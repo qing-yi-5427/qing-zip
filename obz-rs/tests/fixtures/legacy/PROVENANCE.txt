@@ -1,0 +1,6 @@
+license1.ace and license2.ace are unchanged ACE test fixtures from unarc-rs 0.8.0,
+tests/ace/; source https://github.com/mkrueger/unarc-rs (MIT OR Apache-2.0).
+They are used solely as interoperability test data. Runtime code is independently
+implemented in unarc-rs; no Bandisoft DLL or binary is linked or redistributed.
+
+Additional multi/unarc.ace,c00,c01 copied from unarc-rs 0.8.0 crate tests/ace/multi (MIT OR Apache-2.0 crate distribution). Their archived program is test data only and never executed. encrypted-license.ace is the existing license1.ace payload wrapped in authentic ACE encryption by acefile; password obz-fixture, cross-validated by the reference program.

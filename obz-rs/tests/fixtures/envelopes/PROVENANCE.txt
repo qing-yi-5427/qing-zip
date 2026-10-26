@@ -1,0 +1,1 @@
+AES vectors from aescrypt-rs0.2.0-rc.15 MIT OR Apache-2.0, password Hello; remaining fixtures synthetic Open Archive test text created with Python stdlib lzma/binascii and documented lzip/XXencode framing. None are executable.

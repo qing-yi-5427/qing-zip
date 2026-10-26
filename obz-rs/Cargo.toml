@@ -1,0 +1,45 @@
+[package]
+name = "obz-rs"
+version = "0.10.0"
+edition = "2021"
+description = "qing-zip native toolkit: packages and archives"
+license = "MIT"
+
+[lib]
+name = "obz_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "obz"
+path = "src/main.rs"
+
+[dependencies]
+lzma-rs = "0.3"
+miniz_oxide = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+chrono = "0.4"
+unegg = "=0.2.1"
+unalz = "=0.2.1"
+oxiarc-lzhuf = "=0.4.2"
+unarc-rs = { path = "vendor/unarc-rs", version = "=0.8.0", default-features = false }
+
+md-5 = "0.11"
+sha1 = "=0.11.0"
+sha2 = "=0.11.1"
+crc32fast = "=1.5.3"
+
+zip = { version = "=9.1.0", default-features = false, features = ["aes-crypto", "deflate", "xz"] }
+
+brotli = "=9.0.0"
+lz4_flex = "=0.14.0"
+delharc = { version = "=0.8.0", features = ["pm"] }
+
+aescrypt-rs = "=0.2.0-rc.15"
+lzma-rust2 = { version = "=0.23.0", default-features = false, features = ["std", "lzip", "encoder"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+

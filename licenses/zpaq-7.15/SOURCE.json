@@ -1,0 +1,12 @@
+{
+  "version": "7.15",
+  "source_archive": "https://mattmahoney.net/dc/zpaq715.zip",
+  "source_archive_sha256": "e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+  "license": "Unlicense; divsufsort MIT notice embedded in libzpaq.cpp",
+  "modifications": [
+    "Machine-readable OBZ1 integer fields and UTF8 hex filenames in list output; no human filenames emitted for records.",
+    "Compiled with NOJIT, MSVC x64 /O2 /EHsc; caller applies Windows Job memory/process/time limits."
+  ],
+  "build": "cl /O2 /EHsc /DNOJIT zpaq.cpp libzpaq.cpp advapi32.lib /Fe:obz-zpaq.exe",
+  "runtime_sha256": "72a5350f9fa3a38faa91acf13a27cc6ae112eb5da89a0404cf87854c6826c49d"
+}

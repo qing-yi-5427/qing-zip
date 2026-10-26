@@ -1,0 +1,5 @@
+Local modifications to unarc-rs 0.8.0:
+- Correct ACE password flag to0x4000.
+- Correct ACE-specific160-bit password derivation, little-endian block framing and modified Blowfish S-boxes using BSD2 acefile reference. See LICENSE-ACEFILE.md.
+- Strip example/test/bench manifest targets outside vendored source.
+Native ACE2 blocked decompression remains incomplete; Open Archive packages a separate BSD2 acefile worker with CPython to decode full ACE2 independently. Reference-vector tests live in src/ace/crypto.rs.

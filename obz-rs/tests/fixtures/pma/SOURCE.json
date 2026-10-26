@@ -1,0 +1,51 @@
+{
+  "repository": "https://github.com/fragglet/lhasa",
+  "fixtures": [
+    {
+      "file": "test_archives_generated_pm1_pm1.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/generated/pm1/pm1.pma",
+      "sha256": "682f91646d79a36d1f663f7e43c222fb53ba98b8a1913fed88d4d0d90d0b7a41"
+    },
+    {
+      "file": "test_archives_pmarc124_mtcd.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc124/mtcd.pma",
+      "sha256": "2eb3602b049a721881738489b2e304166bbcce4c1cd7e08c549841f514c226a8"
+    },
+    {
+      "file": "test_archives_pmarc124_pm0.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc124/pm0.pma",
+      "sha256": "8deab44678436125e169a20c0f1e6260182c3b7a74277b0868e3b813483acb7b"
+    },
+    {
+      "file": "test_archives_pmarc124_pm1.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc124/pm1.pma",
+      "sha256": "13dfdbd992c2fac4964b3028c646aa68eb7a4a941a4224c4837058c3771b6346"
+    },
+    {
+      "file": "test_archives_pmarc124_pm1_long.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc124/pm1_long.pma",
+      "sha256": "71c77d931c960fc6e3e592cf16b1cd22fa5cbf1e2c1c7422d2365cf2f706efbd"
+    },
+    {
+      "file": "test_archives_pmarc2_comment.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc2/comment.pma",
+      "sha256": "7e0875fcc3d331c6e483d2a1b5e640f797d021395780eba7aac7b6d9d5a34866"
+    },
+    {
+      "file": "test_archives_pmarc2_long.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc2/long.pma",
+      "sha256": "472fdba46b19bcef96b1ef9e00fe45222d727399d0f4bb88aca9be5e8d41a38f"
+    },
+    {
+      "file": "test_archives_pmarc2_pm0.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc2/pm0.pma",
+      "sha256": "b9dc05a9dd49b19c02d5e08bf8eb7fca584d280ed0083eefcd45c6314e4003ad"
+    },
+    {
+      "file": "test_archives_pmarc2_pm2.pma",
+      "url": "https://raw.githubusercontent.com/fragglet/lhasa/master/test/archives/pmarc2/pm2.pma",
+      "sha256": "4428e8d9d4e5f61aa7fd041fc6048cfdb64052eaf2776f8b23b9430f506e7979"
+    }
+  ],
+  "note": "Upstream interoperability samples, including GPL-2 text payloads; original archive contents and notices retained."
+}
