@@ -57,6 +57,9 @@ fn engine_select_preview_and_overwrite() {
         engine::preview(&out, &name, &opts).unwrap(),
         b"hello archive"
     );
+    for alias in [name.replace('\\', "/"), name.replace('/', "\\")] {
+        assert_eq!(engine::preview(&out, &alias, &opts).unwrap(), b"hello archive");
+    }
     let selected = EngineOptions {
         selected: vec![name],
         ..Default::default()

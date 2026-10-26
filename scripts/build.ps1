@@ -9,7 +9,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Core build failed' }
     & python scripts/package.py
     if ($LASTEXITCODE -ne 0) { throw 'Portable package failed' }
-    & $NsisPath /INPUTCHARSET UTF8 scripts/installer.nsi
+    $releaseVersion = (Get-Content obz-gui/tauri.conf.json -Raw | ConvertFrom-Json).version
+    & $NsisPath /INPUTCHARSET UTF8 "/DVERSION=$releaseVersion" scripts/installer.nsi
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
     Get-ChildItem dist -File | Where-Object Extension -in '.zip','.exe' | ForEach-Object {
         $checksum = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()

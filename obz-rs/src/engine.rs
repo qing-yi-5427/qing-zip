@@ -2825,7 +2825,7 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     let list = list(path, opts)?;
     let e = list
         .iter()
-        .find(|e| e.name == name && !e.is_dir)
+        .find(|e| e.name.replace('\\', "/") == name.replace('\\', "/") && !e.is_dir)
         .ok_or("preview entry not found")?;
     if e.size > 32 * 1024 * 1024 {
         return Err("preview exceeds 32 MiB limit".into());
@@ -2836,7 +2836,7 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
         "-so".into(),
         "--".into(),
         absolute(path)?.display().to_string(),
-        name.to_string(),
+        e.name.clone(),
     ]);
     run(
         &a,

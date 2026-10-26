@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "obz-gui"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "encoding_rs",
  "image",
@@ -2926,7 +2926,7 @@ dependencies = [
 
 [[package]]
 name = "obz-rs"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "aescrypt-rs",
  "brotli",
