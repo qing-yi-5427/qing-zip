@@ -3,7 +3,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !ifndef VERSION
-!define VERSION "0.10.2"
+!define VERSION "0.10.3"
 !endif
 !ifndef STAGING
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"
@@ -82,6 +82,10 @@ Section "Uninstall"
  ReadRegStr $0 HKCU "Software\Classes\*\shell\qing-zip\command" ""
  ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" $\"%1$\"'
   DeleteRegKey HKCU "Software\Classes\*\shell\qing-zip"
+ ${EndIf}
+ ReadRegStr $0 HKCU "Software\Classes\Directory\shell\qing-zip-compress\command" ""
+ ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" --compress-folder $\"%1$\"'
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\qing-zip-compress"
  ${EndIf}
  ; Delete only shipped files. Archives or other files the user placed here survive.
  !include "uninstall-files.nsh"

@@ -10,6 +10,32 @@ use windows::{core::PCWSTR, Win32::{
 
 const PROGID: &str = "OpenArchive.Archive";
 const APP_NAME: &str = "qing-zip";
+const FOLDER_MENU: &str = r"Software\Classes\Directory\shell\qing-zip-compress";
+
+#[tauri::command]
+pub fn folder_menu_enabled() -> Result<bool,String> {
+    Ok(string_data(read_value(HKEY_CURRENT_USER,&format!(r"{FOLDER_MENU}\command"),"")?).is_some())
+}
+#[tauri::command]
+pub fn set_folder_menu(enabled: bool) -> Result<bool,String> {
+    let _lock=REGISTRATION.lock().map_err(|_| "设置暂不可用")?;
+    if enabled {
+        let exe=std::env::current_exe().map_err(|e|e.to_string())?.to_string_lossy().into_owned();
+        let command=open_command(&exe)?.replace("\" \"%1\"", "\" --compress-folder \"%1\"");
+        apply_edits(&Registry::user(),vec![
+            edit(FOLDER_MENU,"",Some(string_value("用 qing-zip 压缩…"))),
+            edit(FOLDER_MENU,"Icon",Some(string_value(&format!("\"{exe}\",0")))),
+            edit(FOLDER_MENU,"MultiSelectModel",Some(string_value("Single"))),
+            edit(format!(r"{FOLDER_MENU}\command"),"",Some(string_value(&command))),
+        ],None)?;
+    } else {
+        let key=wide(FOLDER_MENU)?;
+        let result=unsafe{RegDeleteTreeW(HKEY_CURRENT_USER,PCWSTR(key.as_ptr()))};
+        if result!=ERROR_FILE_NOT_FOUND && result!=ERROR_PATH_NOT_FOUND {result.ok().map_err(|e|e.to_string())?;}
+    }
+    unsafe{SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,None,None);}
+    folder_menu_enabled()
+}
 const CAPABILITIES: &str = r"Software\OpenArchive\Capabilities";
 const OWNER_KEY: &str = r"Software\OpenArchive\Associations";
 const OWNER: &str = "OpenArchive.Associations.v1";

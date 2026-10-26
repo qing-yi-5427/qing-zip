@@ -4,6 +4,7 @@ use std::{
     sync::Mutex,
 };
 use tauri::{Emitter, Manager};
+static PENDING_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[tauri::command]
 pub fn canonical_archive_path(path: String) -> Result<String, String> {
@@ -36,7 +37,7 @@ pub fn canonical_archive_path(path: String) -> Result<String, String> {
         Ok(path.strip_prefix(r"\\?\").unwrap_or(&path).to_string())
     }
 }
-fn paths(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
+fn paths(args: impl IntoIterator<Item = String>, cwd: &Path, folders: bool) -> Vec<String> {
     let mut result = Vec::new();
     for arg in args.into_iter().skip(1).take(1024) {
         if arg.is_empty()
@@ -61,9 +62,10 @@ fn paths(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
             continue;
         };
         use std::os::windows::fs::MetadataExt;
-        if !meta.is_file() || meta.file_attributes() & 0x400 != 0 {
+        if (if folders {!meta.is_dir() || path.file_name().is_none()} else {!meta.is_file()}) || meta.file_attributes() & 0x400 != 0 {
             continue;
         }
+        if folders && path.ancestors().any(|p|std::fs::symlink_metadata(p).map(|m|m.file_attributes() & 0x400 != 0).unwrap_or(true)){continue;}
         let path = path.to_string_lossy().into_owned();
         if !result
             .iter()
@@ -75,9 +77,10 @@ fn paths(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
     result
 }
 pub fn startup_paths() -> Vec<String> {
+    if std::env::args().nth(1).as_deref()==Some("--compress-folder"){return Vec::new();}
     paths(
         std::env::args(),
-        &std::env::current_dir().unwrap_or_default(),
+        &std::env::current_dir().unwrap_or_default(), false,
     )
 }
 fn enqueue(paths: &[String]) {
@@ -89,11 +92,13 @@ fn enqueue(paths: &[String]) {
     }
 }
 pub fn queue_startup() {
-    enqueue(&startup_paths());
+    let args:Vec<String>=std::env::args().collect();
+    if args.get(1).map(String::as_str)==Some("--compress-folder"){queue_folders(paths(args,&std::env::current_dir().unwrap_or_default(),true));}else{enqueue(&startup_paths());}
 }
 pub fn receive(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
-    let paths = paths(args, Path::new(&cwd));
-    enqueue(&paths);
+    let folders=args.get(1).map(String::as_str)==Some("--compress-folder");
+    let paths = paths(args, Path::new(&cwd),folders);
+    if folders {queue_folders(paths.clone());}else{enqueue(&paths);}
     // The event is a wakeup; the frontend drains the queue once after listener setup.
     let _ = app.emit("open-archives", paths);
     if let Some(window) = app.get_webview_window("main") {
@@ -106,9 +111,23 @@ pub fn receive(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
 pub fn take_pending_archives() -> Vec<String> {
     std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()))
 }
+fn queue_folders(paths:Vec<String>){
+    let mut pending=PENDING_FOLDERS.lock().unwrap_or_else(|e|e.into_inner());
+    for path in paths {if pending.len()<128 && !pending.iter().any(|p|p.eq_ignore_ascii_case(&path)){pending.push(path);}}
+}
+#[tauri::command]
+pub fn take_pending_folders()->Vec<String>{std::mem::take(&mut *PENDING_FOLDERS.lock().unwrap_or_else(|e|e.into_inner()))}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compression_arguments_accept_folders_only(){
+        let root=tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("中文 folder")).unwrap();
+        std::fs::write(root.path().join("file.zip"),b"data").unwrap();
+        let found=paths(["app.exe","--compress-folder","中文 folder","file.zip","missing"].map(str::to_string),root.path(),true);
+        assert_eq!(found.len(),1);assert!(found[0].ends_with("中文 folder"));
+    }
     #[test]
     fn arguments_only_select_existing_regular_files() {
         let root = tempfile::tempdir().unwrap();
@@ -124,7 +143,7 @@ mod tests {
                 ".",
             ]
             .map(str::to_string),
-            root.path(),
+            root.path(), false,
         );
         assert_eq!(result.len(), 1);
         assert!(result[0].ends_with("a.zip"));
