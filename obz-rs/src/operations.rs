@@ -75,7 +75,7 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             caps.limitations.push("ACE adapter has bounded member/total sizes; not every historical ACE variant is validated".into());
             caps.limitations.push("EGG/ALZ adapters are bounded to 100000 entries and 8 GiB total decoded data; ALZ cancellation is checked during decode IO".into());
             caps.limitations.push("Not all historical format variants are covered; ZIP repair is bounded salvage, not guaranteed full recovery".into());
-            Ok(json!({"engine":caps,"services":["zip_repair","password_vault","candidate_and_charset_recovery","image_preview","file_checksums","defender_scan","shell_menu"],"schema_version":1}))
+            Ok(json!({"engine":caps,"services":["zip_repair","password_vault","candidate_and_charset_recovery","image_preview","file_checksums","shell_menu"],"schema_version":1}))
         },
         "list" => Ok(json!({"entries": list_archive(&r.path, &r.options)?})),
         "test" => { test_archive(&r.path, &r.options)?; Ok(json!({"valid":true})) },
@@ -121,7 +121,6 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
         "checksum" => crate::checksum::checksum(&r.path, &r.options),
         "comment-get" => Ok(json!({"comment":crate::archive_comment::get(&r.path)?})),
         "comment-set" => {crate::archive_comment::set(&r.path,&r.name,&r.options)?;Ok(json!({"updated":r.path}))},
-        "scan" => Ok(json!(services::scan_defender(&r.path)?)),
         "vault-list" => Ok(json!(services::Vault::open(vault_path()?)?.list()?)),
         "vault-put" => {
             let password = r.options.password.as_deref().ok_or("password required")?;

@@ -25,7 +25,6 @@ USAGE:
   obz repair        <broken.zip> <new.zip>  (keeps original)
   obz recover       <archive> --candidates <file> --max-attempts 1000
   obz checksum      <file>                  (CRC32/MD5/SHA1/SHA256)
-  obz scan          <file>
   obz vault-list | vault-put <id> --label <label> --password-stdin | vault-delete <id>
   obz shell-enable|shell-disable <qing-zip.exe>
   obz capabilities
@@ -63,7 +62,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 _ => Err(format!("unknown setup subcommand\n{USAGE}")),
             }
         }
-        "list" | "extract" | "create" | "test" | "add" | "delete" | "rename" | "preview" | "repair" | "checksum" | "scan" | "recover" | "capabilities" | "vault-list" | "vault-put" | "vault-delete" | "shell-enable" | "shell-disable" => cmd_operation(args),
+        "list" | "extract" | "create" | "test" | "add" | "delete" | "rename" | "preview" | "repair" | "checksum" | "recover" | "capabilities" | "vault-list" | "vault-put" | "vault-delete" | "shell-enable" | "shell-disable" => cmd_operation(args),
         "json" => cmd_json(&args[1..]),
         other => Err(format!("unknown command {other}\n{USAGE}")),
     }

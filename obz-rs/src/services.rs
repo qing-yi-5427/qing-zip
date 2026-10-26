@@ -1336,81 +1336,6 @@ fn hidden(cmd: &mut Command) {
     cmd.stdin(Stdio::null());
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ScanReport {
-    pub scanner: String,
-    pub exit_code: Option<i32>,
-    pub status: String,
-    pub details: String,
-}
-
-pub fn defender_path() -> Result<PathBuf, String> {
-    let base = PathBuf::from(std::env::var_os("ProgramData").ok_or("ProgramData unavailable")?)
-        .join("Microsoft/Windows Defender/Platform");
-    let mut candidates: Vec<_> = fs::read_dir(base)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|e| e.path().join("MpCmdRun.exe"))
-        .filter(|p| p.is_file())
-        .collect();
-    candidates.sort();
-    candidates
-        .pop()
-        .or_else(|| {
-            std::env::var_os("ProgramFiles")
-                .map(PathBuf::from)
-                .map(|p| p.join("Windows Defender/MpCmdRun.exe"))
-                .filter(|p| p.is_file())
-        })
-        .ok_or_else(|| "Microsoft Defender command-line scanner unavailable".into())
-}
-
-/// Microsoft custom scan with remediation explicitly disabled. Exit 2 is kept
-/// ambiguous (threat or operational error), never reported as a clean result.
-pub fn scan_defender(path: &str) -> Result<ScanReport, String> {
-    let target = fs::canonicalize(path).map_err(|e| e.to_string())?;
-    let scanner = defender_path()?;
-    let log = tempfile::tempfile().map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(&scanner);
-    hidden(&mut cmd);
-    let mut child = cmd
-        .args([
-            "-Scan",
-            "-ScanType",
-            "3",
-            "-DisableRemediation",
-            "-Timeout",
-            "1",
-            "-File",
-        ])
-        .arg(target)
-        .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
-        .stderr(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status;
-        }
-        if started.elapsed() > Duration::from_secs(300) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("Defender scan exceeded 5 minute limit; result unknown".into());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    use std::io::{Seek, SeekFrom};
-    let mut log = log;
-    log.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    log.take(16384)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    Ok(ScanReport { scanner: scanner.to_string_lossy().into_owned(), exit_code: status.code(), status: if status.success() { "no_threat_reported" } else { "threat_or_scan_error" }.into(), details: format!("Custom scan with remediation disabled. Nonzero results require review in Windows Security; encrypted archive contents may be inaccessible to the scanner.\n{}",String::from_utf8_lossy(&bytes)) })
-}
-
 /// Explorer cannot launch extended-length device paths in a shell command.
 fn explorer_executable_path(raw: &str) -> Result<String, String> {
     let path = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
@@ -1660,20 +1585,5 @@ mod tests {
         assert!(!commands[2][6].contains(r"\\?\"));
         assert!(commands[2][6].ends_with("\" \"%1\""));
         assert!(shell_menu_plan(std::env::temp_dir().to_str().unwrap()).is_err());
-    }
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "requires locally enabled Microsoft Defender; bounded real-service smoke test"]
-    fn defender_smoke_scan_benign_fixture() {
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("benign.txt");
-        fs::write(&file, b"OpenBandiZip benign scan fixture").unwrap();
-        let report = scan_defender(file.to_str().unwrap()).unwrap();
-        println!("{}", serde_json::to_string(&report).unwrap());
-        assert!(matches!(
-            report.status.as_str(),
-            "no_threat_reported" | "threat_or_scan_error"
-        ));
-        assert_eq!(fs::read(file).unwrap(), b"OpenBandiZip benign scan fixture");
     }
 }
