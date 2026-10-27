@@ -83,14 +83,7 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
             if r.smart {
                 let entries = list_archive(&r.path, &r.options)?;
-                let names=entries.iter().filter(|e|crate::engine::selected(&e.name,&r.options))
-                    .map(|e|crate::engine::validate_name(&e.name)).collect::<Result<Vec<_>,_>>()?;
-                let first=names.first().and_then(|p|p.components().next());
-                let one_root=names.iter().all(|p|p.components().next()==first);
-                if names.len() > 1 && !one_root {
-                    let stem = std::path::Path::new(&r.path).file_stem().and_then(|s| s.to_str()).ok_or("invalid archive filename")?;
-                    r.dest = PathBuf::from(&r.dest).join(crate::extract::relative_path(stem)?).to_string_lossy().into_owned();
-                }
+                r.dest = crate::smart_extract::destination(&r.path, &r.dest, &entries)?;
             }
             let count = extract_archive(&r.path, &r.dest, &r.options)?;
             Ok(json!({"files": count, "destination": r.dest}))

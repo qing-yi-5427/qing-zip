@@ -23,3 +23,5 @@ pub mod envelopes;
 pub mod rare;
 
 pub mod archive_comment;
+
+mod smart_extract;
