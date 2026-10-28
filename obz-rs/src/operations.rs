@@ -83,7 +83,7 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
             if r.smart {
                 let entries = list_archive(&r.path, &r.options)?;
-                r.dest = crate::smart_extract::destination(&r.path, &r.dest, &entries)?;
+                r.dest = crate::smart_extract::destination(&r.path, &r.dest, &entries, &r.options)?;
             }
             let count = extract_archive(&r.path, &r.dest, &r.options)?;
             Ok(json!({"files": count, "destination": r.dest}))
