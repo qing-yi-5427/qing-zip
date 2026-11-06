@@ -23,6 +23,7 @@ pub struct Request {
     pub max_attempts: Option<usize>,
     pub max_bytes: Option<u64>,
     pub smart: bool,
+    pub hashes: Vec<String>,
 }
 
 pub fn vault_path() -> Result<PathBuf, String> {
@@ -45,6 +46,9 @@ pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     if crate::korean::is_supported(path){crate::korean::test(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::test(path,opts)}else{engine::test(path,opts)}
 }
 pub fn extract_archive(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
+    let mut inherited = opts.clone();
+    if inherited.zone_identifier.is_none() { inherited.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(path))?); }
+    let opts = &inherited;
     if crate::rare::supports(path){return crate::rare::extract(path,dest,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::extract(path,dest,opts);}
@@ -70,6 +74,10 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             let mut caps=engine::capabilities(); caps.write_formats.push("iso (Windows IMAPI2FS)".into());
             caps.read_formats.extend(["egg","alz","ace","asar","br","lz4","aes","lz","uu","uue","xxe","pma","zpaq","daa","isz"].map(str::to_string));
             caps.write_formats.push("lzh (LH7)".into());
+            caps.write_formats.extend(["brotli", "lz4", "lz5", "lizard", "zstd"].map(str::to_string));
+            caps.read_formats.extend(["brotli", "lz5", "lizard"].map(str::to_string));
+            caps.limitations.push("Standalone raw streams contain one regular file and do not support passwords, splitting or archive-specific options; unknown decoded lengths are reported explicitly until extraction".into());
+            caps.limitations.push("Raw-stream integrity checks depend on the format; ordinary Brotli has no content checksum, so valid bit changes cannot always be detected".into());
             caps.limitations.retain(|s|!s.contains("ALZ/EGG"));
             caps.limitations.push("RAR creation and some ZIPX codecs are unsupported; LZH writing supports LH7 without passwords/splitting".into());
             caps.limitations.push("ACE adapter has bounded member/total sizes; not every historical ACE variant is validated".into());
@@ -111,7 +119,8 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             Ok(json!({"name":r.name,"mime":mime,"data_url": format!("data:{mime};base64,{}", base64(&bytes))}))
         },
         "repair" => Ok(json!(services::repair_zip_with_options(&r.path, &r.dest, r.max_bytes.unwrap_or(512 * 1024 * 1024), r.options.password.as_deref(), r.options.codepage)?)),
-        "checksum" => crate::checksum::checksum(&r.path, &r.options),
+        "checksum" => crate::checksum::checksum_selected(&r.path, &r.hashes, &r.options),
+        "checksum-algorithms" => Ok(json!({"algorithms": crate::checksum::algorithms(&r.options)?})),
         "comment-get" => Ok(json!({"comment":crate::archive_comment::get(&r.path)?})),
         "comment-set" => {crate::archive_comment::set(&r.path,&r.name,&r.options)?;Ok(json!({"updated":r.path}))},
         "vault-list" => Ok(json!(services::Vault::open(vault_path()?)?.list()?)),
@@ -161,6 +170,8 @@ fn infer_format(path: &str) -> Result<&str, String> {
     match std::path::Path::new(&lower).extension().and_then(|v| v.to_str()) {
         Some("zip") => Ok("zip"), Some("7z") => Ok("7z"), Some("tar") => Ok("tar"),
         Some("gz") => Ok("gzip"), Some("bz2") => Ok("bzip2"), Some("xz") => Ok("xz"),
+        Some("br" | "brotli") => Ok("brotli"), Some("lz4") => Ok("lz4"), Some("lz5") => Ok("lz5"),
+        Some("liz" | "lizard") => Ok("lizard"), Some("zst" | "zstd") => Ok("zstd"),
         Some("lzh") | Some("lha") => Ok("lzh"), Some("wim") => Ok("wim"), Some("iso") => Ok("iso"), Some("zipx") => Ok("zipx"), Some("exe") => Ok("sfx"), Some("tgz") => Ok("tgz"), Some("tbz") | Some("tbz2") => Ok("tbz2"), Some("txz") => Ok("txz"),
         _ => Err("specify format explicitly".into()),
     }

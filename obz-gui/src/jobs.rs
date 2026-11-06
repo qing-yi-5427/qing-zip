@@ -56,15 +56,20 @@ fn capture_prefix(mut reader: impl Read, maximum: usize) -> Vec<u8> {
 fn confirm_single_volume(request: &Request, control: &JobControl) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     check_cancel(control)?;
+    if let Some(password)=&request.options.password {obz_core::engine_password::validate(password)?;}
     let mut command=Command::new(obz_core::engine::executable()?);
     command.args(["l","-slt","-sccUTF-8","-y","-spd"]).creation_flags(0x08000000)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(password)=&request.options.password {
-        if password.is_empty() || password.contains(['\0','\n','\r']) {return Err("无效密码".into());}
-        command.arg(format!("-p{password}"));
-    }
+        .stdin(if request.options.password.is_some(){Stdio::piped()}else{Stdio::null()})
+        .stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cp)=request.options.codepage {command.arg(format!("-mcp={cp}"));}
     let mut child=command.arg("--").arg(&request.path).spawn().map_err(|e|e.to_string())?;
+    let password_input=match request.options.password.as_deref() {
+        Some(password)=>match obz_core::engine_password::PasswordInput::spawn(&mut child,password) {
+            Ok(input)=>Some(input),
+            Err(error)=>{let _=child.kill();let _=child.wait();return Err(error);}
+        },
+        None=>None,
+    };
     let stdout=child.stdout.take().ok_or("无法读取归档信息")?;
     let stderr=child.stderr.take().ok_or("无法读取引擎状态")?;
     let out=std::thread::spawn(move||capture_prefix(stdout,65536));
@@ -73,17 +78,23 @@ fn confirm_single_volume(request: &Request, control: &JobControl) -> Result<(), 
     let status=loop {
         if control.cancelled.load(Ordering::SeqCst) || start.elapsed()>Duration::from_secs(60) {
             let _=child.kill();let _=child.wait();let _=out.join();let _=err.join();
+            if let Some(input)=password_input {let _=input.finish();}
             check_cancel(control)?;
             return Err("确认单卷状态超时，原压缩包保持不变".into());
         }
         match child.try_wait() {
             Ok(Some(status))=>break status,
             Ok(None)=>if let Err(e)=obz_core::engine::wait_for_process(&child,Duration::from_millis(40)) {
-                let _=child.kill();let _=child.wait();let _=out.join();let _=err.join();return Err(e.to_string());
+                let _=child.kill();let _=child.wait();let _=out.join();let _=err.join();
+                if let Some(input)=password_input {let _=input.finish();}
+                return Err(e.to_string());
             },
-            Err(e)=>{let _=child.kill();let _=child.wait();let _=out.join();let _=err.join();return Err(e.to_string());}
+            Err(e)=>{let _=child.kill();let _=child.wait();let _=out.join();let _=err.join();
+                if let Some(input)=password_input {let _=input.finish();}
+                return Err(e.to_string());}
         }
     };
+    if let Some(input)=password_input {input.finish()?;}
     let bytes=out.join().map_err(|_|"归档信息读取失败")?;let _=err.join();
     if !status.success(){return Err("无法确认压缩包完整且为单卷，未解压或回收，请使用普通解压查看原因".into());}
     let text=String::from_utf8_lossy(&bytes);
@@ -251,6 +262,27 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         for header in ["", "Type = Split\nType = 7z\n", "Type = Rar\n", "Type = zip\nVolumes = 2\n", "Type = zip\nMultivolume = +\n", "Type = zip\nVolumeIndex = 1\n"] {
             assert!(validate_archive_header(header).is_err(),"{header}");
         }
+    }
+    #[test] fn recycle_header_check_uses_password_stdin_and_keeps_split_safety() {
+        use obz_core::engine::{self,EngineOptions};
+        let temp=tempfile::tempdir().unwrap();let root=temp.path();
+        let input=root.join("input.txt");std::fs::write(&input,b"synthetic recycle header fixture").unwrap();
+        let archive=root.join("encrypted.7z").display().to_string();
+        let options=EngineOptions{password:Some(" header 中文 🔐 ".into()),..Default::default()};
+        engine::create(&archive,&[input.display().to_string()],"7z",&options).unwrap();
+        let mut request=Request{operation:"extract".into(),path:archive,options:options.clone(),..Default::default()};
+        confirm_single_volume(&request,&JobControl::new()).unwrap();
+        request.options.password=Some("wrong".into());
+        assert!(confirm_single_volume(&request,&JobControl::new()).is_err());
+        request.options.password=None;
+        assert!(confirm_single_volume(&request,&JobControl::new()).is_err());
+        let cancelled=JobControl::new();cancelled.cancel();
+        assert_eq!(confirm_single_volume(&request,&cancelled).unwrap_err(),"operation cancelled");
+        let split=root.join("split.7z").display().to_string();
+        let split_options=EngineOptions{volume_bytes:Some(128),..options.clone()};
+        let volumes=engine::create(&split,&[input.display().to_string()],"7z",&split_options).unwrap();
+        request.path=volumes[0].clone();request.options=options;
+        assert!(confirm_single_volume(&request,&JobControl::new()).is_err());
     }
     #[test] fn cancelled_or_incomplete_extraction_cannot_commit_recycle() {
         let control=JobControl::new();

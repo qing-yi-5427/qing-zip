@@ -1,0 +1,4 @@
+LIBRARY "qing-shell"
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

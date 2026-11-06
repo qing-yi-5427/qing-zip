@@ -77,6 +77,12 @@ fn startup_path() -> Option<String> { instance::startup_paths().into_iter().next
 fn app_version() -> String { env!("CARGO_PKG_VERSION").to_owned() }
 
 #[tauri::command]
+async fn checksum_algorithms() -> Result<Vec<obz_core::checksum::Algorithm>, String> {
+    tauri::async_runtime::spawn_blocking(|| obz_core::checksum::algorithms(&EngineOptions::default()))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn current_executable() -> Result<String,String> { std::env::current_exe().map(|p|p.to_string_lossy().into_owned()).map_err(|e|e.to_string()) }
 
 #[tauri::command]
@@ -121,7 +127,7 @@ fn set_appearance(window: tauri::WebviewWindow, material: String, dark: bool) ->
 fn pick_files() -> Vec<String> {
     rfd::FileDialog::new()
         .set_title("打开压缩文件")
-        .add_filter("归档/安装包", &["zip", "7z", "rar", "exe", "tar", "gz", "xz", "bz2", "iso", "cab", "wim", "001", "zipx", "egg", "alz", "ace", "lzh"])
+        .add_filter("归档/安装包", &["zip", "7z", "rar", "exe", "tar", "gz", "xz", "bz2", "iso", "cab", "wim", "001", "zipx", "egg", "alz", "ace", "lzh", "zst", "zstd", "br", "brotli", "lz4", "lz5", "liz", "lizard"])
         .add_filter("所有文件", &["*"])
         .pick_files()
         .map(|v| v.iter().map(|p| p.to_string_lossy().into_owned()).collect())
@@ -139,7 +145,7 @@ fn pick_folder() -> String {
 
 #[tauri::command]
 fn pick_archive_save(format: String) -> String {
-    let ext=match format.as_str(){"7z"=>"7z","tar"=>"tar","tgz"=>"tar.gz","tbz2"=>"tar.bz2","txz"=>"tar.xz","gzip"=>"gz","xz"=>"xz","bzip2"=>"bz2","wim"=>"wim","sfx"=>"exe","iso"=>"iso","zipx"=>"zipx","lzh"=>"lzh",_=>"zip"};
+    let ext=match format.as_str(){"7z"=>"7z","tar"=>"tar","tgz"=>"tar.gz","tbz2"=>"tar.bz2","txz"=>"tar.xz","gzip"=>"gz","xz"=>"xz","bzip2"=>"bz2","wim"=>"wim","sfx"=>"exe","iso"=>"iso","zipx"=>"zipx","lzh"=>"lzh","zstd"=>"zst","brotli"=>"br","lz4"=>"lz4","lz5"=>"lz5","lizard"=>"liz",_=>"zip"};
     rfd::FileDialog::new().set_title("新建压缩包").set_file_name(format!("archive.{ext}")).save_file().map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
@@ -194,10 +200,10 @@ fn main() {
             pick_folder,
             pick_save, pick_copy_save,
             pick_files_for_zip,
-            dropped, open_tools, app_version, current_executable, startup_path, pick_archive_save, set_appearance, window_action, window_maximized, cancel_and_close, jobs::start_operation, jobs::operation_status, jobs::wait_operation, jobs::cancel_operation, jobs::forget_operation,
+            dropped, open_tools, app_version, checksum_algorithms, current_executable, startup_path, pick_archive_save, set_appearance, window_action, window_maximized, cancel_and_close, jobs::start_operation, jobs::operation_status, jobs::wait_operation, jobs::cancel_operation, jobs::forget_operation,
             drag::drag_paths, desktop::known_folders, desktop::reveal_path, desktop::copy_archive, desktop::clipboard_paths, desktop::clipboard_directory, desktop::recycle_paths, desktop::list_directory,
             associations::folder_menu_enabled, associations::set_folder_menu, instance::take_pending_folders, associations::association_status, associations::set_file_associations, associations::open_default_apps,
-            preview::preview_entry, preview::open_archive_image, preview::clear_preview_cache, instance::take_pending_archives, instance::canonical_archive_path
+            preview::preview_entry, preview::open_archive_image, preview::clear_preview_cache, instance::take_pending_archives, instance::canonical_archive_path, instance::take_pending_shell_extractions
         ])
         .run(tauri::generate_context!())
         .expect("qing-zip 启动失败");

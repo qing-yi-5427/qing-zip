@@ -8,6 +8,8 @@ pub mod zipfmt;
 
 pub mod extract;
 pub mod engine;
+mod engine_stream;
+pub mod engine_password;
 pub mod services;
 pub mod operations;
 pub mod korean;
@@ -25,3 +27,8 @@ pub mod rare;
 pub mod archive_comment;
 
 mod smart_extract;
+
+pub mod motw;
+
+#[cfg(windows)]
+mod private_stage;

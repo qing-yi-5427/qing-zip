@@ -120,6 +120,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
             .entries
             .iter()
             .map(|e| Entry {
+                size_known: true,
                 name: e.file_name.replace('\\', "/"),
                 size: e.uncompressed_size,
                 packed_size: e.blocks.iter().map(|b| b.compressed_size as u64).sum(),
@@ -145,6 +146,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
             .entries
             .iter()
             .map(|e| Entry {
+                size_known: true,
                 name: e.file_name.replace('\\', "/"),
                 size: e.uncompressed_size,
                 packed_size: e.compressed_size,
@@ -421,6 +423,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         }
         check(opts)?;
         engine::no_links(&p)?;
+        crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
         if opts.overwrite == "overwrite" {
             tmp.persist(p).map_err(|e| e.error.to_string())?;
         } else {

@@ -22,6 +22,7 @@ fn check(o: &EngineOptions) -> Result<(), String> {
 }
 fn entry(name: String, size: u64, method: &str) -> Entry {
     Entry {
+        size_known: true,
         name,
         size,
         packed_size: 0,
@@ -94,11 +95,16 @@ fn runtime(name: &str) -> Result<PathBuf, String> {
 }
 fn run(program: &Path, args: &[String], o: &EngineOptions) -> Result<String, String> {
     check(o)?;
+    let password = if args.iter().any(|arg| arg == "-key-stdin") {
+        let password = o.password.as_deref().ok_or("decoder password missing")?;
+        crate::engine_password::validate(password)?;
+        Some(password)
+    } else { None };
     let mut logs = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut errors = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(program);
     cmd.args(args)
-        .stdin(Stdio::null())
+        .stdin(if password.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(logs.try_clone().map_err(|e| e.to_string())?)
         .stderr(errors.try_clone().map_err(|e| e.to_string())?);
     #[cfg(windows)]
@@ -116,27 +122,33 @@ fn run(program: &Path, args: &[String], o: &EngineOptions) -> Result<String, Str
             return Err(e);
         }
     };
-    let started = Instant::now();
-    let status = loop {
-        if check(o).is_err()
-            || started.elapsed() > Duration::from_secs(600)
-            || logs.metadata().map_err(|e| e.to_string())?.len() > 32 * 1024 * 1024
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            check(o)?;
-            return Err("decoder time/output limit exceeded".into());
-        }
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => thread::sleep(Duration::from_millis(20)),
-            Err(e) => {
+    let password_input = match password {
+        Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
+            Ok(input) => Some(input),
+            Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(e.to_string());
+                return Err(error);
             }
+        },
+        None => None,
+    };
+    let started = Instant::now();
+    let status = loop {
+        if let Err(error) = check(o) { break Err(error); }
+        let length = match logs.metadata() { Ok(metadata) => metadata.len(), Err(error) => break Err(error.to_string()) };
+        if started.elapsed() > Duration::from_secs(600) || length > 32 * 1024 * 1024 {
+            break Err("decoder time/output limit exceeded".to_owned());
+        }
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(e) => break Err(e.to_string()),
         }
     };
+    if status.is_err() { let _ = child.kill(); let _ = child.wait(); }
+    let password_result = password_input.map(|input| input.finish()).unwrap_or(Ok(()));
+    let status = status?;
     if !status.success() {
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut message = String::new();
@@ -150,6 +162,7 @@ fn run(program: &Path, args: &[String], o: &EngineOptions) -> Result<String, Str
             message.trim()
         ));
     }
+    password_result?;
     logs.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut text = String::new();
     logs.take(32 * 1024 * 1024)
@@ -171,7 +184,7 @@ fn zpaq_args(action: &str, path: &str, o: &EngineOptions) -> Result<Vec<String>,
         if p.is_empty() || p.chars().any(|c| c.is_control()) {
             return Err("invalid password".into());
         }
-        a.extend(["-key".into(), p.clone()]);
+        a.push("-key-stdin".into());
     }
     Ok(a)
 }
@@ -413,6 +426,7 @@ pub fn extract(path: &str, dest: &str, o: &EngineOptions) -> Result<usize, Strin
         }
         check(o)?;
         engine::no_links(&p)?;
+        crate::motw::apply_to_file(tmp.as_file(), o.zone_identifier.as_ref())?;
         if o.overwrite == "overwrite" {
             tmp.persist(&p).map_err(|e| e.error.to_string())?;
         } else {

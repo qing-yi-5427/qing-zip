@@ -24,13 +24,16 @@ USAGE:
   obz preview       <archive> <entry>       (image data URL as JSON)
   obz repair        <broken.zip> <new.zip>  (keeps original)
   obz recover       <archive> --candidates <file> --max-attempts 1000
-  obz checksum      <file>                  (CRC32/MD5/SHA1/SHA256)
+  obz checksum      <file> [--hash NAME]     (repeat --hash, or --hash '*')
+  obz checksum-algorithms                   (available hash algorithms)
   obz vault-list | vault-put <id> --label <label> --password-stdin | vault-delete <id>
   obz shell-enable|shell-disable <qing-zip.exe>
   obz capabilities
   obz json [request.json]                  (otherwise read JSON from stdin)
 
-Options: --password-stdin, --password-id ID, --level 0..9, --threads N,
+Options: --method NAME, --encryption NAME, --dictionary-bytes N,
+  --solid / --no-solid, --header-encryption / --no-header-encryption,
+  --password-stdin, --password-id ID, --level N (method-dependent), --threads N,
          --volume BYTES, --codepage N, --overwrite error|skip|rename|overwrite,
          --store, --include ENTRY (repeatable); -- ends option parsing.
 ";
@@ -62,7 +65,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 _ => Err(format!("unknown setup subcommand\n{USAGE}")),
             }
         }
-        "list" | "extract" | "create" | "test" | "add" | "delete" | "rename" | "preview" | "repair" | "checksum" | "recover" | "capabilities" | "vault-list" | "vault-put" | "vault-delete" | "shell-enable" | "shell-disable" => cmd_operation(args),
+        "list" | "extract" | "create" | "test" | "add" | "delete" | "rename" | "preview" | "repair" | "checksum" | "checksum-algorithms" | "recover" | "capabilities" | "vault-list" | "vault-put" | "vault-delete" | "shell-enable" | "shell-disable" => cmd_operation(args),
         "json" => cmd_json(&args[1..]),
         other => Err(format!("unknown command {other}\n{USAGE}")),
     }
@@ -236,11 +239,19 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
         if !literal && a.starts_with("--") {
             match a.as_str() {
                 "--store" => r.options.level=Some(0),
+                "--solid" => r.options.solid=Some(true),
+                "--no-solid" => r.options.solid=Some(false),
+                "--header-encryption" => r.options.header_encryption=Some(true),
+                "--no-header-encryption" => r.options.header_encryption=Some(false),
                 "--smart" => r.smart=true,
                 "--password-stdin" => {let mut p=String::new(); std::io::stdin().read_line(&mut p).map_err(|e|e.to_string())?; r.options.password=Some(p.trim_end_matches(['\r','\n']).to_string());},
-                "--format"|"--password-id"|"--codepage"|"--threads"|"--level"|"--volume"|"--include"|"--overwrite"|"--name"|"--label"|"--candidates"|"--max-attempts"|"--charset"|"--min-length"|"--max-length" => {
+                "--method"|"--encryption"|"--dictionary-bytes"|"--hash"|"--format"|"--password-id"|"--codepage"|"--threads"|"--level"|"--volume"|"--include"|"--overwrite"|"--name"|"--label"|"--candidates"|"--max-attempts"|"--charset"|"--min-length"|"--max-length" => {
                     i+=1; let v=args.get(i).ok_or_else(||format!("{a} requires a value"))?;
                     match a.as_str() {
+                        "--hash"=>r.hashes.push(v.clone()),
+                        "--method"=>r.options.method=Some(v.clone()),
+                        "--encryption"=>r.options.encryption=Some(v.clone()),
+                        "--dictionary-bytes"=>r.options.dictionary_bytes=Some(v.parse().map_err(|_|"invalid dictionary size")?),
                         "--charset"=>r.charset=Some(v.clone()),
                         "--min-length"=>r.min_length=Some(v.parse().map_err(|_|"invalid minimum length")?),
                         "--max-length"=>r.max_length=Some(v.parse().map_err(|_|"invalid maximum length")?),
@@ -262,7 +273,7 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
         i+=1;
     }
     match r.operation.as_str() {
-        "capabilities"|"vault-list"=>{},
+        "capabilities"|"checksum-algorithms"|"vault-list"=>{},
         "vault-put"|"vault-delete"=> {r.name=pos.first().ok_or("vault item ID required")?.clone();},
         _=>r.path=pos.first().ok_or("archive path required")?.clone(),
     }

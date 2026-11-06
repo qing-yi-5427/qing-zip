@@ -1,6 +1,6 @@
-//! Bounded ASAR and Brotli/LZ4 readers. No archive content is executed.
-//! ASAR layout follows electron/asar disk.ts and filesystem.ts; Brotli has no
-//! magic or built-in checksum, so .br is required and its full stream is parsed.
+//! Bounded ASAR plus independent raw-stream dispatch. No content is executed.
+//! ASAR keeps its existing resource bounds. Raw streams use the external codec
+//! with streaming IO; listing unknown decoded lengths never decompresses data.
 use crate::engine::{self, EngineOptions, Entry};
 use serde::{
     de::{MapAccess, Visitor},
@@ -37,21 +37,39 @@ fn extension(path: &str) -> String {
         .unwrap_or("")
         .to_ascii_lowercase()
 }
-/// Dispatch hint only: open/list always validates the entire header/stream.
-/// Raw Brotli has no signature and is considered only with the .br extension.
+/// Canonical standalone stream type, independent of its filename alias.
+pub(crate) fn canonical_raw_format(format: &str) -> Option<&'static str> {
+    match format.to_ascii_lowercase().as_str() {
+        "br" | "brotli" => Some("brotli"),
+        "lz4" => Some("lz4"),
+        "lz5" => Some("lz5"),
+        "liz" | "lizard" => Some("lizard"),
+        "zst" | "zstd" => Some("zstd"),
+        _ => None,
+    }
+}
+pub(crate) fn raw_format(path: &str) -> Option<&'static str> {
+    canonical_raw_format(&extension(path))
+}
+pub(crate) fn validate_raw_options(opts: &EngineOptions) -> Result<(), String> {
+    check(opts)?;
+    if opts.password.is_some() || opts.encryption.is_some() {
+        return Err("raw streams do not support passwords or encryption".into());
+    }
+    if opts.volume_bytes.is_some() || opts.solid.is_some() || opts.header_encryption.is_some()
+        || opts.dictionary_bytes.is_some() || opts.codepage.is_some() {
+        return Err("raw streams do not support splitting, solid, header encryption, dictionary or filename codepage settings".into());
+    }
+    if opts.threads == Some(0) { return Err("invalid compression settings".into()); }
+    Ok(())
+}
+/// Dispatch hint only. List validates metadata; test/extract validates content.
 pub fn is_supported(path: &str) -> bool {
-    let ext = extension(path);
-    if ext == "br" {
-        return true;
-    }
+    if raw_format(path).is_some() { return true; }
+    if extension(path) != "asar" { return false; }
     let mut magic = [0; 4];
-    if File::open(path)
-        .and_then(|mut f| f.read_exact(&mut magic))
-        .is_err()
-    {
-        return false;
-    }
-    (ext == "asar" && magic == [4, 0, 0, 0]) || (ext == "lz4" && magic == [4, 0x22, 0x4d, 0x18])
+    File::open(path).and_then(|mut file| file.read_exact(&mut magic)).is_ok()
+        && magic == [4, 0, 0, 0]
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +125,7 @@ struct Archive {
 }
 fn entry(name: String, size: u64, packed: u64, dir: bool, method: &str) -> Entry {
     Entry {
+        size_known: true,
         name,
         size,
         packed_size: packed,
@@ -279,173 +298,14 @@ fn asar(file: File, opts: &EngineOptions) -> Result<Archive, String> {
     )?;
     Ok(archive)
 }
-/// Pre-validate exact LZ4 frame boundaries. The dependency treats EOF at a
-/// missing block header as a clean end, so relying on Read alone is insufficient.
-fn lz4_frame(data: &[u8]) -> Result<(), String> {
-    if data.len() < 11 || data[..4] != [4, 0x22, 0x4d, 0x18] {
-        return Err("invalid LZ4 frame signature".into());
-    }
-    let flags = data[4];
-    let bd = data[5];
-    if flags >> 6 != 1 || flags & 2 != 0 || bd & 0x8f != 0 {
-        return Err("invalid LZ4 reserved/version bits".into());
-    }
-    if flags & 1 != 0 {
-        return Err("LZ4 external dictionaries unsupported".into());
-    }
-    let block = match (bd >> 4) & 7 {
-        4 => 65536,
-        5 => 262144,
-        6 => 1048576,
-        7 => 4194304,
-        _ => return Err("invalid LZ4 block bound".into()),
-    };
-    let mut pos = 7 + if flags & 8 != 0 { 8 } else { 0 };
-    let mut blocks = 0;
-    if flags & 8 != 0 {
-        let length = data.get(6..14).ok_or("truncated LZ4 content size")?;
-        if u64::from_le_bytes(length.try_into().unwrap()) > MAX_MEMBER {
-            return Err("LZ4 declared size exceeds bound".into());
-        }
-    }
-    loop {
-        let b = data.get(pos..pos + 4).ok_or("LZ4 missing end marker")?;
-        let n = u32::from_le_bytes(b.try_into().unwrap());
-        pos += 4;
-        if n == 0 {
-            if flags & 4 != 0 {
-                pos += 4;
-            }
-            if pos != data.len() {
-                return Err("LZ4 truncated checksum or trailing frames/data unsupported".into());
-            }
-            return Ok(());
-        }
-        let n = (n & 0x7fff_ffff) as usize;
-        if n == 0 || n > block {
-            return Err("LZ4 block exceeds frame bound".into());
-        }
-        pos = pos
-            .checked_add(n + if flags & 16 != 0 { 4 } else { 0 })
-            .filter(|p| *p <= data.len())
-            .ok_or("truncated LZ4 block")?;
-        blocks += 1;
-        if blocks > 100000 {
-            return Err("LZ4 block count exceeds bound".into());
-        }
-    }
-}
-fn stream(file: File, path: &str, opts: &EngineOptions) -> Result<Archive, String> {
-    let mut packed = Vec::new();
-    file.take(MAX_MEMBER + 1)
-        .read_to_end(&mut packed)
-        .map_err(|e| e.to_string())?;
-    if packed.len() as u64 > MAX_MEMBER {
-        return Err("compressed stream exceeds 512 MiB bound".into());
-    }
-    let mut temp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    let mut total = 0u64;
-    let mut emit = |data: &[u8]| -> Result<(), String> {
-        check(opts)?;
-        total = total
-            .checked_add(data.len() as u64)
-            .filter(|n| *n <= MAX_MEMBER)
-            .ok_or("decoded stream exceeds 512 MiB bound")?;
-        temp.write_all(data).map_err(|e| e.to_string())
-    };
-    let ext = extension(path);
-    if ext == "lz4" {
-        lz4_frame(&packed)?;
-        let mut decoder = lz4_flex::frame::FrameDecoder::new(std::io::Cursor::new(&packed));
-        let mut buffer = [0u8; 65536];
-        loop {
-            check(opts)?;
-            let n = decoder
-                .read(&mut buffer)
-                .map_err(|e| format!("LZ4 decode/checksum failure: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            emit(&buffer[..n])?;
-        }
-    } else {
-        let mut state = brotli::BrotliState::new(
-            brotli::HeapAlloc::default(),
-            brotli::HeapAlloc::default(),
-            brotli::HeapAlloc::default(),
-        );
-        let mut available = packed.len();
-        let mut offset = 0usize;
-        let mut written = 0usize;
-        let mut buffer = [0u8; 65536];
-        loop {
-            check(opts)?;
-            let mut out_available = buffer.len();
-            let mut out = 0;
-            let before = offset;
-            let result = brotli::BrotliDecompressStream(
-                &mut available,
-                &mut offset,
-                &packed,
-                &mut out_available,
-                &mut out,
-                &mut buffer,
-                &mut written,
-                &mut state,
-            );
-            emit(&buffer[..out])?;
-            match result {
-                brotli::BrotliResult::ResultSuccess => {
-                    if available != 0 || offset != packed.len() {
-                        return Err("Brotli trailing bytes rejected".into());
-                    }
-                    break;
-                }
-                brotli::BrotliResult::ResultFailure => return Err("invalid Brotli stream".into()),
-                brotli::BrotliResult::NeedsMoreInput => {
-                    return Err("truncated Brotli stream".into())
-                }
-                brotli::BrotliResult::NeedsMoreOutput => {
-                    if out == 0 && offset == before {
-                        return Err("Brotli decoder made no progress".into());
-                    }
-                }
-            }
-        }
-    }
-    drop(emit);
-    temp.as_file_mut()
-        .seek(SeekFrom::Start(0))
-        .map_err(|e| e.to_string())?;
-    let name = Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or("invalid stream filename")?
-        .to_owned();
-    engine::validate_name(&name)?;
-    let method = if ext == "br" { "Brotli" } else { "LZ4 frame" };
-    let item = Item {
-        entry: entry(name, total, packed.len() as u64, false, method),
-        offset: 0,
-        integrity: None,
-    };
-    Ok(Archive {
-        file: temp.reopen().map_err(|e| e.to_string())?,
-        _temp: Some(temp),
-        items: vec![item],
-    })
-}
 fn open(path: &str, opts: &EngineOptions) -> Result<Archive, String> {
     check(opts)?;
     if !is_supported(path) {
         return Err("unsupported stream format/signature".into());
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
-    if extension(path) == "asar" {
-        asar(file, opts)
-    } else {
-        stream(file, path, opts)
-    }
+    if extension(path) != "asar" { return Err("ASAR format required".into()); }
+    asar(file, opts)
 }
 fn copy_item(
     file: &mut File,
@@ -502,6 +362,7 @@ fn copy_item(
     Ok(())
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::list(path, opts); }
     guarded(|| {
         Ok(open(path, opts)?
             .items
@@ -511,6 +372,7 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     })
 }
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::test(path, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
         for item in &a.items {
@@ -522,6 +384,7 @@ pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::preview(path, name, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
         let item = a
@@ -538,6 +401,7 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     })
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::extract(path, dest, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
         let chosen: Vec<_> = a
@@ -599,6 +463,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 temp.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             }
             engine::no_links(&target)?;
+            crate::motw::apply_to_file(temp.as_file(), opts.zone_identifier.as_ref())?;
             if opts.overwrite == "overwrite" {
                 temp.persist(target).map_err(|e| e.error.to_string())?;
             } else {

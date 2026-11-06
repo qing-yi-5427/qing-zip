@@ -6,6 +6,23 @@ use std::{
 use tauri::{Emitter, Manager};
 static PENDING_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static PENDING_EXTRACTIONS: Mutex<Vec<ShellExtraction>> = Mutex::new(Vec::new());
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ShellExtraction {
+    path: String,
+    dest: String,
+    smart: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StartupMode { Open, CompressFolders, SmartExtract, ExtractHere }
+fn startup_mode(args: &[String]) -> StartupMode {
+    match args.get(1).map(String::as_str) {
+        Some("--compress-folder") => StartupMode::CompressFolders,
+        Some("--smart-extract") => StartupMode::SmartExtract,
+        Some("--extract-here") => StartupMode::ExtractHere,
+        _ => StartupMode::Open,
+    }
+}
 #[tauri::command]
 pub fn canonical_archive_path(path: String) -> Result<String, String> {
     if path.is_empty()
@@ -77,7 +94,7 @@ fn paths(args: impl IntoIterator<Item = String>, cwd: &Path, folders: bool) -> V
     result
 }
 pub fn startup_paths() -> Vec<String> {
-    if std::env::args().nth(1).as_deref()==Some("--compress-folder"){return Vec::new();}
+    if startup_mode(&std::env::args().collect::<Vec<_>>()) != StartupMode::Open {return Vec::new();}
     paths(
         std::env::args(),
         &std::env::current_dir().unwrap_or_default(), false,
@@ -93,19 +110,45 @@ fn enqueue(paths: &[String]) {
 }
 pub fn queue_startup() {
     let args:Vec<String>=std::env::args().collect();
-    if args.get(1).map(String::as_str)==Some("--compress-folder"){queue_folders(paths(args,&std::env::current_dir().unwrap_or_default(),true));}else{enqueue(&startup_paths());}
+    queue_arguments(args, &std::env::current_dir().unwrap_or_default());
 }
 pub fn receive(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
-    let folders=args.get(1).map(String::as_str)==Some("--compress-folder");
-    let paths = paths(args, Path::new(&cwd),folders);
-    if folders {queue_folders(paths.clone());}else{enqueue(&paths);}
+    queue_arguments(args, Path::new(&cwd));
     // The event is a wakeup; the frontend drains the queue once after listener setup.
-    let _ = app.emit("open-archives", paths);
+    let _ = app.emit("open-archives", ());
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+fn extraction_requests(paths: Vec<String>, smart: bool) -> Vec<ShellExtraction> {
+    paths.into_iter().take(128).filter_map(|path| {
+        // Reuse the same canonicalization and ancestor reparse checks as tabs.
+        let path = canonical_archive_path(path).ok()?;
+        let dest = Path::new(&path).parent()?.to_string_lossy().into_owned();
+        Some(ShellExtraction { path, dest, smart })
+    }).collect()
+}
+fn queue_arguments(args: Vec<String>, cwd: &Path) {
+    let mode = startup_mode(&args);
+    let paths = paths(args, cwd, mode == StartupMode::CompressFolders);
+    match mode {
+        StartupMode::Open => enqueue(&paths),
+        StartupMode::CompressFolders => queue_folders(paths),
+        StartupMode::SmartExtract | StartupMode::ExtractHere => {
+            let mut pending = PENDING_EXTRACTIONS.lock().unwrap_or_else(|e| e.into_inner());
+            for request in extraction_requests(paths, mode == StartupMode::SmartExtract) {
+                if pending.len() < 128 && !pending.iter().any(|p| p.smart == request.smart && p.path.eq_ignore_ascii_case(&request.path)) {
+                    pending.push(request);
+                }
+            }
+        }
+    }
+}
+#[tauri::command]
+pub fn take_pending_shell_extractions() -> Vec<ShellExtraction> {
+    std::mem::take(&mut *PENDING_EXTRACTIONS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 #[tauri::command]
 pub fn take_pending_archives() -> Vec<String> {
@@ -120,6 +163,36 @@ pub fn take_pending_folders()->Vec<String>{std::mem::take(&mut *PENDING_FOLDERS.
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extraction_switches_do_not_open_tabs_or_compress_folders() {
+        for (arg, expected) in [("--smart-extract", StartupMode::SmartExtract), ("--extract-here", StartupMode::ExtractHere), ("--compress-folder", StartupMode::CompressFolders)] {
+            assert_eq!(startup_mode(&["app.exe".into(), arg.into(), "a.zip".into()]), expected);
+        }
+        assert_eq!(startup_mode(&["app.exe".into(), "a.zip".into()]), StartupMode::Open);
+    }
+    #[test]
+    fn shell_extraction_queue_retains_mode_destination_and_deduplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("archive.zip");
+        std::fs::write(&file, b"data").unwrap();
+        let _ = take_pending_shell_extractions();
+        for switch in ["--smart-extract", "--smart-extract", "--extract-here"] {
+            queue_arguments(["app.exe", switch, "archive.zip", "missing.zip", "."].map(str::to_string).to_vec(), root.path());
+        }
+        let pending = take_pending_shell_extractions();
+        assert_eq!(pending.len(), 2);
+        assert!(pending[0].smart);
+        assert!(!pending[1].smart);
+        assert_eq!(pending[0].path, canonical_archive_path(file.to_string_lossy().into_owned()).unwrap());
+        assert_eq!(Path::new(&pending[0].path).parent().unwrap(), Path::new(&pending[0].dest));
+        assert!(take_pending_shell_extractions().is_empty());
+        assert!(take_pending_folders().is_empty());
+    }
+    #[test]
+    fn extraction_requests_reject_directories_and_missing_paths() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(extraction_requests(vec![root.path().display().to_string(), root.path().join("missing.zip").display().to_string()], true).is_empty());
+    }
     #[test]
     fn compression_arguments_accept_folders_only(){
         let root=tempfile::tempdir().unwrap();

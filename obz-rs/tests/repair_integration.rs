@@ -161,7 +161,13 @@ s=Sink()
 with zipfile.ZipFile(s,'w',compression=zipfile.ZIP_DEFLATED) as z:
  with z.open('python.txt','w',force_zip64=True) as f: f.write(b'python streaming evidence'*100)
 b=s.getvalue();open(sys.argv[1],'wb').write(b[:b.index(b'PK\x01\x02')])"#;
-    let r = Command::new("python")
+    // Use the same bundled interpreter as the Windows runtime. Cargo may build
+    // a restricted DLL search PATH for isolated --target test executables.
+    #[cfg(windows)]
+    let python = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/python/python.exe");
+    #[cfg(not(windows))]
+    let python = PathBuf::from("python");
+    let r = Command::new(python)
         .args(["-c", script])
         .arg(&src)
         .output()

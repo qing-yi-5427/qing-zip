@@ -15,6 +15,9 @@
 
 - 毛玻璃界面、浅深色主题、目录树和多标签浏览。
 - ZIP / 7z 等格式压缩，ZIP / 7z / RAR 等格式解压；支持加密、分卷和完整性检查。
+- 7z 可选 ZSTD、Brotli、LZ4 等扩展压缩方法；高级设置提供字典大小、固实压缩和文件名加密。
+- 支持 Brotli、LZ4、LZ5、Lizard、ZSTD 单文件流格式的压缩与解压。
+- 文件校验支持 SHA-2 / SHA-3、BLAKE3、xxHash 等算法，可一次计算多种校验值。
 - 常见文本预览、图片缩略图与原图打开；支持多选和包内文件复制。
 - 解压偏好自动记忆：智能解压、成功后回收原包、打开目标文件夹、关闭窗口。
 - 文件关联与资源管理器右键入口；ZIP 修复、密码管理和有限范围密码恢复。
@@ -34,14 +37,16 @@
 
 ## 构建
 
-需要 Rust stable、Visual Studio C++ Build Tools、Python 3，以及 NSIS 3.11+（构建安装版时使用）。
+需要 Rust stable、Visual Studio C++ Build Tools、Python 3.10+，以及 NSIS 3.11+（构建安装版时使用）。
 
 ```powershell
 ./scripts/build.ps1 -NsisPath "C:/path/to/NSIS/makensis.exe"
 ```
 
-输出在 `dist/`。`obz-gui` 是 Tauri 界面，`obz-rs` 是归档核心和 `obz.exe` 命令行工具。第三方运行时随 `runtime/` 提供，构建缓存和研究资料不进入发行包。
+输出在 `dist/`。`obz-gui` 是 Tauri 界面，`obz-rs` 是归档核心和 `obz.exe` 命令行工具。第三方运行时随 `runtime/` 提供，构建缓存和研究资料不进入发行包。构建会校验运行时哈希，并生成独立的引擎源码包。
 
 ## 许可
 
-项目原创代码使用 [MIT License](LICENSE)。第三方组件遵循各自许可，详见 [第三方声明](licenses/THIRD-PARTY-NOTICES.txt)；7-Zip、嵌入式 Python 和 ZPAQ 的许可与对应源码信息随包提供。
+项目原创代码使用 [MIT License](LICENSE)。第三方组件遵循各自许可，详见 [第三方声明](licenses/THIRD-PARTY-NOTICES.txt)；NanaZip、7-Zip、嵌入式 Python 和 ZPAQ 的许可与对应源码信息随包提供。
+
+归档引擎采用 NanaZip 7.0.1882.0（7-Zip 核心 26.05），保留官方 7-Zip 26.05 作为兼容后端。原始组件许可和对应源码地址随包提供，Release 中的 `qing-zip-版本-engine-sources.zip` 提供确切版本的源码。

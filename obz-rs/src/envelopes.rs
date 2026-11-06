@@ -87,6 +87,7 @@ fn name(path: &str, kind: &str) -> Result<String, String> {
 }
 fn entry(name: String, size: u64, packed: u64, kind: &str) -> Entry {
     Entry {
+        size_known: true,
         name,
         size,
         packed_size: packed,
@@ -417,6 +418,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         .map_err(|e| e.to_string())?;
         check(opts)?;
         engine::no_links(&target)?;
+        crate::motw::apply_to_file(temp.as_file(), opts.zone_identifier.as_ref())?;
         if opts.overwrite == "overwrite" {
             temp.persist(target).map_err(|e| e.error.to_string())?;
         } else {

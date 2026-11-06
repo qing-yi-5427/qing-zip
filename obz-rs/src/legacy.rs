@@ -444,6 +444,7 @@ fn entry_view(e: &unarc_rs::unified::ArchiveEntry) -> Result<Entry, String> {
         return Err("ACE entry exceeds size limit".into());
     }
     Ok(Entry {
+        size_known: true,
         name: e.name().replace('\\', "/"),
         size: e.original_size(),
         packed_size: e.compressed_size(),
@@ -615,6 +616,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             std::io::copy(&mut input, &mut temp).map_err(|e| e.to_string())?;
             check(opts)?;
             engine::no_links(&target)?;
+            crate::motw::apply_to_file(temp.as_file(), opts.zone_identifier.as_ref())?;
             if opts.overwrite == "overwrite" {
                 temp.persist(target).map_err(|e| e.error.to_string())?;
             } else {

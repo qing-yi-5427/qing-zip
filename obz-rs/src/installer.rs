@@ -42,6 +42,7 @@ fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
     let mut es = Vec::new();
     for e in &pkg.archive.entries {
         es.push(Entry {
+            size_known: true,
             name: format!("payload/{}", e.name.replace('\\', "/")),
             size: e.size,
             packed_size: 0,
@@ -56,6 +57,7 @@ fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
     }
     for e in &pkg.ui_entries {
         es.push(Entry {
+            size_known: true,
             name: format!("ui/{}", e.name.replace('\\', "/")),
             size: e.size,
             packed_size: e.comp_size,
@@ -231,6 +233,7 @@ pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, S
         temp.flush().map_err(|e| e.to_string())?;
         check(opts)?;
         engine::no_links(&p)?;
+        crate::motw::apply_to_file(temp.as_file(), opts.zone_identifier.as_ref())?;
         if opts.overwrite == "overwrite" {
             temp.persist(p).map_err(|e| e.error.to_string())?;
         } else {

@@ -295,9 +295,10 @@ fn bytes_for(
         .find(|entry| !entry.is_dir && safe_name(&entry.name).is_ok_and(|path| path == relative))
         .ok_or("找不到要预览的文件")?;
     let size = entry.size;
+    let size_known = entry.size_known;
     // Keep the engine spelling for exact-name backends; the UI uses slash paths.
     let engine_name = entry.name.clone();
-    if size > limit {
+    if size_known && size > limit {
         return Err(format!(
             "此文件超过 {} MiB 预览限制，请解压后查看",
             limit / 1024 / 1024
@@ -307,12 +308,13 @@ fn bytes_for(
         let item = cache.raw.remove(index).unwrap();
         let bytes = item.1.clone();
         cache.raw.push_back(item);
+        if bytes.len() as u64 > limit { return Err("此文件超过预览限制，请解压后查看".into()); }
         return Ok(bytes);
     }
     let total = cache
         .entries
         .iter()
-        .try_fold(0u64, |sum, e| sum.checked_add(e.size));
+        .try_fold(0u64, |sum, e| e.size_known.then(|| sum.checked_add(e.size)).flatten());
     if cache.stage.is_none()
         && cache.identity.volatile == 0
         && cache.entries.len() <= 4096
@@ -344,7 +346,7 @@ fn bytes_for(
             .open(target)
             .map_err(|e| e.to_string())?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
-        if !meta.is_file() || meta.len() != size || meta.file_attributes() & 0x400 != 0 {
+        if !meta.is_file() || (size_known && meta.len() != size) || meta.file_attributes() & 0x400 != 0 {
             return Err("暂存预览文件与清单不一致".into());
         }
         let mut bytes = Vec::new();
@@ -352,13 +354,15 @@ fn bytes_for(
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         bytes
+    } else if !size_known {
+        obz_core::engine::preview_raw_stream(path, &engine_name, options, limit)?
     } else {
         operations::preview_archive(path, &engine_name, options)?
     };
     if EPOCH.load(Ordering::SeqCst) != epoch {
         return Err("预览已取消".into());
     }
-    if bytes.len() as u64 != size || bytes.len() as u64 > limit {
+    if (size_known && bytes.len() as u64 != size) || bytes.len() as u64 > limit {
         return Err("预览大小与清单不一致".into());
     }
     while cache.raw_bytes + bytes.len() > CACHE_LIMIT || cache.raw.len() >= 64 {
@@ -687,7 +691,7 @@ fn owned_exports(root: &Path) -> Result<Vec<(PathBuf, Vec<PathBuf>, u64, SystemT
     }
     Ok(result)
 }
-fn export_original(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+fn export_original(root: &Path, name: &str, bytes: &[u8], zone: Option<&obz_core::motw::ZoneIdentifier>) -> Result<PathBuf, String> {
     no_links(root)?;
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     no_links(root)?;
@@ -739,6 +743,7 @@ fn export_original(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Str
         .open(&path)
         .map_err(|e| e.to_string())?;
     output.write_all(bytes).map_err(|e| e.to_string())?;
+    obz_core::motw::apply_to_file(&output, zone)?;
     output.sync_all().map_err(|e| e.to_string())?;
     drop(output);
     fs::write(directory.path().join(".open-archive-preview"), MARKER).map_err(|e| e.to_string())?;
@@ -760,6 +765,7 @@ pub async fn open_archive_image(
     let epoch = EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         image_format(&name)?;
+        let zone = obz_core::motw::archive_context(Path::new(&path))?;
         let bytes = bytes_for(
             &path,
             &name,
@@ -779,7 +785,7 @@ pub async fn open_archive_image(
         let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?)
             .join("OpenArchive")
             .join("PreviewFiles");
-        let exported = export_original(&root, &name, &bytes)?;
+        let exported = export_original(&root, &name, &bytes, Some(&zone))?;
         let wide: Vec<u16> = exported
             .as_os_str()
             .to_string_lossy()
@@ -812,6 +818,10 @@ pub async fn open_archive_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // These two integration tests inspect the process-wide preview cache and
+    // epoch across several calls. Keep their scenarios atomic within this test
+    // binary while allowing all independent preview tests to run in parallel.
+    static CACHE_SCENARIO: Mutex<()> = Mutex::new(());
     #[test]
     fn text_decoding_preserves_unicode_and_refuses_binary() {
         assert_eq!(
@@ -935,10 +945,22 @@ mod tests {
         let unowned = root.path().join("image-unowned");
         fs::create_dir(&unowned).unwrap();
         fs::write(unowned.join("keep.txt"), b"keep").unwrap();
-        let out = export_original(root.path(), "original.png", bytes).unwrap();
+        let out = export_original(root.path(), "original.png", bytes, None).unwrap();
         assert_eq!(fs::read(out).unwrap(), bytes);
         assert_eq!(owned_exports(root.path()).unwrap().len(), 1);
         assert_eq!(fs::read(unowned.join("keep.txt")).unwrap(), b"keep");
+    }
+    #[test]
+    fn exported_images_keep_archive_internet_zone() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.zip");
+        fs::write(&source, b"source archive").unwrap();
+        let zone_bytes = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+        fs::write(format!("{}:Zone.Identifier", source.display()), zone_bytes).unwrap();
+        let zone = obz_core::motw::from_archive(&source).unwrap().unwrap();
+        let output = export_original(root.path(), "original.png", b"original bytes", Some(&zone)).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"original bytes");
+        assert_eq!(fs::read(format!("{}:Zone.Identifier", output.display())).unwrap(), zone_bytes);
     }
     #[test]
     fn source_identity_changes_with_password_and_content() {
@@ -964,6 +986,7 @@ mod tests {
     }
     #[test]
     fn archive_cache_reuses_safe_stage_and_invalidates_after_replacement() {
+        let _scenario = CACHE_SCENARIO.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let input = root.path().join("input");
         fs::create_dir(&input).unwrap();
@@ -1041,6 +1064,32 @@ mod tests {
         assert!(!first_stage.exists());
         EPOCH.fetch_add(1, Ordering::SeqCst);
         assert!(bytes_for(path, one, &options, TEXT_LIMIT, epoch).is_err());
+        *CACHE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn raw_unknown_length_preview_keeps_per_type_limits_without_whole_stage() {
+        let _scenario = CACHE_SCENARIO.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("sample.txt");
+        let data = vec![b'a'; 3 * 1024 * 1024];
+        fs::write(&input, &data).unwrap();
+        for (format, extension, level) in [
+            ("brotli", "br", 1), ("lz4", "lz4", 1), ("lz5", "lz5", 1),
+            ("lizard", "liz", 10), ("zstd", "zst", 3),
+        ] {
+            let archive = root.path().join(format!("sample.txt.{extension}"));
+            let path = archive.to_str().unwrap();
+            let options = EngineOptions { level: Some(level), threads: Some(1), ..Default::default() };
+            obz_core::engine::create(path, &[input.to_string_lossy().into_owned()], format, &options).unwrap();
+            let epoch = EPOCH.load(Ordering::SeqCst);
+            assert!(bytes_for(path, "sample.txt", &options, TEXT_LIMIT, epoch).unwrap_err().contains("limit"));
+            assert!(CACHE.lock().unwrap().as_ref().unwrap().stage.is_none());
+            assert_eq!(bytes_for(path, "sample.txt", &options, IMAGE_LIMIT, epoch).unwrap(), data);
+            assert!(CACHE.lock().unwrap().as_ref().unwrap().stage.is_none());
+            // A larger successful image-style preview must not bypass a later text limit.
+            assert!(bytes_for(path, "sample.txt", &options, TEXT_LIMIT, epoch).is_err());
+        }
         *CACHE.lock().unwrap() = None;
     }
 }

@@ -41,7 +41,7 @@ pub fn destination(archive: &str, base: &str, entries: &[Entry], opts: &EngineOp
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn e(name:&str,is_dir:bool)->Entry {Entry{name:name.into(),is_dir,size:0,packed_size:0,crc:String::new(),encrypted:false,modified:String::new(),method:String::new(),comment:String::new(),attributes:String::new()}}
+    fn e(name:&str,is_dir:bool)->Entry {Entry {size_known: true, name:name.into(),is_dir,size:0,packed_size:0,crc:String::new(),encrypted:false,modified:String::new(),method:String::new(),comment:String::new(),attributes:String::new()}}
     #[test] fn top_level_layouts(){
         let base="output";
         assert_eq!(destination("bundle.zip",base,&[e("bundle/a.txt",false)], &EngineOptions::default()).unwrap(),base);
