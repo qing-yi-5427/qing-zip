@@ -9,7 +9,10 @@ Unicode true
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"
 !endif
 Name "qing-zip"
-OutFile "..\dist\qing-zip-${VERSION}-setup.exe"
+!ifndef OUTPUT
+!define OUTPUT "..\dist\qing-zip-${VERSION}-setup.exe"
+!endif
+OutFile "${OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\qing-zip"
 InstallDirRegKey HKCU "Software\qing-zip\Installer" "InstallDir"
 RequestExecutionLevel user

@@ -1565,7 +1565,7 @@ window-vibrancy 0.8.1 | Apache-2.0 OR MIT
 windows 0.62.2 | MIT OR Apache-2.0
   https://static.crates.io/crates/windows/windows-0.62.2.crate
   Repository: https://github.com/microsoft/windows-rs
-  Notices: rust/windows-0.62.2/license-apache-2.0, rust/windows-0.62.2/license-mit, rust/windows-0.62.2/src/Windows/Win32/Security/LicenseProtection/mod.rs
+  Notices: rust/windows-0.62.2/license-apache-2.0, rust/windows-0.62.2/license-mit
   Status: preserved
 windows-collections 0.3.2 | MIT OR Apache-2.0
   https://static.crates.io/crates/windows-collections/windows-collections-0.3.2.crate
@@ -1615,12 +1615,12 @@ windows-strings 0.5.1 | MIT OR Apache-2.0
 windows-sys 0.59.0 | MIT OR Apache-2.0
   https://static.crates.io/crates/windows-sys/windows-sys-0.59.0.crate
   Repository: https://github.com/microsoft/windows-rs
-  Notices: rust/windows-sys-0.59.0/license-apache-2.0, rust/windows-sys-0.59.0/license-mit, rust/windows-sys-0.59.0/src/Windows/Win32/Security/LicenseProtection/mod.rs
+  Notices: rust/windows-sys-0.59.0/license-apache-2.0, rust/windows-sys-0.59.0/license-mit
   Status: preserved
 windows-sys 0.61.2 | MIT OR Apache-2.0
   https://static.crates.io/crates/windows-sys/windows-sys-0.61.2.crate
   Repository: https://github.com/microsoft/windows-rs
-  Notices: rust/windows-sys-0.61.2/license-apache-2.0, rust/windows-sys-0.61.2/license-mit, rust/windows-sys-0.61.2/src/Windows/Win32/Security/LicenseProtection/mod.rs
+  Notices: rust/windows-sys-0.61.2/license-apache-2.0, rust/windows-sys-0.61.2/license-mit
   Status: preserved
 windows-targets 0.52.6 | MIT OR Apache-2.0
   https://static.crates.io/crates/windows-targets/windows-targets-0.52.6.crate

@@ -19,3 +19,7 @@
 /qing-zip*.exe
 /qing-zip*.zip*
 /qing-zip-*-portable/
+/licenses/rust/unarc-rs-0.8.0/tests/
+/licenses/rust/windows-0.62.2/src/
+/licenses/rust/windows-sys-0.59.0/src/
+/licenses/rust/windows-sys-0.61.2/src/
