@@ -2317,25 +2317,24 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 count += 1;
                 continue;
             }
-            let mut tmp = output_temp(parent)?;
-            let mut source = staged.reader(&rel)?;
-            let mut buf = vec![0; 1024 * 1024];
-            loop {
-                ctl.check()?;
-                let n = source.read(&mut buf).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
-                }
-                use std::io::Write;
-                tmp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            }
-            ctl.check()?;
-            output_guards.check(&target)?;
             output_guards.allow_publication(parent)?;
-            output_guards.check(&target)?;
-            crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
-            let published = publish_output(tmp, &target, opts.overwrite == "overwrite")?;
-            restore_open_file_metadata(&published, e).map_err(|e| format!("file metadata: {e}"))?;
+            with_output_temp(parent, &output_guards, |tmp| {
+                let mut source = staged.reader(&rel)?;
+                let mut buf = vec![0; 1024 * 1024];
+                loop {
+                    ctl.check()?;
+                    let n = source.read(&mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 { break; }
+                    use std::io::Write;
+                    tmp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                }
+                crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
+                restore_open_file_metadata(tmp.as_file(), e).map_err(|e| format!("file metadata: {e}"))?;
+                ctl.check()?;
+                output_guards.check_prepared(&target)?;
+                drop(publish_output(tmp, &target, opts.overwrite == "overwrite")?);
+                Ok(())
+            })?;
             if let Some(receipt) = publication_receipt.as_mut() { receipt[1] += 1; }
             count += 1;
         }
@@ -2994,94 +2993,78 @@ fn rename_directory_noclobber_in(
     }
 }
 
-fn output_temp(parent: &Path) -> Result<tempfile::NamedTempFile, String> {
+struct OutputTemp {
     #[cfg(windows)]
-    {
+    inner: crate::private_stage::PrivateOutputFile,
+    #[cfg(not(windows))]
+    inner: Option<tempfile::NamedTempFile>,
+}
+impl OutputTemp {
+    fn as_file(&self) -> &File {
+        #[cfg(windows)] { self.inner.as_file() }
+        #[cfg(not(windows))] { self.inner.as_ref().expect("owned output").as_file() }
+    }
+    fn as_file_mut(&mut self) -> &mut File {
+        #[cfg(windows)] { self.inner.as_file_mut() }
+        #[cfg(not(windows))] { self.inner.as_mut().expect("owned output").as_file_mut() }
+    }
+    #[cfg(test)]
+    fn path(&self) -> &Path {
+        #[cfg(windows)] { self.inner.path() }
+        #[cfg(not(windows))] { self.inner.as_ref().expect("owned output").path() }
+    }
+    fn abort(&mut self) -> Result<(), String> {
+        #[cfg(windows)] { self.inner.abort() }
+        #[cfg(not(windows))] {
+            self.inner.take().map_or(Ok(()), |file| file.close().map_err(|e| e.to_string()))
+        }
+    }
+}
+impl std::io::Write for OutputTemp {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.as_file_mut().write(bytes) }
+    fn flush(&mut self) -> std::io::Result<()> { self.as_file_mut().flush() }
+}
+fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
+    #[cfg(windows)] {
         use std::os::windows::fs::OpenOptionsExt;
-        if let Ok(file) = tempfile::Builder::new().make_in(parent, |path| {
-            fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .access_mode(0xc0010000)
-                .share_mode(7)
-                .open(path)
-        }) {
-            return Ok(file);
+        guards.check_prepared(parent)?;
+        let (held, _) = guards.held.get(parent).ok_or("missing output parent guard")?;
+        let pin = fs::OpenOptions::new().access_mode(0x200a0).share_mode(3)
+            .custom_flags(0x02200000).open(parent).map_err(|e| e.to_string())?;
+        if directory_identity(held)? != directory_identity(&pin)?
+            || directory_attributes(&pin)? & 0x410 != 0x10 {
+            return Err("output parent identity changed".into());
+        }
+        Ok(OutputTemp { inner: crate::private_stage::create_output(parent, &pin)? })
+    }
+    #[cfg(not(windows))] {
+        let _ = guards;
+        Ok(OutputTemp { inner: Some(tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?) })
+    }
+}
+// Explicit cleanup reports a failed private-temp deletion on every ordinary
+// error/cancel path. Drop remains only a last-resort panic safeguard.
+fn with_output_temp<T>(parent: &Path, guards: &CheckedDirectories,
+    write_and_publish: impl FnOnce(&mut OutputTemp) -> Result<T, String>) -> Result<T, String> {
+    let mut temp = output_temp(parent, guards)?;
+    let result = write_and_publish(&mut temp);
+    match (result, temp.abort()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(reason), Ok(())) => Err(reason),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(reason), Err(cleanup)) => Err(format!("{reason}; {cleanup}")),
+    }
+}
+fn publish_output(temp: &mut OutputTemp, target: &Path, overwrite: bool) -> Result<File, String> {
+    #[cfg(windows)] { temp.inner.commit(target, overwrite) }
+    #[cfg(not(windows))] {
+        let file = temp.inner.take().ok_or("output already published")?;
+        let result = if overwrite { file.persist(target) } else { file.persist_noclobber(target) };
+        match result {
+            Ok(file) => Ok(file),
+            Err(failed) => { temp.inner = Some(failed.file); Err(failed.error.to_string()) },
         }
     }
-    tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())
-}
-#[cfg(all(windows, target_pointer_width = "64"))]
-fn publish_output_by_handle(
-    temp: &mut tempfile::NamedTempFile,
-    target: &Path,
-    overwrite: bool,
-) -> bool {
-    if !target.is_absolute() {
-        return false;
-    }
-    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn SetFileInformationByHandle(
-            handle: *mut std::ffi::c_void,
-            class: i32,
-            info: *const std::ffi::c_void,
-            size: u32,
-        ) -> i32;
-    }
-    // FILE_BASIC_INFO: preserve all times and match the ARCHIVE attribute
-    // left by the existing SetFileAttributes/MoveFileEx publication on Windows.
-    // The existing handle avoids a path reopen and clears TEMPORARY.
-    let mut basic = [0u64; 5];
-    basic[4] = 0x20;
-    let name = target.as_os_str().encode_wide().collect::<Vec<_>>();
-    if name.len() <= 32767 && !name.contains(&0) {
-        let bytes = 22 + name.len() * 2; // include a NUL for the Win32 wrapper
-                                         // Aligned FILE_RENAME_INFO: BOOLEAN, padding, HANDLE, DWORD, WCHAR[].
-        let mut rename = vec![0u64; bytes.div_ceil(8)];
-        let raw = rename.as_mut_ptr() as *mut u8;
-        unsafe {
-            *raw = u8::from(overwrite);
-            std::ptr::write_unaligned(raw.add(16) as *mut u32, (name.len() * 2) as u32);
-            std::ptr::copy_nonoverlapping(name.as_ptr() as *const u8, raw.add(20), name.len() * 2);
-            if SetFileInformationByHandle(
-                temp.as_file().as_raw_handle(),
-                0,
-                basic.as_ptr().cast(),
-                40,
-            ) != 0
-                && SetFileInformationByHandle(
-                    temp.as_file().as_raw_handle(),
-                    3,
-                    raw.cast(),
-                    bytes as u32,
-                ) != 0
-            {
-                temp.disable_cleanup(true);
-                return true;
-            }
-        }
-    }
-    false
-}
-fn publish_output(
-    mut temp: tempfile::NamedTempFile,
-    target: &Path,
-    overwrite: bool,
-) -> Result<File, String> {
-    #[cfg(all(windows, target_pointer_width = "64"))]
-    if publish_output_by_handle(&mut temp, target, overwrite) {
-        return Ok(temp.into_file());
-    }
-    // Unsupported filesystems, namespaces or permissions retain the old API.
-    if overwrite {
-        temp.persist(target)
-    } else {
-        temp.persist_noclobber(target)
-    }
-    .map_err(|e| e.error.to_string())
 }
 
 // Bounded publication is restricted to full, no-overwrite extraction. The entire
@@ -3163,28 +3146,24 @@ fn publish_staged_files_parallel(
                                 prepared_guards.check_prepared(p)
                             })?;
                             prepared_guards.check_prepared(parent)?;
-                            let mut temp = output_temp(parent)?;
-                            let mut source = stage.reader(&relative)?;
-                            loop {
+                            let committed = with_output_temp(parent, prepared_guards, |temp| {
+                                let mut source = stage.reader(&relative)?;
+                                loop {
+                                    ctl.check()?;
+                                    if stopped.load(Ordering::Acquire) { return Ok(false); }
+                                    let n = source.read(&mut buffer).map_err(|e| e.to_string())?;
+                                    if n == 0 { break; }
+                                    std::io::Write::write_all(temp, &buffer[..n]).map_err(|e| e.to_string())?;
+                                }
+                                crate::motw::apply_to_file(temp.as_file(), zone)?;
+                                restore_open_file_metadata(temp.as_file(), entry)?;
                                 ctl.check()?;
-                                if stopped.load(Ordering::Acquire) {
-                                    return Ok(());
-                                }
-                                let n = source.read(&mut buffer).map_err(|e| e.to_string())?;
-                                if n == 0 {
-                                    break;
-                                }
-                                std::io::Write::write_all(&mut temp, &buffer[..n])
-                                    .map_err(|e| e.to_string())?;
-                            }
-                            ctl.check()?;
-                            if stopped.load(Ordering::Acquire) {
-                                return Ok(());
-                            }
-                            prepared_guards.check_prepared(&target)?;
-                            crate::motw::apply_to_file(temp.as_file(), zone)?;
-                            let published = publish_output(temp, &target, false)?;
-                            restore_open_file_metadata(&published, entry)?;
+                                if stopped.load(Ordering::Acquire) { return Ok(false); }
+                                prepared_guards.check_prepared(&target)?;
+                                drop(publish_output(temp, &target, false)?);
+                                Ok(true)
+                            })?;
+                            if !committed { return Ok(()); }
                             let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                             ctl.set(
                                 "extracting",
@@ -3993,7 +3972,7 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
         preview_raw(path, name, opts)
     }
 }
-// Keep the already-open published handle for metadata, avoiding both a second
+// Keep the already-open output handle for metadata, avoiding both a second
 // path lookup and a path-substitution window between publication and timestamp.
 fn archive_modified_time(value: &str) -> Option<std::time::SystemTime> {
     use chrono::TimeZone;
@@ -5397,6 +5376,16 @@ mod staging_tests {
             &EngineOptions::default(),
         )
         .unwrap();
+        let oracle_root = parent.join("oracle");
+        fs::create_dir_all(oracle_root.join("nested/deep")).unwrap();
+        let oracle_file = oracle_root.join("nested/deep/ordinary.txt");
+        fs::write(&oracle_file, b"content").unwrap();
+        let created_acl = dacl(&oracle_file);
+        fs::rename(&oracle_file, oracle_root.join("nested/deep/a.txt")).unwrap();
+        assert_eq!(dacl(&oracle_root.join("nested/deep/a.txt")), created_acl, "ordinary same-parent rename oracle");
+        assert_eq!(dacl(&old.join("nested/deep/a.txt")), created_acl, "copy output against ordinary file oracle");
+        assert_eq!(dacl(&new.join("nested/deep/a.txt")), created_acl, "directory commit against ordinary file oracle");
+        fs::remove_dir_all(&oracle_root).unwrap();
         for rel in ["", "nested", "nested/deep", "nested/deep/a.txt", "empty"] {
             assert_eq!(dacl(&old.join(rel)), dacl(&new.join(rel)), "DACL {rel}");
             if !rel.is_empty() {
@@ -5787,6 +5776,9 @@ mod staging_tests {
             result
         }
         let temp = tempfile::tempdir().unwrap();
+        let mut guards = CheckedDirectories::default();
+        guards.check(temp.path()).unwrap();
+        guards.allow_publication(temp.path()).unwrap();
         let oldpath = temp.path().join("old.txt");
         let old = tempfile::NamedTempFile::new_in(temp.path())
             .unwrap()
@@ -5794,14 +5786,10 @@ mod staging_tests {
             .unwrap();
         for name in ["short.txt", "中文😀文件.txt", "odd-name-length.bin"] {
             let path = temp.path().join(name);
-            let mut output = output_temp(temp.path()).unwrap();
+            let mut output = output_temp(temp.path(), &guards).unwrap();
             let scratch = output.path().to_path_buf();
             output.write_all(b"verified").unwrap();
-            assert!(
-                publish_output_by_handle(&mut output, &path, false),
-                "native handle API must be exercised"
-            );
-            let file = output.into_file();
+            let file = publish_output(&mut output, &path, false).unwrap();
             assert!(!scratch.exists());
             assert_eq!(fs::read(&path).unwrap(), b"verified");
             assert_eq!(
@@ -5809,33 +5797,28 @@ mod staging_tests {
                 old.metadata().unwrap().file_attributes()
             );
             assert_eq!(dacl(&path), dacl(&oldpath));
-            let mut collision = output_temp(temp.path()).unwrap();
+            let mut collision = output_temp(temp.path(), &guards).unwrap();
             let scratch = collision.path().to_path_buf();
             collision.write_all(b"must-not-replace").unwrap();
-            assert!(!publish_output_by_handle(&mut collision, &path, false));
+            assert!(publish_output(&mut collision, &path, false).is_err());
+            collision.abort().unwrap();
             drop(collision);
             assert!(!scratch.exists());
             assert_eq!(fs::read(&path).unwrap(), b"verified");
             drop(file);
         }
-        let path = temp.path().join("fallback.txt");
-        let mut without_delete = tempfile::NamedTempFile::new_in(temp.path()).unwrap();
-        without_delete.write_all(b"fallback").unwrap();
-        assert!(!publish_output_by_handle(&mut without_delete, &path, false));
-        drop(publish_output(without_delete, &path, false).unwrap());
-        assert_eq!(fs::read(path).unwrap(), b"fallback");
         let target = temp.path().join("readonly.txt");
         fs::write(&target, b"preserve").unwrap();
         let mut perm = fs::metadata(&target).unwrap().permissions();
         perm.set_readonly(true);
         fs::set_permissions(&target, perm).unwrap();
-        assert!(publish_output(output_temp(temp.path()).unwrap(), &target, true).is_err());
+        assert!(publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &target, true).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"preserve");
         let mut perm = fs::metadata(&target).unwrap().permissions();
         perm.set_readonly(false);
         fs::set_permissions(&target, perm).unwrap();
         let newpath = temp.path().join("metadata.txt");
-        let published = publish_output(output_temp(temp.path()).unwrap(), &newpath, false).unwrap();
+        let published = publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &newpath, false).unwrap();
         let entry = Entry {
             size_known: true,
             name: "metadata.txt".into(),

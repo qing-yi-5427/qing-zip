@@ -13,6 +13,8 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+mod output;
+pub(crate) use output::{create_output, PrivateOutputFile};
 type Handle = *mut c_void;
 #[repr(C)]
 struct UnicodeString {
