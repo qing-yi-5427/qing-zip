@@ -1,4 +1,4 @@
-//! OpenBandiZip core library: PE / 7z / setup-package / ZIP handling.
+//! qing-zip core library: PE / 7z / setup-package / ZIP handling.
 
 pub mod pe;
 pub mod setup;
@@ -9,6 +9,7 @@ pub mod zipfmt;
 pub mod extract;
 pub mod engine;
 mod engine_stream;
+mod zealfs_guard;
 pub mod engine_password;
 pub mod services;
 pub mod operations;

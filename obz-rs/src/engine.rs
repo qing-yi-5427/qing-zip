@@ -262,7 +262,15 @@ fn run(
     opts: &EngineOptions,
     output: Option<File>,
 ) -> Result<Vec<u8>, String> {
-    run_program(executable()?, args, cwd, opts, output)
+    run_program(executable()?, args, cwd, opts, output, false)
+}
+// Only a pinned source's type probe and a successfully guarded direct image
+// may opt into the incomplete handler. This is never a user-supplied option.
+fn run_with_zealfs(args: &[String], cwd: Option<&Path>, opts: &EngineOptions, output: Option<File>) -> Result<Vec<u8>, String> {
+    run_program(executable()?, args, cwd, opts, output, true)
+}
+fn has_zealfs_handler(program: &Path) -> bool {
+    program.file_name().is_some_and(|name| name.eq_ignore_ascii_case("NanaZip.Universal.Console.exe"))
 }
 /// Wait for exit readiness without imposing a fixed delay on a completed process.
 /// The timeout still bounds progress updates and cancellation checks.
@@ -286,6 +294,7 @@ fn run_program(
     cwd: Option<&Path>,
     opts: &EngineOptions,
     output: Option<File>,
+    allow_zealfs: bool,
 ) -> Result<Vec<u8>, String> {
     let _timer = PhaseTimer::new("engine-process");
     let ctl = control(opts);
@@ -298,8 +307,13 @@ fn run_program(
         Some(f) => f,
         None => logs.reopen().map_err(|e| e.to_string())?,
     };
+    let mut guarded_args = args.to_vec();
+    if !allow_zealfs && has_zealfs_handler(&program)
+        && matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) {
+        guarded_args.insert(1, "-stxZealFS".into());
+    }
     let mut cmd = Command::new(program);
-    cmd.args(args)
+    cmd.args(&guarded_args)
         .stdin(if opts.password.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(errors.reopen().map_err(|e| e.to_string())?));
@@ -511,30 +525,62 @@ fn unsupported_utc_listing_switch(error: &str) -> bool {
 }
 
 fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    control(opts).check()?;
+    let mut source = crate::engine_stream::pin(&absolute(path)?)?;
+    list_raw_with_source(path, opts, &mut source).map(|(entries, _)| entries)
+}
+fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, bool), String> {
     let _timer = PhaseTimer::new("list-total");
     let ctl = control(opts);
     ctl.set("listing", None, "Reading archive directory");
     let raw_format = crate::stream_formats::raw_format(path);
     if raw_format.is_some() { crate::stream_formats::validate_raw_options(opts)?; }
+    let probe = if raw_format.is_none() && has_zealfs_handler(&executable()?) {
+        Some(crate::zealfs_guard::SourceProbe::read(source)?)
+    } else { None };
+    let candidate = probe.as_ref().is_some_and(|p| p.is_candidate());
     let mut args = base("l", opts)?;
     if let Some(format) = raw_format { args.push(format!("-t{format}")); }
     args.extend([
         "-slt".into(),
-        "-ba".into(),
         // UTC avoids NanaZip's millisecond-only local FILETIME conversion and
         // preserves the archive's full timestamp precision, including DST folds.
         "-slmu".into(),
         "--".into(),
         absolute(path)?.display().to_string(),
     ]);
-    let listing = match run(&args, None, opts, None) {
+    if !candidate { args.insert(1, "-ba".into()); }
+    let execute = if candidate { run_with_zealfs } else { run };
+    let listing = match execute(&args, None, opts, None) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
             args.retain(|argument| argument != "-slmu");
-            run(&args, None, opts, None)?
+            execute(&args, None, opts, None)?
         }
         result => result?,
     };
     let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
+    let mut guarded_zealfs = false;
+    let bare_listing;
+    let listing = if candidate {
+        let kind = crate::zealfs_guard::first_type(listing)?;
+        if kind.eq_ignore_ascii_case("ZealFS") {
+            let (headers, body) = crate::zealfs_guard::header_payload(listing, true)?;
+            crate::zealfs_guard::check(&headers, source, probe.as_ref().unwrap())?;
+            guarded_zealfs = true;
+            body
+        } else {
+            if kind == "Split" {
+                let (headers, _) = crate::zealfs_guard::header_payload(listing, true)?;
+                crate::zealfs_guard::check(&headers, source, probe.as_ref().unwrap())?;
+            }
+            // A Z-prefixed ZIP/LZMA/etc is not ZealFS just because of magic.
+            // Reuse the original bare protocol, excluding the broken handler.
+            // Never parse non-ZealFS archive comments as technical metadata.
+            args.insert(1, "-ba".into());
+            bare_listing = run(&args, None, opts, None)?;
+            if opts.password.is_some() { crate::engine_password::listing_payload(&bare_listing) } else { &bare_listing }
+        }
+    } else { listing };
     let mut out = parse_listing(listing)?;
     if let Some(format) = raw_format {
         if out.is_empty() {
@@ -550,7 +596,7 @@ fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
         }
         if out.len() != 1 || out[0].is_dir { return Err("invalid raw stream directory".into()); }
         ctl.set("complete", Some(100), "Stream metadata ready");
-        return Ok(out);
+        return Ok((out, false));
     }
     // Bzip2 and some raw streams have no stored name or uncompressed size.
     // 7-Zip emits an anonymous Size block; measure it rather than report empty.
@@ -589,7 +635,7 @@ fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
         });
     }
     ctl.set("complete", Some(100), "Archive directory ready");
-    Ok(out)
+    Ok((out, guarded_zealfs))
 }
 pub fn list_with_control(
     path: &str,
@@ -1969,9 +2015,10 @@ fn preflight_output_targets(
 }
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let ctl = control(opts);
-    let _raw_source = if crate::stream_formats::raw_format(path).is_some() {
-        Some(crate::engine_stream::pin(&absolute(path)?)?)
-    } else { None };
+    ctl.check()?;
+    // Keep both the source and its directory namespace fixed from the typed
+    // listing/format guard through decoding and publication.
+    let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
     let mut memory_source = memory_archive_source(path, opts);
     let mut selected_source = if !opts.selected.is_empty()
         && Path::new(path)
@@ -1982,7 +2029,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         None
     };
-    let all_entries = list_raw(path, opts)?;
+    let (all_entries, guarded_zealfs) = list_raw_with_source(path, opts, &mut source_guard)?;
     #[cfg(windows)]
     if let Some(source) = memory_source.as_ref() {
         let same = memory_archive_source(path, opts).is_some_and(|current| {
@@ -2091,6 +2138,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         )?;
         if !streamed {
             let mut args = base("x", opts)?;
+            let execute = if guarded_zealfs {
+                args.push("-tZealFS".into());
+                run_with_zealfs
+            } else { run };
             if let Some(format) = crate::stream_formats::raw_format(path) {
                 args.push(format!("-t{format}"));
             }
@@ -2110,14 +2161,14 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                         std::io::Write::write_all(&mut output, bytes).map_err(|e|e.to_string())
                     })?
                 } else { false };
-                if !native { run(&args, None, opts, Some(output))?; }
+                if !native { execute(&args, None, opts, Some(output))?; }
             } else {
                 args.extend([
                     format!("-o{}", stage.path().display()),
                     "--".into(),
                     absolute(path)?.display().to_string(),
                 ]);
-                run(&args, None, opts, None)?;
+                execute(&args, None, opts, None)?;
             }
         }
         let mut staged_expected = if streamed {
@@ -3182,13 +3233,16 @@ pub fn extract_with_control(
 }
 fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
     let ctl = control(opts);
+    ctl.check()?;
     ctl.set("testing", None, "Checking archive integrity");
     let mut a = base("t", opts)?;
-    let mut source_guard = None;
+    let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
+    let probe = if crate::stream_formats::raw_format(path).is_none() && has_zealfs_handler(&executable()?) {
+        Some(crate::zealfs_guard::SourceProbe::read(&mut *source_guard)?)
+    } else { None };
     if let Some(format) = crate::stream_formats::raw_format(path) {
         crate::stream_formats::validate_raw_options(opts)?;
         let source = absolute(path)?;
-        source_guard = Some(crate::engine_stream::pin(&source)?);
         crate::engine_stream::validate_frame_bounds(&source, format, opts)?;
         if crate::engine_stream::decode_native(&source, format, opts, None, &mut |_| Ok(()))? {
             ctl.set("complete", Some(100), "Archive integrity verified");
@@ -3197,7 +3251,15 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
         a.push(format!("-t{format}"));
     }
     a.extend(["--".into(), absolute(path)?.display().to_string()]);
-    run(&a, None, opts, None)?;
+    if let Some(probe) = probe.filter(|p| p.is_candidate()) {
+        let result = run_with_zealfs(&a, None, opts, None)?;
+        let kind = crate::zealfs_guard::first_type(&result)?;
+        if kind.eq_ignore_ascii_case("ZealFS") || kind == "Split" {
+            let (headers, _) = crate::zealfs_guard::header_payload(&result, false)?;
+            crate::zealfs_guard::check(&headers, &mut source_guard, &probe)?;
+        }
+        if !kind.eq_ignore_ascii_case("ZealFS") { run(&a, None, opts, None)?; }
+    } else { run(&a, None, opts, None)?; }
     drop(source_guard);
     ctl.set("complete", Some(100), "Archive integrity verified");
     Ok(())
@@ -3798,9 +3860,9 @@ pub fn preview_raw_stream(path: &str, name: &str, opts: &EngineOptions, limit: u
     let format=crate::stream_formats::raw_format(path).ok_or("raw stream format required")?;
     crate::stream_formats::validate_raw_options(opts)?;
     let absolute=absolute(path)?;
-    let _source=crate::engine_stream::pin(&absolute)?;
+    let mut source=crate::engine_stream::pin(&absolute)?;
     validate_name(name)?;
-    let entries=list_raw(path,opts)?;
+    let (entries, _)=list_raw_with_source(path,opts,&mut source)?;
     let entry=entries.iter().find(|entry| !entry.is_dir && path_key(Path::new(&entry.name))==path_key(Path::new(name)))
         .ok_or("preview entry not found")?;
     if entry.size_known && entry.size>limit { return Err("preview exceeds size limit".into()); }
@@ -3809,11 +3871,13 @@ pub fn preview_raw_stream(path: &str, name: &str, opts: &EngineOptions, limit: u
     Ok(bytes)
 }
 fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    control(opts).check()?;
     if crate::stream_formats::raw_format(path).is_some() {
         return preview_raw_stream(path,name,opts,32*1024*1024);
     }
     validate_name(name)?;
-    let list = list(path, opts)?;
+    let mut source = crate::engine_stream::pin(&absolute(path)?)?;
+    let (list, guarded_zealfs) = list_raw_with_source(path, opts, &mut source)?;
     let e = list
         .iter()
         .find(|e| e.name.replace('\\', "/") == name.replace('\\', "/") && !e.is_dir)
@@ -3823,13 +3887,17 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     }
     let tmp = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut a = base("x", opts)?;
+    let execute = if guarded_zealfs {
+        a.push("-tZealFS".into());
+        run_with_zealfs
+    } else { run };
     a.extend([
         "-so".into(),
         "--".into(),
         absolute(path)?.display().to_string(),
         e.name.clone(),
     ]);
-    run(
+    execute(
         &a,
         None,
         opts,
@@ -3857,9 +3925,19 @@ fn compound_tar(path: &str) -> bool {
     .any(|suffix| p.ends_with(suffix))
 }
 fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, String), String> {
+    control(opts).check()?;
+    let _source = crate::engine_stream::pin(&absolute(path)?)?;
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let inner = temp.path().join("contents.tar");
     let mut a = base("x", opts)?;
+    // This route promises a declared compressed TAR container. Do not let a
+    // renamed filesystem image bypass its typed listing by autodetection here.
+    let lower = path.to_ascii_lowercase();
+    let format = if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") { "gzip" }
+        else if [".tar.bz2", ".tbz", ".tbz2"].iter().any(|s| lower.ends_with(s)) { "bzip2" }
+        else if lower.ends_with(".tar.xz") || lower.ends_with(".txz") { "xz" }
+        else { return Err("unsupported compressed TAR container".into()); };
+    a.push(format!("-t{format}"));
     a.extend([
         "-so".into(),
         "--".into(),
@@ -4226,6 +4304,19 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+
+    #[test]
+    fn fallback_seven_zip_never_receives_unknown_zealfs_exclusion() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let seven = root.join("../runtime/7zip/7z.exe");
+        let archive = root.join("tests/fixtures/original-bandizip/created.zipx");
+        assert!(!has_zealfs_handler(&seven));
+        assert!(has_zealfs_handler(Path::new("NanaZip.Universal.Console.exe")));
+        let args = vec!["l".into(), "-slt".into(), "-ba".into(), "-sccUTF-8".into(),
+            "--".into(), archive.display().to_string()];
+        let listing = run_program(seven, &args, None, &EngineOptions::default(), None, false).unwrap();
+        assert!(parse_listing(&listing).unwrap().iter().any(|entry| entry.name.ends_with("hello.txt")));
+    }
 
     #[test]
     fn file_publication_reservation_keeps_full_copy_fallback_room() {
