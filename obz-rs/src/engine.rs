@@ -2259,8 +2259,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 staged, &rel, e, &target, opts.overwrite == "overwrite", &ctl,
                 stage_guards.as_mut().ok_or("missing private stage guards")?, &mut output_guards,
             )? {
-                // Content, ADS and exact metadata were finalized before this
-                // atomic commit. No fallible metadata work follows a move.
+                // Content, ADS and exact times preceded the atomic commit;
+                // the helper also finalized permissions before returning success.
+                // The caller performs no additional file metadata writes.
                 if let Some(receipt) = publication_receipt.as_mut() { receipt[0] += 1; }
                 count += 1;
                 continue;
@@ -4239,7 +4240,7 @@ mod staging_tests {
     #[cfg(all(windows, target_pointer_width = "64"))]
     #[test]
     fn file_publication_engine_route_moves_verified_identity_and_honors_cancel() {
-        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         for cancel in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let archive = temp.path().join("archive.7z");
@@ -4247,6 +4248,10 @@ mod staging_tests {
             let zone_bytes = b"[ZoneTransfer]\r\nZoneId=3\r\n";
             fs::write(format!("{}:Zone.Identifier", archive.display()), zone_bytes).unwrap();
             let dest = temp.path().join("existing"); fs::create_dir(&dest).unwrap();
+            let policy_handle = fs::OpenOptions::new().access_mode(0x60081).share_mode(3)
+                .custom_flags(0x02200000).open(&dest).unwrap();
+            crate::private_stage::ordinary_file_publication_test_parent(&policy_handle);
+            drop(policy_handle);
             fs::write(dest.join("keep"), b"old unrelated file").unwrap();
             let entries = parse_listing(b"Path = nested/file.txt\nSize = 3\nModified = 2023-11-14 22:13:20.1234567Z\nAttributes = R\n\n").unwrap();
             let mut output_guards = CheckedDirectories::default(); output_guards.check(&dest).unwrap();
@@ -4263,8 +4268,22 @@ mod staging_tests {
                 &mut stage_guards, Some(&entries), Some(&zone)).unwrap();
             let source_pin = File::open(&source).unwrap();
             let before = directory_identity(&source_pin).unwrap();
+            let source_meta = crate::private_stage::checked_metadata(&source_pin).unwrap();
+            assert_eq!(source_meta.len(), entries[0].size);
+            assert_eq!(source_meta.file_attributes(), 0x21);
+            assert_eq!(source_meta.modified().unwrap(), archive_modified_time(&entries[0].modified).unwrap());
+            drop(source_pin);
+            assert!(stage_guards.private_metadata_parent(source.parent().unwrap()).is_some(), "verified source parent must retain its strong private pin");
             let target = dest.join("nested/file.txt");
             output_guards.create_dirs(target.parent().unwrap()).unwrap();
+            let target_parent = fs::OpenOptions::new().access_mode(0x200a0).share_mode(3)
+                .custom_flags(0x02200000).open(target.parent().unwrap()).unwrap();
+            let target_attrs = directory_attributes(&target_parent).unwrap();
+            let target_auto_acl = crate::private_stage::supports_inheritance(&target_parent).unwrap();
+            assert!(crate::private_stage::supports_file_publication(&target_parent).unwrap(), "target storage attributes: {target_attrs:#x}");
+            assert!(target_auto_acl, "fixture must have an ordinary automatic-inheritance target DACL; attrs={target_attrs:#x}");
+            assert_eq!(directory_identity(&target_parent).unwrap().0, before.0, "fixture must be on one volume");
+            drop(target_parent);
             if cancel { ctl.cancel(); }
             let result = try_publish_staged_file(StagedContents::Disk(stage.path()), Path::new("nested/file.txt"),
                 &entries[0], &target, false, &ctl, &mut stage_guards, &mut output_guards);
@@ -4272,7 +4291,8 @@ mod staging_tests {
                 assert!(matches!(result, Err(message) if message == "operation cancelled"));
                 assert!(source.exists()); assert!(!target.exists());
             } else {
-                assert_eq!(result.unwrap(), true); assert!(!source.exists());
+                assert!(result.unwrap(), "qualified move returned Unavailable: target_attrs={target_attrs:#x}, target_auto_acl={target_auto_acl}, source_attrs={:#x}, source_mtime={:?}, source_size={}, source_exists={}, target_exists={}", source_meta.file_attributes(), source_meta.modified(), source_meta.len(), source.exists(), target.exists());
+                assert!(!source.exists());
                 assert_eq!(directory_identity(&File::open(&target).unwrap()).unwrap(), before);
                 assert_eq!(fs::read(&target).unwrap(), b"abc");
                 assert_eq!(fs::read(format!("{}:Zone.Identifier", target.display())).unwrap(), zone_bytes);
@@ -4281,7 +4301,6 @@ mod staging_tests {
             }
             assert_eq!(fs::read(&archive).unwrap(), b"7z\xbc\xaf'\x1c");
             assert_eq!(fs::read(dest.join("keep")).unwrap(), b"old unrelated file");
-            drop(source_pin);
             let remaining = if cancel { &source } else { &target };
             let attributes = fs::OpenOptions::new().access_mode(0x100).share_mode(7).open(remaining).unwrap();
             let mut permissions = attributes.metadata().unwrap().permissions(); permissions.set_readonly(false);

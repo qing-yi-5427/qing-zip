@@ -1,7 +1,7 @@
 //! Same-volume staging is created privately and pinned in one NtCreateFile call.
 //! Whole-directory publication restores inheritance after committing the tree.
-//! Individual verified files may prepare their destination DACL while a private
-//! ancestor and a READ_DATA/deny-write-delete pin protect the pending rename.
+//! Individual files retain their private DACL until the atomic rename has
+//! committed; the held source handle then restores destination inheritance.
 #![cfg(windows)]
 use std::{
     ffi::{c_void, OsStr},
@@ -1017,13 +1017,27 @@ mod tests {
 #[cfg(target_pointer_width = "64")]
 pub(crate) use file_publication::{publish_verified_file, supports_file_publication, FilePublication};
 
+#[cfg(all(test, target_pointer_width = "64"))]
+pub(crate) fn ordinary_file_publication_test_parent(parent: &File) {
+    // Only a newly created fixture directory. A deterministic protected parent
+    // gives its children ordinary automatic inheritance without depending on a
+    // runner's TEMP DACL (which production deliberately may send to fallback).
+    let sid = current_sid(&token().unwrap()).unwrap();
+    let text: Vec<_> = format!("D:PAI(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)")
+        .encode_utf16().chain(Some(0)).collect();
+    let mut memory = std::ptr::null_mut();
+    assert_ne!(unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        text.as_ptr(), 1, &mut memory, std::ptr::null_mut()) }, 0);
+    let descriptor = Allocation(memory);
+    assert_ne!(unsafe { SetSecurityDescriptorControl(descriptor.0, 0x500, 0x500) }, 0);
+    assert!(unsafe { NtSetSecurityObject(parent.as_raw_handle(), 4 | 0x8000_0000, descriptor.0) } >= 0);
+    assert!(supports_inheritance(parent).unwrap());
+}
+
 #[cfg(target_pointer_width = "64")]
 mod file_publication {
     use super::*;
-    use std::{
-        sync::{Mutex, OnceLock},
-        time::SystemTime,
-    };
+    use std::time::SystemTime;
 
     #[link(name = "Kernel32")]
     extern "system" {
@@ -1038,6 +1052,7 @@ mod file_publication {
             filesystem: *mut u16,
             filesystem_size: u32,
         ) -> i32;
+        #[cfg(test)]
         fn SetFileInformationByHandle(
             file: Handle,
             class: i32,
@@ -1054,19 +1069,8 @@ mod file_publication {
         Committed(File),
     }
 
-    // Exceptional recovery only. A file with an unsuccessfully restored DACL
-    // must never lose its READ_DATA/deny-write-delete pin. Stop offering this
-    // optimization after such an incident; ordinary failures retain no handles.
-    static QUARANTINE: OnceLock<Mutex<Vec<(File, File)>>> = OnceLock::new();
-
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Step {
-        ApplyTarget,
-        BeforeCommit,
-        RestoreOriginal,
-        Reprotect,
-        Delete,
-    }
+    enum Step { BeforeCommit, AfterCommit, ApplyTarget }
 
     fn leaf(value: &OsStr) -> Result<Vec<u16>, String> {
         let name: Vec<_> = value.encode_wide().collect();
@@ -1186,47 +1190,6 @@ mod file_publication {
         Ok(())
     }
 
-    fn set_saved_dacl(file: &File, saved: Handle) -> Result<(), String> {
-        let (mut control, mut revision) = (0, 0);
-        if unsafe { GetSecurityDescriptorControl(saved, &mut control, &mut revision) } == 0 {
-            return Err(error("read saved file permissions"));
-        }
-        let protection = if control & 0x1000 != 0 {
-            0x8000_0000
-        } else {
-            0x2000_0000
-        };
-        let result = unsafe { NtSetSecurityObject(file.as_raw_handle(), 4 | protection, saved) };
-        if result < 0 {
-            return Err(format!(
-                "restore private file permissions: {}",
-                io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32)
-            ));
-        }
-        Ok(())
-    }
-
-    fn fixed_private_dacl() -> Result<Allocation, String> {
-        let sid = current_sid(&token()?)?;
-        let text: Vec<_> = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        let mut memory = std::ptr::null_mut();
-        if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                text.as_ptr(),
-                1,
-                &mut memory,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(error("prepare private file recovery permissions"));
-        }
-        Ok(Allocation(memory))
-    }
-
     fn pinned_path(file: &File) -> Result<String, String> {
         let mut path = vec![0u16; 32768];
         let len = unsafe {
@@ -1243,42 +1206,15 @@ mod file_publication {
         Ok(String::from_utf16_lossy(&path[..len as usize]))
     }
 
-    fn delete_own_file(file: &File) -> Result<(), String> {
-        // This is the already-verified private stage file, never the previous
-        // output. No path lookup or readonly modification can reach another file.
-        let mut basic = [0i64; 5];
-        basic[4] = 0x20;
-        if unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, basic.as_ptr().cast(), 40) }
-            == 0
-        {
-            return Err(error("clear quarantined file readonly"));
-        }
-        let delete = 1u8;
-        let mut status = [0usize; 2];
-        let result = unsafe {
-            NtSetInformationFile(
-                file.as_raw_handle(),
-                status.as_mut_ptr(),
-                (&delete as *const u8).cast(),
-                1,
-                13,
-            )
-        };
-        if result < 0 {
-            return Err(format!(
-                "remove unpublished file: {}",
-                io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32)
-            ));
-        }
-        Ok(())
-    }
-
     /// Caller must own a verified, private staging tree and retain all source
     /// and destination ancestor identity guards. ADS and metadata normalization
     /// must be complete before calling. `target_parent` has READ_CONTROL and
     /// TRAVERSE, share READ|WRITE; the existing stronger output guard is retained.
-    /// No path-based opening, post-commit mutation, source archive deletion, or
-    /// relaxation of the caller's conflict policy occurs here.
+    /// All content/ADS/metadata is finalized before commit. DACL inheritance
+    /// is applied only AFTER rename: traversal privileges and independently
+    /// shared ADS must never expose a precommit leaf under destination access.
+    /// Postcommit permission failure is an error that retains the target; it
+    /// must never trigger fallback, target deletion, or source archive recycling.
     pub(crate) fn publish_verified_file(
         source_parent: &File,
         source_leaf: &OsStr,
@@ -1290,32 +1226,8 @@ mod file_publication {
         replace: bool,
         mut check_cancel: impl FnMut() -> Result<(), String>,
     ) -> Result<FilePublication, String> {
-        let quarantine = QUARANTINE.get_or_init(|| Mutex::new(Vec::new()));
-        if !quarantine
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            return Ok(FilePublication::Unavailable);
-        }
-        publish_with(
-            source_parent,
-            source_leaf,
-            target_parent,
-            target_leaf,
-            size,
-            modified,
-            readonly,
-            replace,
-            &mut check_cancel,
-            &mut |_| Ok(()),
-            &mut |file, parent| {
-                quarantine
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((file, parent));
-            },
-        )
+        publish_with(source_parent, source_leaf, target_parent, target_leaf,
+            size, modified, readonly, replace, &mut check_cancel, &mut |_| Ok(()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1330,7 +1242,6 @@ mod file_publication {
         replace: bool,
         check_cancel: &mut dyn FnMut() -> Result<(), String>,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
-        quarantine: &mut dyn FnMut(File, File),
     ) -> Result<FilePublication, String> {
         check_cancel()?;
         let source_name = leaf(source_leaf)?;
@@ -1373,41 +1284,20 @@ mod file_publication {
             Ok(value) => value,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
-        let saved = descriptor(&file)?;
-        // Prepare both recovery resources before changing permissions.
-        let fallback_private = fixed_private_dacl()?;
-        let source_guard = source_parent.try_clone().map_err(|e| e.to_string())?;
-        let recovery_path = pinned_path(&file)?;
-        let mut cancelled = false;
-        let result = step(Step::ApplyTarget)
-            .and_then(|_| apply_compatible(&file, &permissions))
-            .and_then(|_| step(Step::BeforeCommit))
-            .and_then(|_| check_cancel().inspect_err(|_| cancelled = true))
-            .and_then(|_| rename(&file, target_parent, &target_name, replace));
-        if result.is_ok() {
-            return Ok(FilePublication::Committed(file));
+        let committed_path = PathBuf::from(pinned_path(target_parent)?)
+            .join(target_leaf).display().to_string();
+        check_cancel()?;
+        // Permissions are unchanged on every precommit failure, including a
+        // collision or unsupported native rename. Copy fallback is safe here.
+        if step(Step::BeforeCommit).and_then(|_| rename(&file, target_parent, &target_name, replace)).is_err() {
+            return Ok(FilePublication::Unavailable);
         }
-        let restore_error = match step(Step::RestoreOriginal)
-            .and_then(|_| set_saved_dacl(&file, saved.0)) {
-            Ok(()) => return if cancelled { result.map(|_| FilePublication::Unavailable) }
-                else { Ok(FilePublication::Unavailable) },
-            Err(error) => error,
-        };
-        let message = format!(
-            "unpublished file permission rollback failed for {recovery_path}: {restore_error}; original error: {}",
-            result.unwrap_err()
-        );
-        let private_error = match step(Step::Reprotect)
-            .and_then(|_| set_saved_dacl(&file, fallback_private.0)) {
-            Ok(()) => return Err(format!("{message}; file re-isolated with private permissions")),
-            Err(error) => error,
-        };
-        let delete_error = match step(Step::Delete).and_then(|_| delete_own_file(&file)) {
-            Ok(()) => return Err(format!("{message}; unpublished stage file removed")),
-            Err(error) => error,
-        };
-        quarantine(file, source_guard);
-        Err(format!("{message}; re-isolation failed: {private_error}; handle deletion failed: {delete_error}; write/delete pin retained for this process only; residual stage requires cleanup after exit"))
+        // Commit has happened. Finish permissions even if cancellation arrives
+        // now; an error retains the committed target and MUST NOT be a fallback.
+        step(Step::AfterCommit).and_then(|_| step(Step::ApplyTarget))
+            .and_then(|_| apply_compatible(&file, &permissions))
+            .map_err(|error| format!("verified file was committed but permission restoration failed: {committed_path}: {error}"))?;
+        Ok(FilePublication::Committed(file))
     }
     #[cfg(test)]
     mod tests {
@@ -1446,6 +1336,27 @@ mod file_publication {
             let owned = Allocation(raw);
             let len = unsafe { GetSecurityDescriptorLength(owned.0) } as usize;
             unsafe { std::slice::from_raw_parts(owned.0.cast::<u8>(), len).to_vec() }
+        }
+        fn expected_private_descriptor_after_rename(mut descriptor: Vec<u8>) -> Vec<u8> {
+            // The observed NTFS rename protects the retained DACL and materializes
+            // inherited ACEs. Permit these changes in this direction only: never
+            // losing protection or adding inherited permissions from the target.
+            // Owner/group, ACE order/type/SID/mask and every other flag stay exact.
+            let control = u16::from_le_bytes(descriptor[2..4].try_into().unwrap());
+            assert_ne!(control & 0x8000, 0, "self-relative descriptor expected");
+            descriptor[2..4].copy_from_slice(&(control | 0x1000).to_le_bytes());
+            let acl = u32::from_le_bytes(descriptor[16..20].try_into().unwrap()) as usize;
+            assert!(acl >= 20 && acl + 8 <= descriptor.len());
+            let count = u16::from_le_bytes(descriptor[acl + 4..acl + 6].try_into().unwrap());
+            let mut ace = acl + 8;
+            for _ in 0..count {
+                assert!(ace + 4 <= descriptor.len());
+                let size = u16::from_le_bytes(descriptor[ace + 2..ace + 4].try_into().unwrap()) as usize;
+                assert!(size >= 4 && ace + size <= descriptor.len());
+                descriptor[ace + 1] &= !0x10;
+                ace += size;
+            }
+            descriptor
         }
         fn attrs(file: &File, value: u32) {
             let mut basic = [0i64; 5];
@@ -1554,7 +1465,6 @@ mod file_publication {
                 replace: bool,
                 cancel: &mut dyn FnMut() -> Result<(), String>,
                 step: &mut dyn FnMut(Step) -> Result<(), String>,
-                held: &mut Vec<(File, File)>,
             ) -> Result<FilePublication, String> {
                 publish_with(
                     &self.pins[2],
@@ -1567,7 +1477,6 @@ mod file_publication {
                     replace,
                     cancel,
                     step,
-                    &mut |file, parent| held.push((file, parent)),
                 )
             }
             fn unchanged(&self) {
@@ -1658,7 +1567,7 @@ mod file_publication {
                     attrs(&open(&f.target, 0x100, 7), 0x21);
                 }
                 let result = f
-                    .run(replace, &mut || Ok(()), &mut |_| Ok(()), &mut Vec::new())
+                    .run(replace, &mut || Ok(()), &mut |_| Ok(()))
                     .unwrap();
                 if replace && !readonly_target {
                     assert!(matches!(result, FilePublication::Committed(_)));
@@ -1672,115 +1581,82 @@ mod file_publication {
         }
 
         #[test]
-        fn file_publication_cancellation_and_acl_error_restore_before_fallback() {
-            for fail in [Step::ApplyTarget, Step::BeforeCommit] {
-                let f = Fixture::new(true);
-                assert!(matches!(
-                    f.run(
-                        false,
-                        &mut || Ok(()),
-                        &mut |step| {
-                            if step == fail {
-                                Err("injected failure".into())
-                            } else {
-                                Ok(())
-                            }
-                        },
-                        &mut Vec::new()
-                    )
-                    .unwrap(),
-                    FilePublication::Unavailable
-                ));
+        fn file_publication_before_commit_failure_and_cancel_never_change_permissions() {
+            let f = Fixture::new(true);
+            assert!(matches!(f.run(false, &mut || Ok(()), &mut |step| {
+                assert_eq!(step, Step::BeforeCommit);
+                assert_eq!(security(&open(&f.source, 0x20080, 7)), f.original_security);
                 assert!(!f.target.exists());
-                f.unchanged();
-            }
+                Err("injected rename unavailable".into())
+            }).unwrap(), FilePublication::Unavailable));
+            f.unchanged(); assert!(!f.target.exists());
             for cancel_on in [1, 2] {
-                let f = Fixture::new(true);
-                let mut calls = 0;
-                let result = f.run(
-                    false,
-                    &mut || {
-                        calls += 1;
-                        if calls == cancel_on {
-                            Err("cancelled".into())
-                        } else {
-                            Ok(())
-                        }
-                    },
-                    &mut |_| Ok(()),
-                    &mut Vec::new(),
-                );
+                let f = Fixture::new(true); let mut calls = 0;
+                let result = f.run(false, &mut || { calls += 1;
+                    if calls == cancel_on { Err("cancelled".into()) } else { Ok(()) }
+                }, &mut |_| Ok(()));
                 assert!(matches!(result, Err(message) if message == "cancelled"));
-                assert!(!f.target.exists());
-                f.unchanged();
+                f.unchanged(); assert!(!f.target.exists());
             }
         }
 
         #[test]
-        fn file_publication_rollback_failure_reisolates_deletes_or_retains_pin() {
-            for recovery in [Step::Reprotect, Step::Delete, Step::RestoreOriginal] {
-                let f = Fixture::new(true);
-                let mut held = Vec::new();
-                let result = f.run(
-                    false,
-                    &mut || Ok(()),
-                    &mut |step| {
-                        if step == Step::BeforeCommit
-                            || step == Step::RestoreOriginal
-                            || (step == Step::Reprotect && recovery != Step::Reprotect)
-                            || (step == Step::Delete && recovery == Step::RestoreOriginal)
-                        {
-                            Err("injected recovery failure".into())
-                        } else {
-                            Ok(())
-                        }
-                    },
-                    &mut held,
-                );
-                let message = match result {
-                    Err(error) => error,
-                    _ => panic!("fatal recovery must not fall back"),
-                };
-                assert!(message.contains("source.bin"));
-                assert!(!f.target.exists());
-                f.archive_intact();
-                match recovery {
-                    Step::Reprotect => {
-                        assert!(message.contains("re-isolated"));
-                        assert!(held.is_empty());
-                        let file = open(&f.source, 0x20080, 7);
-                        let private = descriptor(&file).unwrap();
-                        let (mut control, mut revision) = (0, 0);
-                        assert_ne!(
-                            unsafe {
-                                GetSecurityDescriptorControl(private.0, &mut control, &mut revision)
-                            },
-                            0
-                        );
-                        assert_ne!(control & 0x1000, 0);
-                    }
-                    Step::Delete => {
-                        assert!(message.contains("removed"));
-                        assert!(held.is_empty());
+        fn file_publication_retains_private_dacl_until_commit_then_finalizes() {
+            for readonly in [false, true] {
+                let f = Fixture::new(readonly); let mut events = Vec::new();
+                let FilePublication::Committed(file) = f.run(false, &mut || Ok(()), &mut |step| {
+                    events.push(step);
+                    let path = if step == Step::BeforeCommit { &f.source } else { &f.target };
+                    let actual = security(&open(path, 0x20080, 7));
+                    if step == Step::BeforeCommit {
+                        assert_eq!(actual, f.original_security, "precommit descriptor must remain byte-exact");
+                        assert!(!f.target.exists());
+                    } else {
+                        assert_eq!(actual, expected_private_descriptor_after_rename(f.original_security.clone()),
+                            "rename must retain private access, including all streams, until permission finalization");
                         assert!(!f.source.exists());
                     }
-                    _ => {
-                        assert!(message.contains("process only"));
-                        assert_eq!(held.len(), 1);
-                        assert!(fs::OpenOptions::new()
-                            .write(true)
-                            .share_mode(7)
-                            .open(&f.source)
-                            .is_err());
-                        assert!(fs::rename(&f.source, f.source.with_extension("moved")).is_err());
-                        // Injected failure is released only after a real private
-                        // DACL restore, never by blindly dropping the held pin.
-                        let private = fixed_private_dacl().unwrap();
-                        set_saved_dacl(&held[0].0, private.0).unwrap();
-                        held.clear();
-                    }
-                }
+                    Ok(())
+                }).unwrap() else { panic!("must commit"); };
+                assert_eq!(events, [Step::BeforeCommit, Step::AfterCommit, Step::ApplyTarget]);
+                assert_eq!(security(&file), f.expected_security);
+                assert_eq!(file.metadata().unwrap().modified().unwrap(), f.modified);
+                assert_eq!(fs::read(format!("{}:Zone.Identifier", f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+                f.archive_intact();
             }
+        }
+
+        #[test]
+        fn file_publication_postcommit_failure_never_falls_back_or_deletes_target() {
+            for failure in [Step::AfterCommit, Step::ApplyTarget] {
+              for replace in [false, true] {
+                let f = Fixture::new(true);
+                if replace { fs::write(&f.target, b"old output must not be restored after commit").unwrap(); }
+                let result = f.run(replace, &mut || Ok(()), &mut |step| {
+                    if step == failure { Err("injected postcommit permission failure".into()) } else { Ok(()) }
+                });
+                let message = match result { Err(message) => message, _ => panic!("must report committed failure") };
+                assert!(message.contains("was committed but permission restoration failed"));
+                assert!(message.contains("target.bin"));
+                assert!(!f.source.exists()); assert!(f.target.exists());
+                assert_eq!(fs::read(&f.target).unwrap(), b"verified bytes");
+                assert_eq!(security(&open(&f.target, 0x20080, 7)), expected_private_descriptor_after_rename(f.original_security.clone()));
+                assert_eq!(fs::metadata(&f.target).unwrap().modified().unwrap(), f.modified);
+                assert_eq!(fs::read(format!("{}:Zone.Identifier", f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+                f.archive_intact();
+              }
+            }
+        }
+
+        #[test]
+        fn file_publication_cancellation_after_commit_does_not_skip_permission_finalize() {
+            use std::cell::Cell;
+            let f = Fixture::new(false); let cancelled = Cell::new(false);
+            let FilePublication::Committed(file) = f.run(false, &mut || {
+                if cancelled.get() { Err("cancelled".into()) } else { Ok(()) }
+            }, &mut |step| { if step == Step::AfterCommit { cancelled.set(true); } Ok(()) }).unwrap()
+                else { panic!("commit must finish permissions"); };
+            assert_eq!(security(&file), f.expected_security); f.archive_intact();
         }
 
         #[test]
@@ -1789,14 +1665,14 @@ mod file_publication {
             let alias = f.temp.path().join("alias");
             fs::hard_link(&f.source, &alias).unwrap();
             assert!(
-                matches!(f.run(false, &mut || Ok(()), &mut |_| Ok(()), &mut Vec::new()), Err(message) if message == "changed publication source")
+                matches!(f.run(false, &mut || Ok(()), &mut |_| Ok(())), Err(message) if message == "changed publication source")
             );
             f.unchanged();
             assert!(!f.target.exists());
             fs::remove_file(alias).unwrap();
             policy(&open(f.target.parent().unwrap(), 0x60081, 3), true);
             assert!(matches!(
-                f.run(false, &mut || Ok(()), &mut |_| Ok(()), &mut Vec::new())
+                f.run(false, &mut || Ok(()), &mut |_| Ok(()))
                     .unwrap(),
                 FilePublication::Unavailable
             ));
@@ -1812,7 +1688,7 @@ mod file_publication {
             let parent = open(f.target.parent().unwrap(), 0x100, 7);
             attrs(&parent, 0x2010);
             assert!(!supports_file_publication(&f.pins[4]).unwrap());
-            assert!(matches!(f.run(false, &mut || Ok(()), &mut |_| Ok(()), &mut Vec::new()).unwrap(), FilePublication::Unavailable));
+            assert!(matches!(f.run(false, &mut || Ok(()), &mut |_| Ok(())).unwrap(), FilePublication::Unavailable));
             f.unchanged(); assert!(!f.target.exists());
             attrs(&parent, 0x10);
         }
