@@ -5,8 +5,12 @@ Preserved upstream license and attribution files accompany this inventory.
 Rust dependencies: locked Windows GUI graph, including CLI core and build dependencies.
 The inventory is conservative; it is not a binary link map.
 Crate source archives and upstream repositories are listed below.
-7-Zip 26.00 notices are in 7zip-26.00/License.txt. Corresponding source:
-https://www.7-zip.org/a/7z2600-src.7z
+7-Zip 26.05 notices are in 7zip-26.05/License.txt. Corresponding source:
+https://github.com/ip7z/7zip/releases/download/26.05/7z2605-src.7z
+
+NanaZip 7.0.1882.0 unmodified console and codec runtime notices: nanazip-7.0.1882.0/License.md.
+Corresponding source: https://github.com/M2Team/NanaZip/tree/7.0.1882.0
+Original NanaZip code is MIT; bundled 7-Zip, ZS and third-party code retain their own licenses.
 
 CPython embedded 3.14.9 and acefile notices: python-3.14.9/.
 ZPAQ 7.15 modified helper notices: zpaq-7.15/. Full corresponding source in runtime/zpaq/.

@@ -1,0 +1,19 @@
+{
+  "version": "7.0.1882.0",
+  "architecture": "x64",
+  "upstream": "https://github.com/M2Team/NanaZip",
+  "release_url": "https://github.com/M2Team/NanaZip/releases/tag/7.0.1882.0",
+  "package_url": "https://github.com/M2Team/NanaZip/releases/download/7.0.1882.0/NanaZip_7.0.1882.0_Binaries.zip",
+  "package_sha256": "19d98f24697f6115fc6e788cdf675e52b4b35be9916f91457a76dd32ef00e53a",
+  "source_url": "https://github.com/M2Team/NanaZip/tree/7.0.1882.0",
+  "files": {
+    "NanaZip.Universal.Console.exe": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139",
+    "NanaZip.Core.dll": "470e80066760f432bef8893ef416ba79fab6b165fbf3db3c1729bbe2b0feb46a",
+    "NanaZip.Codecs.dll": "6fb3d89f4002890c939c07e311fc940dead1a5b571f3daf70e7535da790b65c5",
+    "NanaZip.ZS.Codecs.dll": "8547b43be561fb283115de6e1183a789050b523255a55fe63f802298e5eff869",
+    "K7Base.dll": "6b7903cbadae93f59f6705e73a570da9dee9f76d25879c2e60a5ef1c0b00ea92",
+    "K7User.dll": "916d6ddc18738827921b2ed204c958ebbc4483d8586881a9df8b0f9c5df1052d"
+  },
+  "source_archive_url": "https://api.github.com/repos/M2Team/NanaZip/zipball/7.0.1882.0",
+  "source_archive_sha256": "413c4a3510d7e4c5c0e705d3a5c8a590cf9fcdbc5b6ffb5781275854354da67d"
+}

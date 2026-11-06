@@ -1,0 +1,13 @@
+{
+  "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.exe",
+  "sha256": "fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0",
+  "version": "26.05",
+  "files": {
+    "7z.exe": "94205cfc054dd3bbeb978905bc619a65b3f04e9e73bb2717841110b6f46d962e",
+    "7z.dll": "78bf6b668d75801e3aa180b4ccb16e6d8395fba80dec8a065055bb6f8dfabb82",
+    "7z.sfx": "5e2b45e773df40fec504e1afe7e511c8815057f8edb92e8b57e5015dd3bf760a",
+    "License.txt": "519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d"
+  },
+  "source_archive_url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-src.7z",
+  "source_archive_sha256": "fa081a1a33186158d71e9e24f494ed852ef8d0c9d06e21a86fb4713d94b55ae9"
+}

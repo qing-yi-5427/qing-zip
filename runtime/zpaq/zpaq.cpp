@@ -1090,6 +1090,7 @@ void Jidac::usage() {
 "  -index F        Extract: create index F for archive.\n"
 "                  Add: create suffix for archive indexed by F, update F.\n"
 "  -key X          Create or access encrypted archive with password X.\n"
+"  -key-stdin      Read the UTF-8 password from one terminated stdin line.\n"
 "  -mN  -method N  Compress level N (0..5 = faster..better, default 1).\n"
 "  -noattributes   Ignore/don't save file attributes or permissions.\n"
 "  -not files...   Exclude. * and ? match any string or char.\n"
@@ -1219,6 +1220,31 @@ int Jidac::doCommand(int argc, const char** argv) {
     else if (opt=="-force" || opt=="-f") force=true;
     else if (opt=="-fragment" && i<argc-1) fragment=atoi(argv[++i]);
     else if (opt=="-index" && i<argc-1) index=argv[++i];
+    else if (opt=="-key-stdin") {
+      // qing-zip supplies UTF-8 via an anonymous pipe; never echo or place
+      // plaintext in argv, the environment, or an intermediate password file.
+      // Keep the original UTF-8 -> SHA256 derivation for old archive support.
+      struct PasswordHash {
+        libzpaq::SHA256 value;
+        ~PasswordHash() {
+          volatile unsigned char* p=(volatile unsigned char*)&value;
+          for (size_t n=0; n<sizeof(value); ++n) p[n]=0;
+        }
+      } hash;
+      setvbuf(stdin, NULL, _IONBF, 0);
+      size_t count=0;
+      for (;;) {
+        const int c=getc(stdin);
+        if (c=='\n') break;
+        if (c==EOF) error("incomplete password input");
+        if (c==0 || c=='\r') error("invalid password input");
+        hash.value.put(c);
+        ++count;
+      }
+      if (!count) error("empty password input");
+      memcpy(password_string, hash.value.result(), 32);
+      password=password_string;
+    }
     else if (opt=="-key" && i<argc-1) {
       libzpaq::SHA256 sha256;
       for (const char* p=argv[++i]; *p; ++p) sha256.put(*p);
