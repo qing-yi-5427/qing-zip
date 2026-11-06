@@ -42,3 +42,14 @@ test('extended methods present only real application levels and distinguish fast
  assert.match(api.compressionLevels('zip')[0][1],/仅存储/);
  assert.doesNotMatch(api.compressionLevels('brotli')[0][1],/仅存储/);
 });
+
+// The engine keeps exact UTC ticks; only the visible timestamp is localized.
+test('UTC listing display follows local timezone without changing old local strings',()=>{
+ const code=source.split('\n').find(line=>line.startsWith('function displayModified('));
+ const {spawnSync}=require('node:child_process');
+ for(const [zone,expected] of [['Asia/Hong_Kong','2026-11-08 02:00:00'],['America/New_York','2026-11-07 13:00:00'],['UTC','2026-11-07 18:00:00']]){
+  const script=code+`\nprocess.stdout.write(JSON.stringify([displayModified('2026-11-07 18:00:00.3370638Z'),displayModified('2020-01-02 03:04:05.125'),displayModified('invalid'),displayModified(null)]));`;
+  const result=spawnSync(process.execPath,['-e',script],{env:{...process.env,TZ:zone},encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(result.stdout),[expected,'2020-01-02 03:04:05.125','invalid','']);
+ }
+});
