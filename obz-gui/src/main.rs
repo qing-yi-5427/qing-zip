@@ -127,7 +127,7 @@ fn set_appearance(window: tauri::WebviewWindow, material: String, dark: bool) ->
 fn pick_files() -> Vec<String> {
     rfd::FileDialog::new()
         .set_title("打开压缩文件")
-        .add_filter("归档/安装包", &["zip", "7z", "rar", "exe", "tar", "gz", "xz", "bz2", "iso", "cab", "wim", "001", "zipx", "egg", "alz", "ace", "lzh", "zst", "zstd", "br", "brotli", "lz4", "lz5", "liz", "lizard"])
+        .add_filter("归档/安装包", &["zip", "7z", "rar", "exe", "tar", "gz", "xz", "bz2", "iso", "cab", "wim", "001", "zipx", "egg", "alz", "ace", "lzh", "zst", "zstd", "br", "brotli", "lz4", "lz5", "liz", "lizard", "wasm", "romfs"])
         .add_filter("所有文件", &["*"])
         .pick_files()
         .map(|v| v.iter().map(|p| p.to_string_lossy().into_owned()).collect())
