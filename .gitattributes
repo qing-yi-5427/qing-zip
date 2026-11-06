@@ -1,0 +1,3 @@
+# Third-party runtimes and corresponding sources are byte-verified by provenance.
+# A Windows checkout must not rewrite upstream line endings or invalidate hashes.
+/runtime/** -text
