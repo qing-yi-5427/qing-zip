@@ -92,13 +92,17 @@ fn acl_bytes(sd: Handle) -> Result<Vec<u8>, String> {
     }
     Ok(unsafe { std::slice::from_raw_parts(acl.cast::<u8>(), size) }.to_vec())
 }
-fn trusted_owner(file: &File, token: &Token) -> Result<bool, String> {
+fn verify_private_permissions(
+    file: &File,
+    expected: &Allocation,
+    user_sid: &str,
+) -> Result<bool, String> {
     let (mut owner, mut raw) = (std::ptr::null_mut(), std::ptr::null_mut());
     let result = unsafe {
         GetSecurityInfo(
             file.as_raw_handle(),
             1,
-            1,
+            1 | 4, // OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
             &mut owner,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -108,13 +112,29 @@ fn trusted_owner(file: &File, token: &Token) -> Result<bool, String> {
     };
     if result != 0 {
         return Err(format!(
-            "query private output owner: {}",
+            "query private output permissions and owner: {}",
             io::Error::from_raw_os_error(result as i32)
         ));
     }
-    let _memory = Allocation(raw);
+    let memory = Allocation(raw);
+    // The owner points into this one descriptor. Keep its allocation alive
+    // through both checks, so owner and DACL come from the same query.
+    private_permissions_match(memory.0, owner, expected.0, user_sid)
+}
+fn private_permissions_match(
+    actual: Handle,
+    owner: Handle,
+    expected: Handle,
+    user_sid: &str,
+) -> Result<bool, String> {
+    if actual.is_null() || owner.is_null() {
+        return Err("private output has no permission descriptor or owner".into());
+    }
+    if control(actual)? & 0x1000 == 0 || acl_bytes(actual)? != acl_bytes(expected)? {
+        return Ok(false);
+    }
     let mut text = std::ptr::null_mut();
-    if owner.is_null() || unsafe { ConvertSidToStringSidW(owner, &mut text) } == 0 {
+    if unsafe { ConvertSidToStringSidW(owner, &mut text) } == 0 {
         return Err(error("read private output owner"));
     }
     let _text = Allocation(text.cast());
@@ -126,7 +146,7 @@ fn trusted_owner(file: &File, token: &Token) -> Result<bool, String> {
     }
     let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
         .map_err(|e| e.to_string())?;
-    Ok(sid == current_sid(token)? || matches!(sid.as_str(), "S-1-5-18" | "S-1-5-32-544"))
+    Ok(sid == user_sid || matches!(sid.as_str(), "S-1-5-18" | "S-1-5-32-544"))
 }
 fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {
     let policy = descriptor(parent)?;
@@ -167,8 +187,7 @@ fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescripto
     acl_bytes(computed.0)?;
     Ok(computed)
 }
-fn private_permissions(token: &Token) -> Result<Allocation, String> {
-    let sid = current_sid(token)?;
+fn private_permissions(sid: &str) -> Result<Allocation, String> {
     let text: Vec<u16> = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)")
         .encode_utf16()
         .chain(Some(0))
@@ -411,7 +430,10 @@ pub(crate) fn create_output(
         None
     };
     let private = if mode == Mode::PrivateAcl {
-        Some(private_permissions(&token)?)
+        // Reuse only this held token's user SID within this synchronous call.
+        // Resolve the effective thread/process token afresh for every output.
+        let sid = current_sid(&token)?;
+        Some((private_permissions(&sid)?, sid))
     } else {
         None
     };
@@ -437,7 +459,7 @@ pub(crate) fn create_output(
             root: parent.as_raw_handle(),
             name: &mut unicode,
             attributes: 0x40,
-            descriptor: private.as_ref().map_or(std::ptr::null_mut(), |p| p.0),
+            descriptor: private.as_ref().map_or(std::ptr::null_mut(), |(p, _)| p.0),
             qos: std::ptr::null_mut(),
         };
         let mut status = IoStatus {
@@ -482,12 +504,8 @@ pub(crate) fn create_output(
             if volume_mode(output.as_file())? != mode {
                 return Err("output filesystem capability changed".into());
             }
-            if let Some(expected) = &private {
-                let actual = descriptor(output.as_file())?;
-                if control(actual.0)? & 0x1000 == 0
-                    || acl_bytes(actual.0)? != acl_bytes(expected.0)?
-                    || !trusted_owner(output.as_file(), &token)?
-                {
+            if let Some((expected, sid)) = &private {
+                if !verify_private_permissions(output.as_file(), expected, sid)? {
                     return Err("filesystem did not preserve private output permissions".into());
                 }
             }
@@ -593,7 +611,8 @@ mod tests {
         bytes
     }
     fn assert_private(file: &File) {
-        let expected = private_permissions(&effective_token().unwrap()).unwrap();
+        let expected =
+            private_permissions(&current_sid(&effective_token().unwrap()).unwrap()).unwrap();
         let actual = descriptor(file).unwrap();
         assert_ne!(control(actual.0).unwrap() & 0x1000, 0);
         assert_eq!(acl_bytes(actual.0).unwrap(), acl_bytes(expected.0).unwrap());
@@ -604,6 +623,96 @@ mod tests {
         assert_eq!(mode(8).unwrap(), Mode::PrivateAcl);
         assert_eq!(mode(8 | 0x40000).unwrap(), Mode::PrivateAcl);
         assert!(mode(0x40000).is_err());
+    }
+    #[test]
+    fn private_permission_snapshot_rejects_untrusted_owner_or_changed_dacl() {
+        #[link(name = "Advapi32")]
+        extern "system" {
+            fn GetSecurityDescriptorOwner(
+                descriptor: Handle,
+                owner: *mut Handle,
+                defaulted: *mut i32,
+            ) -> i32;
+        }
+        let user = current_sid(&effective_token().unwrap()).unwrap();
+        let acl = format!("(A;;FA;;;{user})(A;;FA;;;SY)(A;;FA;;;BA)");
+        let expected = private_permissions(&user).unwrap();
+        for (label, sddl, accepted) in [
+            ("user", format!("O:{user}D:P{acl}"), true),
+            ("system", format!("O:SYD:P{acl}"), true),
+            ("administrators", format!("O:BAD:P{acl}"), true),
+            ("other owner", format!("O:BUD:P{acl}"), false),
+            ("missing owner", format!("D:P{acl}"), false),
+            ("missing DACL", format!("O:{user}"), false),
+            ("null DACL", format!("O:{user}D:PNO_ACCESS_CONTROL"), false),
+            ("empty DACL", format!("O:{user}D:P"), false),
+            ("unprotected DACL", format!("O:{user}D:{acl}"), false),
+            (
+                "extra reader",
+                format!("O:{user}D:P{acl}(A;;GR;;;BU)"),
+                false,
+            ),
+        ] {
+            let wide: Vec<_> = sddl.encode_utf16().chain(Some(0)).collect();
+            let mut raw = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        wide.as_ptr(),
+                        1,
+                        &mut raw,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0,
+                "fixture {label}: {}",
+                io::Error::last_os_error()
+            );
+            let memory = Allocation(raw);
+            let (mut owner, mut defaulted) = (std::ptr::null_mut(), 0);
+            assert_ne!(
+                unsafe { GetSecurityDescriptorOwner(memory.0, &mut owner, &mut defaulted) },
+                0
+            );
+            assert_eq!(
+                private_permissions_match(memory.0, owner, expected.0, &user).unwrap_or(false),
+                accepted,
+                "{label}"
+            );
+        }
+    }
+    #[test]
+    fn private_output_reads_changed_parent_permissions_for_each_file() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = open_parent(root.path());
+        let user = current_sid(&effective_token().unwrap()).unwrap();
+        let common = format!("(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        let mut first_security = None;
+        for (index, extra) in ["(A;OICI;GR;;;BU)", "(A;OICI;GR;;;WD)"].iter().enumerate() {
+            policy(&parent, &format!("D:PAI{common}{extra}"));
+            let ordinary_path = root.path().join(format!("ordinary-{index}.txt"));
+            let ordinary = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&ordinary_path)
+                .unwrap();
+            let mut output = create_output(root.path(), &parent).unwrap();
+            assert_private(output.as_file());
+            let committed = output
+                .commit(&root.path().join(format!("final-{index}.txt")), false)
+                .unwrap();
+            let observed = security(&committed);
+            assert_eq!(observed, security(&ordinary));
+            if let Some(first) = first_security.as_ref() {
+                assert_ne!(
+                    &observed, first,
+                    "each file must derive the current parent DACL"
+                );
+            } else {
+                first_security = Some(observed);
+            }
+        }
     }
     #[test]
     fn private_output_matches_nine_ordinary_acl_models() {
