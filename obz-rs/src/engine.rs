@@ -484,6 +484,26 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
     }
     Ok(result)
 }
+fn unsupported_utc_listing_switch(error: &str) -> bool {
+    // Older external engines can lack -slmu. Retry only the explicit command
+    // line rejection of this one switch; never retry password/data/I/O errors.
+    let Some(message) = error.strip_prefix("archive engine failed (7):") else {
+        return false;
+    };
+    let Some((_, tail)) = message.split_once("Command Line Error:") else {
+        return false;
+    };
+    let lines: Vec<_> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    matches!(
+        lines.as_slice(),
+        ["Unknown switch:" | "Unsupported switch:", "slmu" | "-slmu"]
+    )
+}
+
 fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _timer = PhaseTimer::new("list-total");
     let ctl = control(opts);
@@ -495,10 +515,19 @@ fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     args.extend([
         "-slt".into(),
         "-ba".into(),
+        // UTC avoids NanaZip's millisecond-only local FILETIME conversion and
+        // preserves the archive's full timestamp precision, including DST folds.
+        "-slmu".into(),
         "--".into(),
         absolute(path)?.display().to_string(),
     ]);
-    let listing = run(&args, None, opts, None)?;
+    let listing = match run(&args, None, opts, None) {
+        Err(error) if unsupported_utc_listing_switch(&error) => {
+            args.retain(|argument| argument != "-slmu");
+            run(&args, None, opts, None)?
+        }
+        result => result?,
+    };
     let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
     let mut out = parse_listing(listing)?;
     if let Some(format) = raw_format {
@@ -1185,7 +1214,7 @@ fn verify_stage_with_metadata(
             } else {
                 if zone.is_some() { mark_staged_file(&path, &meta, zone)?; }
                 if let Some(entry) = files.get(&key) {
-                    normalize_staged_entry(&path, entry, &meta, ctl, guards)?;
+                    normalize_staged_entry(&path, entry, &meta, ctl, guards, zone.is_some_and(|zone| zone.is_marked()))?;
                 }
             }
         }
@@ -1201,7 +1230,7 @@ fn verify_stage_with_metadata(
             let path = root.join(validate_name(&entry.name)?);
             guards.check(&path)?;
             let meta = checked_staged_metadata_with_relative(&path, guards, zone.is_none_or(|z| !z.is_marked()))?;
-            normalize_staged_entry(&path, entry, &meta, ctl, guards)?;
+            normalize_staged_entry(&path, entry, &meta, ctl, guards, false)?;
         }
     }
     Ok(())
@@ -2652,22 +2681,21 @@ fn normalize_staged_entry(
     meta: &fs::Metadata,
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
+    metadata_changed: bool,
 ) -> Result<(), String> {
     ctl.check()?;
+    #[cfg(not(windows))]
+    let _ = metadata_changed;
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         let attributes = if entry.is_dir { 0x10 } else { 0x20 }
             | if entry.attributes.contains('R') { 1 } else { 0 };
-        let modified =
-            chrono::NaiveDateTime::parse_from_str(&entry.modified, "%Y-%m-%d %H:%M:%S%.f")
-                .ok()
-                .and_then(|date| {
-                    use chrono::TimeZone;
-                    chrono::Local.from_local_datetime(&date).earliest()
-                })
-                .map(std::time::SystemTime::from);
-        if meta.file_attributes() == attributes
+        let modified = archive_modified_time(&entry.modified);
+        // ADS writes can change mtime after this snapshot was read. Never
+        // skip restoration based on pre-marking metadata.
+        if !metadata_changed
+            && meta.file_attributes() == attributes
             && modified.is_none_or(|time| meta.modified().ok() == Some(time))
         {
             return Ok(());
@@ -3754,18 +3782,34 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
 }
 // Keep the already-open published handle for metadata, avoiding both a second
 // path lookup and a path-substitution window between publication and timestamp.
+fn archive_modified_time(value: &str) -> Option<std::time::SystemTime> {
+    use chrono::TimeZone;
+    let utc = value.strip_suffix('Z');
+    let date =
+        chrono::NaiveDateTime::parse_from_str(utc.unwrap_or(value), "%Y-%m-%d %H:%M:%S%.f").ok()?;
+    let date = if utc.is_some() {
+        date.and_utc()
+    } else {
+        // Keep adapters/older external engines' existing local-time semantics.
+        chrono::Local
+            .from_local_datetime(&date)
+            .earliest()?
+            .with_timezone(&chrono::Utc)
+    };
+    let seconds = date.timestamp();
+    let nanos = Duration::from_nanos(date.timestamp_subsec_nanos() as u64);
+    let whole = if seconds < 0 {
+        std::time::UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))?
+    } else {
+        std::time::UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))?
+    };
+    whole.checked_add(nanos)
+}
+
 fn restore_open_file_metadata(file: &File, entry: &Entry) -> Result<(), String> {
-    if !entry.modified.is_empty() {
-        if let Ok(date) =
-            chrono::NaiveDateTime::parse_from_str(&entry.modified, "%Y-%m-%d %H:%M:%S%.f")
-        {
-            use chrono::TimeZone;
-            if let Some(local) = chrono::Local.from_local_datetime(&date).earliest() {
-                let timestamp: std::time::SystemTime = local.into();
-                file.set_times(fs::FileTimes::new().set_modified(timestamp))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+    if let Some(timestamp) = archive_modified_time(&entry.modified) {
+        file.set_times(fs::FileTimes::new().set_modified(timestamp))
+            .map_err(|e| e.to_string())?;
     }
     if entry.attributes.contains('R') {
         let mut permissions = file.metadata().map_err(|e| e.to_string())?.permissions();
@@ -3776,25 +3820,17 @@ fn restore_open_file_metadata(file: &File, entry: &Entry) -> Result<(), String> 
     Ok(())
 }
 pub(crate) fn restore_metadata(path: &Path, entry: &Entry) -> Result<(), String> {
-    if !entry.modified.is_empty() {
-        if let Ok(date) =
-            chrono::NaiveDateTime::parse_from_str(&entry.modified, "%Y-%m-%d %H:%M:%S%.f")
+    if let Some(timestamp) = archive_modified_time(&entry.modified) {
+        let mut options = fs::OpenOptions::new();
+        options.write(true);
+        #[cfg(windows)]
         {
-            use chrono::TimeZone;
-            if let Some(local) = chrono::Local.from_local_datetime(&date).earliest() {
-                let timestamp: std::time::SystemTime = local.into();
-                let mut options = fs::OpenOptions::new();
-                options.write(true);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::OpenOptionsExt;
-                    options.access_mode(0x100).custom_flags(0x02000000);
-                }
-                let file = options.open(path).map_err(|e| e.to_string())?;
-                file.set_times(fs::FileTimes::new().set_modified(timestamp))
-                    .map_err(|e| e.to_string())?;
-            }
+            use std::os::windows::fs::OpenOptionsExt;
+            options.access_mode(0x100).custom_flags(0x02000000);
         }
+        let file = options.open(path).map_err(|e| e.to_string())?;
+        file.set_times(fs::FileTimes::new().set_modified(timestamp))
+            .map_err(|e| e.to_string())?;
     }
     if entry.attributes.contains('R') {
         let mut permissions = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
@@ -4055,6 +4091,228 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+
+    #[test]
+    fn utc_metadata_parser_preserves_100ns_and_legacy_local_dates() {
+        use chrono::TimeZone;
+        assert_eq!(
+            archive_modified_time("1970-01-01 00:00:00.1234567Z"),
+            Some(std::time::UNIX_EPOCH + Duration::from_nanos(123_456_700))
+        );
+        assert_eq!(
+            archive_modified_time("1969-12-31 23:59:59.9999999Z"),
+            Some(std::time::UNIX_EPOCH - Duration::from_nanos(100))
+        );
+        // Distinct instants in a DST fold stay distinct; UTC has no ambiguity.
+        let before = archive_modified_time("2024-11-03 05:30:00.1234567Z").unwrap();
+        let after = archive_modified_time("2024-11-03 06:30:00.1234567Z").unwrap();
+        assert_eq!(
+            after.duration_since(before).unwrap(),
+            Duration::from_secs(3600)
+        );
+        for value in [
+            "2024-03-10 02:30:00.1234567",
+            "2024-11-03 01:30:00.7654321",
+            "2024-01-01 10:20:30",
+            "2024-07-01 10:20:30.001",
+        ] {
+            let date =
+                chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").unwrap();
+            let old = chrono::Local
+                .from_local_datetime(&date)
+                .earliest()
+                .map(std::time::SystemTime::from);
+            assert_eq!(
+                archive_modified_time(value),
+                old,
+                "legacy local semantics: {value}"
+            );
+        }
+        for value in [
+            "",
+            "invalid",
+            "2024-02-30 00:00:00Z",
+            "2024-01-01 00:00:00ZZ",
+        ] {
+            assert!(archive_modified_time(value).is_none(), "{value}");
+        }
+    }
+
+    #[test]
+    fn utc_listing_fallback_is_only_for_explicit_unknown_switch() {
+        for detail in ["Unknown switch:\nslmu", "Unsupported switch:\r\n-slmu"] {
+            assert!(unsupported_utc_listing_switch(&format!(
+                "archive engine failed (7): banner\nCommand Line Error:\n{detail}\n"
+            )));
+        }
+        for error in [
+            "archive engine failed (2): Command Line Error:\nUnknown switch:\nslmu",
+            "archive engine failed (7): Wrong password",
+            "operation cancelled",
+            "archive engine failed (7): Command Line Error:\nUnknown switch:\nmcp",
+            "archive engine failed (7): Command Line Error:\nUnknown switch:\nslmu\nData error",
+            "archive engine failed (7): slmu is unsupported",
+        ] {
+            assert!(!unsupported_utc_listing_switch(error), "{error}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn utc_metadata_normalize_keeps_exact_timestamp_but_repairs_attributes() {
+        use std::os::windows::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file");
+        fs::write(&path, b"data").unwrap();
+        let mut entry = parse_listing(
+            b"Path = file\nSize = 4\nModified = 1970-01-01 00:00:00.1234567Z\nAttributes = R\n\n",
+        )
+        .unwrap()
+        .remove(0);
+        let expected = std::time::UNIX_EPOCH + Duration::from_nanos(123_456_700);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(expected))
+            .unwrap();
+        let mut guards = CheckedDirectories::owned_root(temp.path());
+        normalize_staged_entry(
+            &path,
+            &entry,
+            &fs::metadata(&path).unwrap(),
+            &JobControl::default(),
+            &mut guards,
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().file_attributes(), 0x21);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), expected);
+        entry.attributes = "A".into();
+        normalize_staged_entry(
+            &path,
+            &entry,
+            &fs::metadata(&path).unwrap(),
+            &JobControl::default(),
+            &mut guards,
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().file_attributes(), 0x20);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn utc_metadata_roundtrips_native_staged_partial_existing_and_motw() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("bundle");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"alpha").unwrap();
+        fs::write(source.join("b.txt"), b"beta").unwrap();
+        let timestamp = std::time::UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700);
+        for path in [&source, &source.join("a.txt"), &source.join("b.txt")] {
+            fs::OpenOptions::new()
+                .access_mode(0x100)
+                .custom_flags(0x02000000)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(timestamp))
+                .unwrap();
+        }
+        let readonly = source.join("a.txt");
+        let mut permissions = fs::metadata(&readonly).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&readonly, permissions).unwrap();
+        let zone = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+        for format in ["zip", "7z"] {
+            for encrypted in [false, true] {
+                let archive = temp.path().join(format!("{format}-{encrypted}.{format}"));
+                let options = EngineOptions {
+                    level: Some(0),
+                    solid: (format == "7z").then_some(false),
+                    password: encrypted.then(|| "metadata-test-password".into()),
+                    ..Default::default()
+                };
+                create(
+                    archive.to_str().unwrap(),
+                    &[source.display().to_string()],
+                    format,
+                    &options,
+                )
+                .unwrap();
+                let listing = list_raw(archive.to_str().unwrap(), &options).unwrap();
+                assert_eq!(listing.len(), 3);
+                for entry in &listing {
+                    assert!(entry.modified.ends_with('Z'), "UTC listing expected");
+                    assert_eq!(archive_modified_time(&entry.modified), Some(timestamp));
+                }
+                for mode in ["new", "existing", "selected", "marked"] {
+                    let target = temp.path().join(format!("out-{format}-{encrypted}-{mode}"));
+                    if mode == "existing" {
+                        fs::create_dir(&target).unwrap();
+                        fs::write(target.join("keep"), b"sentinel").unwrap();
+                    }
+                    if mode == "marked" {
+                        fs::write(format!("{}:Zone.Identifier", archive.display()), zone).unwrap();
+                    }
+                    let mut extract_options = options.clone();
+                    if mode == "selected" {
+                        extract_options.selected = vec!["bundle/a.txt".into()];
+                    }
+                    extract(
+                        archive.to_str().unwrap(),
+                        target.to_str().unwrap(),
+                        &extract_options,
+                    )
+                    .unwrap();
+                    let out = target.join("bundle/a.txt");
+                    assert_eq!(fs::read(&out).unwrap(), b"alpha");
+                    assert_eq!(
+                        fs::metadata(&out).unwrap().modified().unwrap(),
+                        timestamp,
+                        "{format} encrypted={encrypted} mode={mode}"
+                    );
+                    assert!(fs::metadata(&out).unwrap().permissions().readonly());
+                    if mode != "selected" {
+                        assert_eq!(fs::read(target.join("bundle/b.txt")).unwrap(), b"beta");
+                        assert_eq!(
+                            fs::metadata(target.join("bundle/b.txt"))
+                                .unwrap()
+                                .modified()
+                                .unwrap(),
+                            timestamp
+                        );
+                        assert_eq!(
+                            fs::metadata(target.join("bundle"))
+                                .unwrap()
+                                .modified()
+                                .unwrap(),
+                            timestamp
+                        );
+                    } else {
+                        assert!(!target.join("bundle/b.txt").exists());
+                    }
+                    if mode == "existing" {
+                        assert_eq!(fs::read(target.join("keep")).unwrap(), b"sentinel");
+                    }
+                    if mode == "marked" {
+                        assert_eq!(
+                            fs::read(format!("{}:Zone.Identifier", out.display())).unwrap(),
+                            zone
+                        );
+                    }
+                    let mut permissions = fs::metadata(&out).unwrap().permissions();
+                    permissions.set_readonly(false);
+                    fs::set_permissions(&out, permissions).unwrap();
+                }
+            }
+        }
+        let mut permissions = fs::metadata(&readonly).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&readonly, permissions).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
