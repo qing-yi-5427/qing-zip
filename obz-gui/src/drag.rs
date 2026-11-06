@@ -73,7 +73,13 @@ mod tests {
             let count=DragQueryFileW(drop,u32::MAX,None);let mut actual=Vec::new();
             for i in 0..count {let len=DragQueryFileW(drop,i,None);let mut buf=vec![0u16;len as usize+1];DragQueryFileW(drop,i,Some(&mut buf));actual.push(String::from_utf16_lossy(&buf[..len as usize]));}
             ReleaseStgMedium(&mut medium);
-            assert_eq!(actual,paths);assert_eq!(std::fs::read(file).unwrap(),b"unchanged");
+            // Shell PIDLs may expand DOS 8.3 aliases (for example RUNNER~1 in
+            // CI's TEMP). Require the same ordered filesystem objects while
+            // retaining the exact Unicode filenames and source-content check.
+            let canonical = |values: &[String]| values.iter()
+                .map(|path| std::fs::canonicalize(path).unwrap()).collect::<Vec<_>>();
+            assert_eq!(canonical(&actual),canonical(&paths));
+            assert_eq!(std::fs::read(file).unwrap(),b"unchanged");
         }
     }
 
