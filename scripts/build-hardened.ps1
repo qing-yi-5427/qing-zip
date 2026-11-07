@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('x86_64-pc-windows-msvc')]
+    [ValidateSet('x86_64-pc-windows-msvc','aarch64-pc-windows-msvc')]
     [string]$Target = 'x86_64-pc-windows-msvc',
     [string]$TargetDirectory,
     [string]$CargoPath = 'cargo',
@@ -34,6 +34,12 @@ $rustFlags = @(
     '-C', 'link-arg=/HIGHENTROPYVA',
     '-C', 'link-arg=/NXCOMPAT'
 )
+$peMachine = '0x8664'
+if ($Target -eq 'aarch64-pc-windows-msvc') {
+    $peMachine = '0xaa64'
+    # CET shadow stacks are an x86/x64 PE capability.
+    $rustFlags = @('-C','control-flow-guard=yes','-C','link-arg=/DYNAMICBASE','-C','link-arg=/HIGHENTROPYVA','-C','link-arg=/NXCOMPAT')
+}
 $flagArray = ConvertTo-Json -InputObject $rustFlags -Compress
 $configPath = Join-Path $TargetDirectory 'hardening-config.toml'
 # Explicit --target keeps flags off host build scripts and proc macros. The
@@ -72,7 +78,7 @@ try {
     }
     $corePath = Join-Path $binaryDirectory 'obz.exe'
     $guiPath = Join-Path $binaryDirectory 'obz-gui.exe'
-    Invoke-HardenedNative -Command $PythonPath -Arguments @((Join-Path $PSScriptRoot 'audit_pe_security.py'), '--require-hardened', '--expect-machine', '0x8664', '--output', $auditPath, $corePath, $guiPath) -Failure 'Authored executable PE mitigation gate failed'
+    Invoke-HardenedNative -Command $PythonPath -Arguments @((Join-Path $PSScriptRoot 'audit_pe_security.py'), '--require-hardened', '--expect-machine', $peMachine, '--output', $auditPath, $corePath, $guiPath) -Failure 'Authored executable PE mitigation gate failed'
     # Build evidence does not assert identical coverage for prebuilt dependencies
     # or active hardware enforcement on the current computer.
     $receiptPath = Join-Path $binaryDirectory 'hardened-build.json'

@@ -168,7 +168,6 @@ fn unrestricted_executable() -> Result<PathBuf, String> {
     let adjacent = current.as_deref().and_then(Path::parent);
     for dir in adjacent.into_iter().chain(std::iter::once(workspace)) {
         paths.push(dir.join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe"));
-        #[cfg(not(target_arch = "aarch64"))]
         paths.push(dir.join("runtime/7zip/7z.exe"));
     }
     if let Some(p) = std::env::var_os("ProgramFiles") {

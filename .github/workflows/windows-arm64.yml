@@ -47,6 +47,13 @@ jobs:
           Invoke-WebRequest $manifest.package_url -OutFile $archive
           python scripts/prepare-arm64-runtime.py $archive runtime/nanazip-arm64
           exit $LASTEXITCODE
+      - name: Build architecture-matched supporting runtimes
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime'
+          $cache = Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads'
+          ./scripts/build-arm64-helpers.cmd $runtime $cache
+          exit $LASTEXITCODE
       - name: Native CLI, policy and verified split extraction
         shell: pwsh
         run: |
@@ -68,3 +75,28 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ./scripts/check-arm64-layout.ps1 -Cli target/arm-validation/debug/obz.exe -Desktop target/arm-validation/debug/obz-gui.exe -Layout (Join-Path $env:RUNNER_TEMP 'qing-arm64-layout')
           exit $LASTEXITCODE
+      - name: Build hardened ARM64 portable package
+        shell: pwsh
+        run: |
+          $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
+          python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
+          exit $LASTEXITCODE
+      - name: Install, exercise helpers, and uninstall on ARM64
+        shell: pwsh
+        run: |
+          python scripts/check-arm64-package.py dist/arm64 (Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/package-engine-sources.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item dist/*-engine-sources.zip dist/arm64
+      - name: Upload verified trial packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qing-zip-windows-arm64-trial
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            dist/arm64/*.zip
+            dist/arm64/*.exe
+            dist/arm64/*.sha256
+            dist/arm64/*-verification.json
