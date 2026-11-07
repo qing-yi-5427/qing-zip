@@ -314,7 +314,7 @@ fn bytes_for(
         let bytes = item.1.clone();
         cache.raw.push_back(item);
         if bytes.len() as u64 > limit { return Err("此文件超过预览限制，请解压后查看".into()); }
-        policy.validate_cached_access()?;
+        policy.validate_output()?;
         return Ok(bytes);
     }
     let total = cache
@@ -378,7 +378,7 @@ fn bytes_for(
             break;
         }
     }
-    policy.validate_cached_access()?;
+    policy.validate_output()?;
     cache.raw_bytes += bytes.len();
     cache.raw.push_back((name.into(), bytes.clone()));
     Ok(bytes)
@@ -606,7 +606,7 @@ fn preview_inner(
         }
         _ => return Err("不支持的预览方式".into()),
     }
-    policy.validate_cached_access()?;
+    policy.validate_output()?;
     Ok(result)
 }
 #[tauri::command]

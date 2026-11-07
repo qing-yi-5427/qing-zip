@@ -2262,6 +2262,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             if transaction.is_some() || file_publication_stage { opts.zone_identifier.as_ref() } else { None },
         )?;
     }
+    policy.validate_output()?;
     if let Some(transaction) = transaction.as_ref() {
         let root = &transaction.root;
         let temp = stage.as_ref().unwrap();

@@ -222,10 +222,10 @@ impl Operation {
     fn machine() -> Self {
         let rules = read_machine();
         #[cfg(windows)]
-        if rules.restricted() && !rules.opaque && !rules.allows(0, "ZealFS") {
-            // Nana rejects -stxZealFS when policy removed that handler. Arm
-            // the notification before taking the authoritative second snapshot:
-            // a newly enabled handler must never decode without our guard.
+        if rules.restricted() && !rules.opaque {
+            // Each official child reads HKLM independently. A temporary
+            // relaxation between listing and decoding (even if restored
+            // before exit) must invalidate that child's result.
             let notifications = Watch::arm();
             let mut op = Self::new(read_machine());
             op.notifications = Some(notifications);
@@ -343,12 +343,13 @@ impl Scope {
             .token
             .get_or_init(|| self.operation.rules.token())
     }
-    /// A preview request can wait behind another decoder or hit a plaintext
-    /// cache. Re-read the effective policy just before releasing its result.
-    pub fn validate_cached_access(&self) -> Result<(), String> {
-        if self.operation.rules.opaque || self.operation.rules != read_machine() {
+    /// Check once before releasing decoded data. Restricted operations have
+    /// a live watch. Ordinary operations use one final read so a newly
+    /// imposed policy also applies to the files about to be published.
+    pub fn validate_output(&self) -> Result<(), String> {
+        if self.operation.rules.opaque || (!self.restricted() && read_machine().restricted()) {
             return Err(
-                "machine format policy changed or is unreadable; reopen the preview".into(),
+                "machine format policy changed or is unreadable; retry this operation".into(),
             );
         }
         self.unchanged()
