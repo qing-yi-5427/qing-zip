@@ -26,3 +26,8 @@ windows-core = "=0.62.2"
 [profile.release]
 opt-level = 3
 lto = true
+
+# The unoptimized x86 SHA intrinsics have produced wrong digests and CET
+# failures in a standalone MSVC debug build. Keep the same hash and checks.
+[profile.dev.package.sha2]
+opt-level = 2

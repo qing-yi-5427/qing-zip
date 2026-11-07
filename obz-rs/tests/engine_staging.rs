@@ -123,7 +123,7 @@ fn extract_split(archive: &Path, dest: &Path, selected: &[&str]) -> std::process
 #[cfg(nana_selected_worker)]
 fn require_worker(result: &std::process::Output, success: bool, fields: &[&str]) {
     let diagnostics = String::from_utf8_lossy(&result.stderr);
-    assert_eq!(result.status.success(), success, "{diagnostics}");
+    assert_eq!(result.status.success(), success, "exit={} {diagnostics}", result.status);
     let mut lines = diagnostics
         .lines()
         .filter(|l| l.starts_with("OA_SELECTED_WORKER "));
@@ -352,7 +352,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
         }
         let out = extract(&dest);
         let log = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "{log}");
+        assert!(out.status.success(), "exit={} {log}", out.status);
         assert!(log.contains("OA_SELECTED_WORKER status=ok"), "{log}");
         assert!(
             log.contains(if existing {
