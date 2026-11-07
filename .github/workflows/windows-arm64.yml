@@ -1,7 +1,7 @@
 name: Windows ARM64 native validation
 on:
   push:
-    branches: [main, codex/arm64-engine-validation]
+    branches: [main, codex/nanazip-parity, codex/arm64-engine-validation]
   pull_request:
   workflow_dispatch:
 permissions:
