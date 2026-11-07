@@ -349,9 +349,15 @@ pub(crate) fn create_child_file(parent: &File, leaf: &OsStr) -> Result<File, Str
     open_private_child(parent, leaf, ChildAccess::CreateFile)
 }
 
+/// FILE_CREATE yields an identity handle only for a directory created by this call.
+pub(crate) fn create_output_directory(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    open_private_child(parent, leaf, ChildAccess::CreateDirectory)
+}
+
 enum ChildAccess {
     Metadata,
     CreateFile,
+    CreateDirectory,
 }
 
 fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<File, String> {
@@ -382,12 +388,13 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         information: 0,
     };
     let mut raw = std::ptr::null_mut();
-    let (access, file_attributes, disposition, options, operation) = match mode {
-        ChildAccess::Metadata => (0x100081, 0, 1, 0x200020, "read private stage metadata"),
+    let (access, file_attributes, sharing, disposition, options, operation) = match mode {
+        ChildAccess::Metadata => (0x100081, 0, 1, 1, 0x200020, "read private stage metadata"),
         // WRITE_DATA | READ/WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_CREATE and
         // FILE_NON_DIRECTORY_FILE. Existing files, links and reparse leaves
         // cannot be opened or truncated.
-        ChildAccess::CreateFile => (0x100182, 0x80, 2, 0x200060, "create private stage file"),
+        ChildAccess::CreateFile => (0x100182, 0x80, 1, 2, 0x200060, "create private stage file"),
+        ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),
     };
     let result = unsafe {
         NtCreateFile(
@@ -397,7 +404,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
             &mut status,
             std::ptr::null(),
             file_attributes,
-            1,
+            sharing,
             disposition,
             options,
             std::ptr::null_mut(),

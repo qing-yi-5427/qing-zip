@@ -837,10 +837,38 @@ struct CheckedDirectories {
     owned_roots: Vec<PathBuf>,
     #[cfg(windows)]
     owned_dirs: HashSet<PathBuf>,
+    #[cfg(windows)]
+    selected_output_root: Option<PathBuf>,
+    #[cfg(windows)]
+    created_output_dirs: Vec<(PathBuf, File)>,
     // Only validated private stages qualify. Ordinary owned TempDirs may
     // inherit shared permissions and must keep full path checks.
     #[cfg(windows)]
     private_stages: HashSet<PathBuf>,
+}
+#[cfg(windows)]
+impl Drop for CheckedDirectories {
+    fn drop(&mut self) {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        if self.created_output_dirs.is_empty() { return; }
+        self.held.clear();
+        #[link(name = "Kernel32")]
+        extern "system" {
+            fn SetFileInformationByHandle(handle: *mut std::ffi::c_void, class: i32,
+                info: *const std::ffi::c_void, size: u32) -> i32;
+        }
+        while let Some((path, created)) = self.created_output_dirs.pop() {
+            // Keep the creation handle alive so a reused path or file ID cannot
+            // identify somebody else's directory. Windows refuses nonempty dirs.
+            let Ok(current) = fs::OpenOptions::new().access_mode(0x10080)
+                .share_mode(7).custom_flags(0x02200000).open(path) else { continue };
+            let Ok(id) = directory_identity(&created) else { continue };
+            if directory_identity(&current).ok() != Some(id)
+                || !directory_attributes(&current).is_ok_and(|attrs| attrs & 0x410 == 0x10) { continue; }
+            let delete: u8 = 1;
+            unsafe { SetFileInformationByHandle(current.as_raw_handle(), 4, (&delete as *const u8).cast(), 1); }
+        }
+    }
 }
 impl CheckedDirectories {
     #[cfg(windows)]
@@ -863,6 +891,23 @@ impl CheckedDirectories {
             self.check(component)?;
             if self.pinned(component) {
                 continue;
+            }
+            #[cfg(windows)]
+            if self.selected_output_root.as_ref().is_some_and(|root| component.starts_with(root))
+                && self.created_output_dirs.len() < 4096 {
+                if let Some((parent, leaf)) = component.parent().and_then(|p| self.held.get(p))
+                    .zip(component.file_name()) {
+                    match crate::private_stage::create_output_directory(&parent.0, leaf) {
+                        Ok(created) => {
+                            self.created_output_dirs.push((component.to_owned(), created));
+                            self.owned_dirs.insert(component.to_owned());
+                            self.check(component)?;
+                            continue;
+                        }
+                        Err(_) if component.is_dir() => { self.check(component)?; continue; }
+                        Err(error) => return Err(error),
+                    }
+                }
             }
             match fs::create_dir(component) {
                 Ok(()) => {
@@ -2331,6 +2376,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         Some(files) => StagedContents::Memory(files),
         None => StagedContents::Disk(stage.as_ref().unwrap().path()),
     };
+    #[cfg(windows)]
+    if !opts.selected.is_empty() && !dest.try_exists().map_err(|e| e.to_string())? {
+        output_guards.selected_output_root = Some(dest.clone());
+    }
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
     let count = if opts.overwrite == "error"
         && opts.selected.is_empty()
@@ -2411,6 +2460,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         restore_metadata(&dest.join(validate_name(&e.name)?), e)
             .map_err(|e| format!("directory metadata: {e}"))?;
     }
+    #[cfg(windows)]
+    output_guards.created_output_dirs.clear();
     drop(stage_guards);
     if let Some([moved, copied]) = publication_receipt {
         eprintln!("OA_PUBLICATION same_volume_stage=1 moved={moved} copied={copied}");
@@ -4538,6 +4589,35 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn abandoned_selected_publication_removes_only_its_own_empty_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("new");
+        let abandoned = dest.join("empty");
+        let occupied = dest.join("occupied");
+        let replacement = dest.join("replacement");
+        let mut guards = CheckedDirectories::default();
+        guards.selected_output_root = Some(dest.clone());
+        for dir in [&abandoned, &occupied, &replacement] {
+            guards.create_dirs(dir).unwrap();
+        }
+        fs::write(occupied.join("external"), b"keep").unwrap();
+        guards.held.clear();
+        fs::rename(&replacement, dest.join("moved")).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        drop(guards);
+        assert!(!abandoned.exists());
+        assert!(replacement.is_dir() && dest.join("moved").is_dir());
+        assert_eq!(fs::read(occupied.join("external")).unwrap(), b"keep");
+
+        let empty = temp.path().join("new-empty");
+        let mut guards = CheckedDirectories::default();
+        guards.selected_output_root = Some(empty.clone());
+        guards.create_dirs(&empty.join("child")).unwrap();
+        drop(guards);
+        assert!(!empty.exists());
+    }
 
     #[test]
     fn fallback_seven_zip_never_receives_unknown_zealfs_exclusion() {
