@@ -1,4 +1,5 @@
 """Build the ARM64 runtime from fixed releases in a native MSVC developer shell."""
+from audit_pe_security import imports, needs_private_runtime
 import argparse
 import hashlib
 import json
@@ -57,35 +58,12 @@ def inventory(root):
     return {p.relative_to(root).as_posix():sha(p) for p in sorted(root.rglob('*'))
             if p.is_file() and p!=root/'ARM64-RUNTIME.json'}
 
-def imports(path):
-    """Return ordinary and delay-loaded PE module names for a reviewed binary."""
-    data=path.read_bytes()
-    def u16(i):return struct.unpack_from('<H',data,i)[0]
-    def u32(i):return struct.unpack_from('<I',data,i)[0]
-    pe=u32(60);opt=pe+24
-    directories=opt+(112 if u16(opt)==0x20b else 96)
-    start=opt+u16(pe+20)
-    sections=[(u32(i+12),max(u32(i+8),u32(i+16)),u32(i+20))
-              for i in range(start,start+40*u16(pe+6),40)]
-    def offset(addr):
-        return next(raw+addr-rva for rva,size,raw in sections if rva<=addr<rva+size)
-    names=set()
-    for index,stride,field in [(1,20,12),(13,32,4)]:
-        addr=u32(directories+8*index)
-        if not addr:continue
-        cursor=offset(addr)
-        while u32(cursor+field):
-            name=offset(u32(cursor+field))
-            names.add(data[name:data.index(0,name)].decode('ascii').lower())
-            cursor+=stride
-    return sorted(names)
-
 def verify_private_imports(path):
     deps=imports(path)
     # Windows 11 includes UCRT and API sets, but the optional VC++ redistributable
     # on a developer machine must not conceal a missing app-local dependency.
     for name in deps:
-        if name.startswith(('msvcp1','vcruntime1','concrt1','vcomp1','webview2loader.dll')):
+        if needs_private_runtime(name):
             local=path.parent/name
             if not local.is_file() or machine(local)!=0xaa64:raise ValueError(f'{path.name}: missing native {name}')
     return deps

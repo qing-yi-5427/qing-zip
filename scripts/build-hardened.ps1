@@ -28,6 +28,7 @@ foreach ($name in @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS')) {
 }
 
 $rustFlags = @(
+    '-C', 'target-feature=+crt-static',
     '-C', 'control-flow-guard=yes',
     '-C', 'link-arg=/CETCOMPAT',
     '-C', 'link-arg=/DYNAMICBASE',

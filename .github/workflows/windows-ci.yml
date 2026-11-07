@@ -39,4 +39,16 @@ jobs:
         run: |
           cargo test --locked --manifest-path obz-gui/Cargo.toml
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          ./scripts/build-hardened.ps1
+          $build = ./scripts/build-hardened.ps1
+          python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
+          exit $LASTEXITCODE
+      - name: Upload validated Windows x64 portable build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qing-zip-windows-x64-trial
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            dist/x64/*-portable.zip
+            target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
+            target/hardened/x86_64-pc-windows-msvc/release/pe-security.json

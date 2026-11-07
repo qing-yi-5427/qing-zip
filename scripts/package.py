@@ -5,7 +5,7 @@ import shutil
 import zipfile
 from pathlib import Path
 
-from audit_pe_security import hardened_issues, inspect
+from audit_pe_security import hardened_issues, imports, inspect, needs_private_runtime
 
 
 # Historical notice collection also matched compressed LICENSE fixtures and
@@ -47,6 +47,9 @@ def main():
     # fallback to the old ordinary target/release output directory.
     for source, _ in sources[:2]:
         problems = hardened_issues(inspect(source), expected_machine="0xaa64" if args.architecture == "arm64" else "0x8664")
+        # No private CRT or WebView loader is shipped beside the two authored
+        # executables. Detect accidental links on build machines that have them.
+        problems.extend(f"unbundled import {dll}" for dll in imports(source) if needs_private_runtime(dll))
         if problems:
             raise SystemExit(f"PE mitigation gate failed: {source}: {', '.join(problems)}")
     for name in ("runtime", "licenses", "assets"):

@@ -25,7 +25,7 @@
 
 ## 使用
 
-支持 Windows 10 2004（19041）及以上版本、Windows 11 x64，需要 Microsoft Edge WebView2 Runtime。
+x64 版支持 Windows 10 2004（19041）及以上版本和 Windows 11。Windows 11 ARM64 设备请选择文件名含 `arm64` 的版本。桌面界面需要 Microsoft Edge WebView2 Runtime。
 
 - **便携版**：完整解压 `qing-zip-版本-portable.zip`，运行 `qing-zip.exe`，保留旁边的 `runtime` 目录。
 - **安装版**：运行 `qing-zip-版本-setup.exe`，默认安装到当前用户目录，无需管理员权限。
