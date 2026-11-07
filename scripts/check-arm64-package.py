@@ -40,6 +40,7 @@ def smoke_desktop(application, archive, scratch):
     k=ctypes.WinDLL('kernel32',use_last_error=True)
     k.CreateToolhelp32Snapshot.argtypes=(w.DWORD,w.DWORD);k.CreateToolhelp32Snapshot.restype=w.HANDLE
     for method in (k.Process32FirstW,k.Process32NextW):method.argtypes=(w.HANDLE,ctypes.POINTER(Process));method.restype=w.BOOL
+    k.OpenProcess.argtypes=(w.DWORD,w.BOOL,w.DWORD);k.OpenProcess.restype=w.HANDLE
     k.CloseHandle.argtypes=(w.HANDLE,);k.CloseHandle.restype=w.BOOL
     k.IsWow64Process2.argtypes=(w.HANDLE,ctypes.POINTER(w.WORD),ctypes.POINTER(w.WORD));k.IsWow64Process2.restype=w.BOOL
     env=dict(os.environ,WEBVIEW2_USER_DATA_FOLDER=str(scratch/'webview-profile'))
@@ -66,7 +67,15 @@ def smoke_desktop(application, archive, scratch):
                 if name!='msedgewebview2.exe':continue
                 ancestors=set()
                 while parent and parent not in ancestors:
-                    if parent==proc.pid:return {'native_process':True,'webview2_child':True,'scope':'process startup, no UI interaction'}
+                    if parent==proc.pid:
+                        child=k.OpenProcess(0x1000,False,pid)
+                        if not child:break
+                        try:
+                            child_machine,native=w.WORD(),w.WORD()
+                            if k.IsWow64Process2(child,ctypes.byref(child_machine),ctypes.byref(native)):
+                                return {'native_process':True,'webview2_child':True,'system_webview_machine':hex(child_machine.value or native.value),'scope':'process startup, no UI interaction'}
+                        finally:k.CloseHandle(child)
+                        break
                     ancestors.add(parent);parent=processes.get(parent,(0,''))[0]
             time.sleep(.25)
         raise RuntimeError('desktop process did not start a WebView2 child within 45s')

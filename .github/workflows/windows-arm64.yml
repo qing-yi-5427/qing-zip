@@ -78,8 +78,11 @@ jobs:
           ./scripts/check-arm64-layout.ps1 -Cli target/arm-validation/debug/obz.exe -Desktop target/arm-validation/debug/obz-gui.exe -Layout (Join-Path $env:RUNNER_TEMP 'qing-arm64-layout')
           exit $LASTEXITCODE
       - name: Build hardened ARM64 portable package
+        id: package
         shell: pwsh
         run: |
+          $version = (Get-Content -Raw obz-gui/tauri.conf.json | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
           $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
           python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
           exit $LASTEXITCODE
@@ -93,7 +96,7 @@ jobs:
       - name: Upload verified trial packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: qing-zip-windows-arm64-trial
+          name: qing-zip-${{ steps.package.outputs.version }}-windows-arm64-trial
           if-no-files-found: error
           retention-days: 21
           path: |

@@ -157,6 +157,8 @@ def build(out, cache):
     zmeta.update(architecture='arm64',runtime_sha256=sha(zp/'obz-zpaq.exe'),build='Native MSVC ARM64 /MT /DNOJIT /O2 /EHsc /guard:cf')
     zmeta['modifications']=[line.replace('MSVC x64','MSVC ARM64') for line in zmeta['modifications']]
     (zp/'SOURCE.json').write_text(json.dumps(zmeta,indent=2),encoding='utf8')
+    with zipfile.ZipFile(fetch(cache,NSIS)) as installer_tools:
+        (out/'NSIS-COPYING.txt').write_bytes(installer_tools.read('nsis-3.13/COPYING'))
     (out/'ARM64-RUNTIME.json').write_text(json.dumps({'architecture':'arm64','python_package':PYTHON,'files':inventory(out)},indent=2),encoding='utf8')
     verify_layout(out)
 
