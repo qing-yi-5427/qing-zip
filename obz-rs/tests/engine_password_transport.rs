@@ -7,9 +7,10 @@ use std::{fs, path::{Path, PathBuf}, process::{Command, Output, Stdio}, time::{D
 
 fn engines() -> Vec<(&'static str, PathBuf)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let nana = root.join("runtime/nanazip/NanaZip.Universal.Console.exe");
-    let nana = if nana.exists() { nana } else { root.join("tools/nanazip-7.0.1882.0/bin/x64/NanaZip.Universal.Console.exe") };
-    let result: Vec<_> = [("NanaZip", nana), ("7-Zip", root.join("runtime/7zip/7z.exe"))]
+    let nana = root.join(obz_core::engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+    let result: Vec<_> = [("NanaZip", nana),
+        #[cfg(not(target_arch = "aarch64"))]
+        ("7-Zip", root.join("runtime/7zip/7z.exe"))]
         .into_iter().filter(|(_, path)| path.exists()).collect();
     assert!(!result.is_empty(), "real archive engine runtime required");
     result

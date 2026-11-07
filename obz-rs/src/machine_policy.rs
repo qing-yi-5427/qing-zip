@@ -192,7 +192,7 @@ fn read_machine() -> Rules {
     Rules::default()
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 #[no_mangle]
 extern "C" fn qing_machine_policy_restricts_native() -> i32 {
     i32::from(std::panic::catch_unwind(|| read_machine().restricted()).unwrap_or(true))
@@ -406,7 +406,7 @@ fn verify_backend() -> Result<Backend, String> {
     } else {
         app
     };
-    verify_backend_at(&root.join("runtime/nanazip"))
+    verify_backend_at(&root.join(crate::engine::BUNDLED_NANA_DIR))
 }
 fn verify_backend_at(root: &Path) -> Result<Backend, String> {
     #[derive(serde::Deserialize)]
@@ -414,7 +414,7 @@ fn verify_backend_at(root: &Path) -> Result<Backend, String> {
         files: std::collections::BTreeMap<String, String>,
     }
     let published: Provenance =
-        serde_json::from_str(include_str!("../../runtime/nanazip/provenance.json"))
+        serde_json::from_str(crate::engine::NANA_PROVENANCE)
             .map_err(|e| e.to_string())?;
     let mut pins = Vec::new();
     for (name, expected) in published.files {
@@ -483,14 +483,14 @@ mod tests {
     #[test]
     fn exact_multi_string_semantics_and_independent_codec_sets() {
         let rules = Rules::read(|name| match name {
-            "AllowedHandlers" => multi(&["zip", "Zip", " zip ", "圧縮", "zip"]),
+            "AllowedHandlers" => multi(&["zip", "Zip", " zip ", "鍦х府", "zip"]),
             "BlockedHandlers" => multi(&["Zip"]),
             "AllowedCodecs" => multi(&[]),
             "BlockedCodecs" => multi(&["LZMA2"]),
             _ => unreachable!(),
         });
         assert!(rules.restricted());
-        for allowed in ["zip", " zip ", "圧縮"] {
+        for allowed in ["zip", " zip ", "鍦х府"] {
             assert!(rules.allows(0, allowed));
         }
         for blocked in ["Zip", "ZIP", "7z", "*"] {

@@ -106,7 +106,7 @@ fn cancel_decode_does_not_publish_destination() {
     assert!(!destination.exists());
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 fn extract_split(archive: &Path, dest: &Path, selected: &[&str]) -> std::process::Output {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_obz"));
     command
@@ -120,7 +120,7 @@ fn extract_split(archive: &Path, dest: &Path, selected: &[&str]) -> std::process
     command.output().unwrap()
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 fn require_worker(result: &std::process::Output, success: bool, fields: &[&str]) {
     let diagnostics = String::from_utf8_lossy(&result.stderr);
     assert_eq!(result.status.success(), success, "{diagnostics}");
@@ -137,7 +137,7 @@ fn require_worker(result: &std::process::Output, success: bool, fields: &[&str])
     }
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 #[test]
 fn split_lzma2_verifies_all_blocks_and_rejects_unselected_crc() {
     let temp = tempfile::tempdir().unwrap();
@@ -236,7 +236,7 @@ fn split_lzma2_verifies_all_blocks_and_rejects_unselected_crc() {
     }
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 #[test]
 fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
     use std::process::Command;
@@ -299,7 +299,7 @@ fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
     assert!(!destination.exists());
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 #[test]
 fn selected_split_commits_only_verified_files_on_the_target_volume() {
     use std::process::Command;
@@ -321,7 +321,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
     fs::write(source.join("other.bin"), &unselected).unwrap();
     let archive = tmp.path().join("sample.7z");
     let exe = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../runtime/nanazip/NanaZip.Universal.Console.exe");
+        .join("..").join(obz_core::engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
     let made = Command::new(exe)
         .current_dir(&source)
         .args(["a", "-t7z", "-mx=0", "-ms=off", "-v32k"])

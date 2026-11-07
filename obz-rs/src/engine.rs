@@ -1,6 +1,6 @@
 //! Multi-format operations through bundled NanaZip with official 7-Zip fallback.
 //! No shell is used. Extraction stages preflighted archives before publishing files.
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
@@ -145,6 +145,17 @@ pub struct Capabilities {
     pub limitations: Vec<String>,
 }
 
+// Keep ARM64 validation side by side with the distributed x64 runtime.
+// Neither the policy verifier nor the isolated worker trusts an on-disk manifest.
+#[cfg(target_arch = "aarch64")]
+pub const BUNDLED_NANA_DIR: &str = "runtime/nanazip-arm64";
+#[cfg(not(target_arch = "aarch64"))]
+pub const BUNDLED_NANA_DIR: &str = "runtime/nanazip";
+#[cfg(target_arch = "aarch64")]
+pub(crate) const NANA_PROVENANCE: &str = include_str!("../native/nana/provenance-arm64.json");
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) const NANA_PROVENANCE: &str = include_str!("../../runtime/nanazip/provenance.json");
+
 pub fn executable() -> Result<PathBuf, String> {
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return policy.official_executable(); }
@@ -153,17 +164,14 @@ pub fn executable() -> Result<PathBuf, String> {
 
 fn unrestricted_executable() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("runtime/nanazip/NanaZip.Universal.Console.exe"));
-            paths.push(dir.join("runtime/7zip/7z.exe"));
-        }
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let current = std::env::current_exe().ok();
+    let adjacent = current.as_deref().and_then(Path::parent);
+    for dir in adjacent.into_iter().chain(std::iter::once(workspace)) {
+        paths.push(dir.join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe"));
+        #[cfg(not(target_arch = "aarch64"))]
+        paths.push(dir.join("runtime/7zip/7z.exe"));
     }
-    paths.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../runtime/nanazip/NanaZip.Universal.Console.exe"),
-    );
-    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/7zip/7z.exe"));
     if let Some(p) = std::env::var_os("ProgramFiles") {
         paths.push(PathBuf::from(p).join("7-Zip/7z.exe"));
     }
@@ -172,8 +180,24 @@ fn unrestricted_executable() -> Result<PathBuf, String> {
     }
     paths
         .into_iter()
-        .find(|p| p.is_file())
-        .ok_or("archive engine not found; restore runtime/nanazip or runtime/7zip".into())
+        .find(|p| usable_engine(p))
+        .ok_or_else(|| format!("archive engine not found; restore {BUNDLED_NANA_DIR} or install 7-Zip"))
+}
+
+#[cfg(not(all(windows, target_arch = "aarch64")))]
+fn usable_engine(path: &Path) -> bool { path.is_file() }
+
+#[cfg(all(windows, target_arch = "aarch64"))]
+fn usable_engine(path: &Path) -> bool {
+    // Windows on Arm can start an x64 console under emulation. The selected
+    // native worker cannot load x64 DLLs, so only select an ARM64 console.
+    let Ok(mut file) = File::open(path) else { return false };
+    let mut dos = [0; 64];
+    if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" { return false; }
+    let pos = u32::from_le_bytes(dos[60..].try_into().unwrap());
+    let mut header = [0; 6];
+    file.seek(SeekFrom::Start(pos.into())).is_ok() && file.read_exact(&mut header).is_ok()
+        && header == *b"PE\0\0\x64\xaa"
 }
 
 // Hash requests share the bounded subprocess output, cancellation and password
@@ -213,7 +237,7 @@ pub fn capabilities() -> Capabilities {
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),
-      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 with the bundled NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy or LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction and eligible selected split 7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
+      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 or ARM64 with the matching NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy or LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction and eligible selected split 7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
 }
 fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
@@ -2230,13 +2254,13 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         decode_memory_zip(memory_source, &all_entries, opts, &ctl)?
     };
-    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    #[cfg(nana_selected_worker)]
     let split_plan = if !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty() {
         selected_worker::plan(path, &source_guard, &_volume_guards, &all_entries, opts)?
     } else { None };
-    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    #[cfg(nana_selected_worker)]
     let plan_selection = split_plan.is_some() && using_process_token();
-    #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+    #[cfg(not(nana_selected_worker))]
     let plan_selection = false;
     let projected = plan_selection.then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
     let safe_projection = opts.selected.is_empty() || plan_selection;
@@ -2279,7 +2303,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         .as_ref()
         .map(|s| s.guards(transaction.as_ref().map(|t| &t.root)))
         .transpose()?;
-    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    #[cfg(nana_selected_worker)]
     let split_streamed = if let Some(plan) = split_plan {
         let root = stage.as_ref().ok_or("selected worker stage unavailable")?.path();
         let guards = stage_guards.as_mut().ok_or("missing selected worker stage guards")?;
@@ -2287,7 +2311,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         ctl.set("decoding", Some(0), "Verifying all archive entries");
         selected_worker::decode(plan, &source_guard, &_volume_guards, &all_entries, opts, root, guards, &ctl)?
     } else { false };
-    #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+    #[cfg(not(nana_selected_worker))]
     let split_streamed = false;
     if plan_selection && !split_streamed && (transaction.is_some() || file_publication_stage) {
         // Unsupported native layouts return false only before granting outputs.
