@@ -45,7 +45,7 @@ pub(super) fn plan_transaction(
     {
         return Ok(None);
     }
-    let Some(transaction) = new_directory_stage(path, dest, true, output, Some(entries))? else {
+    let Some(transaction) = new_directory_stage(path, dest, true, output, entries, true)? else {
         return Ok(None);
     };
     // try_clone shares the underlying cursor. The original reader is idle during

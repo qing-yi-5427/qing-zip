@@ -2268,7 +2268,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     // the entire fixed archive family and confirms that it wrote this projection.
     let mut transaction = if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
         new_directory_stage(path, &dest, safe_projection, &mut output_guards,
-            projected.as_deref().or_else(|| memory.as_ref().map(|_| all_entries.as_slice())))?
+            projected.as_deref().unwrap_or(&all_entries), projected.is_some() || memory.is_some())?
     } else {
         None
     };
@@ -2432,7 +2432,20 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             "Committing verified archive directory",
         );
         ctl.check()?;
-        if rename_directory_noclobber_in(root, &dest, Some(&transaction.parent))? {
+        #[cfg(all(windows, target_pointer_width = "64"))]
+        let compatible = if let Some(witness) = &transaction.witnessed {
+            let pins = pin_committed_tree(temp.path(), &expected)?;
+            let matches = using_process_token() && witness.compatible(&transaction.parent, root, &pins)?;
+            if !matches && PhaseTimer::enabled() {
+                eprintln!("OA_PUBLICATION witnessed_directory_fallback=1");
+            }
+            matches
+        } else { true };
+        #[cfg(not(all(windows, target_pointer_width = "64")))]
+        let compatible = true;
+        ctl.check()?;
+        policy.validate_output()?;
+        if compatible && rename_directory_noclobber_in(root, &dest, Some(&transaction.parent))? {
             let _published_path = stage.take().unwrap().keep();
             #[cfg(windows)]
             if transaction.restore_acl {
@@ -2440,11 +2453,21 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 // reparse conversion while recursive inheritance opens access.
                 let publication_pins = pin_committed_tree(&dest, &expected)
                     .map_err(|e| format!("verified output was committed but remains private: {e}"))?;
-                crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins)
-                    .map_err(|e| format!("verified output was committed but permissions could not be restored: {e}"))?;
+                #[cfg(target_pointer_width = "64")]
+                let restored = match &transaction.witnessed {
+                    Some(witness) => witness.restore(&transaction.parent, root, &publication_pins),
+                    None => crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins),
+                };
+                #[cfg(not(target_pointer_width = "64"))]
+                let restored = crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins);
+                restored.map_err(|e| format!("verified output was committed but permissions could not be restored: {e}"))?;
                 drop(publication_pins);
             }
             ctl.set("complete", Some(100), "Extraction complete");
+            #[cfg(all(windows, target_pointer_width = "64"))]
+            if transaction.witnessed.is_some() && PhaseTimer::enabled() {
+                eprintln!("OA_PUBLICATION witnessed_directory_commit=1");
+            }
             if split_streamed && PhaseTimer::enabled() {
                 eprintln!("OA_PUBLICATION selected_directory_commit=1");
             }
@@ -3181,6 +3204,8 @@ struct DirectoryTransaction {
     root: File,
     parent: File,
     restore_acl: bool,
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    witnessed: Option<crate::private_stage::WitnessedInheritance>,
     stage: Option<StagingDir>,
 }
 #[cfg(windows)]
@@ -3255,7 +3280,8 @@ fn new_directory_stage(
     dest: &Path,
     safe_projection: bool,
     guards: &mut CheckedDirectories,
-    reservation_entries: Option<&[Entry]>,
+    entries: &[Entry],
+    reserve: bool,
 ) -> Result<Option<DirectoryTransaction>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
@@ -3294,7 +3320,7 @@ fn new_directory_stage(
             Err(_) => return Ok(None),
         };
         validate_transaction_root(&parent_handle, parent)?;
-        if let Some(entries) = reservation_entries {
+        if reserve {
             // Copy publication inherits storage attributes and uses the effective
             // token. Whole-tree ACL derivation uses the process token.
             let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
@@ -3304,10 +3330,16 @@ fn new_directory_stage(
             }
         }
         let private_parent = private_stage_acl_handle(&parent_handle)?;
-        if (!private_parent || reservation_entries.is_some())
-            && !crate::private_stage::supports_inheritance(&parent_handle)? {
-            return Ok(None);
-        }
+        let witnessed = if (!private_parent || reserve) && !crate::private_stage::supports_inheritance(&parent_handle)? {
+            if private_parent || !using_process_token() { return Ok(None); }
+            let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
+            if !has_stage_space(parent, required) { return Ok(None); }
+            // A missing capability (including witness creation/access) always
+            // preserves the ordinary per-file publication route.
+            let Some(witness) = crate::private_stage::WitnessedInheritance::qualify(parent, &parent_handle)?
+                else { return Ok(None); };
+            Some(witness)
+        } else { None };
         if private_parent {
             let temp = match tempfile::Builder::new()
                 .prefix(".open-archive-stage-")
@@ -3327,7 +3359,7 @@ fn new_directory_stage(
             };
             validate_transaction_root(&root, temp.path())?;
             if !private_stage_acl_handle(&root)?
-                || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+                || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
                 return Ok(None);
             }
             return Ok(Some(DirectoryTransaction {
@@ -3335,6 +3367,7 @@ fn new_directory_stage(
                 root,
                 parent: parent_handle,
                 restore_acl: false,
+                witnessed: None,
             }));
         }
         let temp = match crate::private_stage::create(parent, &parent_handle) {
@@ -3344,7 +3377,7 @@ fn new_directory_stage(
         let root = temp.root().try_clone().map_err(|e| e.to_string())?;
         validate_transaction_root(&root, temp.path())?;
         if !private_stage_acl_handle(&root)?
-            || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+            || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
             return Ok(None);
         }
         Ok(Some(DirectoryTransaction {
@@ -3352,11 +3385,12 @@ fn new_directory_stage(
             root,
             parent: parent_handle,
             restore_acl: true,
+            witnessed,
         }))
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
-        let _ = (path, dest, safe_projection, guards, reservation_entries);
+        let _ = (path, dest, safe_projection, guards, entries, reserve);
         Ok(None)
     }
 }
@@ -5805,7 +5839,7 @@ mod staging_tests {
             &target,
             true,
             &mut guards,
-            None,
+            &[], false,
         )
         .unwrap()
         .unwrap();
@@ -5950,7 +5984,7 @@ mod staging_tests {
             &new,
             true,
             &mut CheckedDirectories::default(),
-            None,
+            &[], false,
         )
         .unwrap()
         .expect("private parent must qualify");
@@ -6029,14 +6063,14 @@ mod staging_tests {
         security(&shared, "D:P(A;OICI;FA;;;WD)");
         assert!(!private_stage_acl(&shared).unwrap());
         assert!(new_directory_stage(archive.to_str().unwrap(), &shared.join("legacy"),
-            true, &mut CheckedDirectories::default(), None).unwrap().is_none());
+            true, &mut CheckedDirectories::default(), &[], false).unwrap().is_none());
         security(&shared, "D:PAI(A;OICI;FA;;;WD)");
         let candidate = new_directory_stage(
             archive.to_str().unwrap(),
             &shared.join("result"),
             true,
             &mut CheckedDirectories::default(),
-            None,
+            &[], false,
         )
         .unwrap().expect("shared parent must use a private stage");
         assert!(private_stage_acl_handle(&candidate.root).unwrap());
@@ -6102,7 +6136,7 @@ mod staging_tests {
         entries.last_mut().unwrap().modified = precise.into();
         let mut output_guards = CheckedDirectories::default();
         let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-            &mut output_guards, Some(&entries)).unwrap().expect("ordinary NTFS destination");
+            &mut output_guards, &entries, true).unwrap().expect("ordinary NTFS destination");
         let stage = transaction.stage.unwrap();
         let mut guards = stage.guards(Some(&transaction.root)).unwrap();
         stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control, Some(4)).unwrap();
@@ -6140,7 +6174,7 @@ mod staging_tests {
         let target = parent.join("target");
         let candidate = |options: &EngineOptions, items: &[Entry]| {
             new_directory_stage(archive.to_str().unwrap(), &target, options.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(items)).unwrap()
+                &mut CheckedDirectories::default(), items, true).unwrap()
         };
         let opts = EngineOptions::default();
         assert!(candidate(&opts, &entries).is_some());
@@ -6193,7 +6227,7 @@ mod staging_tests {
         let abandoned;
         {
             let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+                &mut CheckedDirectories::default(), &entries, true).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();
             let mut guards = stage.guards(Some(&transaction.root)).unwrap();
@@ -6227,7 +6261,7 @@ mod staging_tests {
         let abandoned;
         {
             let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+                &mut CheckedDirectories::default(), &entries, true).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();
             fs::create_dir(stage.path().join("folder")).unwrap();

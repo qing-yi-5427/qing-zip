@@ -13,6 +13,10 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+#[cfg(target_pointer_width = "64")]
+mod witnessed;
+#[cfg(target_pointer_width = "64")]
+pub(crate) use witnessed::WitnessedInheritance;
 mod output;
 pub(crate) use output::{create_output, PrivateOutputFile};
 type Handle = *mut c_void;
@@ -83,7 +87,6 @@ extern "system" {
     ) -> i32;
     fn SetSecurityDescriptorControl(descriptor: Handle, mask: u16, control: u16) -> i32;
     fn GetAce(acl: Handle, index: u32, ace: *mut Handle) -> i32;
-    #[cfg(test)]
     fn GetSecurityDescriptorLength(descriptor: Handle) -> u32;
     fn CreatePrivateObjectSecurityEx(
         parent: Handle,
@@ -187,7 +190,9 @@ fn current_sid(token: &Token) -> Result<String, String> {
     {
         return Err(error("read stage token"));
     }
-    let sid = unsafe { *(buffer.as_ptr().cast::<Handle>()) };
+    sid_text(unsafe { *(buffer.as_ptr().cast::<Handle>()) })
+}
+fn sid_text(sid: Handle) -> Result<String, String> {
     let mut text = std::ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
         return Err(error("format stage owner"));
@@ -265,10 +270,7 @@ pub(crate) fn create_drag_root(parent: &Path, parent_handle: &File) -> Result<(P
     create_root(parent, parent_handle, "qing-zip-drag-", 0x120081, 3)
 }
 
-fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, share: u32) -> Result<(PathBuf, File, File), String> {
-    let parent_pin = parent_handle.try_clone().map_err(|e| e.to_string())?;
-    let token = token()?;
-    let sid = current_sid(&token)?;
+fn protected_descriptor(sid: &str) -> Result<Allocation, String> {
     let descriptor = format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
     let text: Vec<u16> = descriptor.encode_utf16().chain(Some(0)).collect();
     let mut raw = std::ptr::null_mut();
@@ -283,7 +285,13 @@ fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, s
     {
         return Err(error("create private stage descriptor"));
     }
-    let memory = Allocation(raw);
+    Ok(Allocation(raw))
+}
+fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, share: u32) -> Result<(PathBuf, File, File), String> {
+    let parent_pin = parent_handle.try_clone().map_err(|e| e.to_string())?;
+    let token = token()?;
+    let sid = current_sid(&token)?;
+    let memory = protected_descriptor(&sid)?;
     for _ in 0..16 {
         let mut random = [0u8; 16];
         if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
@@ -370,6 +378,8 @@ enum ChildAccess {
     Metadata,
     CreateFile,
     CreateDirectory,
+    #[cfg(target_pointer_width = "64")]
+    Witness(bool),
 }
 
 fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<File, String> {
@@ -401,6 +411,9 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
     };
     let mut raw = std::ptr::null_mut();
     let (access, file_attributes, sharing, disposition, options, operation) = match mode {
+        #[cfg(target_pointer_width = "64")]
+        ChildAccess::Witness(is_dir) => (0x170081, if is_dir { 0x10 } else { 0x80 },
+            0, 2, if is_dir { 0x201021 } else { 0x201060 }, "create inheritance witness"),
         ChildAccess::Metadata => (0x100081, 0, 1, 1, 0x200020, "read private stage metadata"),
         // WRITE_DATA | READ/WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_CREATE and
         // FILE_NON_DIRECTORY_FILE. Existing files, links and reparse leaves
@@ -455,12 +468,15 @@ pub(crate) fn checked_metadata(file: &File) -> Result<std::fs::Metadata, String>
 /// this call returns. Parent must be its pinned destination parent. Never call before
 /// commit: granting inherited access would expose the unverified staging tree.
 fn descriptor(file: &File) -> Result<Allocation, String> {
+    security_descriptor(file, 4)
+}
+fn security_descriptor(file: &File, mask: u32) -> Result<Allocation, String> {
     let mut descriptor = std::ptr::null_mut();
     let result = unsafe {
         GetSecurityInfo(
             file.as_raw_handle(),
             1,
-            4,
+            mask,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -490,6 +506,9 @@ fn supports_descriptor(descriptor: Handle) -> Result<bool, String> {
     if control & 0x400 == 0 {
         return Ok(false);
     }
+    ordinary_aces(descriptor)
+}
+fn ordinary_aces(descriptor: Handle) -> Result<bool, String> {
     let (mut present, mut defaulted, mut dacl) = (0, 0, std::ptr::null_mut());
     if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
         == 0
@@ -516,6 +535,9 @@ fn supports_descriptor(descriptor: Handle) -> Result<bool, String> {
     Ok(true)
 }
 fn derive(parent: Handle, container: bool, token: &Token) -> Result<PrivateDescriptor, String> {
+    derive_with(parent, container, token, 1, 0x500)
+}
+fn derive_with(parent: Handle, container: bool, token: &Token, flags: u32, inheritance_bits: u16) -> Result<PrivateDescriptor, String> {
     let mut computed = std::ptr::null_mut();
     let mut mapping = GenericMapping {
         read: 0x120089,
@@ -530,7 +552,7 @@ fn derive(parent: Handle, container: bool, token: &Token) -> Result<PrivateDescr
             &mut computed,
             std::ptr::null_mut(),
             i32::from(container),
-            1,
+            flags,
             token.0,
             &mut mapping,
         )
@@ -539,10 +561,9 @@ fn derive(parent: Handle, container: bool, token: &Token) -> Result<PrivateDescr
         return Err(error("derive destination permissions"));
     }
     let computed = PrivateDescriptor(computed);
-    // Native setters distinguish a requested automatic-inheritance update from
-    // merely carrying the existing AI bit. Preserve the automatic model when
-    // applying this already-derived descriptor to a previously protected file.
-    if unsafe { SetSecurityDescriptorControl(computed.0, 0x500, 0x500) } == 0 {
+    // AR and AI together request automatic inheritance through the native
+    // setter. A witnessed legacy transition must instead preserve cleared bits.
+    if unsafe { SetSecurityDescriptorControl(computed.0, 0x500, inheritance_bits) } == 0 {
         return Err(error("prepare automatic destination permissions"));
     }
     Ok(computed)
