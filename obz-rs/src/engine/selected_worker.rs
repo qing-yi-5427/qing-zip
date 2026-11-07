@@ -101,8 +101,9 @@ fn pin_runtime(
         .into_iter()
         .filter(|(n, _)| n.ends_with(".dll"))
     {
-        let mut pin = crate::engine_stream::pin(&root.join(name))?;
+        let mut pin = crate::engine_stream::pin(&root.join(&name))?;
         let mut hash = Sha256::new();
+        let mut bytes_read = 0_u64;
         let mut buffer = [0; 64 * 1024];
         loop {
             ctl.check()?;
@@ -111,9 +112,15 @@ fn pin_runtime(
                 break;
             }
             hash.update(&buffer[..n]);
+            bytes_read += n as u64;
         }
-        if crate::checksum::hex(&hash.finalize()) != expected {
-            return Err("bundled archive DLL identity mismatch".into());
+        let observed = crate::checksum::hex(&hash.finalize());
+        if observed != expected {
+            if PhaseTimer::enabled() {
+                let size = pin.metadata().ok().map(|m| m.len());
+                eprintln!("OA_RUNTIME_IDENTITY component={name} bytes={bytes_read} size={size:?} expected={expected} observed={observed}");
+            }
+            return Err(format!("bundled archive DLL identity mismatch: {name}"));
         }
         pins.push(pin);
     }
