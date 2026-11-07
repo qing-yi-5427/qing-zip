@@ -498,6 +498,69 @@ pub(crate) fn parse_memory_archive(
 }
 
 impl MemoryArchive {
+    pub(crate) fn validate_stream(
+        &self,
+        data: &[u8],
+        check: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let folder = &self.archive.folders[0];
+        let start = self.archive.pack_offset;
+        let end = start
+            .checked_add(self.archive.pack_sizes[0])
+            .ok_or("7z packed range overflow")?;
+        let bytes = data.get(start..end).ok_or("7z packed range exceeds file")?;
+        // parse_memory_archive already verified any declared packed CRC on this
+        // fixed input. LZMA2 also requires a final marker at exactly the pack end.
+        if folder.coders[0].codec.as_slice() == CODEC_LZMA2 {
+            strict_lzma2(bytes, usize_value(folder.unpack_size())?, check)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_output(
+        &self,
+        source: &mut dyn Read,
+        check: &dyn Fn() -> Result<(), String>,
+        consume: impl FnOnce(&mut dyn Read) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let folder = &self.archive.folders[0];
+        struct Verified<'a> {
+            input: &'a mut dyn Read,
+            crc: crc32fast::Hasher,
+            total: u64,
+        }
+        impl Read for Verified<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.input.read(out)?;
+                self.total += n as u64;
+                self.crc.update(&out[..n]);
+                Ok(n)
+            }
+        }
+        let mut checked = Verified {
+            input: source,
+            crc: crc32fast::Hasher::new(),
+            total: 0,
+        };
+        consume(&mut checked)?;
+        check()?;
+        if checked.total != folder.unpack_size()
+            || checked
+                .read(&mut [0; 1])
+                .map_err(|e| format!("7z folder decode: {e}"))?
+                != 0
+        {
+            return Err("7z decoded folder length mismatch".into());
+        }
+        if folder
+            .unpack_crc
+            .is_some_and(|want| checked.crc.finalize() != want)
+        {
+            return Err("7z folder CRC mismatch".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn decode(
         &self,
         data: &[u8],
@@ -654,6 +717,35 @@ pub(crate) mod tests {
         } else {
             wrap(&payload, &h)
         }
+    }
+    #[test]
+    fn streamed_output_requires_exact_eof_and_declared_folder_crc() {
+        let payload = vec![42u8; 160 * 1024];
+        let valid = fixture(false, false, false);
+        let checked = parse_memory_archive(&valid, &|| Ok(())).unwrap().unwrap();
+        let bad = fixture(false, false, true);
+        let wrong_crc = parse_memory_archive(&bad, &|| Ok(())).unwrap().unwrap();
+        let consume = |reader: &mut dyn Read| -> Result<(), String> {
+            let mut bytes = vec![0; payload.len()];
+            reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+            Ok(())
+        };
+        assert!(checked
+            .verify_output(&mut Cursor::new(&payload), &|| Ok(()), consume)
+            .is_ok());
+        assert!(wrong_crc
+            .verify_output(&mut Cursor::new(&payload), &|| Ok(()), consume)
+            .unwrap_err()
+            .contains("CRC"));
+        let mut extra = payload.clone();
+        extra.push(0);
+        assert!(checked
+            .verify_output(&mut Cursor::new(&extra), &|| Ok(()), consume)
+            .unwrap_err()
+            .contains("length"));
+        assert!(checked
+            .verify_output(&mut Cursor::new(&payload[..5]), &|| Ok(()), consume)
+            .is_err());
     }
     #[test]
     fn complete_copy_solid_and_encoded_headers_verify() {

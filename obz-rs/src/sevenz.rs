@@ -1050,7 +1050,7 @@ fn bcj_x86_decode(data: &[u8], pc: u32) -> Vec<u8> {
 }
 
 mod memory;
-pub(crate) use memory::parse_memory_archive;
+pub(crate) use memory::{parse_memory_archive, MemoryArchive};
 
 #[cfg(test)]
 pub(crate) use memory::tests::fixture as memory_test_fixture;

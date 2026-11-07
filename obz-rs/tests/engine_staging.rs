@@ -420,7 +420,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
     );
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 fn set_ordinary_acl(parent: &Path) {
     use std::process::Command;
     // Give this test directory a normal, auto-inherited DACL regardless of the
@@ -436,7 +436,7 @@ fn set_ordinary_acl(parent: &Path) {
     );
 }
 
-#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[cfg(nana_selected_worker)]
 #[test]
 fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies() {
     use std::{fs::File, io::Write, process::Command};
@@ -514,4 +514,102 @@ fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies(
     );
     assert!(!failed.exists());
     assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+}
+
+#[cfg(nana_selected_worker)]
+#[test]
+fn bounded_solid_7z_checks_the_whole_folder_before_publishing() {
+    use std::process::Command;
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("targets");
+    fs::create_dir(&parent).unwrap();
+    set_ordinary_acl(&parent);
+    let data = temp.path().join("source");
+    fs::create_dir_all(data.join("empty-dir")).unwrap();
+    fs::write(data.join("empty"), []).unwrap();
+    for i in 0..132 {
+        fs::write(
+            data.join(format!("{i:03}.txt")),
+            format!("file {i}\n").repeat(70),
+        )
+        .unwrap();
+    }
+    let utf = "\u{4e2d}\u{6587}.txt";
+    let last = b"large distinct file".repeat(32_000);
+    fs::write(data.join(utf), &last).unwrap();
+    let nana = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..").join(engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+    let archive = temp.path().join("space and \u{4e2d}\u{6587}.7z");
+    let made = Command::new(nana)
+        .current_dir(&data)
+        .args([
+            "a",
+            "-t7z",
+            "-m0=LZMA2:d=1m",
+            "-ms=on",
+            "-mhc=off",
+            "-mmt=1",
+        ])
+        .arg(&archive)
+        .arg(".")
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let zone = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+    fs::write(format!("{}:Zone.Identifier", archive.display()), zone).unwrap();
+    let extract = |dest: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_obz"))
+            .arg("extract")
+            .arg(&archive)
+            .arg(dest)
+            .env("OPEN_ARCHIVE_PROFILE", "1")
+            .output()
+            .unwrap()
+    };
+    let good = parent.join("good");
+    let valid = extract(&good);
+    let log = String::from_utf8_lossy(&valid.stderr);
+    assert!(
+        valid.status.success() && log.contains("bounded-7z-private-stage"),
+        "{log}"
+    );
+    assert!(good.join("empty-dir").is_dir() && fs::read(good.join("empty")).unwrap().is_empty());
+    assert_eq!(fs::read(good.join(utf)).unwrap(), last);
+    assert_eq!(
+        fs::read(format!("{}:Zone.Identifier", good.join(utf).display())).unwrap(),
+        zone
+    );
+    assert_eq!(
+        fs::metadata(good.join(utf)).unwrap().modified().unwrap(),
+        fs::metadata(data.join(utf)).unwrap().modified().unwrap()
+    );
+    for i in 0..132 {
+        assert_eq!(
+            fs::read(good.join(format!("{i:03}.txt"))).unwrap(),
+            format!("file {i}\n").repeat(70).as_bytes()
+        );
+    }
+    // Change one independently known substream CRC, preserving both envelope CRCs.
+    let mut bytes = fs::read(&archive).unwrap();
+    let off = 32 + u64::from_le_bytes(bytes[12..20].try_into().unwrap()) as usize;
+    let declared = crc32fast::hash(&last).to_le_bytes();
+    let offsets: Vec<_> = bytes[off..]
+        .windows(4)
+        .enumerate()
+        .filter_map(|(i, w)| (w == declared).then_some(i))
+        .collect();
+    assert_eq!(offsets.len(), 1);
+    bytes[off + offsets[0]] ^= 1;
+    let header = crc32fast::hash(&bytes[off..]);
+    bytes[28..32].copy_from_slice(&header.to_le_bytes());
+    let start = crc32fast::hash(&bytes[12..32]);
+    bytes[8..12].copy_from_slice(&start.to_le_bytes());
+    fs::write(&archive, bytes).unwrap();
+    let bad = parent.join("bad");
+    let failure = extract(&bad);
+    assert!(
+        !failure.status.success()
+            && String::from_utf8_lossy(&failure.stderr).contains("bounded-7z-private-stage")
+    );
+    assert!(!bad.exists() && fs::read_dir(&parent).unwrap().count() == 1);
 }

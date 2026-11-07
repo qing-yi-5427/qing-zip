@@ -4,7 +4,7 @@
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
-mod full_zip_stage;
+mod bounded_archive_stage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -2010,11 +2010,17 @@ fn decode_memory_zip(
     Ok(Some(contents))
 }
 
-fn decode_memory_sevenz(
+struct SevenMemoryPlan {
+    data: Vec<u8>,
+    parsed: crate::sevenz::MemoryArchive,
+    order: Vec<usize>,
+}
+
+fn prepare_memory_sevenz(
     source: Option<File>,
     entries: &[Entry],
     ctl: &JobControl,
-) -> Result<Option<MemoryFiles>, String> {
+) -> Result<Option<SevenMemoryPlan>, String> {
     let Some(mut source) = source else {
         return Ok(None);
     };
@@ -2058,18 +2064,20 @@ fn decode_memory_sevenz(
     }
     let expected = entries
         .iter()
-        .map(|e| Ok((path_key(&validate_name(&e.name)?), e)))
+        .enumerate()
+        .map(|(i, e)| Ok((path_key(&validate_name(&e.name)?), i)))
         .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
-    let mut seen = HashSet::new();
+    let mut seen = vec![false; entries.len()];
     let mut names = Vec::new();
     for member in &parsed.archive.entries {
         ctl.check()?;
         let key = path_key(&validate_name(&member.name)?);
-        let Some(entry) = expected.get(&key) else {
+        let Some(&index) = expected.get(&key) else {
             return Ok(None);
         };
+        let entry = &entries[index];
         let kind = (member.attrs >> 16) & 0xf000;
-        if !seen.insert(key.clone())
+        if std::mem::replace(&mut seen[index], true)
             || member.is_dir != entry.is_dir
             || member.size != entry.size
             || member.attrs & 0x400 != 0
@@ -2081,11 +2089,22 @@ fn decode_memory_sevenz(
         {
             return Ok(None);
         }
-        names.push(key);
+        names.push(index);
     }
-    if seen.len() != entries.len() {
+    if seen.contains(&false) {
         return Ok(None);
     }
+    Ok(Some(SevenMemoryPlan { data, parsed, order: names }))
+}
+
+fn decode_memory_sevenz(
+    source: Option<File>,
+    entries: &[Entry],
+    ctl: &JobControl,
+) -> Result<Option<MemoryFiles>, String> {
+    let Some(SevenMemoryPlan { data, parsed, order }) = prepare_memory_sevenz(source, entries, ctl)? else {
+        return Ok(None);
+    };
     ctl.set(
         "decoding",
         Some(0),
@@ -2095,8 +2114,8 @@ fn decode_memory_sevenz(
     if bytes.capacity() as u64 > MEMORY_ZIP_LIMIT {
         return Err("7z memory capacity budget exceeded".into());
     }
-    let mut output = MemoryFiles::with_capacity(count);
-    for (key, member) in names.into_iter().zip(&parsed.archive.entries) {
+    let mut output = MemoryFiles::with_capacity(entries.len());
+    for (index, member) in order.into_iter().zip(&parsed.archive.entries) {
         ctl.check()?;
         let start = usize::try_from(member.offset_in_stream).map_err(|_| "7z offset overflow")?;
         let end = start
@@ -2105,7 +2124,7 @@ fn decode_memory_sevenz(
         let chunk = bytes
             .get(start..end)
             .ok_or("7z entry exceeds decoded stream")?;
-        let entry = expected[&key];
+        let entry = &entries[index];
         let crc = crc32fast::hash(chunk);
         if member.crc.is_some_and(|want| crc != want)
             || u32::from_str_radix(&entry.crc, 16)
@@ -2116,7 +2135,7 @@ fn decode_memory_sevenz(
         }
         if !entry.is_dir {
             output.insert(
-                key,
+                path_key(&validate_name(&entry.name)?),
                 MemoryChunk::Shared {
                     bytes: bytes.clone(),
                     start,
@@ -2236,15 +2255,15 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     ctl.check()?;
     let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
-    let (mut zip_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
+    let (mut bounded_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
         && defer_preflight && expected.len() <= 65_536
     {
-        full_zip_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
+        bounded_archive_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
             .map_or((None, None), |(plan, transaction)| (Some(plan), Some(transaction)))
     } else {
         (None, None)
     };
-    let memory = if zip_plan.is_some() { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
+    let memory = if bounded_plan.is_some() { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
         Some(files)
     } else if Path::new(path)
         .extension()
@@ -2340,7 +2359,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             stage_guards,
             &ctl,
         )?;
-        if let Some(plan) = zip_plan.take() {
+        if let Some(plan) = bounded_plan.take() {
             plan.decode(&all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if let Some(files) = &memory {
             stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;

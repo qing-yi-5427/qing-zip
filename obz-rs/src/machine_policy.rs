@@ -198,8 +198,8 @@ extern "C" fn qing_machine_policy_restricts_native() -> i32 {
     i32::from(std::panic::catch_unwind(|| read_machine().restricted()).unwrap_or(true))
 }
 
-struct Backend {
-    exe: PathBuf,
+pub(crate) struct Backend {
+    pub(crate) exe: PathBuf,
     _pins: Vec<crate::engine_stream::PinnedSource>,
 }
 struct Operation {
@@ -408,7 +408,7 @@ fn verify_backend() -> Result<Backend, String> {
     };
     verify_backend_at(&root.join(crate::engine::BUNDLED_NANA_DIR))
 }
-fn verify_backend_at(root: &Path) -> Result<Backend, String> {
+pub(crate) fn verify_backend_at(root: &Path) -> Result<Backend, String> {
     #[derive(serde::Deserialize)]
     struct Provenance {
         files: std::collections::BTreeMap<String, String>,
