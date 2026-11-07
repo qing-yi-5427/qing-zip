@@ -2377,7 +2377,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         None => StagedContents::Disk(stage.as_ref().unwrap().path()),
     };
     #[cfg(windows)]
-    if !opts.selected.is_empty() && !dest.try_exists().map_err(|e| e.to_string())? {
+    // The ledger records only directories whose FILE_CREATE succeeded. An
+    // existing root may still acquire new empty children before cancellation.
+    if !opts.selected.is_empty() {
         output_guards.selected_output_root = Some(dest.clone());
     }
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
@@ -4617,6 +4619,16 @@ mod staging_tests {
         guards.create_dirs(&empty.join("child")).unwrap();
         drop(guards);
         assert!(!empty.exists());
+
+        let existing = temp.path().join("existing");
+        fs::create_dir(&existing).unwrap();
+        fs::write(existing.join("keep"), b"user-owned").unwrap();
+        let mut guards = CheckedDirectories::default();
+        guards.selected_output_root = Some(existing.clone());
+        guards.create_dirs(&existing.join("new/nested")).unwrap();
+        drop(guards);
+        assert!(!existing.join("new").exists());
+        assert_eq!(fs::read(existing.join("keep")).unwrap(), b"user-owned");
     }
 
     #[test]
