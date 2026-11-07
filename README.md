@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载 0.11.1 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.1) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载 0.11.2 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.2) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
 
 ## 软件截图
 
@@ -15,9 +15,9 @@
 
 - 毛玻璃界面、浅深色主题、目录树和多标签浏览。
 - ZIP / 7z 等格式压缩，ZIP / 7z / RAR 等格式解压；支持加密、分卷和完整性检查。
-- 从符合条件的 ZIP 或 `.7z.001` 分卷中选取文件时，程序校验全包，只暂存选中内容。无加密分卷支持非固实 Copy，以及单独使用 LZMA2 的固实和非固实 7z。
+- 从符合条件的 ZIP 或 `.7z.001` 分卷中选取文件时，程序校验全包，只暂存选中内容。分卷支持无加密的非固实 Copy，以及使用 LZMA2 的固实和非固实 7z，包括符合条件的 AES 加密分卷。
 - 7z 可选 ZSTD、Brotli、LZ4 等扩展压缩方法；高级设置提供字典大小、固实压缩和文件名加密。
-- 支持 Brotli、LZ4、LZ5、Lizard、ZSTD 单文件流格式的压缩与解压，也可浏览和提取 WASM、ROMFS 内容。
+- 支持 Brotli、LZ4、LZ5、Lizard、ZSTD 单文件流格式的压缩与解压，也可浏览和提取 WASM、ROMFS、UFS 分区镜像，以及 ZealFS v1 直接镜像中的多级目录。
 - 文件校验支持 SHA-2 / SHA-3、BLAKE3、xxHash 等算法，可一次计算多种校验值。
 - 常见文本预览、图片缩略图与原图打开；支持多选和包内文件复制。
 - 解压偏好自动记忆：智能解压、成功后回收原包、打开目标文件夹、关闭窗口。
