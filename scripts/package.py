@@ -66,6 +66,8 @@ def main():
         shutil.copy2(source, stage / destination)
     def ignore_resources(directory, names):
         ignored = set(shutil.ignore_patterns("__pycache__", "*.pyc", "generate.py")(directory, names))
+        if Path(directory) == root / "runtime":
+            ignored.add("nanazip-arm64")  # Validation runtime; this packager produces x64 distributions.
         ignored.update(name for name in names
                        if (Path(directory) / name).relative_to(root).as_posix() in NON_NOTICE_TREES)
         return ignored
