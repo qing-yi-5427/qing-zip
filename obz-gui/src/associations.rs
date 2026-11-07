@@ -39,7 +39,13 @@ pub fn set_folder_menu(enabled: bool) -> Result<bool,String> {
 const CAPABILITIES: &str = r"Software\OpenArchive\Capabilities";
 const OWNER_KEY: &str = r"Software\OpenArchive\Associations";
 const OWNER: &str = "OpenArchive.Associations.v1";
-const EXTENSIONS: &[&str] = &[".zip", ".7z", ".rar", ".zipx", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz", ".iso", ".cab", ".wim", ".lzh", ".lha", ".ace", ".egg", ".alz", ".zst", ".asar", ".br", ".lz4", ".lz5", ".liz", ".lizard", ".brotli", ".zstd", ".aes", ".lz", ".uu", ".uue", ".xxe", ".pma", ".zpaq", ".daa", ".isz", ".wasm", ".romfs"];
+const EXTENSIONS: &[&str] = &[".zip", ".7z", ".rar", ".zipx", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz", ".iso", ".cab", ".wim", ".lzh", ".lha", ".ace", ".egg", ".alz", ".zst", ".asar", ".br", ".lz4", ".lz5", ".liz", ".lizard", ".brotli", ".zstd", ".aes", ".lz", ".uu", ".uue", ".xxe", ".pma", ".zpaq", ".daa", ".isz", ".wasm", ".romfs", ".ufs", ".ufs2"];
+
+pub(crate) fn file_dialog_extensions() -> Vec<&'static str> {
+    EXTENSIONS.iter().map(|ext| &ext[1..])
+        .chain(["exe", "001", "img", "udf", "dmg", "arj", "deb", "rpm", "vhd", "vhdx", "msi"])
+        .collect()
+}
 static REGISTRATION: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Serialize)]
