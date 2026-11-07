@@ -20,7 +20,35 @@ function toast(message){$('qa-toast').textContent=message;$('qa-toast').hidden=f
 function appearance(){root.style.colorScheme=s.theme;root.dataset.material=s.material;root.style.setProperty('--qa-row',s.density==='compact'?'42px':'56px');if($('qa-tools'))try{$('qa-tools').contentDocument.documentElement.style.colorScheme=s.theme;}catch{}root.querySelectorAll('[data-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.theme===s.theme)));localStorage.setItem('qing-preferences',JSON.stringify({theme:s.theme,material:s.material,density:s.density,overwrite:s.overwrite,sameFolder:s.sameFolder,recycleAfter:s.recycleAfter,openAfter:s.openAfter,closeAfter:s.closeAfter,listStyle:s.listStyle,iconSize:s.iconSize}));invoke('set_appearance',{material:s.material,dark:s.theme==='dark'}).catch(e=>toast('窗口材质不可用，保留页面样式：'+e));}
 function home(){return `<section class="oa-home"><span class="oa-home-mark">${icon('archive')}</span><h1>文件归整，从这里开始。</h1><p>打开一个压缩文件，或把文件拖进来。</p><div class="qa-actions">${btn('打开压缩文件','open','primary','folder-open')}${btn('新建压缩文件','compress','','plus')}</div></section>${s.recent.length?`<section class="oa-recent"><div class="oa-section-head"><h3>最近打开</h3>${btn('全部记录','recent-menu','quiet')}</div>${s.recent.slice(0,4).map((path,i)=>`<button class="qa-recent-row" data-recent="${i}"><span class="oa-file-symbol">${icon('archive')}</span><span class="qa-file-copy"><strong>${esc(filename(path))}</strong><small>${esc(path)}</small></span>${icon('chevron')}</button>`).join('')}</section>`:''}`;}
 
-function visibleEntries(){const map=new Map();for(const e of s.entries){const n=e.name.replaceAll('\\','/').replace(/^\.\//,'');if(!n.startsWith(s.folder)||n===s.folder)continue;const rest=n.slice(s.folder.length),parts=rest.split('/').filter(Boolean);if(!parts.length)continue;const directory=parts.length>1||e.is_dir,name=s.folder+parts[0]+(directory?'/':'');if(!map.has(name))map.set(name,{...e,name,leaf:parts[0],is_dir:directory,size:directory?0:e.size,size_known:directory||e.size_known!==false});}return [...map.values()].filter(e=>e.leaf.toLowerCase().includes(s.search.toLowerCase())).sort(compareEntries);}
+// Refreshing an archive replaces its entry array. Keep just the current
+// folder's projection per live listing, so selection changes can reuse it.
+const folderViews = new WeakMap();
+function visibleEntries() {
+  let view = folderViews.get(s.entries);
+  if (!view || view.folder !== s.folder) {
+    const children = new Map();
+    for (const entry of s.entries) {
+      const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'');
+      if (!path.startsWith(s.folder)) continue;
+      const parts = path.slice(s.folder.length).split('/').filter(Boolean);
+      if (!parts.length) continue;
+      const directory = parts.length > 1 || entry.is_dir;
+      const leaf = parts[0], name = s.folder + leaf + (directory ? '/' : '');
+      if (!children.has(name)) children.set(name, {
+        ...entry, name, leaf, is_dir:directory, size:directory ? 0 : entry.size,
+        size_known:directory || entry.size_known !== false
+      });
+    }
+    view = {folder:s.folder, children:[...children.values()]};
+    folderViews.set(s.entries, view);
+  }
+  const search = s.search.toLowerCase();
+  if (!view.rows || view.search !== search || view.sort !== s.sort || view.reverse !== s.reverse) {
+    view.rows = view.children.filter(entry => entry.leaf.toLowerCase().includes(search)).sort(compareEntries);
+    Object.assign(view, {search, sort:s.sort, reverse:s.reverse});
+  }
+  return view.rows;
+}
 function archive(){if(!s.archive)return home();return `<div class="qa-path">${btn('','up','quiet','arrow-up')}<div class="oa-breadcrumb"><button data-action="root">${esc(filename(s.archive))}</button><span>${s.folder?' / '+esc(s.folder):' / 全部文件'}</span></div><label class="oa-search">${icon('search')}<input id="qa-search" aria-label="查找文件" placeholder="查找文件  Ctrl+F" value="${esc(s.search)}"></label></div>${viewControls()}<div class="oa-table-wrap" style="--oa-icon-size:${s.iconSize}px"><table role="grid" aria-label="压缩包文件" aria-multiselectable="true" class="qa-table ${s.listStyle==='icons'?'oa-icons':''}"><thead><tr><th><input id="qa-all" type="checkbox" aria-label="全选当前列表"></th><th><button data-sort="name">名称 ↕</button></th><th><button data-sort="packed_size">压缩后</button></th><th><button data-sort="size">大小 ↕</button></th><th>类型</th><th>修改日期</th></tr></thead><tbody id="qa-rows"></tbody></table><div id="qa-selection" class="qa-selection" role="status" aria-live="polite"></div></div><div id="oa-selection-actions" class="oa-selection-actions" hidden><span id="oa-selected-count"></span><div class="qa-actions">${btn('解压选中','extract','quiet','folder-output')}${btn('重命名','rename','quiet')}${btn('删除','delete','quiet','x')}</div></div>`;}
 
 function rows(){const restore=document.activeElement?.closest('[data-row]')?.dataset.row;const list=visibleEntries();if(!list.some(e=>e.name===s.cursor))s.cursor=list[0]?.name;$('qa-rows').innerHTML=list.map(e=>`<tr data-row="${esc(e.name)}" aria-selected="${s.selected.has(e.name)}" class="${s.selected.has(e.name)?'selected':''}"><td><input type="checkbox" tabindex="-1" data-select="${esc(e.name)}" aria-label="选择 ${esc(e.leaf)}" ${s.selected.has(e.name)?'checked':''}></td><td><button class="qa-filebtn" tabindex="${e.name===s.cursor?0:-1}" data-entry="${esc(e.name)}"><span class="oa-file-symbol ${e.is_dir?'folder':''}" ${!e.is_dir&&isImage(e.name)&&s.listStyle==='icons'?`data-thumbnail="${esc(e.name)}" aria-label="图片缩略图"`:''}>${icon(e.is_dir?'folder':'file')}</span><span>${esc(e.leaf)}</span></button></td><td>${e.is_dir?'':size(e.packed_size||0)}</td><td>${e.is_dir?'':entrySize(e)}</td><td>${e.is_dir?'文件夹':esc(e.leaf.includes('.')?e.leaf.split('.').pop().toUpperCase()+' 文件':'文件')}${e.encrypted?' 🔒':''}</td><td title="${esc(e.modified||'')}">${esc(displayModified(e.modified))}</td></tr>`).join('')||'<tr><td colspan="6" class="qa-empty">没有匹配的文件</td></tr>';$('qa-selection').textContent=`${list.length} 个项目 · 已选 ${s.selected.size} 项`;$('qa-all').checked=list.length>0&&list.every(e=>s.selected.has(e.name));$('qa-all').indeterminate=list.some(e=>s.selected.has(e.name))&&!$('qa-all').checked;updateToolbar();observeThumbnails();if(restore&&list.some(e=>e.name===restore))focusEntry(restore);}
@@ -84,19 +112,31 @@ const menuGroups={
 };
 function updateToolbar(){root.querySelectorAll('#oa-toolbar [data-action],#oa-primary-action [data-action]').forEach(b=>{const a=b.dataset.action;b.disabled=(!s.archive&&!['open','compress','more-menu'].includes(a))||!!s.active;});if($('oa-selection-actions')){$('oa-selection-actions').hidden=!s.selected.size;$('oa-selected-count').textContent=`已选 ${s.selected.size} 个项目`;$('oa-selection-actions').querySelector('[data-action=rename]').disabled=s.selected.size!==1;}root.querySelectorAll('[data-view]').forEach(b=>{b.setAttribute('aria-current',String(b.dataset.view===(['tool','advanced'].includes(s.page)?'tools':s.page)));});}
 // Sorted descendants are contiguous, so tree expansion does not rescan every folder.
-function folderTree(entries,collapsed){
- const folders=new Set(['']);
- for(const entry of entries){
-  const parts=entry.name.replaceAll('\\','/').split('/').filter(Boolean);if(!entry.is_dir)parts.pop();
-  let path='';for(const part of parts){path+=part+'/';folders.add(path);}
- }
- const names=[...folders].sort(),result=[];let hiddenPrefix=null;
- for(let i=0;i<names.length;i++){
-  const path=names[i];if(hiddenPrefix!==null&&path.startsWith(hiddenPrefix))continue;
-  hiddenPrefix=collapsed.has(path)?path:null;
-  result.push({path,depth:path.split('/').filter(Boolean).length,hasChildren:i+1<names.length&&names[i+1].startsWith(path)});
- }
- return result;
+const archiveFolderTrees = new WeakMap();
+function folderTree(entries, collapsed) {
+  let tree = archiveFolderTrees.get(entries);
+  if (!tree) {
+    const folders = new Set(['']);
+    for (const entry of entries) {
+      const parts = entry.name.replaceAll('\\','/').split('/').filter(Boolean);
+      if (!entry.is_dir) parts.pop();
+      let path = '';
+      for (const part of parts) { path += part + '/'; folders.add(path); }
+    }
+    const names = [...folders].sort();
+    tree = names.map((path, i) => ({
+      path, depth:path.split('/').filter(Boolean).length,
+      hasChildren:i + 1 < names.length && names[i + 1].startsWith(path)
+    }));
+    archiveFolderTrees.set(entries, tree);
+  }
+  if (!collapsed.size) return tree;
+  let hiddenPrefix = null;
+  return tree.filter(({path}) => {
+    if (hiddenPrefix !== null && path.startsWith(hiddenPrefix)) return false;
+    hiddenPrefix = collapsed.has(path) ? path : null;
+    return true;
+  });
 }
 // End folder tree model.
 function renderChrome(){renderArchiveTabs();root.dataset.page=s.page;$('oa-heading').innerHTML=s.page==='files'?`<div class="oa-heading-copy"><span class="oa-archive-symbol">${icon('archive')}</span><div><h1>${s.archive?esc(filename(s.archive)):'文件'}</h1><p>${s.archive?`${esc(filename(s.archive).split('.').pop().toUpperCase())} 压缩文件 · ${s.entries.length} 个条目`:'轻透、专注的本地归档工作空间'}</p></div></div><div id="oa-primary-action">${s.archive?btn('解压','extract','primary','folder-output'):''}</div>`:'';$('oa-toolbar').innerHTML=btn('打开','open','','folder-open')+btn('新建','compress','','plus')+'<span class="oa-divider"></span>'+btn('添加','add','','plus')+'<span class="oa-spacer"></span>'+(s.archive?btn('解压','extract','primary','folder-output'):'');$('oa-heading').hidden=s.page!=='files'||!!s.archive;$('oa-toolbar').hidden=s.page!=='files';$('oa-tree').innerHTML=folderTree(s.entries,s.collapsed).map(({path:p,depth,hasChildren})=>{return `<div class="oa-tree-row" style="--depth:${depth}">${hasChildren?`<button class="oa-tree-toggle" data-tree-toggle="${esc(p)}" aria-label="${s.collapsed.has(p)?'展开':'折叠'} ${esc(p||'根目录')}" aria-expanded="${!s.collapsed.has(p)}">${icon('chevron')}</button>`:'<span class="oa-tree-toggle"></span>'}<button data-tree="${esc(p)}" aria-current="${p===s.folder&&s.page==='files'}">${icon(p?'folder':'archive')}<span>${esc(p?p.split('/').filter(Boolean).pop():s.archive?filename(s.archive):'未打开压缩文件')}</span></button></div>`;}).join('');updateToolbar();}
