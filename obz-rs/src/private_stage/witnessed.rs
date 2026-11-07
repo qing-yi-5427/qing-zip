@@ -342,7 +342,13 @@ mod tests {
     const LEGACY: &str = "D:(A;ID;FA;;;BA)(A;OICIIOID;GA;;;BA)(A;ID;FA;;;SY)(A;OICIIOID;GA;;;SY)(A;ID;0x1301bf;;;AU)(A;OICIIOID;SDGXGWGR;;;AU)(A;ID;0x1200a9;;;BU)(A;OICIIOID;GXGR;;;BU)";
     #[test]
     fn witnessed_tree_matches_normal_metadata_and_future_inheritance() {
-        let t = tempfile::tempdir().unwrap();
+        // The hosted runner's user TEMP inherits SE_SACL_AUTO_INHERITED.
+        // The runner's scratch volume supplies the ordinary NTFS parent this
+        // positive fixture needs, without changing the host's audit policy.
+        let scratch = std::env::var_os("RUNNER_TEMP")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let t = tempfile::tempdir_in(scratch).unwrap();
         // This owner-created fixture alone receives the test policy.
         let policy_root = t.path().join("model");
         fs::create_dir(&policy_root).unwrap();
@@ -350,6 +356,10 @@ mod tests {
         let path = policy_root.join("parent");
         fs::create_dir(&path).unwrap();
         let parent = pin(&path);
+        let legacy_sd = security_descriptor(&parent, ACCESS_POLICY_FIELDS).unwrap();
+        let (mut control, mut revision) = (0, 0);
+        assert_ne!(unsafe { GetSecurityDescriptorControl(legacy_sd.0, &mut control, &mut revision) }, 0);
+        assert_eq!(control, 0x8004, "test needs an unprotected NTFS parent without automatic DACL or SACL inheritance; got {control:#06x}");
         assert!(!supports_inheritance(&parent).unwrap());
         let w = WitnessedInheritance::qualify(&path, &parent)
             .unwrap()
