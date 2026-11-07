@@ -411,7 +411,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
     fs::write(reference.join("data.bin"), []).unwrap();
     let acl = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command",
-            r#"$ErrorActionPreference='Stop'; $root=$env:QING_TEST_OUTPUT_PARENT; foreach ($path in @('','nested','nested/data.bin')) { $want=(Get-Acl -LiteralPath (Join-Path (Join-Path $root 'control') $path)).Sddl; foreach ($dest in @('new','existing')) { if ((Get-Acl -LiteralPath (Join-Path (Join-Path $root $dest) $path)).Sddl -ne $want) { throw 'published ACL differs from ordinary file creation' } } }"#])
+            r#"$ErrorActionPreference='Stop'; $root=$env:QING_TEST_OUTPUT_PARENT; function ReadAcl($p) { $acl=if ([IO.Directory]::Exists($p)) { [IO.Directory]::GetAccessControl($p) } else { [IO.File]::GetAccessControl($p) }; $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]'Owner,Group,Access') }; foreach ($path in @('','nested','nested/data.bin')) { $want=ReadAcl ([IO.Path]::Combine($root,'control',$path)); foreach ($dest in @('new','existing')) { if ((ReadAcl ([IO.Path]::Combine($root,$dest,$path))) -ne $want) { throw 'published ACL differs from ordinary file creation' } } }"#])
         .env("QING_TEST_OUTPUT_PARENT", &parent).output().unwrap();
     assert!(
         acl.status.success(),
@@ -427,7 +427,7 @@ fn set_ordinary_acl(parent: &Path) {
     // runner's TEMP policy. The readonly Users ACE exercises post-commit ACLs.
     let acl = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command",
-            r#"$ErrorActionPreference='Stop'; $s=New-Object System.Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value+')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'); Set-Acl -LiteralPath $env:QING_TEST_OUTPUT_PARENT -AclObject $s"#])
+            r#"$ErrorActionPreference='Stop'; $s=New-Object System.Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value+')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)',[Security.AccessControl.AccessControlSections]::Access); [IO.Directory]::SetAccessControl($env:QING_TEST_OUTPUT_PARENT, $s)"#])
         .env("QING_TEST_OUTPUT_PARENT", parent).output().unwrap();
     assert!(
         acl.status.success(),

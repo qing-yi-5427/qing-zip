@@ -69,7 +69,8 @@ jobs:
           $apps = @('target/arm-validation/debug/obz.exe', 'target/arm-validation/debug/obz-gui.exe')
           $report = python scripts/audit_pe_security.py @apps | ConvertFrom-Json
           if ($LASTEXITCODE -or $report.Count -ne 2 -or @($report | Where-Object machine -ne '0xaa64').Count) { throw 'incorrect CLI or GUI PE machine' }
-          $report | Select-Object path,machine,sha256 | Format-Table
+          $report | Select-Object path,machine,bits | Format-Table
+          Get-FileHash $apps | Format-Table
           $layout = Join-Path $env:RUNNER_TEMP 'qing-arm64-layout'
           New-Item -ItemType Directory -Path "$layout/runtime" | Out-Null
           Copy-Item $apps[0] -Destination $layout
