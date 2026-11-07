@@ -298,3 +298,134 @@ fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
     require_worker(&result, false, &["status=error", "code=3"]);
     assert!(!destination.exists());
 }
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[test]
+fn selected_split_commits_only_verified_files_on_the_target_volume() {
+    use std::process::Command;
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("ordinary");
+    fs::create_dir(&parent).unwrap();
+    // Give this test directory a normal, auto-inherited DACL regardless of the
+    // runner's TEMP policy. The readonly Users ACE exercises post-commit ACLs.
+    let acl = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+            r#"$ErrorActionPreference='Stop'; $s=New-Object System.Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value+')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'); Set-Acl -LiteralPath $env:QING_TEST_OUTPUT_PARENT -AclObject $s"#])
+        .env("QING_TEST_OUTPUT_PARENT", &parent).output().unwrap();
+    assert!(
+        acl.status.success(),
+        "{}",
+        String::from_utf8_lossy(&acl.stderr)
+    );
+
+    let source = tmp.path().join("src");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    let payload = b"selected data".repeat(16000);
+    fs::write(source.join("nested/data.bin"), &payload).unwrap();
+    let selected_file = source.join("nested/data.bin");
+    let writable = fs::metadata(&selected_file).unwrap().permissions();
+    let mut readonly = writable.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&selected_file, readonly).unwrap();
+    let unselected = b"uniquely unselected payload".repeat(10000);
+    fs::write(source.join("other.bin"), &unselected).unwrap();
+    let archive = tmp.path().join("sample.7z");
+    let exe = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/nanazip/NanaZip.Universal.Console.exe");
+    let made = Command::new(exe)
+        .current_dir(&source)
+        .args(["a", "-t7z", "-mx=0", "-ms=off", "-v32k"])
+        .arg(&archive)
+        .args(["nested", "other.bin"])
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    fs::set_permissions(&selected_file, writable.clone()).unwrap();
+    let part = |n| tmp.path().join(format!("sample.7z.{n:03}"));
+    let zone = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+    fs::write(format!("{}:Zone.Identifier", part(1).display()), zone).unwrap();
+    let extract = |dest: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_obz"))
+            .arg("extract")
+            .arg(part(1))
+            .arg(dest)
+            .args(["--include", "nested/data.bin"])
+            .env("OPEN_ARCHIVE_PROFILE", "1")
+            .output()
+            .unwrap()
+    };
+    for existing in [false, true] {
+        let dest = parent.join(if existing { "existing" } else { "new" });
+        if existing {
+            fs::create_dir(&dest).unwrap();
+            fs::write(dest.join("sentinel"), b"keep").unwrap();
+        }
+        let out = extract(&dest);
+        let log = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{log}");
+        assert!(log.contains("OA_SELECTED_WORKER status=ok"), "{log}");
+        assert!(
+            log.contains(if existing {
+                "moved=1 copied=0"
+            } else {
+                "selected_directory_commit=1"
+            }),
+            "{log}"
+        );
+        let file = dest.join("nested/data.bin");
+        assert_eq!(fs::read(&file).unwrap(), payload);
+        assert!(fs::metadata(&file).unwrap().permissions().readonly());
+        assert_eq!(
+            fs::read(format!("{}:Zone.Identifier", file.display())).unwrap(),
+            zone
+        );
+        assert_eq!(
+            fs::metadata(&file).unwrap().modified().unwrap(),
+            fs::metadata(source.join("nested/data.bin"))
+                .unwrap()
+                .modified()
+                .unwrap()
+        );
+        assert!(!dest.join("other.bin").exists());
+        assert!(!extract(&dest).status.success());
+        fs::set_permissions(&file, writable.clone()).unwrap();
+        if existing {
+            assert_eq!(fs::read(dest.join("sentinel")).unwrap(), b"keep");
+        }
+    }
+    let mut changed = false;
+    for n in 1.. {
+        if !part(n).is_file() {
+            break;
+        }
+        let mut bytes = fs::read(part(n)).unwrap();
+        if let Some(i) = bytes
+            .windows(27)
+            .position(|v| v == b"uniquely unselected payload")
+        {
+            bytes[i] ^= 1;
+            fs::write(part(n), bytes).unwrap();
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed);
+    let rejected = parent.join("rejected");
+    let out = extract(&rejected);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("OA_SELECTED_WORKER status=error"));
+    assert!(!rejected.exists());
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 2);
+    let reference = parent.join("control/nested");
+    fs::create_dir_all(&reference).unwrap();
+    fs::write(reference.join("data.bin"), []).unwrap();
+    let acl = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+            r#"$ErrorActionPreference='Stop'; $root=$env:QING_TEST_OUTPUT_PARENT; foreach ($path in @('','nested','nested/data.bin')) { $want=(Get-Acl -LiteralPath (Join-Path (Join-Path $root 'control') $path)).Sddl; foreach ($dest in @('new','existing')) { if ((Get-Acl -LiteralPath (Join-Path (Join-Path $root $dest) $path)).Sddl -ne $want) { throw 'published ACL differs from ordinary file creation' } } }"#])
+        .env("QING_TEST_OUTPUT_PARENT", &parent).output().unwrap();
+    assert!(
+        acl.status.success(),
+        "{}",
+        String::from_utf8_lossy(&acl.stderr)
+    );
+}

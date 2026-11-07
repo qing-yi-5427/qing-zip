@@ -210,7 +210,7 @@ pub fn capabilities() -> Capabilities {
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),
-      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 with the bundled NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy or LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
+      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 with the bundled NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy or LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction and eligible selected split 7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
 }
 fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
@@ -2179,10 +2179,21 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         decode_memory_zip(memory_source, &all_entries, opts, &ctl)?
     };
-    // Bound retained publication handles; larger trees use per-file publishing.
+    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    let split_plan = if !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty() {
+        selected_worker::plan(path, &source_guard, &_volume_guards, &all_entries, opts)?
+    } else { None };
+    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    let plan_selection = split_plan.is_some() && using_process_token();
+    #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+    let plan_selection = false;
+    let projected = plan_selection.then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
+    let safe_projection = opts.selected.is_empty() || plan_selection;
+    // A selected stage may be committed only after the isolated worker verifies
+    // the entire fixed archive family and confirms that it wrote this projection.
     let mut transaction = if expected.len() <= 65_536 {
-        new_directory_stage(path, &dest, opts, &mut output_guards,
-            memory.as_ref().map(|_| all_entries.as_slice()))?
+        new_directory_stage(path, &dest, safe_projection, &mut output_guards,
+            projected.as_deref().or_else(|| memory.as_ref().map(|_| all_entries.as_slice())))?
     } else {
         None
     };
@@ -2197,7 +2208,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         transaction.stage.take()
     } else if memory.is_none() {
         let preferred = if serial_publication {
-            new_file_publication_stage(path, &dest, opts, &all_entries, &mut output_guards)?
+            new_file_publication_stage(path, &dest, safe_projection, projected.as_deref().unwrap_or(&all_entries), &mut output_guards)?
         } else { None };
         file_publication_stage = preferred.is_some();
         Some(match preferred {
@@ -2217,20 +2228,35 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         .as_ref()
         .map(|s| s.guards(transaction.as_ref().map(|t| &t.root)))
         .transpose()?;
+    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    let split_streamed = if let Some(plan) = split_plan {
+        let root = stage.as_ref().ok_or("selected worker stage unavailable")?.path();
+        let guards = stage_guards.as_mut().ok_or("missing selected worker stage guards")?;
+        guards.check(root)?;
+        ctl.set("decoding", Some(0), "Verifying all archive entries");
+        selected_worker::decode(plan, &source_guard, &_volume_guards, &all_entries, opts, root, guards, &ctl)?
+    } else { false };
+    #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+    let split_streamed = false;
+    if plan_selection && !split_streamed && (transaction.is_some() || file_publication_stage) {
+        // Unsupported native layouts return false only before granting outputs.
+        // The general decoder can write the entire archive, so discard the
+        // smaller reservation and use its original private TEMP stage.
+        drop(stage_guards.take());
+        drop(transaction.take());
+        drop(stage.take());
+        file_publication_stage = false;
+        publication_receipt = None;
+        let fallback = new_fallback_stage(&std::env::temp_dir(), &mut output_guards)?;
+        stage_guards = Some(fallback.guards(None)?);
+        stage = Some(fallback);
+    }
     if let Some(stage) = &stage {
         let stage_guards = stage_guards.as_mut().unwrap();
         stage_guards.check(stage.path())?;
-        ctl.set(
-            "decoding",
-            Some(0),
-            "Decoding archive into temporary storage",
-        );
-        #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
-        let split_streamed = !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty()
-            && selected_worker::decode(path, &source_guard, &_volume_guards, &all_entries,
-                opts, stage.path(), stage_guards, &ctl)?;
-        #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
-        let split_streamed = false;
+        if !split_streamed {
+            ctl.set("decoding", Some(0), "Decoding archive into temporary storage");
+        }
         let streamed = split_streamed || decode_selected_zip(
             selected_source.take(),
             &all_entries,
@@ -2276,7 +2302,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 execute(&args, None, opts, None)?;
             }
         }
-        let mut staged_expected = if streamed {
+        let mut staged_expected = if let Some(projection) = projected.as_deref().filter(|_| split_streamed) {
+            expected_tree(projection)?
+        } else if streamed {
             expected_tree(&entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>())?
         } else {
             expected.clone()
@@ -2303,9 +2331,11 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             &staged_expected,
             &ctl,
             stage_guards,
-            (transaction.is_some() || file_publication_stage).then_some(all_entries.as_slice()),
+            (transaction.is_some() || file_publication_stage).then_some(
+                projected.as_deref().filter(|_| split_streamed).unwrap_or(&all_entries)),
             if transaction.is_some() || file_publication_stage { opts.zone_identifier.as_ref() } else { None },
         )?;
+        if split_streamed && transaction.is_some() { expected = staged_expected; }
     }
     policy.validate_output()?;
     if let Some(transaction) = transaction.as_ref() {
@@ -2338,6 +2368,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 drop(publication_pins);
             }
             ctl.set("complete", Some(100), "Extraction complete");
+            if split_streamed && PhaseTimer::enabled() {
+                eprintln!("OA_PUBLICATION selected_directory_commit=1");
+            }
             return Ok(entries.iter().filter(|e| !e.is_dir).count());
         }
         if dest.try_exists().map_err(|e| e.to_string())? {
@@ -2359,6 +2392,18 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         // Never merge into a competitor created during fallback verification.
         ctl.check()?;
         output_guards.check(&dest)?;
+        #[cfg(windows)]
+        if split_streamed {
+            // Claim a fresh directory without following or merging a competing
+            // creation. Keep its identity for rollback if copying is cancelled.
+            let leaf = dest.file_name().ok_or("missing fallback destination leaf")?;
+            let created = crate::private_stage::create_output_directory(&transaction.parent, leaf)?;
+            output_guards.created_output_dirs.push((dest.clone(), created));
+            output_guards.selected_output_root = Some(dest.clone());
+        } else {
+            fs::create_dir(&dest).map_err(|e| format!("claim fallback destination: {e}"))?;
+        }
+        #[cfg(not(windows))]
         fs::create_dir(&dest).map_err(|e| format!("claim fallback destination: {e}"))?;
         #[cfg(windows)]
         output_guards.owned_dirs.insert(dest.clone());
@@ -2857,13 +2902,13 @@ fn using_process_token() -> bool {
 }
 
 fn new_file_publication_stage(
-    archive: &str, dest: &Path, opts: &EngineOptions, entries: &[Entry],
+    archive: &str, dest: &Path, safe_projection: bool, entries: &[Entry],
     guards: &mut CheckedDirectories,
 ) -> Result<Option<StagingDir>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        if !opts.selected.is_empty() || !dest.is_dir() { return Ok(None); }
+        if !safe_projection || !dest.is_dir() { return Ok(None); }
         let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
         let Some(parent) = dest.parent().filter(|p| p.is_dir()) else { return Ok(None); };
         if attribute_query_path(parent).is_none() { return Ok(None); }
@@ -2890,7 +2935,7 @@ fn new_file_publication_stage(
         Ok(Some(StagingDir::Private(stage)))
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
-    { let _ = (archive, dest, opts, entries, guards); Ok(None) }
+    { let _ = (archive, dest, safe_projection, entries, guards); Ok(None) }
 }
 
 fn try_publish_staged_file(
@@ -3008,14 +3053,14 @@ pub(crate) fn pin_committed_tree(
 fn new_directory_stage(
     path: &str,
     dest: &Path,
-    opts: &EngineOptions,
+    safe_projection: bool,
     guards: &mut CheckedDirectories,
-    memory_entries: Option<&[Entry]>,
+    reservation_entries: Option<&[Entry]>,
 ) -> Result<Option<DirectoryTransaction>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        if !opts.selected.is_empty() || dest.try_exists().map_err(|e| e.to_string())? {
+        if !safe_projection || dest.try_exists().map_err(|e| e.to_string())? {
             return Ok(None);
         }
         let Some(parent) = dest.parent() else {
@@ -3049,9 +3094,9 @@ fn new_directory_stage(
             Err(_) => return Ok(None),
         };
         validate_transaction_root(&parent_handle, parent)?;
-        if let Some(entries) = memory_entries {
-            // The per-file memory publisher inherits storage attributes and uses
-            // the effective token. Whole-tree ACL derivation uses the process token.
+        if let Some(entries) = reservation_entries {
+            // Copy publication inherits storage attributes and uses the effective
+            // token. Whole-tree ACL derivation uses the process token.
             let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
             if !using_process_token() || !has_stage_space(parent, required)
                 || !crate::private_stage::supports_file_publication(&parent_handle)? {
@@ -3059,7 +3104,7 @@ fn new_directory_stage(
             }
         }
         let private_parent = private_stage_acl_handle(&parent_handle)?;
-        if (!private_parent || memory_entries.is_some())
+        if (!private_parent || reservation_entries.is_some())
             && !crate::private_stage::supports_inheritance(&parent_handle)? {
             return Ok(None);
         }
@@ -3082,7 +3127,7 @@ fn new_directory_stage(
             };
             validate_transaction_root(&root, temp.path())?;
             if !private_stage_acl_handle(&root)?
-                || (memory_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+                || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
                 return Ok(None);
             }
             return Ok(Some(DirectoryTransaction {
@@ -3099,7 +3144,7 @@ fn new_directory_stage(
         let root = temp.root().try_clone().map_err(|e| e.to_string())?;
         validate_transaction_root(&root, temp.path())?;
         if !private_stage_acl_handle(&root)?
-            || (memory_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+            || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
             return Ok(None);
         }
         Ok(Some(DirectoryTransaction {
@@ -3111,7 +3156,7 @@ fn new_directory_stage(
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
-        let _ = (path, dest, opts, guards, memory_entries);
+        let _ = (path, dest, safe_projection, guards, reservation_entries);
         Ok(None)
     }
 }
@@ -4672,7 +4717,7 @@ mod staging_tests {
             fs::write(dest.join("keep"), b"old unrelated file").unwrap();
             let entries = parse_listing(b"Path = nested/file.txt\nSize = 3\nModified = 2023-11-14 22:13:20.1234567Z\nAttributes = R\n\n").unwrap();
             let mut output_guards = CheckedDirectories::default(); output_guards.check(&dest).unwrap();
-            let stage = new_file_publication_stage(archive.to_str().unwrap(), &dest, &EngineOptions::default(), &entries, &mut output_guards)
+            let stage = new_file_publication_stage(archive.to_str().unwrap(), &dest, true, &entries, &mut output_guards)
                 .unwrap().expect("ordinary NTFS existing destination qualifies");
             assert_eq!(stage.path().parent(), dest.parent());
             let mut stage_guards = stage.guards(None).unwrap();
@@ -5558,7 +5603,7 @@ mod staging_tests {
         let transaction = new_directory_stage(
             archive.to_str().unwrap(),
             &target,
-            &EngineOptions::default(),
+            true,
             &mut guards,
             None,
         )
@@ -5703,7 +5748,7 @@ mod staging_tests {
         let candidate = new_directory_stage(
             archive.to_str().unwrap(),
             &new,
-            &EngineOptions::default(),
+            true,
             &mut CheckedDirectories::default(),
             None,
         )
@@ -5784,12 +5829,12 @@ mod staging_tests {
         security(&shared, "D:P(A;OICI;FA;;;WD)");
         assert!(!private_stage_acl(&shared).unwrap());
         assert!(new_directory_stage(archive.to_str().unwrap(), &shared.join("legacy"),
-            &EngineOptions::default(), &mut CheckedDirectories::default(), None).unwrap().is_none());
+            true, &mut CheckedDirectories::default(), None).unwrap().is_none());
         security(&shared, "D:PAI(A;OICI;FA;;;WD)");
         let candidate = new_directory_stage(
             archive.to_str().unwrap(),
             &shared.join("result"),
-            &EngineOptions::default(),
+            true,
             &mut CheckedDirectories::default(),
             None,
         )
@@ -5856,7 +5901,7 @@ mod staging_tests {
         entries[0].modified = precise.into();
         entries.last_mut().unwrap().modified = precise.into();
         let mut output_guards = CheckedDirectories::default();
-        let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+        let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
             &mut output_guards, Some(&entries)).unwrap().expect("ordinary NTFS destination");
         let stage = transaction.stage.unwrap();
         let mut guards = stage.guards(Some(&transaction.root)).unwrap();
@@ -5894,7 +5939,7 @@ mod staging_tests {
         let _parent = memory_test_parent(&parent);
         let target = parent.join("target");
         let candidate = |options: &EngineOptions, items: &[Entry]| {
-            new_directory_stage(archive.to_str().unwrap(), &target, options,
+            new_directory_stage(archive.to_str().unwrap(), &target, options.selected.is_empty(),
                 &mut CheckedDirectories::default(), Some(items)).unwrap()
         };
         let opts = EngineOptions::default();
@@ -5947,7 +5992,7 @@ mod staging_tests {
         files.insert(path_key(Path::new(&entries[0].name)), empty);
         let abandoned;
         {
-            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
                 &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();
@@ -5981,7 +6026,7 @@ mod staging_tests {
             &entries, &opts, &ctl).unwrap().unwrap();
         let abandoned;
         {
-            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
                 &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();

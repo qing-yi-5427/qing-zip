@@ -802,9 +802,29 @@ fn run(
     Ok(true)
 }
 
+pub(super) struct WorkerPlan<'a> {
+    leaf: &'a str,
+    exe: PathBuf,
+    runtime: PathBuf,
+}
+
+pub(super) fn plan<'a>(path: &'a str, first: &File, parts: &[File], entries: &[Entry],
+    opts: &EngineOptions) -> Result<Option<WorkerPlan<'a>>, String> {
+    let Some(leaf) = Path::new(path).file_name().and_then(OsStr::to_str) else {
+        return Ok(None);
+    };
+    if !eligible(first, parts, entries, opts, leaf)? {
+        return Ok(None);
+    }
+    let Some(runtime) = runtime_dir()? else { return Ok(None); };
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = current.with_file_name("obz.exe");
+    Ok(exe.is_file().then_some(WorkerPlan { leaf, exe, runtime }))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode(
-    path: &str,
+    plan: WorkerPlan<'_>,
     first: &crate::engine_stream::PinnedSource,
     parts: &[File],
     entries: &[Entry],
@@ -813,20 +833,7 @@ pub(super) fn decode(
     guards: &mut CheckedDirectories,
     ctl: &JobControl,
 ) -> Result<bool, String> {
-    let Some(leaf) = Path::new(path).file_name().and_then(OsStr::to_str) else {
-        return Ok(false);
-    };
-    if !eligible(first, parts, entries, opts, leaf)? {
-        return Ok(false);
-    }
-    let Some(runtime) = runtime_dir()? else {
-        return Ok(false);
-    };
-    let current = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = current.with_file_name("obz.exe");
-    if !exe.is_file() {
-        return Ok(false);
-    }
+    let WorkerPlan { leaf, exe, runtime } = plan;
     let mut stats = Stats {
         code: -1,
         ..Default::default()
