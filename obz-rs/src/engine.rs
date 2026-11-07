@@ -1710,6 +1710,7 @@ fn decode_selected_zip(
 fn decode_memory_zip(
     source: Option<File>,
     entries: &[Entry],
+    opts: &EngineOptions,
     ctl: &JobControl,
 ) -> Result<Option<MemoryFiles>, String> {
     let Some(mut source) = source else {
@@ -1806,7 +1807,8 @@ fn decode_memory_zip(
         Some(0),
         "Verifying complete archive in bounded memory",
     );
-    let mut contents = MemoryFiles::with_capacity(files);
+    let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
+    let mut discard = Vec::new();
     let mut allocated = 0u64;
     for (i, key) in names.into_iter().enumerate() {
         ctl.check()?;
@@ -1814,13 +1816,15 @@ fn decode_memory_zip(
         let mut member = archive
             .by_index(i)
             .map_err(|e| format!("ZIP decode: {e}"))?;
-        let mut data = Vec::new();
-        data.try_reserve_exact(entry.size as usize)
-            .map_err(|e| e.to_string())?;
-        allocated = allocated
-            .checked_add(data.capacity() as u64)
+        let keep = !entry.is_dir && selected(&entry.name, opts);
+        let mut data = if keep { Vec::new() } else { std::mem::take(&mut discard) };
+        data.clear();
+        data.try_reserve_exact(entry.size as usize).map_err(|e| e.to_string())?;
+        // Count retained payloads plus the largest reusable discard buffer.
+        let resident = allocated.checked_add(data.capacity() as u64)
+            .and_then(|n| n.checked_add(discard.capacity() as u64))
             .ok_or("ZIP memory budget exceeded")?;
-        if allocated > MEMORY_ZIP_LIMIT {
+        if resident > MEMORY_ZIP_LIMIT {
             return Err("ZIP memory budget exceeded".into());
         }
         data.resize(entry.size as usize, 0);
@@ -1846,8 +1850,11 @@ fn decode_memory_zip(
         {
             return Err("ZIP size or CRC mismatch".into());
         }
-        if !entry.is_dir {
+        if keep {
+            allocated += data.capacity() as u64;
             contents.insert(key, MemoryChunk::Owned(data));
+        } else {
+            discard = data;
         }
     }
     ctl.check()?;
@@ -2084,7 +2091,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     {
         decode_memory_sevenz(memory_source, &all_entries, &ctl)?
     } else {
-        decode_memory_zip(memory_source, &all_entries, &ctl)?
+        decode_memory_zip(memory_source, &all_entries, opts, &ctl)?
     };
     // Bound retained publication handles; larger trees use per-file publishing.
     let mut transaction = if memory.is_none() && expected.len() <= 65_536 {
@@ -5608,6 +5615,7 @@ mod staging_tests {
         let contents = decode_memory_zip(
             memory_archive_source(path.to_str().unwrap(), &EngineOptions::default()),
             &entries,
+            &EngineOptions::default(),
             &JobControl::new(),
         )
         .unwrap()
@@ -5638,6 +5646,17 @@ mod staging_tests {
         );
     }
     #[test]
+    fn selected_memory_zip_retains_only_published_payload() {
+        let (_temp, path, entries) = memory_zip_fixture();
+        let opts = EngineOptions { selected: vec!["folder/file-031.txt".into()], ..Default::default() };
+        let contents = decode_memory_zip(
+            memory_archive_source(path.to_str().unwrap(), &opts),
+            &entries, &opts, &JobControl::new(),
+        ).unwrap().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents["folder/file-031.txt"].as_slice(), vec![31; 3073]);
+    }
+    #[test]
     fn bounded_zip_memory_crc_failure_is_error_not_fallback_even_when_unselected() {
         let (_temp, path, entries) = memory_zip_fixture();
         let mut bytes = fs::read(&path).unwrap();
@@ -5662,6 +5681,7 @@ mod staging_tests {
         let error = decode_memory_zip(
             memory_archive_source(path.to_str().unwrap(), &options),
             &entries,
+            &options,
             &JobControl::new(),
         )
         .unwrap_err();
@@ -5707,6 +5727,7 @@ mod staging_tests {
         assert!(decode_memory_zip(
             memory_archive_source(path.to_str().unwrap(), &EngineOptions::default()),
             &entries,
+            &EngineOptions::default(),
             &JobControl::new()
         )
         .unwrap()
@@ -5718,6 +5739,7 @@ mod staging_tests {
         assert!(decode_memory_zip(
             memory_archive_source(path.to_str().unwrap(), &EngineOptions::default()),
             &entries,
+            &EngineOptions::default(),
             &JobControl::new()
         )
         .unwrap()
@@ -5727,6 +5749,7 @@ mod staging_tests {
         assert!(decode_memory_zip(
             memory_archive_source(path.to_str().unwrap(), &EngineOptions::default()),
             &entries,
+            &EngineOptions::default(),
             &ctl
         )
         .unwrap_err()
