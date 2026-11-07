@@ -1,4 +1,4 @@
-//! Reject the known incomplete ZealFS directory walk without decoding the image.
+//! Decode direct ZealFS v1 images only after the engine confirms their type and extent.
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -18,7 +18,7 @@ pub(crate) struct SourceProbe {
 
 impl SourceProbe {
     /// This is only a cheap candidate filter, never a format decision. Cache
-    /// the root bytes so the confirmed-image guard still reads at most 1792 B.
+    /// the root bytes so each allocated page is read at most once.
     pub(crate) fn read(source: &mut (impl Read + Seek)) -> Result<Self, String> {
         let mut root = [0u8; 256];
         source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
@@ -177,17 +177,22 @@ fn validate_headers(headers: &[ArchiveHeader]) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) struct Image {
+    pub entries: Vec<crate::engine::Entry>,
+    pub files: std::collections::HashMap<String, Vec<u8>>,
+}
+
 pub(crate) fn check(
     headers: &[ArchiveHeader],
     source: &mut File,
     probe: &SourceProbe,
-) -> Result<(), String> {
+) -> Result<Option<Image>, String> {
     let Some(header) = headers.iter().find(|h| {
         h.kind
             .as_deref()
             .is_some_and(|k| k.eq_ignore_ascii_case("ZealFS"))
     }) else {
-        return Ok(());
+        return Ok(None);
     };
     // A nested/offset filesystem would need the decoder's exact substream.
     // Never apply a beginning-of-file check to a different image location.
@@ -208,7 +213,7 @@ pub(crate) fn check(
     if *count != 256 {
         return Err("invalid or truncated ZealFS metadata".into());
     }
-    check_root(source, root, length, physical)
+    check_root(source, root, length, physical, crate::machine_policy::scope().restricted()).map(Some)
 }
 
 #[cfg(test)]
@@ -217,7 +222,7 @@ fn check_image(source: &mut (impl Read + Seek), length: u64, physical: u64) -> R
     let mut root = [0u8; 256];
     source.seek(SeekFrom::Start(0)).map_err(|_| invalid())?;
     source.read_exact(&mut root).map_err(|_| invalid())?;
-    check_root(source, &root, length, physical)
+    check_root(source, &root, length, physical, false).map(drop)
 }
 
 fn check_root(
@@ -225,7 +230,8 @@ fn check_root(
     root: &[u8; 256],
     length: u64,
     physical: u64,
-) -> Result<(), String> {
+    official_only: bool,
+) -> Result<Image, String> {
     const PAGE: usize = 256;
     let invalid = || "invalid or truncated ZealFS metadata".to_owned();
     if root[0] != b'Z' || root[1] != 1 {
@@ -251,58 +257,68 @@ fn check_root(
     if pages.checked_sub(allocated) != Some(usize::from(root[3])) {
         return Err(invalid());
     }
-    let mut seen_pages = std::collections::HashSet::new();
-    let mut seen_names = std::collections::HashSet::new();
-    // Six root records, at most one 256-byte read for each child directory.
-    // Total data reads are bounded by 256 + 6 * 256 = 1792 bytes.
-    for entry in root[64..].chunks_exact(32) {
-        if entry[0] & !0x81 != 0 {
-            return Err(invalid());
-        }
-        if entry[0] & 0x80 == 0 {
-            continue;
-        }
-        let name = &entry[1..17];
-        let name = &name[..name.iter().position(|b| *b == 0).unwrap_or(name.len())];
-        let page = usize::from(entry[17]);
-        let size = usize::from(u16::from_le_bytes([entry[18], entry[19]]));
-        if entry[0] & !0x81 != 0
-            || name.is_empty()
-            || !seen_names.insert(name.to_vec())
-            || page == 0
-            || page >= pages
-            || root[4 + page / 8] & (1 << (page % 8)) == 0
-            || !seen_pages.insert(page)
-            || size > (pages - 1) * 255
+    // An entry owns its complete chain, including the first page of an empty
+    // file. Never revisit allocated pages, even through a different directory.
+    let mut seen_pages = [false; 256];
+    let mut read_page = |page: usize, count: usize| -> Result<[u8; PAGE], String> {
+        if page == 0 || page >= pages || root[4 + page / 8] & (1 << (page % 8)) == 0
+            || std::mem::replace(&mut seen_pages[page], true)
         {
             return Err(invalid());
         }
-        if entry[0] & 1 == 0 {
-            continue;
-        }
-        if size != PAGE {
-            return Err(invalid());
-        }
-        let offset = page.checked_mul(PAGE).ok_or_else(invalid)? as u64;
-        if offset
-            .checked_add(PAGE as u64)
-            .is_none_or(|end| end > extent)
-        {
-            return Err(invalid());
-        }
-        let mut child = [0; PAGE];
-        source
-            .seek(SeekFrom::Start(offset))
-            .map_err(|_| invalid())?;
-        source.read_exact(&mut child).map_err(|_| invalid())?;
-        if child.chunks_exact(32).any(|entry| entry[0] & 0x80 != 0) {
-            return Err("ZealFS non-empty subdirectories are unsupported: the archive engine would omit their contents".into());
-        }
-        if child.chunks_exact(32).any(|entry| entry[0] & !0x81 != 0) {
-            return Err(invalid());
+        let mut buffer = [0; PAGE];
+        source.seek(SeekFrom::Start((page * PAGE) as u64)).map_err(|_| invalid())?;
+        source.read_exact(&mut buffer[..count]).map_err(|_| invalid())?;
+        Ok(buffer)
+    };
+    let mut directories = vec![(String::new(), *root, 64)];
+    let mut image = Image { entries: Vec::new(), files: Default::default() };
+    while let Some((parent, records, start)) = directories.pop() {
+        let mut sibling_names = std::collections::HashSet::new();
+        for record in records[start..].chunks_exact(32) {
+            if record[0] & !0x81 != 0 { return Err(invalid()); }
+            if record[0] & 0x80 == 0 { continue; }
+            let field = &record[1..17];
+            let leaf = std::str::from_utf8(field.split(|b| *b == 0).next().unwrap())
+                .map_err(|_| "invalid UTF-8 ZealFS entry name")?;
+            if leaf.contains(['/', '\\']) || !sibling_names.insert(leaf.to_lowercase()) {
+                return Err("invalid or duplicate ZealFS entry name".into());
+            }
+            crate::extract::relative_path(leaf)?;
+            let name = if parent.is_empty() { leaf.to_owned() } else { format!("{parent}/{leaf}") };
+            let size = u16::from_le_bytes([record[18], record[19]]) as usize;
+            let is_dir = record[0] & 1 != 0;
+            // Under machine policy use the official decoder for every payload.
+            // Inspect only directory records and one link byte per file page.
+            let read_len = if is_dir || !official_only { PAGE } else { 1 };
+            let mut page = read_page(record[17] as usize, read_len)?;
+            if is_dir {
+                if size != PAGE { return Err(invalid()); }
+                directories.push((name.clone(), page, 0));
+            } else {
+                if size > (pages - 1) * (PAGE - 1) { return Err(invalid()); }
+                let mut bytes = Vec::new();
+                let mut remaining = size;
+                loop {
+                    let count = remaining.min(PAGE - 1);
+                    if !official_only { bytes.extend_from_slice(&page[1..1 + count]); }
+                    remaining -= count;
+                    if remaining == 0 {
+                        if page[0] != 0 { return Err(invalid()); }
+                        break;
+                    }
+                    page = read_page(page[0] as usize, read_len)?;
+                }
+                if !official_only { image.files.insert(name.to_lowercase(), bytes); }
+            }
+            image.entries.push(crate::engine::Entry {
+                name, size: size as u64, packed_size: size as u64, size_known: true,
+                is_dir, crc: String::new(), encrypted: false, modified: String::new(),
+                method: String::new(), comment: String::new(), attributes: String::new(),
+            });
         }
     }
-    Ok(())
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -342,14 +358,40 @@ mod tests {
         check_image(&mut Cursor::new(bytes), length, 2048)
     }
     #[test]
-    fn root_and_empty_directory_pass_populated_directory_fails() {
+    fn root_and_nested_directories_are_verified() {
         inspect(fixture(false, false)).unwrap();
         inspect(fixture(false, true)).unwrap();
-        assert!(inspect(fixture(true, false)).unwrap_err().contains("omit"));
+        inspect(fixture(true, false)).unwrap();
         let mut data = fixture(true, false);
         data[512] = 0x81;
-        assert!(inspect(data).unwrap_err().contains("omit"));
+        assert!(inspect(data).is_err());
     }
+    #[test]
+    fn every_chain_and_nested_name_is_checked() {
+        // Populate a second payload page so that the leaf crosses its 255-byte boundary.
+        let mut valid = fixture(true, false);
+        valid[3] -= 1;
+        valid[4] |= 1 << 4;
+        valid[530..532].copy_from_slice(&256u16.to_le_bytes());
+        valid[768] = 4;
+        valid[1025] = 99;
+        let mut source = Cursor::new(&valid[..]);
+        let probe = SourceProbe::read(&mut source).unwrap();
+        let image = check_root(&mut source, &probe.root.unwrap().0, 2048, 2048, false).unwrap();
+        assert_eq!(image.files["nested/lost.txt"].len(), 256);
+        assert_eq!(image.files["nested/lost.txt"][255], 99);
+        for (offset, value) in [(768, 0), (768, 1), (768, 2), (768, 3), (768, 6), (1024, 2), (513, b'/')] {
+            let mut bad = valid.clone();
+            bad[offset] = value;
+            assert!(inspect(bad).is_err(), "offset {offset}={value}");
+        }
+        let mut conflict = valid;
+        let mut second: [u8; 32] = conflict[512..544].try_into().unwrap();
+        second[1] = b'L';
+        conflict[544..576].copy_from_slice(&second);
+        assert!(inspect(conflict).unwrap_err().contains("duplicate"));
+    }
+
     #[test]
     fn malformed_metadata_fails_closed() {
         for (index, value) in [
@@ -430,7 +472,7 @@ mod tests {
         let probe = SourceProbe::read(&mut source).unwrap();
         let (root, count) = probe.root.as_ref().unwrap();
         assert_eq!(*count, 256);
-        check_root(&mut source, root, 2048, 2048).unwrap();
+        check_root(&mut source, root, 2048, 2048, false).unwrap();
         assert_eq!(source.read, 1792);
     }
     #[test]
@@ -498,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_keeps_root_and_empty_directory_but_rejects_every_nested_route() {
+    fn engine_decodes_nested_direct_filesystems_and_rejects_wrappers() {
         use crate::engine::{self, EngineOptions};
         // The fallback 7-Zip distribution has no ZealFS handler. Its rejection
         // is already safe; this fixture exercises the extended bundled backend.
@@ -532,38 +574,38 @@ mod tests {
                 assert!(output.join("nested").is_dir());
             }
         }
-        for suffix in ["bin", "zip", "7z", "tgz"] {
+        for suffix in ["bin", "zip", "7z"] {
             let archive = temp.path().join(format!("nested.{suffix}"));
             std::fs::write(&archive, fixture(true, false)).unwrap();
             let path = archive.to_str().unwrap();
-            let message = engine::list(path, &options).unwrap_err();
-            if suffix != "tgz" {
-                assert!(
-                    message.contains("ZealFS") && message.contains("omit"),
-                    "{message}"
-                );
-            }
-            assert!(engine::test(path, &options).is_err());
-            assert!(engine::preview(path, "hello.txt", &options).is_err());
-            for selected in [vec![], vec!["hello.txt".into()]] {
-                let options = EngineOptions {
-                    selected,
-                    ..Default::default()
-                };
-                let output = temp.path().join(format!("rejected-{suffix}"));
-                assert!(engine::extract(path, output.to_str().unwrap(), &options).is_err());
-                assert!(!output.exists());
-                let existing = temp.path().join("existing");
-                std::fs::create_dir_all(&existing).unwrap();
-                std::fs::write(existing.join("sentinel"), b"original").unwrap();
-                assert!(engine::extract(path, existing.to_str().unwrap(), &options).is_err());
-                assert_eq!(
-                    std::fs::read(existing.join("sentinel")).unwrap(),
-                    b"original"
-                );
-                assert_eq!(std::fs::read_dir(&existing).unwrap().count(), 1);
+            let entries = engine::list(path, &options).unwrap();
+            assert_eq!(entries.len(), 3);
+            assert!(entries.iter().any(|e| e.name == "nested/lost.txt" && e.size == 4));
+            engine::test(path, &options).unwrap();
+            assert_eq!(engine::preview(path, "nested/lost.txt", &options).unwrap(), b"lost");
+            for selected in [vec![], vec!["nested".into()]] {
+                let whole = selected.is_empty();
+                let options = EngineOptions { selected, ..Default::default() };
+                let output = temp.path().join(format!("extracted-{suffix}-{whole}"));
+                engine::extract(path, output.to_str().unwrap(), &options).unwrap();
+                assert_eq!(std::fs::read(output.join("nested/lost.txt")).unwrap(), b"lost");
+                assert_eq!(output.join("hello.txt").is_file(), whole);
             }
         }
+        let disguised = temp.path().join("nested.tgz");
+        std::fs::write(&disguised, fixture(true, false)).unwrap();
+        assert!(engine::list(disguised.to_str().unwrap(), &options).is_err());
+        let bad = temp.path().join("bad-unselected.zealfs");
+        let mut damaged = fixture(true, false);
+        damaged[768] = 3; // cycle in nested/lost.txt, outside the requested selection
+        std::fs::write(&bad, damaged).unwrap();
+        let existing = temp.path().join("preserve");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("sentinel"), b"original").unwrap();
+        let selected = EngineOptions { selected: vec!["hello.txt".into()], ..Default::default() };
+        assert!(engine::extract(bad.to_str().unwrap(), existing.to_str().unwrap(), &selected).is_err());
+        assert_eq!(std::fs::read(existing.join("sentinel")).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(existing).unwrap().count(), 1);
         let split = fixture(true, false);
         let first = temp.path().join("nested.zealfs.001");
         std::fs::write(&first, &split[..1024]).unwrap();
@@ -584,6 +626,38 @@ mod tests {
         assert!(engine::test(malformed.to_str().unwrap(), &options)
             .unwrap_err()
             .contains("ZealFS"));
+    }
+
+    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    #[test]
+    fn machine_policy_keeps_payloads_on_the_official_engine() {
+        use crate::{engine::{self, EngineOptions}, machine_policy::with_rules};
+        let temp = tempfile::tempdir().unwrap();
+        let flat = temp.path().join("flat.zealfs");
+        let nested = temp.path().join("nested.zealfs");
+        std::fs::write(&flat, fixture(false, true)).unwrap();
+        std::fs::write(&nested, fixture(true, false)).unwrap();
+        let flat = flat.to_str().unwrap();
+        let nested = nested.to_str().unwrap();
+        let opts = EngineOptions::default();
+        with_rules([&["ZealFS"], &[], &[], &[]], || {
+            engine::list(flat, &opts).unwrap();
+            engine::test(flat, &opts).unwrap();
+            assert_eq!(engine::preview(flat, "hello.txt", &opts).unwrap(), b"hello");
+            let dest = temp.path().join("flat-out");
+            engine::extract(flat, dest.to_str().unwrap(), &opts).unwrap();
+            assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hello");
+            let rejected = temp.path().join("rejected");
+            for result in [
+                engine::list(nested, &opts).map(drop),
+                engine::test(nested, &opts),
+                engine::preview(nested, "hello.txt", &opts).map(drop),
+                engine::extract(nested, rejected.to_str().unwrap(), &opts).map(drop),
+            ] {
+                assert!(result.unwrap_err().contains("omits entries"));
+            }
+            assert!(!rejected.exists());
+        });
     }
 
     #[test]

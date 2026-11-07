@@ -202,7 +202,7 @@ pub fn capabilities() -> Capabilities {
             .is_some_and(|name| name == "NanaZip.Universal.Console.exe")
     });
     let extended_read_formats: &[&str] = if extended {
-        &["wasm", "romfs", "ufs", "ufs2", ".NET single-file bundle (uncompressed)"]
+        &["wasm", "romfs", "ufs", "ufs2", "ZealFS v1 (direct image)", ".NET single-file bundle (uncompressed)"]
     } else { &[] };
     Capabilities { engine:executable.as_ref().map(|p|p.display().to_string()).unwrap_or_default(), available:executable.is_ok(),
       backend:if extended {"NanaZip"} else {"7-Zip"}.into(),
@@ -547,7 +547,12 @@ fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let mut source = crate::engine_stream::pin(&absolute(path)?)?;
     list_raw_with_source(path, opts, &mut source).map(|(entries, _)| entries)
 }
-fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, bool), String> {
+enum PayloadSource {
+    Engine,
+    OfficialZeal,
+    VerifiedZeal(MemoryFiles),
+}
+fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, PayloadSource), String> {
     let _timer = PhaseTimer::new("list-total");
     let ctl = control(opts);
     ctl.set("listing", None, "Reading archive directory");
@@ -577,15 +582,29 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         result => result?,
     };
     let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
-    let mut guarded_zealfs = false;
     let bare_listing;
     let listing = if candidate {
         let kind = crate::zealfs_guard::first_type(listing)?;
         if kind.eq_ignore_ascii_case("ZealFS") {
             let (headers, body) = crate::zealfs_guard::header_payload(listing, true)?;
-            crate::zealfs_guard::check(&headers, source, probe.as_ref().unwrap())?;
-            guarded_zealfs = true;
-            body
+            let image = crate::zealfs_guard::check(&headers, source, probe.as_ref().unwrap())?
+                .ok_or("missing direct ZealFS header")?;
+            let policy = crate::machine_policy::scope();
+            policy.unchanged()?;
+            if policy.restricted() {
+                let entries = parse_listing(body)?;
+                if entries.len() != image.entries.len()
+                    || expected_tree(&entries)? != expected_tree(&image.entries)?
+                {
+                    return Err("official ZealFS listing omits entries under the current machine policy".into());
+                }
+                ctl.set("complete", Some(100), "Archive directory ready");
+                return Ok((entries, PayloadSource::OfficialZeal));
+            }
+            let files = image.files.into_iter().map(|(name, bytes)| (name, MemoryChunk::Owned(bytes))).collect();
+            ctl.check()?;
+            ctl.set("complete", Some(100), "Archive directory ready");
+            return Ok((image.entries, PayloadSource::VerifiedZeal(files)));
         } else {
             if kind == "Split" {
                 let (headers, _) = crate::zealfs_guard::header_payload(listing, true)?;
@@ -614,7 +633,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         }
         if out.len() != 1 || out[0].is_dir { return Err("invalid raw stream directory".into()); }
         ctl.set("complete", Some(100), "Stream metadata ready");
-        return Ok((out, false));
+        return Ok((out, PayloadSource::Engine));
     }
     // Bzip2 and some raw streams have no stored name or uncompressed size.
     // 7-Zip emits an anonymous Size block; measure it rather than report empty.
@@ -653,7 +672,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         });
     }
     ctl.set("complete", Some(100), "Archive directory ready");
-    Ok((out, guarded_zealfs))
+    Ok((out, PayloadSource::Engine))
 }
 pub fn list_with_control(
     path: &str,
@@ -2058,7 +2077,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         None
     };
-    let (all_entries, guarded_zealfs) = list_raw_with_source(path, opts, &mut source_guard)?;
+    let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
     #[cfg(windows)]
     if let Some(source) = memory_source.as_ref() {
         let same = memory_archive_source(path, opts).is_some_and(|current| {
@@ -2104,7 +2123,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         preflight_output_targets(&entries, &dest, &opts.overwrite, &mut output_guards)?;
     }
     ctl.check()?;
-    let memory = if Path::new(path)
+    let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
+    let memory = if let PayloadSource::VerifiedZeal(files) = payload_source {
+        Some(files)
+    } else if Path::new(path)
         .extension()
         .is_some_and(|s| s.eq_ignore_ascii_case("7z"))
     {
@@ -2176,7 +2198,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
             let mut args = base("x", opts)?;
-            let execute = if guarded_zealfs {
+            let execute = if official_zeal {
                 args.push("-tZealFS".into());
                 run_with_zealfs
             } else { run };
@@ -3439,7 +3461,12 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
         let kind = crate::zealfs_guard::first_type(&result)?;
         if kind.eq_ignore_ascii_case("ZealFS") || kind == "Split" {
             let (headers, _) = crate::zealfs_guard::header_payload(&result, false)?;
-            crate::zealfs_guard::check(&headers, &mut source_guard, &probe)?;
+            let image = crate::zealfs_guard::check(&headers, &mut source_guard, &probe)?;
+            if policy.restricted() && image.is_some_and(|image| image.entries.iter().any(|e| e.name.contains('/'))) {
+                // The official test exit alone cannot prove all nested items were visited.
+                list_raw_with_source(path, opts, &mut source_guard)?;
+            }
+            policy.unchanged()?;
         }
         if !kind.eq_ignore_ascii_case("ZealFS") { run(&a, None, opts, None)?; }
     } else { run(&a, None, opts, None)?; }
@@ -4073,7 +4100,7 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     }
     validate_name(name)?;
     let mut source = crate::engine_stream::pin(&absolute(path)?)?;
-    let (list, guarded_zealfs) = list_raw_with_source(path, opts, &mut source)?;
+    let (list, payload_source) = list_raw_with_source(path, opts, &mut source)?;
     let e = list
         .iter()
         .find(|e| e.name.replace('\\', "/") == name.replace('\\', "/") && !e.is_dir)
@@ -4081,9 +4108,15 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     if e.size > 32 * 1024 * 1024 {
         return Err("preview exceeds 32 MiB limit".into());
     }
+    if let PayloadSource::VerifiedZeal(mut files) = payload_source {
+        return match files.remove(&path_key(Path::new(&e.name))) {
+            Some(MemoryChunk::Owned(bytes)) => Ok(bytes),
+            _ => Err("missing ZealFS preview entry".into()),
+        };
+    }
     let tmp = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut a = base("x", opts)?;
-    let execute = if guarded_zealfs {
+    let execute = if matches!(payload_source, PayloadSource::OfficialZeal) {
         a.push("-tZealFS".into());
         run_with_zealfs
     } else { run };
