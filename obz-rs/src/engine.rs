@@ -3494,13 +3494,10 @@ impl SourceValidationGuards {
     }
 }
 
-fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
-    let _timer = PhaseTimer::new("input-preflight");
+fn checked_input_roots(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
     if inputs.is_empty() {
         return Err("no input files".into());
     }
-    #[cfg(windows)]
-    let mut source_guards = SourceValidationGuards::new();
     let mut result = Vec::new();
     let mut names = HashSet::new();
     for src in inputs {
@@ -3517,13 +3514,23 @@ fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
         if !names.insert(name) {
             return Err("input root filenames collide".into());
         }
-        #[cfg(windows)]
-        source_guards.validate(&p)?;
-        #[cfg(not(windows))]
-        validate_tree(&p)?;
         result.push(p)
     }
     Ok(result)
+}
+
+fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
+    let _timer = PhaseTimer::new("input-preflight");
+    let paths = checked_input_roots(inputs)?;
+    #[cfg(windows)]
+    let mut source_guards = SourceValidationGuards::new();
+    for path in &paths {
+        #[cfg(windows)]
+        source_guards.validate(path)?;
+        #[cfg(not(windows))]
+        validate_tree(path)?;
+    }
+    Ok(paths)
 }
 fn validate_tree(path: &Path) -> Result<(), String> {
     no_links(path)?;
@@ -3713,9 +3720,9 @@ pub fn create(
             return Err("compressed TAR does not support password or split creation".into());
         }
         control(opts).check()?;
-        // The recursive codec step sees a temporary TAR as its input, so check
-        // the final destination against the original sources before staging.
-        let paths = input_paths(inputs)?;
+        // Check final-output containment against the original roots. The TAR
+        // creation below validates every descendant immediately before use.
+        let paths = checked_input_roots(inputs)?;
         let output = absolute(out)?;
         no_links(&output)?;
         reject_output_in_inputs(output.parent().ok_or("output has no parent")?, &paths)?;
