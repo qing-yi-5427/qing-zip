@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载 0.11.0 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.0) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载 0.11.1 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.1) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
 
 ## 软件截图
 
@@ -15,6 +15,7 @@
 
 - 毛玻璃界面、浅深色主题、目录树和多标签浏览。
 - ZIP / 7z 等格式压缩，ZIP / 7z / RAR 等格式解压；支持加密、分卷和完整性检查。
+- 从符合条件的 ZIP 或 `.7z.001` 分卷中选取文件时，程序校验全包，只暂存选中内容。分卷优化目前适用于无加密、非固实、使用存储（Copy）方法的 7z。
 - 7z 可选 ZSTD、Brotli、LZ4 等扩展压缩方法；高级设置提供字典大小、固实压缩和文件名加密。
 - 支持 Brotli、LZ4、LZ5、Lizard、ZSTD 单文件流格式的压缩与解压，也可浏览和提取 WASM、ROMFS 内容。
 - 文件校验支持 SHA-2 / SHA-3、BLAKE3、xxHash 等算法，可一次计算多种校验值。
