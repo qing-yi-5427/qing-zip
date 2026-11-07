@@ -354,7 +354,16 @@ pub(crate) fn create_output_directory(parent: &File, leaf: &OsStr) -> Result<Fil
     open_private_child(parent, leaf, ChildAccess::CreateDirectory)
 }
 
+pub(crate) fn open_output_directory(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    let file = open_private_child(parent, leaf, ChildAccess::OpenDirectory)?;
+    use std::os::windows::fs::MetadataExt;
+    let attrs = file.metadata().map_err(|e| e.to_string())?.file_attributes();
+    if attrs & 0x410 != 0x10 { return Err("linked or changed output directory".into()); }
+    Ok(file)
+}
+
 enum ChildAccess {
+    OpenDirectory,
     Metadata,
     CreateFile,
     CreateDirectory,
@@ -394,6 +403,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         // FILE_NON_DIRECTORY_FILE. Existing files, links and reparse leaves
         // cannot be opened or truncated.
         ChildAccess::CreateFile => (0x100182, 0x80, 1, 2, 0x200060, "create private stage file"),
+        ChildAccess::OpenDirectory => (0x100081, 0, 3, 1, 0x200021, "pin output directory"),
         ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),
     };
     let result = unsafe {

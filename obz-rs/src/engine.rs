@@ -2,6 +2,8 @@
 //! No shell is used. Extraction stages preflighted archives before publishing files.
 #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
 pub mod selected_worker;
+#[cfg(windows)]
+mod created_directories;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -840,7 +842,7 @@ struct CheckedDirectories {
     #[cfg(windows)]
     selected_output_root: Option<PathBuf>,
     #[cfg(windows)]
-    created_output_dirs: Vec<(PathBuf, File)>,
+    created_output_dirs: Vec<(PathBuf, created_directories::Identity)>,
     // Only validated private stages qualify. Ordinary owned TempDirs may
     // inherit shared permissions and must keep full path checks.
     #[cfg(windows)]
@@ -858,12 +860,11 @@ impl Drop for CheckedDirectories {
                 info: *const std::ffi::c_void, size: u32) -> i32;
         }
         while let Some((path, created)) = self.created_output_dirs.pop() {
-            // Keep the creation handle alive so a reused path or file ID cannot
-            // identify somebody else's directory. Windows refuses nonempty dirs.
+            // Match original ownership against this no-delete-sharing handle.
+            // Windows also refuses to dispose of a directory that is not empty.
             let Ok(current) = fs::OpenOptions::new().access_mode(0x10080)
-                .share_mode(7).custom_flags(0x02200000).open(path) else { continue };
-            let Ok(id) = directory_identity(&created) else { continue };
-            if directory_identity(&current).ok() != Some(id)
+                .share_mode(3).custom_flags(0x02200000).open(path) else { continue };
+            if !created.matches(&current)
                 || !directory_attributes(&current).is_ok_and(|attrs| attrs & 0x410 == 0x10) { continue; }
             let delete: u8 = 1;
             unsafe { SetFileInformationByHandle(current.as_raw_handle(), 4, (&delete as *const u8).cast(), 1); }
@@ -886,6 +887,27 @@ impl CheckedDirectories {
         let _ = root;
         guard
     }
+    #[cfg(windows)]
+    fn create_owned_output_dir(&self, path: &Path) -> Option<Result<File, String>> {
+        let parent = path.parent()?;
+        let leaf = path.file_name()?;
+        if let Some((pinned, _)) = self.held.get(parent) {
+            return Some(crate::private_stage::create_output_directory(pinned, leaf));
+        }
+        // Beyond the directory-pin cache, open each missing ancestor relative
+        // to the nearest retained one. Keep the whole short chain through CREATE.
+        let (anchor_path, anchor) = parent.ancestors()
+            .find_map(|ancestor| self.held.get(ancestor).map(|(file, _)| (ancestor, file)))?;
+        let mut transient = Vec::new();
+        for name in parent.strip_prefix(anchor_path).ok()?.iter() {
+            let previous = transient.last().unwrap_or(anchor);
+            match crate::private_stage::open_output_directory(previous, name) {
+                Ok(file) => transient.push(file),
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        Some(crate::private_stage::create_output_directory(transient.last().unwrap_or(anchor), leaf))
+    }
     fn create_dirs(&mut self, path: &Path) -> Result<(), String> {
         for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
             self.check(component)?;
@@ -893,13 +915,19 @@ impl CheckedDirectories {
                 continue;
             }
             #[cfg(windows)]
-            if self.selected_output_root.as_ref().is_some_and(|root| component.starts_with(root))
-                && self.created_output_dirs.len() < 4096 {
-                if let Some((parent, leaf)) = component.parent().and_then(|p| self.held.get(p))
-                    .zip(component.file_name()) {
-                    match crate::private_stage::create_output_directory(&parent.0, leaf) {
+            if self.selected_output_root.as_ref().is_some_and(|root| component.starts_with(root)) {
+                if let Some(result) = self.create_owned_output_dir(component) {
+                    match result {
                         Ok(created) => {
-                            self.created_output_dirs.push((component.to_owned(), created));
+                            let proof = if self.created_output_dirs.len() < 4096 {
+                                Some(created_directories::Identity::Handle(created))
+                            } else {
+                                created_directories::Stamp::capture(&created)
+                                    .map(created_directories::Identity::Journal)
+                            };
+                            if let Some(proof) = proof {
+                                self.created_output_dirs.push((component.to_owned(), proof));
+                            }
                             self.owned_dirs.insert(component.to_owned());
                             self.check(component)?;
                             continue;
