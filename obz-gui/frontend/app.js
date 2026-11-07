@@ -38,7 +38,7 @@ function dialog(title,body,footer){overlay.dataset.page='';returnFocus=document.
 function close(){$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}
 
 function error(e){if(!overlay.hidden&&$('qa-formerror'))$('qa-formerror').textContent=String(e);else toast(String(e));}
-async function run(request,label,{silent=false,recycleAfter=false}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');s.active='starting';let id;try{id=await invoke('start_operation',{request,recycleAfter});}catch(e){s.active=null;throw e;}const j={id,label,path:request.path||'',status:'running',percent:null};s.jobs.push(j);s.active=id;if(!silent){close();s.view='jobs';render();}try{for(;;){const v=await invoke('wait_operation',{id});Object.assign(j,{status:v.status,phase:v.progress.phase,percent:v.progress.percent,message:v.progress.message,error:v.error});if(v.status!=='running'){if(v.status==='complete'){j.result=v.result;j.summary=v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成';return v.result;}throw new Error(v.error||'任务已取消');}if(s.view==='jobs')renderProgress();}}finally{s.active=null;await invoke('forget_operation',{id}).catch(()=>{});if(s.view==='jobs')renderProgress();}}
+async function run(request,label,{silent=false,recycleAfter=false,startJob=null}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');s.active='starting';let id;try{id=await (startJob?startJob(request):invoke('start_operation',{request,recycleAfter}));}catch(e){s.active=null;throw e;}const j={id,label,path:request.path||'',status:'running',percent:null};s.jobs.push(j);s.active=id;if(!silent){close();s.view='jobs';render();}try{for(;;){const v=await invoke('wait_operation',{id});Object.assign(j,{status:v.status,phase:v.progress.phase,percent:v.progress.percent,message:v.progress.message,error:v.error});if(v.status!=='running'){if(v.status==='complete'){j.result=v.result;j.summary=v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成';return v.result;}throw new Error(v.error||'任务已取消');}if(s.view==='jobs')renderProgress();}}finally{s.active=null;await invoke('forget_operation',{id}).catch(()=>{});if(s.view==='jobs')renderProgress();}}
 async function finishExtraction(source,dest,result,{recycle=false,openAfter=false,closeAfter=false}={}){if(recycle){const last=s.jobs.at(-1);if(result.recycled){s.recent=s.recent.filter(p=>p!==source);localStorage.setItem('qing-recent',JSON.stringify(s.recent));discardArchiveTab(source,{preserveJob:true});if(last)last.summary+='；原压缩包已移入回收站。';render();}else{const message='解压已完成，但原压缩包未移入回收站：'+(result.recycle_error||'原压缩包已保留。');if(last)last.summary=message;renderProgress();toast(message);}}if(openAfter)await invoke('reveal_path',{path:result.destination||dest});if(closeAfter&&(!recycle||result.recycled))await invoke('window_action',{action:'close'});return !recycle||!!result.recycled;}
 async function openArchive(path,password='',{refresh=false}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!$('qa-open-path')});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:'',search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);navigate('archive');}finally{openingArchive=false;}}
 
@@ -167,11 +167,83 @@ let lastSelectShift=false,dragCandidate=null,dragBusy=false,suppressRowClick=fal
 root.addEventListener('mousedown',e=>{if(e.target.closest('[data-row]')&&!e.target.closest('input'))e.preventDefault();});
 root.addEventListener('dragstart',e=>{if(e.target.closest('[data-row]'))e.preventDefault();});
 root.addEventListener('click',e=>{if(suppressRowClick&&e.target.closest('[data-row]')){e.preventDefault();e.stopImmediatePropagation();suppressRowClick=false;}},true);
-root.addEventListener('pointerdown',e=>{lastSelectShift=e.shiftKey;if(e.button!==0||s.active||dragBusy||!overlay.hidden)return;const row=e.target.closest('[data-row]');if(row&&!e.target.closest('input')&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey)dragCandidate={name:row.dataset.row,x:e.clientX,y:e.clientY};});
-root.addEventListener('pointerup',()=>{dragCandidate=null;});
-root.addEventListener('pointercancel',()=>{dragCandidate=null;});
-root.addEventListener('pointermove',e=>{const c=dragCandidate;if(!c||!(e.buttons&1)||Math.hypot(e.clientX-c.x,e.clientY-c.y)<6)return;dragCandidate=null;suppressRowClick=true;if(!s.selected.has(c.name))selectRow(c.name,{});dragSelection().catch(error).finally(()=>{dragBusy=false;setTimeout(()=>suppressRowClick=false,300);});});
-async function dragSelection(){if(dragBusy||s.active)return;dragBusy=true;const names=[...s.selected],path=s.archive,password=s.password||null,codepage=s.codepage||null;if(names.length>512)throw Error('一次最多拖出 512 个文件或文件夹。');toast('正在准备拖出文件，请保持按住鼠标；松开可取消拖放。');const dest=await invoke('clipboard_directory');await run({operation:'extract',path,dest,options:{selected:names,overwrite:'error',password,codepage}},'准备拖出文件',{silent:true});const copied=await invoke('drag_paths',{paths:names.map(n=>dest+'\\'+n.replaceAll('/','\\'))});toast(copied?'文件已交给目标文件夹复制。':'已取消拖放，压缩包保持不变。');}
+let dragGesture=null;
+root.addEventListener('pointerdown',e=>{
+  lastSelectShift=e.shiftKey;
+  if(e.button!==0||s.active||dragBusy||!overlay.hidden)return;
+  const row=e.target.closest('[data-row]');
+  if(row&&!e.target.closest('input')&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey)
+    dragCandidate={name:row.dataset.row,x:e.clientX,y:e.clientY,pointerId:e.pointerId};
+});
+function cancelPreparingDrag(pointerId) {
+  if(dragCandidate&&(!Number.isInteger(pointerId)||dragCandidate.pointerId===pointerId))dragCandidate=null;
+  const gesture=dragGesture;
+  if(!gesture||gesture.cancelled||(Number.isInteger(pointerId)&&gesture.pointerId!==pointerId))return;
+  gesture.cancelled=true;
+  invoke('cancel_drag_preparation',{token:gesture.token}).catch(()=>{});
+}
+window.addEventListener('pointerup',e=>cancelPreparingDrag(e.pointerId),true);
+window.addEventListener('pointercancel',e=>cancelPreparingDrag(e.pointerId),true);
+// Explorer may take focus or mouse capture while the user is still holding
+// the button over a target. The native monitor continues across that boundary.
+root.addEventListener('lostpointercapture',()=>{dragCandidate=null;});
+window.addEventListener('blur',()=>{dragCandidate=null;});
+window.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&dragGesture){cancelPreparingDrag();e.preventDefault();e.stopImmediatePropagation();}
+},true);
+root.addEventListener('pointermove',e=>{
+  const c=dragCandidate;
+  if(!c||c.pointerId!==e.pointerId||!(e.buttons&1)||Math.hypot(e.clientX-c.x,e.clientY-c.y)<6)return;
+  dragCandidate=null;suppressRowClick=true;
+  if(!s.selected.has(c.name))selectRow(c.name,{});
+  dragSelection(c.pointerId).catch(error).finally(()=>{dragBusy=false;setTimeout(()=>suppressRowClick=false,300);});
+});
+async function dragSelection(pointerId) {
+  if(dragBusy||s.active)return;
+  dragBusy=true;
+  const names=[...s.selected],path=s.archive,password=s.password||null,codepage=s.codepage||null;
+  if(names.length>512)throw Error('一次最多拖出 512 个文件或文件夹。');
+  const gesture={token:crypto.randomUUID(),pointerId,cancelled:false};
+  dragGesture=gesture;
+  let jobId;
+  const ownJob=()=>s.jobs.find(item=>item.id===jobId);
+  const status=(state,summary)=>{
+    const job=ownJob();
+    if(job){job.status=state;job.summary=summary;if(s.view==='jobs')renderProgress();}
+  };
+  const releaseCapture=()=>{
+    try{if(root.hasPointerCapture(pointerId))root.releasePointerCapture(pointerId);}catch{}
+  };
+  try {
+    // Capture covers release outside the list. The native monitor also covers
+    // leaving WebView2 or losing focus while the start request is in flight.
+    try{root.setPointerCapture(pointerId);}catch{}
+    toast('正在准备拖出文件，松开鼠标或按 Esc 取消。');
+    const startJob=async request=>{
+      const id=await invoke('start_drag_preparation',{token:gesture.token,request});
+      jobId=id;
+      // A quick release may have arrived before native registration. Replay
+      // only this gesture's cancellation, even if another job is now active.
+      if(gesture.cancelled)await invoke('cancel_drag_preparation',{token:gesture.token}).catch(()=>{});
+      return id;
+    };
+    await run({operation:'extract',path,options:{selected:names,overwrite:'error',password,codepage}},
+      '准备拖出文件',{silent:true,startJob});
+    releaseCapture();
+    const copied=!gesture.cancelled&&await invoke('finish_drag',{token:gesture.token});
+    const summary=copied?'文件已交给目标文件夹复制。':'已取消拖放。';
+    status(copied?'complete':'cancelled',summary);
+    toast(summary);
+  } catch(e) {
+    if(!gesture.cancelled&&ownJob()?.status!=='cancelled'&&!/operation cancelled|已取消拖放/i.test(String(e))){status('failed',String(e));throw e;}
+    status('cancelled','已取消拖放。');
+    toast('已取消拖放。');
+  } finally {
+    releaseCapture();
+    if(dragGesture===gesture)dragGesture=null;
+    await invoke('discard_drag',{token:gesture.token}).catch(()=>{});
+  }
+}
 const scrollTimers=new WeakMap();root.addEventListener('scroll',e=>{const el=e.target;if(!(el instanceof HTMLElement))return;el.classList.add('oa-scrolling');clearTimeout(scrollTimers.get(el));scrollTimers.set(el,setTimeout(()=>el.classList.remove('oa-scrolling'),900));},true);
 root.addEventListener('click',e=>{if(e.target.closest('#oa-menu')||e.target.closest('[data-menu]')||e.target.closest('[data-action=more-menu]'))return;$('oa-menu').hidden=true;const row=e.target.closest('[data-row]');if(row&&!e.target.closest('button,input'))selectRow(row.dataset.row,e);});
 root.addEventListener('contextmenu',e=>{const recent=e.target.closest('[data-recent]');if(recent){e.preventDefault();showRecentContext(recent,e);return;}const tab=e.target.closest('[data-tab-container]');if(tab){e.preventDefault();tab.querySelector('[data-archive-tab]')?.focus();showArchiveTabMenu(tab.dataset.tabContainer,e);return;}const row=e.target.closest('[data-row]');if(row){e.preventDefault();focusEntry(row.dataset.row);if(!s.selected.has(row.dataset.row))selectRow(row.dataset.row,{});showMenu('edit',{getBoundingClientRect:()=>({left:e.clientX,bottom:e.clientY})});}});

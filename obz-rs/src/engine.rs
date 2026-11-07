@@ -446,7 +446,8 @@ fn run_program(
         Ok(Vec::new())
     }
 }
-pub(crate) fn validate_name(name: &str) -> Result<PathBuf, String> {
+/// Resolve a member name to the same safe relative path used during extraction.
+pub fn validate_name(name: &str) -> Result<PathBuf, String> {
     let name = name.replace('\\', "/");
     if name.starts_with('/') {
         return Err("absolute archive path rejected".into());
@@ -2737,8 +2738,121 @@ impl StagingDir {
         }
     }
 }
-// Windows TEMP can be shared or user-selected. Always create the fallback
-// atomically with a private DACL; never repair permissions after publication.
+/// Private output of one Explorer drag. Hold its directory identity until
+/// preparation is abandoned or the shell accepts responsibility for the data.
+#[cfg(windows)]
+pub struct ShellDragDirectory {
+    path: PathBuf,
+    root: Option<File>,
+    _parent_pin: File,
+    _ancestors: CheckedDirectories,
+    retained: AtomicBool,
+}
+#[cfg(windows)]
+impl ShellDragDirectory {
+    pub fn create() -> Result<Self, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let parent = absolute(
+            std::env::temp_dir()
+                .to_str()
+                .ok_or("invalid temporary directory")?,
+        )?;
+        let mut ancestors = CheckedDirectories::default();
+        ancestors.check(&parent)?;
+        let pin = File::options()
+            .access_mode(0x20081)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(&parent)
+            .map_err(|e| e.to_string())?;
+        validate_transaction_root(&pin, &parent)?;
+        let (path, root, parent_pin) = crate::private_stage::create_drag_root(&parent, &pin)?;
+        Ok(Self {
+            path,
+            root: Some(root),
+            _parent_pin: parent_pin,
+            _ancestors: ancestors,
+            retained: AtomicBool::new(false),
+        })
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn retain_for_shell(&self) {
+        self.retained.store(true, Ordering::Release);
+    }
+    pub fn pin_for_read(&self) -> Result<File, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let pin = File::options().access_mode(0x81).share_mode(1)
+            .custom_flags(0x02200000).open(&self.path).map_err(|e| e.to_string())?;
+        validate_transaction_root(&pin, &self.path)?;
+        if directory_identity(&pin)? != directory_identity(self.root.as_ref().ok_or("missing drag root")?)? {
+            return Err("drag export directory changed".into());
+        }
+        Ok(pin)
+    }
+}
+#[cfg(windows)]
+impl Drop for ShellDragDirectory {
+    fn drop(&mut self) {
+        use std::os::windows::fs::OpenOptionsExt;
+        if self.retained.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(strong) = self.pin_for_read() else { return };
+        let Some(root) = self.root.take() else { return };
+        let open = |access| {
+            File::options()
+                .access_mode(access)
+                .share_mode(7)
+                .custom_flags(0x02200000)
+                .open(&self.path)
+        };
+        let Ok(anchor) = open(0x80) else { return };
+        let Ok(id) = directory_identity(&root) else {
+            return;
+        };
+        if directory_identity(&anchor).ok() != Some(id) {
+            return;
+        }
+        // Walk only this operation's pinned, privately created directory.
+        if let Ok(children) = fs::read_dir(&self.path) {
+            for child in children.flatten() {
+                let path = child.path();
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(path);
+                } else {
+                    if let Ok(file) = File::options()
+                        .access_mode(0x180)
+                        .share_mode(7)
+                        .custom_flags(0x00200000)
+                        .open(&path)
+                    {
+                        if let Ok(meta) = crate::private_stage::checked_metadata(&file) {
+                            if meta.permissions().readonly() {
+                                let mut permissions = meta.permissions();
+                                permissions.set_readonly(false);
+                                let _ = file.set_permissions(permissions);
+                            }
+                        }
+                    }
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        drop(strong);
+        drop(root);
+        // The anchor keeps the ID alive across reopening with DELETE access.
+        // The kernel only removes an empty directory; no replacement is walked.
+        let Ok(delete) = open(0x10080) else { return };
+        if directory_identity(&delete).ok() == Some(id) {
+            crate::private_stage::delete_empty_directory(&delete);
+        }
+    }
+}
+
+// Windows TEMP can be shared or user-selected. Create the fallback with a
+// private DACL before exposing a pathname.
 fn new_fallback_stage(parent: &Path, guards: &mut CheckedDirectories) -> Result<StagingDir, String> {
     #[cfg(windows)]
     {

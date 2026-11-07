@@ -239,25 +239,33 @@ impl Drop for PrivateStage {
                         }
                     }
                 }
-                let mut status = IoStatus {
-                    status: 0,
-                    information: 0,
-                };
-                let mut delete = 1u8;
-                unsafe {
-                    NtSetInformationFile(
-                        self.root.as_raw_handle(),
-                        (&mut status as *mut IoStatus).cast(),
-                        (&mut delete as *mut u8).cast(),
-                        1,
-                        13,
-                    );
-                }
+                delete_empty_directory(&self.root);
             }
         }
     }
 }
+pub(crate) fn delete_empty_directory(root: &File) {
+    let mut status = IoStatus { status: 0, information: 0 };
+    let mut delete = 1u8;
+    unsafe {
+        NtSetInformationFile(root.as_raw_handle(), (&mut status as *mut IoStatus).cast(),
+            (&mut delete as *mut u8).cast(), 1, 13);
+    }
+}
 pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage, String> {
+    let (path, root, parent_pin) = create_root(parent, parent_handle, ".qing-zip-stage-", 0x170081, 1)?;
+    Ok(PrivateStage { path: Some(path), parent: parent.to_owned(), root, _parent_pin: parent_pin })
+}
+
+pub(crate) fn create_drag_root(parent: &Path, parent_handle: &File) -> Result<(PathBuf, File, File), String> {
+    // A separate extraction request must be able to open this directory as
+    // an ordinary ancestor. Its held pin denies rename, but requests no DELETE.
+    // Windows needs write sharing on the destination parent to rename a
+    // verified child into it. Keep its namespace pinned against deletion.
+    create_root(parent, parent_handle, "qing-zip-drag-", 0x120081, 3)
+}
+
+fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, share: u32) -> Result<(PathBuf, File, File), String> {
     let parent_pin = parent_handle.try_clone().map_err(|e| e.to_string())?;
     let token = token()?;
     let sid = current_sid(&token)?;
@@ -285,7 +293,7 @@ pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        let leaf = format!(".qing-zip-stage-{name}");
+        let leaf = format!("{prefix}{name}");
         let path = parent.join(&leaf);
         let mut wide: Vec<u16> = leaf.encode_utf16().collect();
         let mut unicode = UnicodeString {
@@ -306,17 +314,17 @@ pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage
             information: 0,
         };
         let mut handle = std::ptr::null_mut();
-        // FILE_CREATE + private DACL + deny-write/delete pin are atomic. No
+        // FILE_CREATE + private DACL + deny-delete pin are atomic. No
         // parent DELETE_CHILD actor can replace the directory before pinning.
         let result = unsafe {
             NtCreateFile(
                 &mut handle,
-                0x170081,
+                access,
                 &attributes,
                 &mut status,
                 std::ptr::null(),
                 0x10,
-                1,
+                share,
                 2,
                 0x200021,
                 std::ptr::null_mut(),
@@ -324,12 +332,7 @@ pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage
             )
         };
         if result >= 0 {
-            return Ok(PrivateStage {
-                path: Some(path),
-                parent: parent.to_owned(),
-                root: unsafe { File::from_raw_handle(handle) },
-                _parent_pin: parent_pin,
-            });
+            return Ok((path, unsafe { File::from_raw_handle(handle) }, parent_pin));
         }
         let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32);
         if error.raw_os_error() != Some(183) {
