@@ -6,6 +6,8 @@
 extern "C" {
 #endif
 
+enum { QZ_TRACE_ENCRYPTED_HEADER = 25 };
+
 enum QzSelectedOutcome {
   QZ_SELECTED_FAILED = 1,         // No CLI retry, publication, recycle, or success.
   QZ_SELECTED_DECODED_PRIVATE = 2, // Still needs worker exit + host verification.
@@ -102,6 +104,10 @@ struct QzSelectedReceipt {
 // that S_OK authorizes publishing.
 HRESULT __stdcall qz_extract_selected(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *);
+
+// Borrowed only until return. Decoders may request a caller-owned BSTR.
+HRESULT __stdcall qz_extract_selected_with_password(
+    const struct QzSelectedRequest *, struct QzSelectedReceipt *, const wchar_t *, uint32_t);
 
 #ifdef __cplusplus
 }

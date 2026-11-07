@@ -6,6 +6,7 @@
 #include "Common/MyInitGuid.h" // Exactly one TU defines the official interface IIDs.
 #include "7zip/Archive/IArchive.h"
 #include "7zip/IStream.h"
+#include "7zip/IPassword.h"
 #include "7zip/ICoder.h"
 #include "7zip/PropID.h"
 #include "bridge_contract.h"
@@ -95,7 +96,17 @@ struct Item { std::wstring name; QzSelectedItem value{}; };
 struct OperationStatus {
   const QzSelectedHost host; // Snapshot function table; context lifetime is host-owned.
   std::atomic<HRESULT> first_error{S_OK};
-  explicit OperationStatus(const QzSelectedHost &h) : host(h) {}
+  const std::wstring_view password; // Borrowed from the isolated worker until Close.
+  OperationStatus(const QzSelectedHost &h, std::wstring_view p) : host(h), password(p) {}
+  HRESULT provide_password(BSTR *out) noexcept {
+    if (!out) return finish(E_POINTER);
+    *out = nullptr;
+    if (auto hr = check(); hr != S_OK) return hr;
+    if (password.empty()) return finish(E_ACCESSDENIED);
+    // Official COM contract transfers ownership of this BSTR to the codec.
+    *out = SysAllocStringLen(password.data(), static_cast<UINT>(password.size()));
+    return *out ? S_OK : finish(E_OUTOFMEMORY);
+  }
   HRESULT finish(HRESULT hr) noexcept {
     if (hr != S_OK) {
       HRESULT expected = S_OK;
@@ -228,7 +239,7 @@ struct VolumeMap {
   }
 };
 
-class OpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolumeCallback {
+class OpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolumeCallback, public ICryptoGetTextPassword {
   std::atomic<ULONG> refs_{1};
   const VolumeMap &map_; bool volume_requests_;
 public:
@@ -239,11 +250,17 @@ public:
       *p = static_cast<IArchiveOpenCallback *>(this);
     else if (iid == IID_IArchiveOpenVolumeCallback)
       *p = static_cast<IArchiveOpenVolumeCallback *>(this);
-    else return E_NOINTERFACE; // No password support in initial unencrypted subset.
+    else if (iid == IID_ICryptoGetTextPassword && !volume_requests_ && !map_.operation->password.empty())
+      *p = static_cast<ICryptoGetTextPassword *>(this);
+    else return E_NOINTERFACE;
     AddRef(); return S_OK;
   }
   ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ++refs_; }
   ULONG STDMETHODCALLTYPE Release() noexcept override { auto n = --refs_; if (!n) delete this; return n; }
+  HRESULT STDMETHODCALLTYPE CryptoGetTextPassword(BSTR *out) noexcept override {
+    auto hr = map_.operation->observe(QZ_TRACE_ENCRYPTED_HEADER); // Inner 7z requests its encrypted header.
+    return hr == S_OK ? map_.operation->provide_password(out) : hr;
+  }
   HRESULT STDMETHODCALLTYPE SetTotal(const UInt64 *, const UInt64 *) noexcept override {
     return map_.operation->check();
   }
@@ -331,7 +348,7 @@ public:
   }
 };
 
-class ExtractCallback final : public IArchiveExtractCallback, public IArchiveExtractCallbackMessage2 {
+class ExtractCallback final : public IArchiveExtractCallback, public IArchiveExtractCallbackMessage2, public ICryptoGetTextPassword {
   std::atomic<ULONG> refs_{1};
   std::shared_ptr<Shared> state_;
 public:
@@ -342,11 +359,16 @@ public:
       *p = static_cast<IArchiveExtractCallback *>(this);
     else if (iid == IID_IArchiveExtractCallbackMessage2)
       *p = static_cast<IArchiveExtractCallbackMessage2 *>(this);
+    else if (iid == IID_ICryptoGetTextPassword && !state_->operation->password.empty())
+      *p = static_cast<ICryptoGetTextPassword *>(this);
     else return E_NOINTERFACE;
     AddRef(); return S_OK;
   }
   ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ++refs_; }
   ULONG STDMETHODCALLTYPE Release() noexcept override { auto n = --refs_; if (!n) delete this; return n; }
+  HRESULT STDMETHODCALLTYPE CryptoGetTextPassword(BSTR *out) noexcept override {
+    return state_->operation->provide_password(out);
+  }
   HRESULT STDMETHODCALLTYPE SetTotal(UInt64 total) noexcept override {
     if (total != state_->total.load()) { state_->record(E_FAIL); return E_FAIL; }
     return state_->check();
@@ -532,7 +554,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
     { Variant v; exact(arc->GetProperty(i, kpidSize, &v.v), "item size");
       item.value.size = number(v.v, item.value.is_dir != 0);
       if (item.value.is_dir && item.value.size) fail("directory has payload"); }
-    for (PROPID id : {kpidEncrypted, kpidIsAnti, kpidIsAltStream, kpidIsAux, kpidIsDeleted}) {
+    for (PROPID id : {kpidIsAnti, kpidIsAltStream, kpidIsAux, kpidIsDeleted}) {
       Variant v; exact(arc->GetProperty(i, id, &v.v), "item safety property");
       if (boolean(v.v)) fail("item is outside safe supported method set");
     }
@@ -542,9 +564,19 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
     }
     { Variant v; exact(arc->GetProperty(i, kpidNtSecure, &v.v), "item security property");
       if (v.v.vt != VT_EMPTY) throw UnsupportedLayout{"archived security descriptor"}; }
-    { Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
+    { Variant flag; exact(arc->GetProperty(i, kpidEncrypted, &flag.v), "item encryption");
+      bool encrypted = boolean(flag.v);
+      Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
-      if (method == L"Copy") has_copy = true;
+      if (encrypted) {
+        auto pos = method.find(L" 7zAES:");
+        auto rounds = pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
+        if (state.operation->password.empty() || rounds.empty() || rounds.size() > 2 ||
+            !std::all_of(rounds.begin(), rounds.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }) ||
+            !single_lzma2(std::wstring_view(method).substr(0, pos))) fail("unexpected encrypted item method");
+        has_lzma2 = true;
+      } else if (item.value.size && !state.operation->password.empty()) fail("mixed encrypted item layout");
+      else if (method == L"Copy") has_copy = true;
       else if (single_lzma2(method)) has_lzma2 = true;
       else if (item.value.size || !method.empty()) fail("unexpected 7z item method"); }
     { Variant v; exact(arc->GetProperty(i, kpidAttrib, &v.v), "item attributes");
@@ -585,7 +617,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *request, QzSelectedReceipt *receipt) {
+extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -601,7 +633,8 @@ extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *reques
         !host.accept_manifest || !host.prepare_private_tree || !host.open_private_output || !host.write_private_output ||
         !host.close_private_output || !host.cancelled || !host.progress || !host.trace) fail("invalid host ABI");
     if (host.cancelled(host.context)) fail("cancelled", E_ABORT);
-    operation = std::make_shared<OperationStatus>(host);
+    if (units > 32767 || (units && !password)) fail("invalid password frame length");
+    operation = std::make_shared<OperationStatus>(host, units ? std::wstring_view(password, units) : std::wstring_view{});
     VolumeMap map(*request, operation); // Own names/sizes; no request-array reads later.
     if (effective_policy_or_unknown()) {
       if (host.cancelled(host.context)) fail("cancelled", E_ABORT);
@@ -669,4 +702,8 @@ extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *reques
     receipt->decoded_bytes = state->decoded; receipt->selected_bytes = state->selected_bytes;
   }
   return receipt->result;
+}
+
+extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *request, QzSelectedReceipt *receipt) {
+  return qz_extract_selected_with_password(request, receipt, nullptr, 0);
 }

@@ -156,6 +156,44 @@ fn single_lzma2(method: &str) -> bool {
     dictionary.len() <= 5 && !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
 }
 
+// A separate anonymous input frame carries only the password. The sender
+// owns and wipes its single, exactly sized UTF-16 transport copy on every exit.
+const MAX_PASSWORD_UNITS: usize = 32767;
+
+struct SecretFrame(Vec<u8>);
+impl SecretFrame {
+    fn new(password: &str) -> Self {
+        let mut body = Vec::with_capacity(password.encode_utf16().count() * 2);
+        for unit in password.encode_utf16() {
+            body.extend_from_slice(&unit.to_le_bytes());
+        }
+        Self(body)
+    }
+}
+impl AsRef<[u8]> for SecretFrame {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl Drop for SecretFrame {
+    fn drop(&mut self) {
+        for byte in &mut self.0 {
+            unsafe { std::ptr::write_volatile(byte, 0) };
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn encrypted_lzma2(method: &str) -> bool {
+    let Some((coder, rounds)) = method.split_once(" 7zAES:") else {
+        return false;
+    };
+    single_lzma2(coder)
+        && !rounds.is_empty()
+        && rounds.len() <= 2
+        && rounds.bytes().all(|c| c.is_ascii_digit())
+}
+
 fn eligible(
     first: &File,
     parts: &[File],
@@ -163,26 +201,37 @@ fn eligible(
     opts: &EngineOptions,
     leaf: &str,
 ) -> Result<bool, String> {
+    if let Some(password) = &opts.password {
+        crate::engine_password::validate(password)?;
+    }
     if !leaf
         .get(leaf.len().saturating_sub(7)..)
         .is_some_and(|s| s.eq_ignore_ascii_case(".7z.001"))
         || parts.is_empty()
         || parts.len() >= 1024
         || opts.selected.is_empty()
-        || opts.password.is_some()
+        || opts
+            .password
+            .as_ref()
+            .is_some_and(|p| p.encode_utf16().count() > MAX_PASSWORD_UNITS)
+        || opts.password.is_some() != entries.iter().any(|e| e.encrypted)
         || opts.codepage.is_some()
         || opts.threads.is_some()
         || entries.is_empty()
         || !manifest_fits(entries)
         || !entries.iter().all(|entry| {
-            entry.size_known
-                && !entry.encrypted
-                && (entry.is_dir
-                    || entry.size == 0
-                    || (entry.method == "Copy" && entry.packed_size == entry.size)
-                    // For a solid folder only its first member reports a packed
-                    // size. Decoded lengths and CRCs are validated per member.
-                    || single_lzma2(&entry.method))
+            if !entry.size_known {
+                return false;
+            }
+            if entry.encrypted {
+                return opts.password.is_some() && encrypted_lzma2(&entry.method);
+            }
+            if entry.is_dir || entry.size == 0 {
+                return true;
+            }
+            opts.password.is_none()
+                && (single_lzma2(&entry.method)
+                    || (entry.method == "Copy" && entry.packed_size == entry.size))
         })
         || entries
             .iter()
@@ -363,8 +412,13 @@ impl Session {
         );
         Ok(s)
     }
-    fn send(&mut self, kind: u8, bytes: Vec<u8>, ctl: &JobControl) -> Result<(), String> {
-        if bytes.len() > LIMIT {
+    fn send(
+        &mut self,
+        kind: u8,
+        body: impl AsRef<[u8]> + Send + 'static,
+        ctl: &JobControl,
+    ) -> Result<(), String> {
+        if body.as_ref().len() > LIMIT {
             return Err("worker request exceeds size limit".into());
         }
         let mut pipe = self
@@ -377,10 +431,11 @@ impl Session {
         let writer = std::thread::Builder::new()
             .name("selected-worker-input".into())
             .spawn(move || {
+                let bytes = body.as_ref();
                 let result = pipe
                     .write_all(&[kind])
                     .and_then(|_| pipe.write_all(&(bytes.len() as u32).to_le_bytes()))
-                    .and_then(|_| pipe.write_all(&bytes))
+                    .and_then(|_| pipe.write_all(bytes))
                     .and_then(|_| pipe.flush());
                 let _ = tx.send(result);
             })
@@ -589,7 +644,13 @@ fn run(
         );
         wide(&mut request, OsStr::new(&format!("{prefix}{:03}", i + 1)))?;
     }
+    let password = opts.password.as_deref();
+    let units = password.map_or(0, |p| p.encode_utf16().count() as u32);
+    request.extend_from_slice(&units.to_le_bytes());
     session.send(1, request, ctl)?;
+    if let Some(password) = password {
+        session.send(6, SecretFrame::new(password), ctl)?;
+    }
     let full_bytes = entries
         .iter()
         .try_fold(0u64, |n, e| n.checked_add(e.size))
@@ -626,6 +687,10 @@ fn run(
                 }
                 session.send(3, ack, ctl)?;
                 accepted = Some(members);
+            }
+            7 if password.is_some() && accepted.is_none() => {
+                data.end()?;
+                ctl.set("decoding", None, "Opening encrypted archive header");
             }
             4 => {
                 let decoded = data.u64()?;
@@ -692,6 +757,8 @@ fn run(
                     Ok(true)
                 } else if ineligible {
                     Ok(false)
+                } else if stats.code == 9 || (password.is_some() && matches!(stats.code, 2 | 3)) {
+                    Err("incorrect password or damaged encrypted archive".into())
                 } else if stats.code == 3 {
                     Err("7z CRC verification failed".into())
                 } else {

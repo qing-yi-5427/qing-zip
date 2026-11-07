@@ -9,6 +9,7 @@
     "vendor/SevenZip/CPP/7zip/Archive/IArchive.h": "a20284073541883f2838083212240beb790a5077459711ead9d7ead448499f68",
     "vendor/SevenZip/CPP/7zip/ICoder.h": "978bd8ea8f43c49f7010688632c4e832855497178773d3747000805b41c73b23",
     "vendor/SevenZip/CPP/7zip/IDecl.h": "65898405ae1d473e284353f177c021d1fcef7431745cc53d763bfeb84ca50ad6",
+    "vendor/SevenZip/CPP/7zip/IPassword.h": "050a1bafe3a1cf67c74fb949d08c6fe87138d518e4431fc995ad4c0dd6b4dc0d",
     "vendor/SevenZip/CPP/7zip/IProgress.h": "7505a2a29e78a93f322091ac1560a44e571854f32eea48c12fae463644c005d1",
     "vendor/SevenZip/CPP/7zip/IStream.h": "9c372948e68f64e4afa8ec39e72fd2314aedde2a75c62c901fd8d73de50b0e9b",
     "vendor/SevenZip/CPP/7zip/PropID.h": "d3e9bd0ec88d07d36d11a7efc5c30d058bba9960026beb0557be3abcb717e2fe",

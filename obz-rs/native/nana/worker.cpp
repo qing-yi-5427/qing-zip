@@ -1,4 +1,4 @@
-// Native one-job child. Control frames carry metadata and capabilities only.
+// Native one-job child. A separate private input frame carries the optional password.
 // The decoder reads pinned volume handles and writes private output handles.
 #include "bridge_contract.h"
 #include <algorithm>
@@ -76,10 +76,14 @@ struct Worker {
   std::vector<QzSelectedVolume> volumes;
   std::vector<uint8_t> selected;
   std::mutex source_lock;
-  std::atomic<bool> failed{false};
+  std::atomic<bool> failed{false}, header_notified{false};
   std::atomic<int32_t> operation_error{-1};
   std::atomic<ULONGLONG> last_progress{0};
   HANDLE parent{};
+  std::vector<wchar_t> password;
+  ~Worker() {
+    if (!password.empty()) SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  }
   Bytes message() const { return Bytes(nonce.begin(), nonce.end()); }
   void match_nonce(Reader &r) {
     std::array<uint8_t, 16> received{}; r.take(received.data(), received.size());
@@ -104,7 +108,16 @@ struct Worker {
       sources.push_back(handle);
       volumes.push_back({leaves.back().c_str(), uint32_t(leaves.back().size()), 0, size});
     }
+    auto units = r.get<uint32_t>();
+    if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
+    if (units) {
+      uint8_t kind; uint32_t length;
+      transfer(channel.input, &kind, 1, false); transfer(channel.input, &length, 4, false);
+      if (kind != 6 || length != units * sizeof(wchar_t)) throw std::runtime_error("invalid password input");
+      password.resize(units);
+      transfer(channel.input, password.data(), length, false);
+    }
   }
 };
 template<class Fn> HRESULT guarded(Worker &w, Fn &&f) noexcept {
@@ -182,6 +195,11 @@ void __stdcall progress(void *p, uint64_t decoded, uint64_t total) {
 }
 HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t result, uint64_t) {
   auto &w = *static_cast<Worker *>(p);
+  if (event == QZ_TRACE_ENCRYPTED_HEADER && !w.header_notified.exchange(true)) {
+    return guarded(w, [&]() -> HRESULT {
+      auto msg = w.message(); w.channel.send(7, msg); return S_OK;
+    });
+  }
   if ((event == 22 || event == 23) && result != 0) w.operation_error = result;
   return S_OK;
 }
@@ -194,7 +212,7 @@ extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {
                         open_output, write_output, close_output, cancelled, progress, observe};
     QzSelectedRequest req{1, sizeof(QzSelectedRequest), runtime, w.volumes.data(),
                           uint32_t(w.volumes.size()), 0, &host};
-    QzSelectedReceipt result{}; HRESULT hr = qz_extract_selected(&req, &result);
+    QzSelectedReceipt result{}; HRESULT hr = qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
     Bytes msg = w.message(); put(msg, uint32_t(hr)); put(msg, result.outcome); put(msg, result.item_count);
     put(msg, result.completion_count); put(msg, result.item_errors); put(msg, result.block_errors);
     put(msg, result.streams_open); put(msg, result.decoded_bytes); put(msg, result.selected_bytes);

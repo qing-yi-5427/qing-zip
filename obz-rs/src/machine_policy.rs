@@ -662,6 +662,59 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    fn selected_encrypted_split_delegates_to_official_console_under_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let chosen = root.join("chosen.txt");
+        let other = root.join("other.txt");
+        std::fs::write(&chosen, b"chosen").unwrap();
+        std::fs::write(&other, b"unselected").unwrap();
+        let archive = root.join("encrypted.7z");
+        let password = Some(String::from("private test fixture"));
+        let creation = EngineOptions {
+            password: password.clone(),
+            header_encryption: Some(true),
+            volume_bytes: Some(128),
+            ..Default::default()
+        };
+        engine::create(
+            archive.to_str().unwrap(),
+            &[chosen.display().to_string(), other.display().to_string()],
+            "7z",
+            &creation,
+        )
+        .unwrap();
+        let first = root.join("encrypted.7z.001");
+        assert!(root.join("encrypted.7z.002").is_file());
+        let opts = EngineOptions {
+            password,
+            selected: vec!["chosen.txt".into()],
+            ..Default::default()
+        };
+        with_rules([&["Split", "7z"], &[], &[], &[]], || {
+            let dest = root.join("output");
+            let calls = trace_archive_children(|| {
+                assert_eq!(
+                    operations::extract_archive(
+                        first.to_str().unwrap(),
+                        dest.to_str().unwrap(),
+                        &opts
+                    )
+                    .unwrap(),
+                    1
+                );
+            });
+            assert!(calls.iter().any(|(_, op)| op == "x"));
+            assert!(calls
+                .iter()
+                .all(|(exe, _)| exe.file_name().unwrap() == "NanaZip.Universal.Console.exe"));
+            assert_eq!(std::fs::read(dest.join("chosen.txt")).unwrap(), b"chosen");
+            assert!(!dest.join("other.txt").exists());
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn allowed_split_copy_uses_full_official_extraction_when_policy_is_active() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
