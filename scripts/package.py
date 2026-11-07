@@ -52,13 +52,18 @@ def main():
     for name in ("runtime", "licenses", "assets"):
         if not (root / name).is_dir():
             raise SystemExit(f"Missing package directory: {root / name}")
+    runtime_source = root / "runtime"
+    if args.architecture == "arm64":
+        from arm64_package_runtime import verify_layout
+        runtime_source = args.runtime_directory.resolve(strict=True)
+        verify_layout(runtime_source)
     if args.check_inputs:
         print(f"Package inputs verified: {binaries}")
         return
 
     version = json.loads((root / "obz-gui/tauri.conf.json").read_text(encoding="utf-8"))["version"]
     output_directory = args.output_directory.resolve() if args.output_directory else root / "dist"
-    if any(output_directory.is_relative_to(root / name) for name in ("runtime", "licenses", "assets")):
+    if output_directory.is_relative_to(runtime_source) or any(output_directory.is_relative_to(root / name) for name in ("runtime", "licenses", "assets")):
         raise SystemExit("Package output must be outside copied resource directories")
     suffix = "-arm64" if args.architecture == "arm64" else ""
     stage = output_directory / f"qing-zip-{version}{suffix}-portable"
@@ -78,9 +83,7 @@ def main():
         return ignored
     for name in ("runtime", "licenses", "assets"):
         if name == "runtime" and args.runtime_directory:
-            from arm64_package_runtime import verify_layout
-            verify_layout(args.runtime_directory.resolve())
-            shutil.copytree(args.runtime_directory.resolve(), stage / name)
+            shutil.copytree(runtime_source, stage / name)
         else:
             shutil.copytree(root / name, stage / name, ignore=ignore_resources)
     if args.architecture == "arm64":

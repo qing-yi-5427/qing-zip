@@ -38,7 +38,7 @@ $peMachine = '0x8664'
 if ($Target -eq 'aarch64-pc-windows-msvc') {
     $peMachine = '0xaa64'
     # CET shadow stacks are an x86/x64 PE capability.
-    $rustFlags = @('-C','control-flow-guard=yes','-C','link-arg=/DYNAMICBASE','-C','link-arg=/HIGHENTROPYVA','-C','link-arg=/NXCOMPAT')
+    $rustFlags = @('-C','target-feature=+crt-static','-C','control-flow-guard=yes','-C','link-arg=/DYNAMICBASE','-C','link-arg=/HIGHENTROPYVA','-C','link-arg=/NXCOMPAT')
 }
 $flagArray = ConvertTo-Json -InputObject $rustFlags -Compress
 $configPath = Join-Path $TargetDirectory 'hardening-config.toml'

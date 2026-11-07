@@ -3,6 +3,7 @@
 The reviewed manifests pin the downloads. Sources are a separate release asset,
 so normal installation does not add a source checkout to the application folder.
 """
+import argparse
 import hashlib
 import json
 import shutil
@@ -12,6 +13,14 @@ import zipfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--arm64-runtime', type=Path, help='Verified staged ARM64 runtime to accompany the trial package')
+parser.add_argument('--output-directory', type=Path)
+args = parser.parse_args()
+runtime = args.arm64_runtime.resolve(strict=True) if args.arm64_runtime else root / 'runtime'
+if args.arm64_runtime:
+    from arm64_package_runtime import verify_layout
+    verify_layout(runtime)
 version = json.loads((root / 'obz-gui/tauri.conf.json').read_text())['version']
 components = [
     ('nanazip', 'nanazip-7.0.1882.0/NanaZip-7.0.1882.0-source.zip'),
@@ -19,7 +28,8 @@ components = [
 ]
 sources = []
 for component, relative in components:
-    manifest = json.loads((root / 'runtime' / component / 'provenance.json').read_text())
+    component_dir = 'nanazip-arm64' if component == 'nanazip' and args.arm64_runtime else component
+    manifest = json.loads((runtime / component_dir / 'provenance.json').read_text(encoding='utf-8'))
     url = manifest['source_archive_url']
     expected = manifest['source_archive_sha256']
     if not url.startswith(('https://github.com/ip7z/7zip/', 'https://api.github.com/repos/M2Team/NanaZip/')):
@@ -44,12 +54,14 @@ for component, relative in components:
         raise SystemExit(f'Cached source integrity mismatch: {component}')
     sources.append((component, cached, manifest))
 
-output = root / 'dist' / f'qing-zip-{version}-engine-sources.zip'
+suffix = '-arm64' if args.arm64_runtime else ''
+output = (args.output_directory or root / 'dist') / f'qing-zip-{version}{suffix}-engine-sources.zip'
 output.parent.mkdir(exist_ok=True)
 readme = (
     'Corresponding source for qing-zip bundled archive engines.\n'
-    'These are the exact upstream source archives; the bundled binaries are unmodified.\n'
-    'See each archive for its licenses, build instructions, and upstream credits.\n'
+    + ('These are the exact upstream source archives. The ARM64 GUI self-extractor was rebuilt from 7-Zip SFXWin source.\n'
+     if args.arm64_runtime else 'These are the exact upstream source archives; the bundled binaries are unmodified.\n')
+    + 'See each archive for its licenses, build instructions, and upstream credits.\n'
     'The modified ZPAQ helper source and build instructions are in the portable package runtime/zpaq/.\n'
 )
 expected_members = {'README.txt': readme.encode('utf-8')}
@@ -74,3 +86,7 @@ with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_STORED) as archive:
         archive.writestr(f'{component}-provenance.json', json.dumps(manifest, indent=2) + '\n')
     archive.writestr('README.txt', readme)
 print(output)
+
+if args.arm64_runtime:
+    digest=hashlib.sha256(output.read_bytes()).hexdigest()
+    output.with_name(output.name+'.sha256').write_text(digest+'  '+output.name+'\n',encoding='ascii')

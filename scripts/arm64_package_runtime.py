@@ -57,14 +57,56 @@ def inventory(root):
     return {p.relative_to(root).as_posix():sha(p) for p in sorted(root.rglob('*'))
             if p.is_file() and p!=root/'ARM64-RUNTIME.json'}
 
+def imports(path):
+    """Return ordinary and delay-loaded PE module names for a reviewed binary."""
+    data=path.read_bytes()
+    def u16(i):return struct.unpack_from('<H',data,i)[0]
+    def u32(i):return struct.unpack_from('<I',data,i)[0]
+    pe=u32(60);opt=pe+24
+    directories=opt+(112 if u16(opt)==0x20b else 96)
+    start=opt+u16(pe+20)
+    sections=[(u32(i+12),max(u32(i+8),u32(i+16)),u32(i+20))
+              for i in range(start,start+40*u16(pe+6),40)]
+    def offset(addr):
+        return next(raw+addr-rva for rva,size,raw in sections if rva<=addr<rva+size)
+    names=set()
+    for index,stride,field in [(1,20,12),(13,32,4)]:
+        addr=u32(directories+8*index)
+        if not addr:continue
+        cursor=offset(addr)
+        while u32(cursor+field):
+            name=offset(u32(cursor+field))
+            names.add(data[name:data.index(0,name)].decode('ascii').lower())
+            cursor+=stride
+    return sorted(names)
+
+def verify_private_imports(path):
+    deps=imports(path)
+    # Windows 11 includes UCRT and API sets, but the optional VC++ redistributable
+    # on a developer machine must not conceal a missing app-local dependency.
+    for name in deps:
+        if name.startswith(('msvcp1','vcruntime1','concrt1','vcomp1','webview2loader.dll')):
+            local=path.parent/name
+            if not local.is_file() or machine(local)!=0xaa64:raise ValueError(f'{path.name}: missing native {name}')
+    return deps
+
 def verify_layout(root):
     record=json.loads((root/'ARM64-RUNTIME.json').read_text(encoding='utf8'))
     if inventory(root)!=record['files']: raise ValueError('ARM64 runtime file inventory mismatch')
+    pins=json.loads((ROOT/'obz-rs/native/nana/provenance-arm64.json').read_text())['files']
+    pyfiles=json.loads((ROOT/'scripts/arm64-python-files.json').read_text())
+    zsrc=json.loads((ROOT/'runtime/zpaq/SOURCE.json').read_text())['patched_source_sha256']
+    for folder,expected in [('nanazip-arm64',pins),('7zip',SEVEN_FILES),('python',pyfiles),('zpaq',zsrc)]:
+        for name,digest in expected.items():
+            if sha(root/folder/name)!=digest:raise ValueError(f'invalid pinned {folder}/{name}')
+    for script in ['acefile.py','ace_worker.py','disc_worker.py','LICENSE-ACEFILE.md']:
+        if sha(root/'python'/script)!=sha(ROOT/'runtime/python'/script):raise ValueError(f'invalid Python adapter: {script}')
     files={p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file() and p.suffix.lower() in SUFFIXES}
     if not {'nanazip-arm64/NanaZip.Universal.Console.exe','7zip/7z.exe','7zip/7z.dll','7zip/7z.sfx','python/python.exe','zpaq/obz-zpaq.exe'} <= files:
         raise ValueError('incomplete ARM64 runtime')
     for name in files:
         if machine(root/name)!=0xaa64: raise ValueError(f'non-native runtime binary: {name}')
+        verify_private_imports(root/name)
     print(f'Verified {len(files)} ARM64 PE files and {len(record["files"])} runtime files')
 
 def build(out, cache):

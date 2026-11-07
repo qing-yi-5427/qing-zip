@@ -13,7 +13,7 @@ import time
 import winreg
 import zipfile
 
-from arm64_package_runtime import ROOT, NSIS, fetch, machine, sha, verify_layout
+from arm64_package_runtime import ROOT, NSIS, fetch, machine, sha, verify_layout, verify_private_imports
 
 def run(args, *, data=None, check=True, cwd=None, timeout=120):
     p=subprocess.run(list(map(str,args)),input=data,capture_output=True,cwd=cwd,timeout=timeout)
@@ -34,6 +34,7 @@ def exercise(app, scratch):
     scratch.mkdir()
     verify_layout(app/'runtime')
     if any(machine(app/n)!=0xaa64 for n in ['obz.exe','qing-zip.exe']):raise ValueError('wrong app architecture')
+    dependencies={name:verify_private_imports(app/name) for name in ['obz.exe','qing-zip.exe']}
     cli=app/'obz.exe'
     cap=json.loads(run([cli,'capabilities']).stdout)['engine']
     assert Path(cap['engine']).resolve()==(app/'runtime/nanazip-arm64/NanaZip.Universal.Console.exe').resolve()
@@ -82,7 +83,8 @@ print('native Python',sys.version,ssl.OPENSSL_VERSION,sqlite3.sqlite_version)
     assert machine(sfx)==0xaa64
     run([sfx,'-y','-o'+str(scratch/'sfx-out')],cwd=scratch,timeout=45)
     assert sha(scratch/'sfx-out/sample.txt')==sha(text)
-    return {'python':runtime,'full_manifest_checks':checks,'native_sfx_executed':True,'native_7zip_fallback':True}
+    verify_layout(app/'runtime')
+    return {'python':runtime,'authored_imports':dependencies,'full_manifest_checks':checks,'native_sfx_executed':True,'native_7zip_fallback':True}
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('dist',type=Path);ap.add_argument('downloads',type=Path);a=ap.parse_args()
@@ -106,6 +108,9 @@ def main():
         arp=r'Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip-arm64'
         shortcuts=Path(os.environ['APPDATA'])/'Microsoft/Windows/Start Menu/Programs/qing-zip-arm64'
         assert not inst.exists() and key(arp,'InstallLocation') is None and not shortcuts.exists()
+        x64_install=r'Software\qing-zip\Installer'
+        x64_arp=r'Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip'
+        previous_x64=(key(x64_install,'InstallDir'),key(x64_arp,'InstallLocation'))
         run([setup,'/S'])
         assert inst.is_dir() and Path(key(arp,'InstallLocation')).resolve()==inst.resolve()
         uninstall=inst/'Uninstall.exe'
@@ -119,6 +124,7 @@ def main():
         assert files(inst)=={'user-sentinel.txt':sha(keep)} and keep.read_text(encoding='utf8')=='retain this local file'
         assert key(arp,'InstallLocation') is None and not shortcuts.exists()
         keep.unlink();inst.rmdir()
+        assert previous_x64==(key(x64_install,'InstallDir'),key(x64_arp,'InstallLocation'))
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
     for p in [setup,portable]: (out/(p.name+'.sha256')).write_text(sha(p)+'  '+p.name+'\n',encoding='ascii')
     (out/(prefix+'-verification.json')).write_text(json.dumps(report,indent=2),encoding='utf8')

@@ -477,6 +477,7 @@ fn disc_iso(path: &str, o: &EngineOptions) -> Result<(tempfile::TempDir, String)
     let input = fs::canonicalize(path).map_err(|e| e.to_string())?;
     let args = vec![
         "-I".into(),
+        "-B".into(),
         runtime("python/disc_worker.py")?
             .to_string_lossy()
             .into_owned(),
