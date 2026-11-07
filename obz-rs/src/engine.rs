@@ -2018,7 +2018,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     ctl.check()?;
     // Keep both the source and its directory namespace fixed from the typed
     // listing/format guard through decoding and publication.
-    let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
+    let source_path = absolute(path)?;
+    let mut source_guard = crate::engine_stream::pin(&source_path)?;
+    #[cfg(windows)]
+    let _volume_guards = crate::engine_stream::pin_numbered_7z_parts(&source_path)?;
     let mut memory_source = memory_archive_source(path, opts);
     let mut selected_source = if !opts.selected.is_empty()
         && Path::new(path)

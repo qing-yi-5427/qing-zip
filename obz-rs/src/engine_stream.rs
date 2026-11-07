@@ -365,6 +365,14 @@ pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
             parents.push(parent);
         }
     }
+    let file = open_source_leaf(path).map_err(|error| error.to_string())?;
+    Ok(PinnedSource {
+        file,
+        _parents: parents,
+    })
+}
+
+fn open_source_leaf(path: &Path) -> std::io::Result<File> {
     let mut options = File::options();
     options.read(true);
     #[cfg(windows)]
@@ -372,27 +380,75 @@ pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
         use std::os::windows::fs::OpenOptionsExt;
         options.share_mode(1).custom_flags(0x00200000);
     }
-    let file = options.open(path).map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err("raw stream must be a regular file".into());
+        return Err(std::io::Error::other("raw stream must be a regular file"));
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         if metadata.file_attributes() & 0x400 != 0 {
-            return Err("raw stream links are unsupported".into());
+            return Err(std::io::Error::other("raw stream links are unsupported"));
         }
     }
-    Ok(PinnedSource {
-        file,
-        _parents: parents,
-    })
+    Ok(file)
+}
+
+/// Keep existing contiguous .7z.002 and later volumes read-only while the
+/// external engine lists and extracts them. The first pin holds their parents.
+/// This does not reserve the name immediately after the last existing volume.
+#[cfg(windows)]
+pub(crate) fn pin_numbered_7z_parts(first: &Path) -> Result<Vec<File>, String> {
+    let mut parts = Vec::new();
+    let Some(stem) = first.file_stem().and_then(|name| name.to_str()) else {
+        return Ok(parts);
+    };
+    if first.extension().and_then(|ext| ext.to_str()) != Some("001")
+        || !Path::new(stem)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("7z"))
+    {
+        return Ok(parts);
+    }
+    for number in 2u64.. {
+        let path = first.with_file_name(format!("{stem}.{number:03}"));
+        match open_source_leaf(&path) {
+            Ok(file) => parts.push(file),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "cannot pin archive volume {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(parts)
 }
 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    #[test]
+    fn later_split_volumes_stay_read_only_until_extraction_releases_them() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("Sample.7Z.001");
+        let second = first.with_extension("002");
+        let third = first.with_extension("003");
+        for p in [&first, &second, &third] {
+            std::fs::write(p, b"fixture").unwrap();
+        }
+        let _first = pin(&first).unwrap();
+        let parts = pin_numbered_7z_parts(&first).unwrap();
+        assert_eq!(parts.len(), 2);
+        for p in [&second, &third] {
+            assert!(File::options().write(true).open(p).is_err());
+            assert!(std::fs::rename(p, root.path().join("replaced")).is_err());
+        }
+        drop(parts);
+        std::fs::write(&second, b"released").unwrap();
+    }
     #[test]
     fn pinned_raw_source_blocks_leaf_writes_and_parent_replacement() {
         let temp = tempfile::tempdir().unwrap();
