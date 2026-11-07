@@ -628,7 +628,7 @@ mod tests {
             .contains("ZealFS"));
     }
 
-    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    #[cfg(nana_selected_worker)]
     #[test]
     fn machine_policy_keeps_payloads_on_the_official_engine() {
         use crate::{engine::{self, EngineOptions}, machine_policy::with_rules};

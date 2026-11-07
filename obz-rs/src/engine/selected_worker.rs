@@ -93,7 +93,7 @@ fn pin_runtime(
         files: BTreeMap<String, String>,
     }
     let published: Provenance =
-        serde_json::from_str(include_str!("../../../runtime/nanazip/provenance.json"))
+        serde_json::from_str(NANA_PROVENANCE)
             .map_err(|e| e.to_string())?;
     let mut pins = Vec::new();
     for (name, expected) in published
@@ -882,7 +882,7 @@ mod tests {
         assert!(manifest_fits(&vec![long.clone(); 255]));
         assert!(!manifest_fits(&vec![long; 256]));
         // Each supplementary character occupies two UTF-16 code units.
-        assert!(!manifest_fits(&[entry("🗄".repeat(16384))]));
+        assert!(!manifest_fits(&[entry("馃梽".repeat(16384))]));
     }
 
     #[test]

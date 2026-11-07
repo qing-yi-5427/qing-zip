@@ -1,8 +1,10 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/nana");
-    if std::env::var("TARGET").as_deref() != Ok("x86_64-pc-windows-msvc") {
+    println!("cargo:rustc-check-cfg=cfg(nana_selected_worker)");
+    if !matches!(std::env::var("TARGET").as_deref(), Ok("x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc")) {
         return;
     }
+    println!("cargo:rustc-cfg=nana_selected_worker");
     cc::Build::new()
         .cpp(true)
         .include("native/nana/vendor/SevenZip/CPP")

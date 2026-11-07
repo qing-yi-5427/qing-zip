@@ -1,6 +1,6 @@
 // Real NanaZip archives cover both password callbacks. The selected worker must
 // verify an unrelated damaged block before publishing a correct selected file.
-#![cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#![cfg(nana_selected_worker)]
 use std::{
     fs,
     io::Write,
@@ -26,7 +26,7 @@ fn run(cmd: &mut Command, password: &str) -> Output {
 #[test]
 fn encrypted_split_selection_checks_unselected_blocks_before_publication() {
     let nana = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../runtime/nanazip/NanaZip.Universal.Console.exe");
+        .join("..").join(obz_core::engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let scratch = root.join("scratch");
