@@ -2156,7 +2156,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             &ctl,
         )?;
         if let Some(files) = &memory {
-            stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl)?;
+            stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
             let mut args = base("x", opts)?;
             let execute = if guarded_zealfs {
@@ -2603,40 +2603,122 @@ fn create_staged_output(target: &Path, guards: &mut CheckedDirectories) -> Resul
     fs::OpenOptions::new().write(true).create_new(true).open(target).map_err(|e| e.to_string())
 }
 
+struct MemoryOutput<'a> {
+    entry: &'a Entry,
+    target: PathBuf,
+    bytes: &'a [u8],
+}
+
+fn write_memory_output(
+    job: &MemoryOutput<'_>,
+    guards: &CheckedDirectories,
+    ctl: &JobControl,
+) -> Result<(), String> {
+    use std::io::Write;
+    ctl.check()?;
+    if !job.entry.size_known || job.bytes.len() as u64 != job.entry.size {
+        return Err("verified memory file length does not match archive".into());
+    }
+    let checked_create = || {
+        guards.check_prepared(&job.target)?;
+        File::options().write(true).create_new(true).open(&job.target)
+            .map_err(|error| error.to_string())
+    };
+    #[cfg(windows)]
+    let mut output = match job.target.parent().and_then(|p| guards.private_metadata_parent(p)) {
+        Some(parent) => {
+            let leaf = job.target.file_name().ok_or("missing stage filename")?;
+            crate::private_stage::create_child_file(parent, leaf)?
+        }
+        None => checked_create()?,
+    };
+    #[cfg(not(windows))]
+    let mut output = checked_create()?;
+    for chunk in job.bytes.chunks(64 * 1024) {
+        ctl.check()?;
+        output.write_all(chunk).map_err(|error| error.to_string())?;
+    }
+    restore_open_file_metadata(&output, job.entry)
+}
+
 fn stage_verified_memory(
     files: &MemoryFiles,
     entries: &[Entry],
     root: &Path,
     guards: &mut CheckedDirectories,
     ctl: &JobControl,
+    thread_limit: Option<u32>,
 ) -> Result<(), String> {
-    use std::io::Write;
+    use std::sync::atomic::AtomicUsize;
     let _timer = PhaseTimer::new("stage-verified-memory");
     ctl.check()?;
     if files.len() != entries.iter().filter(|entry| !entry.is_dir).count() {
         return Err("verified memory file count does not match archive".into());
     }
-    for (index, entry) in entries.iter().enumerate() {
+    let mut jobs = Vec::with_capacity(files.len());
+    let mut directories = HashSet::new();
+    for entry in entries {
         ctl.check()?;
-        if index % 64 == 0 {
-            ctl.set("extracting", Some((index * 100 / entries.len().max(1)) as u8), &entry.name);
-        }
         let relative = validate_name(&entry.name)?;
         let target = root.join(&relative);
-        if entry.is_dir {
-            guards.create_dirs(&target)?;
-            continue;
+        let directory = if entry.is_dir {
+            target.as_path()
+        } else {
+            target.parent().ok_or("missing staged parent")?
+        };
+        if !directories.contains(directory) {
+            guards.create_dirs(directory)?;
+            directories.insert(directory.to_path_buf());
         }
-        let bytes = files.get(&path_key(&relative)).ok_or("verified memory entry missing")?.as_slice();
-        if !entry.size_known || bytes.len() as u64 != entry.size {
-            return Err("verified memory file length does not match archive".into());
+        if !entry.is_dir {
+            let bytes = files.get(&path_key(&relative)).ok_or("verified memory entry missing")?.as_slice();
+            jobs.push(MemoryOutput { entry, target, bytes });
         }
-        let mut output = create_staged_output(&target, guards)?;
-        for chunk in bytes.chunks(64 * 1024) {
-            ctl.check()?;
-            output.write_all(chunk).map_err(|error| error.to_string())?;
+    }
+    // All directories are prepared before sharing their guards. Only strong
+    // direct parents inside this private stage qualify for handle-relative create.
+    let guards: &CheckedDirectories = guards;
+    let next = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    let consume = || -> Result<(), String> {
+        while !stopped.load(Ordering::Acquire) {
+            let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
+            if let Err(error) = write_memory_output(job, guards, ctl) {
+                stopped.store(true, Ordering::Release);
+                return Err(error);
+            }
+            let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % 64 == 0 {
+                ctl.set("extracting", Some((done * 100 / jobs.len()) as u8), &job.entry.name);
+            }
         }
-        restore_open_file_metadata(&output, entry)?;
+        Ok(())
+    };
+    let workers = thread::available_parallelism().map_or(1, |n| n.get())
+        .min(thread_limit.unwrap_or(4).clamp(1, 4) as usize);
+    if workers == 1 || jobs.len() < 128 {
+        consume()?;
+    } else {
+        thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            let mut result = Ok(());
+            for _ in 0..workers {
+                match thread::Builder::new().spawn_scoped(scope, &consume) {
+                    Ok(handle) => handles.push(handle),
+                    Err(error) => {
+                        stopped.store(true, Ordering::Release);
+                        result = Err(error.to_string());
+                        break;
+                    }
+                }
+            }
+            for handle in handles {
+                let outcome = handle.join().unwrap_or_else(|_| Err("private stage writer panicked".into()));
+                result = result.and(outcome);
+            }
+            result
+        })?;
     }
     ctl.check()
 }
@@ -5623,7 +5705,7 @@ mod staging_tests {
             &mut output_guards, Some(&entries)).unwrap().expect("ordinary NTFS destination");
         let stage = transaction.stage.unwrap();
         let mut guards = stage.guards(Some(&transaction.root)).unwrap();
-        stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control).unwrap();
+        stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control, Some(4)).unwrap();
         let expected = expected_tree(&entries).unwrap();
         verify_stage_with_metadata(stage.path(), &expected, &control, &mut guards, Some(&entries), Some(&zone)).unwrap();
         drop(guards);
@@ -5717,15 +5799,44 @@ mod staging_tests {
             let mut guards = stage.guards(Some(&transaction.root)).unwrap();
             let cancelled = JobControl::new();
             cancelled.cancel();
-            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &cancelled)
+            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &cancelled, Some(1))
                 .unwrap_err().contains("cancelled"));
             assert_eq!(fs::read_dir(stage.path()).unwrap().count(), 0);
             entries[2].size += 1;
-            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control)
+            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control, Some(1))
                 .unwrap_err().contains("length"));
             assert!(stage.path().join(&entries[0].name).is_file());
         }
         assert!(!abandoned.exists());
+        assert!(!destination.exists());
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn failed_parallel_memory_writes_leave_private_stage_and_hard_link_safe() {
+        let (fixture, archive, entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let destination = parent.join("result");
+        let sentinel = fixture.path().join("sentinel.txt");
+        fs::write(&sentinel, b"unchanged").unwrap();
+        let opts = EngineOptions::default();
+        let ctl = JobControl::new();
+        let files = decode_memory_zip(memory_archive_source(archive.to_str().unwrap(), &opts),
+            &entries, &opts, &ctl).unwrap().unwrap();
+        let abandoned;
+        {
+            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+            let stage = transaction.stage.as_ref().unwrap();
+            abandoned = stage.path().to_path_buf();
+            fs::create_dir(stage.path().join("folder")).unwrap();
+            fs::hard_link(&sentinel, stage.path().join("folder/file-080.txt")).unwrap();
+            let mut guards = stage.guards(Some(&transaction.root)).unwrap();
+            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &ctl, Some(4)).is_err());
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged");
+        assert!(!abandoned.exists(), "all worker handles must close before cleanup");
         assert!(!destination.exists());
     }
 

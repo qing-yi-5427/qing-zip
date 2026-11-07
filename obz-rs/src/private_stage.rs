@@ -341,6 +341,20 @@ pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage
 /// Query one current leaf through a strongly pinned private directory. The
 /// caller owns that qualification; no ancestor path is resolved by this call.
 pub(crate) fn child_metadata(parent: &File, leaf: &OsStr) -> Result<std::fs::Metadata, String> {
+    checked_metadata(&open_private_child(parent, leaf, ChildAccess::Metadata)?)
+}
+
+/// The caller holds the direct, strongly pinned parent inside its private stage.
+pub(crate) fn create_child_file(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    open_private_child(parent, leaf, ChildAccess::CreateFile)
+}
+
+enum ChildAccess {
+    Metadata,
+    CreateFile,
+}
+
+fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<File, String> {
     let mut wide: Vec<u16> = leaf.encode_wide().collect();
     if wide.is_empty()
         || wide.len() > 32767
@@ -348,7 +362,7 @@ pub(crate) fn child_metadata(parent: &File, leaf: &OsStr) -> Result<std::fs::Met
         || wide == [46]
         || wide == [46, 46]
     {
-        return Err("invalid relative metadata leaf".into());
+        return Err("invalid private stage leaf".into());
     }
     let mut unicode = UnicodeString {
         length: (wide.len() * 2) as u16,
@@ -368,29 +382,33 @@ pub(crate) fn child_metadata(parent: &File, leaf: &OsStr) -> Result<std::fs::Met
         information: 0,
     };
     let mut raw = std::ptr::null_mut();
+    let (access, file_attributes, disposition, options, operation) = match mode {
+        ChildAccess::Metadata => (0x100081, 0, 1, 0x200020, "read private stage metadata"),
+        // WRITE_DATA | READ/WRITE_ATTRIBUTES | SYNCHRONIZE, FILE_CREATE and
+        // FILE_NON_DIRECTORY_FILE. Existing files, links and reparse leaves
+        // cannot be opened or truncated.
+        ChildAccess::CreateFile => (0x100182, 0x80, 2, 0x200060, "create private stage file"),
+    };
     let result = unsafe {
         NtCreateFile(
             &mut raw,
-            0x100081,
+            access,
             &attributes,
             &mut status,
             std::ptr::null(),
-            0,
+            file_attributes,
             1,
-            1,
-            0x200020,
+            disposition,
+            options,
             std::ptr::null_mut(),
             0,
         )
     };
     if result < 0 {
-        return Err(format!(
-            "read relative stage metadata: {}",
-            io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32)
-        ));
+        return Err(format!("{operation}: {}", io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32)));
     }
-    let file = unsafe { File::from_raw_handle(raw) };
-    checked_metadata(&file)
+    Ok(unsafe { File::from_raw_handle(raw) })
 }
 // Stable Rust does not expose Windows link counts on Metadata yet. Query the
 // same fresh handle so no stage can reach metadata restoration or MOTW writes
@@ -649,6 +667,35 @@ fn prepare_permissions(
 mod tests {
     use super::*;
     use std::{fs, os::windows::fs::OpenOptionsExt};
+
+    #[test]
+    fn new_child_is_bound_to_the_open_directory_and_preserves_existing_links() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        let moved = root.path().join("moved");
+        let sentinel = root.path().join("sentinel.txt");
+        fs::create_dir(&original).unwrap();
+        fs::write(&sentinel, b"existing content").unwrap();
+        fs::hard_link(&sentinel, original.join("occupied.txt")).unwrap();
+        // Allow renaming in this fixture to distinguish an identity-relative
+        // create from an accidental reopen by path.
+        let directory = File::options().access_mode(0x81).share_mode(7)
+            .custom_flags(0x02200000).open(&original).unwrap();
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        let mut created = create_child_file(&directory, OsStr::new("new.txt")).unwrap();
+        created.write_all(b"new content").unwrap();
+        drop(created);
+        assert_eq!(fs::read(moved.join("new.txt")).unwrap(), b"new content");
+        assert!(!original.join("new.txt").exists());
+        for invalid in ["occupied.txt", "new.txt", ".", "..", "../sentinel.txt", "new.txt:stream"] {
+            assert!(create_child_file(&directory, OsStr::new(invalid)).is_err(), "{invalid}");
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(), b"existing content");
+        assert_eq!(fs::read(moved.join("new.txt")).unwrap(), b"new content");
+    }
+
     fn open(path: &Path) -> File {
         fs::OpenOptions::new()
             .access_mode(0x60080)

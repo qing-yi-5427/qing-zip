@@ -204,6 +204,14 @@ fn process_inspection_has_no_password_and_cancel_releases_input() {
         assert!(inspect.status.success());
         assert!(command_line.contains("archive.7z"));
         assert!(!command_line.contains(&password));
-        assert!(!command_line.contains("-p"));
+        // The executable path may itself contain "-p". Check the complete
+        // argument tail for the password switch; Windows filenames cannot
+        // contain a quote inside the quoted executable name.
+        let line = command_line.trim_start();
+        let (_, arguments) = match line.strip_prefix('"') {
+            Some(quoted) => quoted.split_once('"'),
+            None => line.split_once(char::is_whitespace),
+        }.expect("missing inspected command arguments");
+        assert!(!arguments.contains("-p"));
     }
 }
