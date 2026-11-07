@@ -15,13 +15,72 @@ const archiveTabs=[];let currentTabId=null,nextTabId=1,openingArchive=false,open
 const filename=p=>p.split(/[\\/]/).pop(),size=n=>n<1024?`${n} B`:n<1048576?`${(n/1024).toFixed(1)} KB`:`${(n/1048576).toFixed(1)} MB`;
 const entrySize=e=>e.size_known===false?'未知':size(e.size);
 function displayModified(value){const text=String(value||'');if(!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$/.test(text))return text;const date=new Date(text.replace(' ','T').replace(/(\.\d{3})\d+(Z)$/,'$1$2'));if(!Number.isFinite(date.getTime()))return text;const pad=n=>String(n).padStart(2,'0');return String(date.getFullYear()).padStart(4,'0')+'-'+pad(date.getMonth()+1)+'-'+pad(date.getDate())+' '+pad(date.getHours())+':'+pad(date.getMinutes())+':'+pad(date.getSeconds());}
-function compareEntries(a,b){const directoryOrder=Number(!!b.is_dir)-Number(!!a.is_dir);if(directoryOrder)return directoryOrder;if(s.sort==='size'&&a.size_known!==b.size_known){const unknownOrder=Number(a.size_known===false)-Number(b.size_known===false);if(unknownOrder)return unknownOrder;}const order=['size','packed_size'].includes(s.sort)?(a[s.sort]||0)-(b[s.sort]||0):a.leaf.localeCompare(b.leaf);return (s.reverse?-1:1)*(order||a.leaf.localeCompare(b.leaf));}
+function entryType(entry) {
+  const dot = entry.leaf.lastIndexOf('.');
+  return dot < 0 ? '' : entry.leaf.slice(dot + 1).toUpperCase();
+}
+function modifiedTime(entry) {
+  return entry.modifiedTime ??= Date.parse((entry.modified || '').replace(' ', 'T'));
+}
+function compareEntries(a, b) {
+  const directoriesFirst = Number(!!b.is_dir) - Number(!!a.is_dir);
+  if (directoriesFirst) return directoriesFirst;
+  let order = 0;
+  if (s.sort === 'size' || s.sort === 'packed_size') {
+    if (s.sort === 'size' && a.size_known !== b.size_known) {
+      const unknownLast = Number(a.size_known === false) - Number(b.size_known === false);
+      if (unknownLast) return unknownLast;
+    }
+    order = (a[s.sort] || 0) - (b[s.sort] || 0);
+  } else if (s.sort === 'type') {
+    if (!a.is_dir) order = entryType(a).localeCompare(entryType(b));
+  } else if (s.sort === 'modified') {
+    const left = modifiedTime(a), right = modifiedTime(b);
+    const unknownLast = Number(!Number.isFinite(left)) - Number(!Number.isFinite(right));
+    if (unknownLast) return unknownLast;
+    order = left - right;
+  }
+  return (s.reverse ? -1 : 1) * (order || a.leaf.localeCompare(b.leaf));
+}
+function sortableColumn(key, label) {
+  const direction = s.sort !== key ? 'none' : s.reverse ? 'descending' : 'ascending';
+  return `<th aria-sort="${direction}"><button data-sort="${key}">${label}</button></th>`;
+}
 function toast(message){$('qa-toast').textContent=message;$('qa-toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('qa-toast').hidden=true,4500)}
 function appearance(){root.style.colorScheme=s.theme;root.dataset.material=s.material;root.style.setProperty('--qa-row',s.density==='compact'?'42px':'56px');if($('qa-tools'))try{$('qa-tools').contentDocument.documentElement.style.colorScheme=s.theme;}catch{}root.querySelectorAll('[data-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.theme===s.theme)));localStorage.setItem('qing-preferences',JSON.stringify({theme:s.theme,material:s.material,density:s.density,overwrite:s.overwrite,sameFolder:s.sameFolder,recycleAfter:s.recycleAfter,openAfter:s.openAfter,closeAfter:s.closeAfter,listStyle:s.listStyle,iconSize:s.iconSize}));invoke('set_appearance',{material:s.material,dark:s.theme==='dark'}).catch(e=>toast('窗口材质不可用，保留页面样式：'+e));}
 function home(){return `<section class="oa-home"><span class="oa-home-mark">${icon('archive')}</span><h1>文件归整，从这里开始。</h1><p>打开一个压缩文件，或把文件拖进来。</p><div class="qa-actions">${btn('打开压缩文件','open','primary','folder-open')}${btn('新建压缩文件','compress','','plus')}</div></section>${s.recent.length?`<section class="oa-recent"><div class="oa-section-head"><h3>最近打开</h3>${btn('全部记录','recent-menu','quiet')}</div>${s.recent.slice(0,4).map((path,i)=>`<button class="qa-recent-row" data-recent="${i}"><span class="oa-file-symbol">${icon('archive')}</span><span class="qa-file-copy"><strong>${esc(filename(path))}</strong><small>${esc(path)}</small></span>${icon('chevron')}</button>`).join('')}</section>`:''}`;}
 
-function visibleEntries(){const map=new Map();for(const e of s.entries){const n=e.name.replaceAll('\\','/').replace(/^\.\//,'');if(!n.startsWith(s.folder)||n===s.folder)continue;const rest=n.slice(s.folder.length),parts=rest.split('/').filter(Boolean);if(!parts.length)continue;const directory=parts.length>1||e.is_dir,name=s.folder+parts[0]+(directory?'/':'');if(!map.has(name))map.set(name,{...e,name,leaf:parts[0],is_dir:directory,size:directory?0:e.size,size_known:directory||e.size_known!==false});}return [...map.values()].filter(e=>e.leaf.toLowerCase().includes(s.search.toLowerCase())).sort(compareEntries);}
-function archive(){if(!s.archive)return home();return `<div class="qa-path">${btn('','up','quiet','arrow-up')}<div class="oa-breadcrumb"><button data-action="root">${esc(filename(s.archive))}</button><span>${s.folder?' / '+esc(s.folder):' / 全部文件'}</span></div><label class="oa-search">${icon('search')}<input id="qa-search" aria-label="查找文件" placeholder="查找文件  Ctrl+F" value="${esc(s.search)}"></label></div>${viewControls()}<div class="oa-table-wrap" style="--oa-icon-size:${s.iconSize}px"><table role="grid" aria-label="压缩包文件" aria-multiselectable="true" class="qa-table ${s.listStyle==='icons'?'oa-icons':''}"><thead><tr><th><input id="qa-all" type="checkbox" aria-label="全选当前列表"></th><th><button data-sort="name">名称 ↕</button></th><th><button data-sort="packed_size">压缩后</button></th><th><button data-sort="size">大小 ↕</button></th><th>类型</th><th>修改日期</th></tr></thead><tbody id="qa-rows"></tbody></table><div id="qa-selection" class="qa-selection" role="status" aria-live="polite"></div></div><div id="oa-selection-actions" class="oa-selection-actions" hidden><span id="oa-selected-count"></span><div class="qa-actions">${btn('解压选中','extract','quiet','folder-output')}${btn('重命名','rename','quiet')}${btn('删除','delete','quiet','x')}</div></div>`;}
+// Refreshing an archive replaces its entry array. Keep just the current
+// folder's projection per live listing, so selection changes can reuse it.
+const folderViews = new WeakMap();
+function visibleEntries() {
+  let view = folderViews.get(s.entries);
+  if (!view || view.folder !== s.folder) {
+    const children = new Map();
+    for (const entry of s.entries) {
+      const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'');
+      if (!path.startsWith(s.folder)) continue;
+      const parts = path.slice(s.folder.length).split('/').filter(Boolean);
+      if (!parts.length) continue;
+      const directory = parts.length > 1 || entry.is_dir;
+      const leaf = parts[0], name = s.folder + leaf + (directory ? '/' : '');
+      if (!children.has(name) || (entry.is_dir && parts.length === 1)) children.set(name, {
+        ...entry, name, leaf, is_dir:directory, size:directory ? 0 : entry.size,
+        modified:parts.length > 1 ? '' : entry.modified,
+        size_known:directory || entry.size_known !== false
+      });
+    }
+    view = {folder:s.folder, children:[...children.values()]};
+    folderViews.set(s.entries, view);
+  }
+  const search = s.search.toLowerCase();
+  if (!view.rows || view.search !== search || view.sort !== s.sort || view.reverse !== s.reverse) {
+    view.rows = view.children.filter(entry => entry.leaf.toLowerCase().includes(search)).sort(compareEntries);
+    Object.assign(view, {search, sort:s.sort, reverse:s.reverse});
+  }
+  return view.rows;
+}
+function archive(){if(!s.archive)return home();return `<div class="qa-path">${btn('','up','quiet','arrow-up')}<div class="oa-breadcrumb"><button data-action="root">${esc(filename(s.archive))}</button><span>${s.folder?' / '+esc(s.folder):' / 全部文件'}</span></div><label class="oa-search">${icon('search')}<input id="qa-search" aria-label="查找文件" placeholder="查找文件  Ctrl+F" value="${esc(s.search)}"></label></div>${viewControls()}<div class="oa-table-wrap" style="--oa-icon-size:${s.iconSize}px"><table role="grid" aria-label="压缩包文件" aria-multiselectable="true" class="qa-table ${s.listStyle==='icons'?'oa-icons':''}"><thead><tr><th><input id="qa-all" type="checkbox" aria-label="全选当前列表"></th>${sortableColumn('name','名称')}${sortableColumn('packed_size','压缩后')}${sortableColumn('size','大小')}${sortableColumn('type','类型')}${sortableColumn('modified','修改日期')}</tr></thead><tbody id="qa-rows"></tbody></table><div id="qa-selection" class="qa-selection" role="status" aria-live="polite"></div></div><div id="oa-selection-actions" class="oa-selection-actions" hidden><span id="oa-selected-count"></span><div class="qa-actions">${btn('解压选中','extract','quiet','folder-output')}${btn('重命名','rename','quiet')}${btn('删除','delete','quiet','x')}</div></div>`;}
 
 function rows(){const restore=document.activeElement?.closest('[data-row]')?.dataset.row;const list=visibleEntries();if(!list.some(e=>e.name===s.cursor))s.cursor=list[0]?.name;$('qa-rows').innerHTML=list.map(e=>`<tr data-row="${esc(e.name)}" aria-selected="${s.selected.has(e.name)}" class="${s.selected.has(e.name)?'selected':''}"><td><input type="checkbox" tabindex="-1" data-select="${esc(e.name)}" aria-label="选择 ${esc(e.leaf)}" ${s.selected.has(e.name)?'checked':''}></td><td><button class="qa-filebtn" tabindex="${e.name===s.cursor?0:-1}" data-entry="${esc(e.name)}"><span class="oa-file-symbol ${e.is_dir?'folder':''}" ${!e.is_dir&&isImage(e.name)&&s.listStyle==='icons'?`data-thumbnail="${esc(e.name)}" aria-label="图片缩略图"`:''}>${icon(e.is_dir?'folder':'file')}</span><span>${esc(e.leaf)}</span></button></td><td>${e.is_dir?'':size(e.packed_size||0)}</td><td>${e.is_dir?'':entrySize(e)}</td><td>${e.is_dir?'文件夹':esc(e.leaf.includes('.')?e.leaf.split('.').pop().toUpperCase()+' 文件':'文件')}${e.encrypted?' 🔒':''}</td><td title="${esc(e.modified||'')}">${esc(displayModified(e.modified))}</td></tr>`).join('')||'<tr><td colspan="6" class="qa-empty">没有匹配的文件</td></tr>';$('qa-selection').textContent=`${list.length} 个项目 · 已选 ${s.selected.size} 项`;$('qa-all').checked=list.length>0&&list.every(e=>s.selected.has(e.name));$('qa-all').indeterminate=list.some(e=>s.selected.has(e.name))&&!$('qa-all').checked;updateToolbar();observeThumbnails();if(restore&&list.some(e=>e.name===restore))focusEntry(restore);}
 
@@ -38,7 +97,7 @@ function dialog(title,body,footer){overlay.dataset.page='';returnFocus=document.
 function close(){$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}
 
 function error(e){if(!overlay.hidden&&$('qa-formerror'))$('qa-formerror').textContent=String(e);else toast(String(e));}
-async function run(request,label,{silent=false,recycleAfter=false}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');s.active='starting';let id;try{id=await invoke('start_operation',{request,recycleAfter});}catch(e){s.active=null;throw e;}const j={id,label,path:request.path||'',status:'running',percent:null};s.jobs.push(j);s.active=id;if(!silent){close();s.view='jobs';render();}try{for(;;){const v=await invoke('wait_operation',{id});Object.assign(j,{status:v.status,phase:v.progress.phase,percent:v.progress.percent,message:v.progress.message,error:v.error});if(v.status!=='running'){if(v.status==='complete'){j.result=v.result;j.summary=v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成';return v.result;}throw new Error(v.error||'任务已取消');}if(s.view==='jobs')renderProgress();}}finally{s.active=null;await invoke('forget_operation',{id}).catch(()=>{});if(s.view==='jobs')renderProgress();}}
+async function run(request,label,{silent=false,recycleAfter=false,startJob=null,temporaryOutput=false}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');s.active='starting';let id;try{id=await (startJob?startJob(request):invoke('start_operation',{request,recycleAfter}));}catch(e){s.active=null;throw e;}const j={id,label,path:request.path||'',status:'running',percent:null};s.jobs.push(j);s.active=id;if(!silent){close();s.view='jobs';render();}try{for(;;){const v=await invoke('wait_operation',{id});Object.assign(j,{status:v.status,phase:v.progress.phase,percent:v.progress.percent,message:v.progress.message,error:v.error});if(v.status!=='running'){if(v.status==='complete'){if(temporaryOutput){j.summary='文件已准备好';return v.result;}j.result=v.result;j.summary=v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成';return v.result;}throw new Error(v.error||'任务已取消');}if(s.view==='jobs')renderProgress();}}finally{s.active=null;await invoke('forget_operation',{id}).catch(()=>{});if(s.view==='jobs')renderProgress();}}
 async function finishExtraction(source,dest,result,{recycle=false,openAfter=false,closeAfter=false}={}){if(recycle){const last=s.jobs.at(-1);if(result.recycled){s.recent=s.recent.filter(p=>p!==source);localStorage.setItem('qing-recent',JSON.stringify(s.recent));discardArchiveTab(source,{preserveJob:true});if(last)last.summary+='；原压缩包已移入回收站。';render();}else{const message='解压已完成，但原压缩包未移入回收站：'+(result.recycle_error||'原压缩包已保留。');if(last)last.summary=message;renderProgress();toast(message);}}if(openAfter)await invoke('reveal_path',{path:result.destination||dest});if(closeAfter&&(!recycle||result.recycled))await invoke('window_action',{action:'close'});return !recycle||!!result.recycled;}
 async function openArchive(path,password='',{refresh=false}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!$('qa-open-path')});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:'',search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);navigate('archive');}finally{openingArchive=false;}}
 
@@ -84,19 +143,31 @@ const menuGroups={
 };
 function updateToolbar(){root.querySelectorAll('#oa-toolbar [data-action],#oa-primary-action [data-action]').forEach(b=>{const a=b.dataset.action;b.disabled=(!s.archive&&!['open','compress','more-menu'].includes(a))||!!s.active;});if($('oa-selection-actions')){$('oa-selection-actions').hidden=!s.selected.size;$('oa-selected-count').textContent=`已选 ${s.selected.size} 个项目`;$('oa-selection-actions').querySelector('[data-action=rename]').disabled=s.selected.size!==1;}root.querySelectorAll('[data-view]').forEach(b=>{b.setAttribute('aria-current',String(b.dataset.view===(['tool','advanced'].includes(s.page)?'tools':s.page)));});}
 // Sorted descendants are contiguous, so tree expansion does not rescan every folder.
-function folderTree(entries,collapsed){
- const folders=new Set(['']);
- for(const entry of entries){
-  const parts=entry.name.replaceAll('\\','/').split('/').filter(Boolean);if(!entry.is_dir)parts.pop();
-  let path='';for(const part of parts){path+=part+'/';folders.add(path);}
- }
- const names=[...folders].sort(),result=[];let hiddenPrefix=null;
- for(let i=0;i<names.length;i++){
-  const path=names[i];if(hiddenPrefix!==null&&path.startsWith(hiddenPrefix))continue;
-  hiddenPrefix=collapsed.has(path)?path:null;
-  result.push({path,depth:path.split('/').filter(Boolean).length,hasChildren:i+1<names.length&&names[i+1].startsWith(path)});
- }
- return result;
+const archiveFolderTrees = new WeakMap();
+function folderTree(entries, collapsed) {
+  let tree = archiveFolderTrees.get(entries);
+  if (!tree) {
+    const folders = new Set(['']);
+    for (const entry of entries) {
+      const parts = entry.name.replaceAll('\\','/').split('/').filter(Boolean);
+      if (!entry.is_dir) parts.pop();
+      let path = '';
+      for (const part of parts) { path += part + '/'; folders.add(path); }
+    }
+    const names = [...folders].sort();
+    tree = names.map((path, i) => ({
+      path, depth:path.split('/').filter(Boolean).length,
+      hasChildren:i + 1 < names.length && names[i + 1].startsWith(path)
+    }));
+    archiveFolderTrees.set(entries, tree);
+  }
+  if (!collapsed.size) return tree;
+  let hiddenPrefix = null;
+  return tree.filter(({path}) => {
+    if (hiddenPrefix !== null && path.startsWith(hiddenPrefix)) return false;
+    hiddenPrefix = collapsed.has(path) ? path : null;
+    return true;
+  });
 }
 // End folder tree model.
 function renderChrome(){renderArchiveTabs();root.dataset.page=s.page;$('oa-heading').innerHTML=s.page==='files'?`<div class="oa-heading-copy"><span class="oa-archive-symbol">${icon('archive')}</span><div><h1>${s.archive?esc(filename(s.archive)):'文件'}</h1><p>${s.archive?`${esc(filename(s.archive).split('.').pop().toUpperCase())} 压缩文件 · ${s.entries.length} 个条目`:'轻透、专注的本地归档工作空间'}</p></div></div><div id="oa-primary-action">${s.archive?btn('解压','extract','primary','folder-output'):''}</div>`:'';$('oa-toolbar').innerHTML=btn('打开','open','','folder-open')+btn('新建','compress','','plus')+'<span class="oa-divider"></span>'+btn('添加','add','','plus')+'<span class="oa-spacer"></span>'+(s.archive?btn('解压','extract','primary','folder-output'):'');$('oa-heading').hidden=s.page!=='files'||!!s.archive;$('oa-toolbar').hidden=s.page!=='files';$('oa-tree').innerHTML=folderTree(s.entries,s.collapsed).map(({path:p,depth,hasChildren})=>{return `<div class="oa-tree-row" style="--depth:${depth}">${hasChildren?`<button class="oa-tree-toggle" data-tree-toggle="${esc(p)}" aria-label="${s.collapsed.has(p)?'展开':'折叠'} ${esc(p||'根目录')}" aria-expanded="${!s.collapsed.has(p)}">${icon('chevron')}</button>`:'<span class="oa-tree-toggle"></span>'}<button data-tree="${esc(p)}" aria-current="${p===s.folder&&s.page==='files'}">${icon(p?'folder':'archive')}<span>${esc(p?p.split('/').filter(Boolean).pop():s.archive?filename(s.archive):'未打开压缩文件')}</span></button></div>`;}).join('');updateToolbar();}
@@ -167,18 +238,90 @@ let lastSelectShift=false,dragCandidate=null,dragBusy=false,suppressRowClick=fal
 root.addEventListener('mousedown',e=>{if(e.target.closest('[data-row]')&&!e.target.closest('input'))e.preventDefault();});
 root.addEventListener('dragstart',e=>{if(e.target.closest('[data-row]'))e.preventDefault();});
 root.addEventListener('click',e=>{if(suppressRowClick&&e.target.closest('[data-row]')){e.preventDefault();e.stopImmediatePropagation();suppressRowClick=false;}},true);
-root.addEventListener('pointerdown',e=>{lastSelectShift=e.shiftKey;if(e.button!==0||s.active||dragBusy||!overlay.hidden)return;const row=e.target.closest('[data-row]');if(row&&!e.target.closest('input')&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey)dragCandidate={name:row.dataset.row,x:e.clientX,y:e.clientY};});
-root.addEventListener('pointerup',()=>{dragCandidate=null;});
-root.addEventListener('pointercancel',()=>{dragCandidate=null;});
-root.addEventListener('pointermove',e=>{const c=dragCandidate;if(!c||!(e.buttons&1)||Math.hypot(e.clientX-c.x,e.clientY-c.y)<6)return;dragCandidate=null;suppressRowClick=true;if(!s.selected.has(c.name))selectRow(c.name,{});dragSelection().catch(error).finally(()=>{dragBusy=false;setTimeout(()=>suppressRowClick=false,300);});});
-async function dragSelection(){if(dragBusy||s.active)return;dragBusy=true;const names=[...s.selected],path=s.archive,password=s.password||null,codepage=s.codepage||null;if(names.length>512)throw Error('一次最多拖出 512 个文件或文件夹。');toast('正在准备拖出文件，请保持按住鼠标；松开可取消拖放。');const dest=await invoke('clipboard_directory');await run({operation:'extract',path,dest,options:{selected:names,overwrite:'error',password,codepage}},'准备拖出文件',{silent:true});const copied=await invoke('drag_paths',{paths:names.map(n=>dest+'\\'+n.replaceAll('/','\\'))});toast(copied?'文件已交给目标文件夹复制。':'已取消拖放，压缩包保持不变。');}
+let dragGesture=null;
+root.addEventListener('pointerdown',e=>{
+  lastSelectShift=e.shiftKey;
+  if(e.button!==0||s.active||dragBusy||!overlay.hidden)return;
+  const row=e.target.closest('[data-row]');
+  if(row&&!e.target.closest('input')&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey)
+    dragCandidate={name:row.dataset.row,x:e.clientX,y:e.clientY,pointerId:e.pointerId};
+});
+function cancelPreparingDrag(pointerId) {
+  if(dragCandidate&&(!Number.isInteger(pointerId)||dragCandidate.pointerId===pointerId))dragCandidate=null;
+  const gesture=dragGesture;
+  if(!gesture||gesture.cancelled||(Number.isInteger(pointerId)&&gesture.pointerId!==pointerId))return;
+  gesture.cancelled=true;
+  invoke('cancel_drag_preparation',{token:gesture.token}).catch(()=>{});
+}
+window.addEventListener('pointerup',e=>cancelPreparingDrag(e.pointerId),true);
+window.addEventListener('pointercancel',e=>cancelPreparingDrag(e.pointerId),true);
+// Explorer may take focus or mouse capture while the user is still holding
+// the button over a target. The native monitor continues across that boundary.
+root.addEventListener('lostpointercapture',()=>{dragCandidate=null;});
+window.addEventListener('blur',()=>{dragCandidate=null;});
+window.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&dragGesture){cancelPreparingDrag();e.preventDefault();e.stopImmediatePropagation();}
+},true);
+root.addEventListener('pointermove',e=>{
+  const c=dragCandidate;
+  if(!c||c.pointerId!==e.pointerId||!(e.buttons&1)||Math.hypot(e.clientX-c.x,e.clientY-c.y)<6)return;
+  dragCandidate=null;suppressRowClick=true;
+  if(!s.selected.has(c.name))selectRow(c.name,{});
+  dragSelection(c.pointerId).catch(error).finally(()=>{dragBusy=false;setTimeout(()=>suppressRowClick=false,300);});
+});
+async function dragSelection(pointerId) {
+  if(dragBusy||s.active)return;
+  dragBusy=true;
+  const names=[...s.selected],path=s.archive,password=s.password||null,codepage=s.codepage||null;
+  if(names.length>512)throw Error('一次最多拖出 512 个文件或文件夹。');
+  const gesture={token:crypto.randomUUID(),pointerId,cancelled:false};
+  dragGesture=gesture;
+  let jobId;
+  const ownJob=()=>s.jobs.find(item=>item.id===jobId);
+  const status=(state,summary)=>{
+    const job=ownJob();
+    if(job){job.status=state;job.summary=summary;if(s.view==='jobs')renderProgress();}
+  };
+  const releaseCapture=()=>{
+    try{if(root.hasPointerCapture(pointerId))root.releasePointerCapture(pointerId);}catch{}
+  };
+  try {
+    // Capture covers release outside the list. The native monitor also covers
+    // leaving WebView2 or losing focus while the start request is in flight.
+    try{root.setPointerCapture(pointerId);}catch{}
+    toast('正在准备拖出文件，松开鼠标或按 Esc 取消。');
+    const startJob=async request=>{
+      const id=await invoke('start_drag_preparation',{token:gesture.token,request});
+      jobId=id;
+      // A quick release may have arrived before native registration. Replay
+      // only this gesture's cancellation, even if another job is now active.
+      if(gesture.cancelled)await invoke('cancel_drag_preparation',{token:gesture.token}).catch(()=>{});
+      return id;
+    };
+    await run({operation:'extract',path,options:{selected:names,overwrite:'error',password,codepage}},
+      '准备拖出文件',{silent:true,startJob,temporaryOutput:true});
+    releaseCapture();
+    const copied=!gesture.cancelled&&await invoke('finish_drag',{token:gesture.token});
+    const summary=copied?'文件已交给目标文件夹复制。':'已取消拖放。';
+    status(copied?'complete':'cancelled',summary);
+    toast(summary);
+  } catch(e) {
+    if(!gesture.cancelled&&ownJob()?.status!=='cancelled'&&!/operation cancelled|已取消拖放/i.test(String(e))){status('failed',String(e));throw e;}
+    status('cancelled','已取消拖放。');
+    toast('已取消拖放。');
+  } finally {
+    releaseCapture();
+    if(dragGesture===gesture)dragGesture=null;
+    await invoke('discard_drag',{token:gesture.token}).catch(()=>{});
+  }
+}
 const scrollTimers=new WeakMap();root.addEventListener('scroll',e=>{const el=e.target;if(!(el instanceof HTMLElement))return;el.classList.add('oa-scrolling');clearTimeout(scrollTimers.get(el));scrollTimers.set(el,setTimeout(()=>el.classList.remove('oa-scrolling'),900));},true);
 root.addEventListener('click',e=>{if(e.target.closest('#oa-menu')||e.target.closest('[data-menu]')||e.target.closest('[data-action=more-menu]'))return;$('oa-menu').hidden=true;const row=e.target.closest('[data-row]');if(row&&!e.target.closest('button,input'))selectRow(row.dataset.row,e);});
 root.addEventListener('contextmenu',e=>{const recent=e.target.closest('[data-recent]');if(recent){e.preventDefault();showRecentContext(recent,e);return;}const tab=e.target.closest('[data-tab-container]');if(tab){e.preventDefault();tab.querySelector('[data-archive-tab]')?.focus();showArchiveTabMenu(tab.dataset.tabContainer,e);return;}const row=e.target.closest('[data-row]');if(row){e.preventDefault();focusEntry(row.dataset.row);if(!s.selected.has(row.dataset.row))selectRow(row.dataset.row,{});showMenu('edit',{getBoundingClientRect:()=>({left:e.clientX,bottom:e.clientY})});}});
 document.addEventListener('keydown',e=>{if(!overlay.hidden)return;const key=e.key.toLowerCase(),ctrl=e.ctrlKey||e.metaKey;if(ctrl&&key==='tab'){e.preventDefault();cycleArchiveTab(e.shiftKey?-1:1);return;}if(ctrl&&key==='w'){e.preventDefault();closeArchiveTabs('current');return;}if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;const map=ctrl?{o:'open',n:'compress',e:'extract',t:'test',w:'close-archive',r:'refresh-archive',f:'find',a:'select-all',c:'copy-files',v:'paste-files'}:{f1:'about',f2:'rename',f4:'close-archive',f5:'settings',f6:'close-archive',f7:'toggle-tree',delete:'delete',insert:'add',backspace:'up'};const a=ctrl&&e.shiftKey&&key==='m'?'comment':ctrl&&key==='delete'?'recycle-archive':map[key];if(a&&s.page!=='files'&&!['open','compress','exit','close-archive','settings','about','toggle-tree'].includes(a))return;if(a){e.preventDefault();action(a).catch(error);}});
-root.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;try{if(b.dataset.archiveTab!==undefined){switchArchiveTab(b.dataset.archiveTab);return;}if(b.dataset.tabClose!==undefined){closeArchiveTabs('one',b.dataset.tabClose);return;}if(b.dataset.tabCloseOthers!==undefined){closeArchiveTabs('others',b.dataset.tabCloseOthers);return;}if(b.dataset.menu){showMenu(b.dataset.menu,b);return;}if(b.dataset.treeToggle!==undefined){const p=b.dataset.treeToggle;s.collapsed.has(p)?s.collapsed.delete(p):s.collapsed.add(p);renderChrome();return;}if(b.dataset.tree!==undefined){if(s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');s.folder=b.dataset.tree;s.search='';s.selected.clear();navigate('files');return;}if(b.dataset.jobOutput){const j=s.jobs.find(j=>j.id===b.dataset.jobOutput),path=j?.result?.destination||j?.result?.outputs?.[0];if(path)await invoke('reveal_path',{path});return;}if(b.dataset.launchTool){showTool(b.dataset.launchTool,b.dataset.toolTitle);return;}if(b.dataset.place){await setDestination(s.known?.[b.dataset.place]||'');return;}if(b.dataset.directory){await setDestination(b.dataset.directory);return;}if(b.dataset.window){await invoke('window_action',{action:b.dataset.window});return;}if(b.dataset.view){navigate(b.dataset.view);return;}if(b.dataset.theme){s.theme=b.dataset.theme;appearance();return;}if(b.dataset.recent!==undefined){const path=s.recent[Number(b.dataset.recent)];try{await openArchive(path);}catch(e){openDialog(path);error(e);}return;}if(b.dataset.entry){selectRow(b.dataset.entry,e);return;}if(b.dataset.sort){s.reverse=s.sort===b.dataset.sort?!s.reverse:false;s.sort=b.dataset.sort;rows();syncViewControls();return;}if(b.dataset.advanced){if($('qa-tools')?.contentWindow?.obzBusy)throw Error('请等待当前工具任务完成。');s.advancedTab=b.dataset.advanced;render();return;}if(b.dataset.tool){if($('qa-tools')?.contentWindow?.obzBusy)throw Error('请等待当前工具任务完成。');$('qa-tools').src=`tools.html?operation=${b.dataset.tool}&path=${encodeURIComponent(s.archive)}&codepage=${s.codepage||''}`;return;}if(b.dataset.profile!==undefined){compress(s.profiles[Number(b.dataset.profile)]);return;}if(b.dataset.profileDelete!==undefined){s.profiles.splice(Number(b.dataset.profileDelete),1);localStorage.setItem('qing-profiles',JSON.stringify(s.profiles));render();return;}if(b.dataset.action){$('oa-menu').hidden=true;await action(b.dataset.action)};}catch(e){error(e);}});
+root.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;try{if(b.dataset.archiveTab!==undefined){switchArchiveTab(b.dataset.archiveTab);return;}if(b.dataset.tabClose!==undefined){closeArchiveTabs('one',b.dataset.tabClose);return;}if(b.dataset.tabCloseOthers!==undefined){closeArchiveTabs('others',b.dataset.tabCloseOthers);return;}if(b.dataset.menu){showMenu(b.dataset.menu,b);return;}if(b.dataset.treeToggle!==undefined){const p=b.dataset.treeToggle;s.collapsed.has(p)?s.collapsed.delete(p):s.collapsed.add(p);renderChrome();return;}if(b.dataset.tree!==undefined){if(s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');s.folder=b.dataset.tree;s.search='';s.selected.clear();navigate('files');return;}if(b.dataset.jobOutput){const j=s.jobs.find(j=>String(j.id)===b.dataset.jobOutput),path=j?.result?.destination||j?.result?.outputs?.[0];if(path)await invoke('reveal_path',{path});return;}if(b.dataset.launchTool){showTool(b.dataset.launchTool,b.dataset.toolTitle);return;}if(b.dataset.place){await setDestination(s.known?.[b.dataset.place]||'');return;}if(b.dataset.directory){await setDestination(b.dataset.directory);return;}if(b.dataset.window){await invoke('window_action',{action:b.dataset.window});return;}if(b.dataset.view){navigate(b.dataset.view);return;}if(b.dataset.theme){s.theme=b.dataset.theme;appearance();return;}if(b.dataset.recent!==undefined){const path=s.recent[Number(b.dataset.recent)];try{await openArchive(path);}catch(e){openDialog(path);error(e);}return;}if(b.dataset.entry){selectRow(b.dataset.entry,e);return;}if(b.dataset.sort){s.reverse=s.sort===b.dataset.sort?!s.reverse:false;s.sort=b.dataset.sort;rows();syncViewControls();return;}if(b.dataset.advanced){if($('qa-tools')?.contentWindow?.obzBusy)throw Error('请等待当前工具任务完成。');s.advancedTab=b.dataset.advanced;render();return;}if(b.dataset.tool){if($('qa-tools')?.contentWindow?.obzBusy)throw Error('请等待当前工具任务完成。');$('qa-tools').src=`tools.html?operation=${b.dataset.tool}&path=${encodeURIComponent(s.archive)}&codepage=${s.codepage||''}`;return;}if(b.dataset.profile!==undefined){compress(s.profiles[Number(b.dataset.profile)]);return;}if(b.dataset.profileDelete!==undefined){s.profiles.splice(Number(b.dataset.profileDelete),1);localStorage.setItem('qing-profiles',JSON.stringify(s.profiles));render();return;}if(b.dataset.action){$('oa-menu').hidden=true;await action(b.dataset.action)};}catch(e){error(e);}});
 root.addEventListener('input',e=>{if(e.target.id==='oa-icon-size')setIconSize(Number(e.target.value));if(e.target.id==='qa-inputs')refreshSources();if(e.target.id==='qa-search'){s.search=e.target.value;s.selected.clear();rows();}});
-root.addEventListener('change',e=>{const t=e.target;if(t.id==='oa-folder-menu'){t.disabled=true;invoke('set_folder_menu',{enabled:t.checked}).then(v=>{folderMenuEnabled=v;t.checked=v;}).catch(e=>{t.checked=folderMenuEnabled;error(e);}).finally(()=>t.disabled=false);return;}const extractPref={'qa-smart':'sameFolder','oa-recycle-after':'recycleAfter','oa-open-after':'openAfter','oa-close-after':'closeAfter'}[t.id];if(extractPref){s[extractPref]=t.checked;appearance();}if(t.id==='oa-text-encoding'){loadTextPreview($('qa-file-preview'),t.value).catch(error);}if(t.id==='oa-sort'){s.sort=t.value;rows();}if(t.dataset.association!==undefined){t.checked?associationSelection.add(t.dataset.association):associationSelection.delete(t.dataset.association);}if(t.name==='extract-scope'||t.id==='qa-conflict')syncRecycleOption();if(t.id==='qa-format')methodOptions();if(t.id==='oa-method')syncCompressionControls();if(t.id==='oa-show-password'){for(const id of ['qa-new-password','oa-password-again'])$(id).type=t.checked?'text':'password';}if(t.dataset.select){if(lastSelectShift)selectRow(t.dataset.select,{shiftKey:true});else{t.checked?s.selected.add(t.dataset.select):s.selected.delete(t.dataset.select);s.anchor=t.dataset.select;refreshSelection();}lastSelectShift=false;}if(t.id==='qa-all'){visibleEntries().forEach(v=>t.checked?s.selected.add(v.name):s.selected.delete(v.name));rows();}const k={'qa-theme':'theme','qa-material':'material','qa-density':'density','qa-defaultconflict':'overwrite'}[t.id];if(k){s[k]=t.value;appearance();}});
+root.addEventListener('change',e=>{const t=e.target;if(t.id==='oa-folder-menu'){t.disabled=true;invoke('set_folder_menu',{enabled:t.checked}).then(v=>{folderMenuEnabled=v;t.checked=v;}).catch(e=>{t.checked=folderMenuEnabled;error(e);}).finally(()=>t.disabled=false);return;}const extractPref={'qa-smart':'sameFolder','oa-recycle-after':'recycleAfter','oa-open-after':'openAfter','oa-close-after':'closeAfter'}[t.id];if(extractPref){s[extractPref]=t.checked;appearance();}if(t.id==='oa-text-encoding'){loadTextPreview($('qa-file-preview'),t.value).catch(error);}if(t.id==='oa-sort'){s.sort=t.value;rows();syncViewControls();}if(t.dataset.association!==undefined){t.checked?associationSelection.add(t.dataset.association):associationSelection.delete(t.dataset.association);}if(t.name==='extract-scope'||t.id==='qa-conflict')syncRecycleOption();if(t.id==='qa-format')methodOptions();if(t.id==='oa-method')syncCompressionControls();if(t.id==='oa-show-password'){for(const id of ['qa-new-password','oa-password-again'])$(id).type=t.checked?'text':'password';}if(t.dataset.select){if(lastSelectShift)selectRow(t.dataset.select,{shiftKey:true});else{t.checked?s.selected.add(t.dataset.select):s.selected.delete(t.dataset.select);s.anchor=t.dataset.select;refreshSelection();}lastSelectShift=false;}if(t.id==='qa-all'){visibleEntries().forEach(v=>t.checked?s.selected.add(v.name):s.selected.delete(v.name));rows();}const k={'qa-theme':'theme','qa-material':'material','qa-density':'density','qa-defaultconflict':'overwrite'}[t.id];if(k){s[k]=t.value;appearance();}});
 root.addEventListener('keydown',e=>{if(e.key==='Escape')close();if(e.key==='Tab'&&!overlay.hidden){const list=[...overlay.querySelectorAll('input,textarea,select,button')].filter(v=>!v.disabled&&v.getClientRects().length);if(e.shiftKey&&document.activeElement===list[0]){e.preventDefault();list.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===list.at(-1)){e.preventDefault();list[0]?.focus();}}});
 async function syncWindowControls(){try{const maximized=await invoke('window_maximized'),button=root.querySelector('[data-window=maximize]');button.setAttribute('aria-label',maximized?'还原窗口':'最大化窗口');button.title=maximized?'还原':'最大化';button.innerHTML=`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">${maximized?'<path d="M6 3.5h6.5V10M10 6V3.5"/><rect x="3.5" y="6" width="6.5" height="6.5" rx=".5"/>':'<rect x="3.5" y="3.5" width="9" height="9" rx=".5"/>'}</svg>`;}catch{}}
 window.addEventListener('resize',syncWindowControls);syncWindowControls();
@@ -213,8 +356,8 @@ const thumbnailCache=new Map(),thumbnailQueue=new Map(),thumbnailInflight=new Se
 let thumbnailPolicyToken=null,thumbnailPolicyRevision=0,thumbnailPolicyBatch=Promise.resolve();
 async function loadTextPreview(target,textEncoding){const context=target.oaTextContext;if(!context)return;const request=(target.oaTextRequest||0)+1;target.oaTextRequest=request;const meta=target.querySelector('#oa-text-meta'),text=target.querySelector('#oa-text-preview');meta.textContent='正在读取文本…';try{const r=await invoke('preview_entry',{...context.args,kind:'text',textEncoding});if(target!==$('qa-file-preview')||context.generation!==previewGeneration||target.oaTextRequest!==request)return;meta.textContent=`${r.encoding||'文本'} · ${r.truncated?'仅显示部分内容':'只读预览'}`;text.textContent=r.text||'';$('qa-formerror').textContent='';}catch(e){if(target===$('qa-file-preview')&&target.oaTextRequest===request){meta.textContent='无法预览';text.textContent='';error(e);}}}
 function saveViewPreference(){const saved=load('qing-preferences',{});localStorage.setItem('qing-preferences',JSON.stringify({...saved,listStyle:s.listStyle,iconSize:s.iconSize}));}
-function viewControls(){return `<div class="oa-view-controls"><div class="oa-view-switch" role="group" aria-label="文件显示方式"><button data-action="details" aria-pressed="${s.listStyle!=='icons'}" title="详细信息">${icon('file')}<span>详情</span></button><button data-action="icons" aria-pressed="${s.listStyle==='icons'}" title="大图标和图片缩略图">${icon('grid')}<span>大图标</span></button></div><label class="oa-icon-control" ${s.listStyle==='icons'?'':'hidden'}><span>图标</span><input id="oa-icon-size" type="range" min="80" max="256" step="16" value="${s.iconSize}" aria-label="图标大小"><span id="oa-icon-size-label">${s.iconSize}</span></label><span class="oa-zoom-hint" ${s.listStyle==='icons'?'':'hidden'}>Ctrl + 滚轮调整</span><label class="oa-sort-control"><span>排序</span><select id="oa-sort" aria-label="排序依据">${opts([['name','名称'],['size','大小'],['packed_size','压缩后']],s.sort)}</select><button type="button" data-action="reverse-sort" aria-label="${s.reverse?'改为升序':'改为降序'}" title="${s.reverse?'降序':'升序'}">${s.reverse?'↓':'↑'}</button></label></div>`;}
-function syncViewControls(){if($('oa-sort'))$('oa-sort').value=s.sort;const b=root.querySelector('.oa-view-controls [data-action=reverse-sort]');if(b){b.textContent=s.reverse?'↓':'↑';b.setAttribute('aria-label',s.reverse?'改为升序':'改为降序');b.title=s.reverse?'降序':'升序';}}
+function viewControls(){return `<div class="oa-view-controls"><div class="oa-view-switch" role="group" aria-label="文件显示方式"><button data-action="details" aria-pressed="${s.listStyle!=='icons'}" title="详细信息">${icon('file')}<span>详情</span></button><button data-action="icons" aria-pressed="${s.listStyle==='icons'}" title="大图标和图片缩略图">${icon('grid')}<span>大图标</span></button></div><label class="oa-icon-control" ${s.listStyle==='icons'?'':'hidden'}><span>图标</span><input id="oa-icon-size" type="range" min="80" max="256" step="16" value="${s.iconSize}" aria-label="图标大小"><span id="oa-icon-size-label">${s.iconSize}</span></label><span class="oa-zoom-hint" ${s.listStyle==='icons'?'':'hidden'}>Ctrl + 滚轮调整</span><label class="oa-sort-control"><span>排序</span><select id="oa-sort" aria-label="排序依据">${opts([['name','名称'],['size','大小'],['packed_size','压缩后'],['type','类型'],['modified','修改日期']],s.sort)}</select><button type="button" data-action="reverse-sort" aria-label="${s.reverse?'改为升序':'改为降序'}" title="${s.reverse?'降序':'升序'}">${s.reverse?'↓':'↑'}</button></label></div>`;}
+function syncViewControls(){for(const button of root.querySelectorAll('th [data-sort]'))button.parentElement.setAttribute('aria-sort',button.dataset.sort!==s.sort?'none':s.reverse?'descending':'ascending');if($('oa-sort'))$('oa-sort').value=s.sort;const b=root.querySelector('.oa-view-controls [data-action=reverse-sort]');if(b){b.textContent=s.reverse?'↓':'↑';b.setAttribute('aria-label',s.reverse?'改为升序':'改为降序');b.title=s.reverse?'降序':'升序';}}
 function setIconSize(value){s.iconSize=Math.max(80,Math.min(256,Math.round(value/16)*16));root.querySelector('.oa-table-wrap')?.style.setProperty('--oa-icon-size',s.iconSize+'px');if($('oa-icon-size'))$('oa-icon-size').value=s.iconSize;if($('oa-icon-size-label'))$('oa-icon-size-label').textContent=s.iconSize;saveViewPreference();}
 function stopThumbnailObserver(){thumbnailObserver?.disconnect();thumbnailObserver=null;thumbnailQueue.clear();}
 function resetPreviewState(){previewGeneration++;stopThumbnailObserver();thumbnailCache.clear();thumbnailBytes=0;}

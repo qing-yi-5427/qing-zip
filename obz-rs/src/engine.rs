@@ -4,6 +4,7 @@
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
+mod bounded_archive_stage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -469,7 +470,8 @@ fn run_program(
         Ok(Vec::new())
     }
 }
-pub(crate) fn validate_name(name: &str) -> Result<PathBuf, String> {
+/// Resolve a member name to the same safe relative path used during extraction.
+pub fn validate_name(name: &str) -> Result<PathBuf, String> {
     let name = name.replace('\\', "/");
     if name.starts_with('/') {
         return Err("absolute archive path rejected".into());
@@ -1840,6 +1842,62 @@ fn decode_selected_zip(
     Ok(true)
 }
 
+fn verified_zip_order<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entries: &[Entry],
+    ctl: &JobControl,
+) -> Result<Option<Vec<usize>>, String> {
+    if archive.offset() != 0
+        || archive.len() != entries.len()
+        || archive.has_duplicate_names()
+        || archive.validate_header_consistency().is_err()
+    {
+        return Ok(None);
+    }
+    let expected = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| Ok((path_key(&validate_name(&e.name)?), i)))
+        .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
+    let mut names = Vec::with_capacity(entries.len());
+    let mut seen = vec![false; entries.len()];
+    for i in 0..archive.len() {
+        ctl.check()?;
+        let member = archive.by_index_data(i).map_err(|e| e.to_string())?;
+        let Ok(name) = std::str::from_utf8(member.name_raw()) else {
+            return Ok(None);
+        };
+        let key = path_key(&validate_name(name)?);
+        let Some(&index) = expected.get(&key) else {
+            return Ok(None);
+        };
+        let entry = &entries[index];
+        let kind = member.unix_mode().map(|m| m & 0xf000).unwrap_or(0);
+        if std::mem::replace(&mut seen[index], true)
+            || member.encrypted()
+            || member.is_symlink()
+            || !matches!(kind, 0 | 0x4000 | 0x8000)
+            || (kind == 0x4000 && !entry.is_dir)
+            || (kind == 0x8000 && entry.is_dir)
+            || member.is_dir() != entry.is_dir
+            || member.size() != entry.size
+            || !matches!(
+                member.compression(),
+                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
+            )
+            || member.external_attributes() & 0x400 != 0
+            || (!entry.is_dir && u32::from_str_radix(&entry.crc, 16).ok() != Some(member.crc32()))
+        {
+            return Ok(None);
+        }
+        names.push(index);
+    }
+    if seen.contains(&false) {
+        return Ok(None);
+    }
+    Ok(Some(names))
+}
+
 fn decode_memory_zip(
     source: Option<File>,
     entries: &[Entry],
@@ -1889,52 +1947,9 @@ fn decode_memory_zip(
         Ok(a) => a,
         Err(_) => return Ok(None),
     };
-    if archive.offset() != 0
-        || archive.len() != entries.len()
-        || archive.has_duplicate_names()
-        || archive.validate_header_consistency().is_err()
-    {
+    let Some(names) = verified_zip_order(&mut archive, entries, ctl)? else {
         return Ok(None);
-    }
-    let expected = entries
-        .iter()
-        .map(|e| Ok((path_key(&validate_name(&e.name)?), e)))
-        .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
-    let mut names = Vec::with_capacity(entries.len());
-    let mut seen = HashSet::new();
-    for i in 0..archive.len() {
-        ctl.check()?;
-        let member = archive.by_index_data(i).map_err(|e| e.to_string())?;
-        let Ok(name) = std::str::from_utf8(member.name_raw()) else {
-            return Ok(None);
-        };
-        let key = path_key(&validate_name(name)?);
-        let Some(entry) = expected.get(&key) else {
-            return Ok(None);
-        };
-        let kind = member.unix_mode().map(|m| m & 0xf000).unwrap_or(0);
-        if !seen.insert(key.clone())
-            || member.encrypted()
-            || member.is_symlink()
-            || !matches!(kind, 0 | 0x4000 | 0x8000)
-            || (kind == 0x4000 && !entry.is_dir)
-            || (kind == 0x8000 && entry.is_dir)
-            || member.is_dir() != entry.is_dir
-            || member.size() != entry.size
-            || !matches!(
-                member.compression(),
-                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
-            )
-            || member.external_attributes() & 0x400 != 0
-            || (!entry.is_dir && u32::from_str_radix(&entry.crc, 16).ok() != Some(member.crc32()))
-        {
-            return Ok(None);
-        }
-        names.push(key);
-    }
-    if seen.len() != entries.len() {
-        return Ok(None);
-    }
+    };
     ctl.set(
         "decoding",
         Some(0),
@@ -1943,9 +1958,9 @@ fn decode_memory_zip(
     let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
     let mut discard = Vec::new();
     let mut allocated = 0u64;
-    for (i, key) in names.into_iter().enumerate() {
+    for (i, index) in names.into_iter().enumerate() {
         ctl.check()?;
-        let entry = expected[&key];
+        let entry = &entries[index];
         let mut member = archive
             .by_index(i)
             .map_err(|e| format!("ZIP decode: {e}"))?;
@@ -1985,7 +2000,7 @@ fn decode_memory_zip(
         }
         if keep {
             allocated += data.capacity() as u64;
-            contents.insert(key, MemoryChunk::Owned(data));
+            contents.insert(path_key(&validate_name(&entry.name)?), MemoryChunk::Owned(data));
         } else {
             discard = data;
         }
@@ -1994,11 +2009,17 @@ fn decode_memory_zip(
     Ok(Some(contents))
 }
 
-fn decode_memory_sevenz(
+struct SevenMemoryPlan {
+    data: Vec<u8>,
+    parsed: crate::sevenz::MemoryArchive,
+    order: Vec<usize>,
+}
+
+fn prepare_memory_sevenz(
     source: Option<File>,
     entries: &[Entry],
     ctl: &JobControl,
-) -> Result<Option<MemoryFiles>, String> {
+) -> Result<Option<SevenMemoryPlan>, String> {
     let Some(mut source) = source else {
         return Ok(None);
     };
@@ -2042,18 +2063,20 @@ fn decode_memory_sevenz(
     }
     let expected = entries
         .iter()
-        .map(|e| Ok((path_key(&validate_name(&e.name)?), e)))
+        .enumerate()
+        .map(|(i, e)| Ok((path_key(&validate_name(&e.name)?), i)))
         .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
-    let mut seen = HashSet::new();
+    let mut seen = vec![false; entries.len()];
     let mut names = Vec::new();
     for member in &parsed.archive.entries {
         ctl.check()?;
         let key = path_key(&validate_name(&member.name)?);
-        let Some(entry) = expected.get(&key) else {
+        let Some(&index) = expected.get(&key) else {
             return Ok(None);
         };
+        let entry = &entries[index];
         let kind = (member.attrs >> 16) & 0xf000;
-        if !seen.insert(key.clone())
+        if std::mem::replace(&mut seen[index], true)
             || member.is_dir != entry.is_dir
             || member.size != entry.size
             || member.attrs & 0x400 != 0
@@ -2065,11 +2088,22 @@ fn decode_memory_sevenz(
         {
             return Ok(None);
         }
-        names.push(key);
+        names.push(index);
     }
-    if seen.len() != entries.len() {
+    if seen.contains(&false) {
         return Ok(None);
     }
+    Ok(Some(SevenMemoryPlan { data, parsed, order: names }))
+}
+
+fn decode_memory_sevenz(
+    source: Option<File>,
+    entries: &[Entry],
+    ctl: &JobControl,
+) -> Result<Option<MemoryFiles>, String> {
+    let Some(SevenMemoryPlan { data, parsed, order }) = prepare_memory_sevenz(source, entries, ctl)? else {
+        return Ok(None);
+    };
     ctl.set(
         "decoding",
         Some(0),
@@ -2079,8 +2113,8 @@ fn decode_memory_sevenz(
     if bytes.capacity() as u64 > MEMORY_ZIP_LIMIT {
         return Err("7z memory capacity budget exceeded".into());
     }
-    let mut output = MemoryFiles::with_capacity(count);
-    for (key, member) in names.into_iter().zip(&parsed.archive.entries) {
+    let mut output = MemoryFiles::with_capacity(entries.len());
+    for (index, member) in order.into_iter().zip(&parsed.archive.entries) {
         ctl.check()?;
         let start = usize::try_from(member.offset_in_stream).map_err(|_| "7z offset overflow")?;
         let end = start
@@ -2089,7 +2123,7 @@ fn decode_memory_sevenz(
         let chunk = bytes
             .get(start..end)
             .ok_or("7z entry exceeds decoded stream")?;
-        let entry = expected[&key];
+        let entry = &entries[index];
         let crc = crc32fast::hash(chunk);
         if member.crc.is_some_and(|want| crc != want)
             || u32::from_str_radix(&entry.crc, 16)
@@ -2100,7 +2134,7 @@ fn decode_memory_sevenz(
         }
         if !entry.is_dir {
             output.insert(
-                key,
+                path_key(&validate_name(&entry.name)?),
                 MemoryChunk::Shared {
                     bytes: bytes.clone(),
                     start,
@@ -2220,7 +2254,15 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     ctl.check()?;
     let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
-    let memory = if let PayloadSource::VerifiedZeal(files) = payload_source {
+    let (mut bounded_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
+        && defer_preflight && expected.len() <= 65_536
+    {
+        bounded_archive_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
+            .map_or((None, None), |(plan, transaction)| (Some(plan), Some(transaction)))
+    } else {
+        (None, None)
+    };
+    let memory = if bounded_plan.is_some() { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
         Some(files)
     } else if Path::new(path)
         .extension()
@@ -2242,9 +2284,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let safe_projection = opts.selected.is_empty() || plan_selection;
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
-    let mut transaction = if expected.len() <= 65_536 {
+    let mut transaction = if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
         new_directory_stage(path, &dest, safe_projection, &mut output_guards,
-            projected.as_deref().or_else(|| memory.as_ref().map(|_| all_entries.as_slice())))?
+            projected.as_deref().unwrap_or(&all_entries), projected.is_some() || memory.is_some())?
     } else {
         None
     };
@@ -2316,7 +2358,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             stage_guards,
             &ctl,
         )?;
-        if let Some(files) = &memory {
+        if let Some(plan) = bounded_plan.take() {
+            plan.decode(&all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
+        } else if let Some(files) = &memory {
             stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
             let mut args = base("x", opts)?;
@@ -2406,7 +2450,20 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             "Committing verified archive directory",
         );
         ctl.check()?;
-        if rename_directory_noclobber_in(root, &dest, Some(&transaction.parent))? {
+        #[cfg(all(windows, target_pointer_width = "64"))]
+        let compatible = if let Some(witness) = &transaction.witnessed {
+            let pins = pin_committed_tree(temp.path(), &expected)?;
+            let matches = using_process_token() && witness.compatible(&transaction.parent, root, &pins)?;
+            if !matches && PhaseTimer::enabled() {
+                eprintln!("OA_PUBLICATION witnessed_directory_fallback=1");
+            }
+            matches
+        } else { true };
+        #[cfg(not(all(windows, target_pointer_width = "64")))]
+        let compatible = true;
+        ctl.check()?;
+        policy.validate_output()?;
+        if compatible && rename_directory_noclobber_in(root, &dest, Some(&transaction.parent))? {
             let _published_path = stage.take().unwrap().keep();
             #[cfg(windows)]
             if transaction.restore_acl {
@@ -2414,11 +2471,21 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 // reparse conversion while recursive inheritance opens access.
                 let publication_pins = pin_committed_tree(&dest, &expected)
                     .map_err(|e| format!("verified output was committed but remains private: {e}"))?;
-                crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins)
-                    .map_err(|e| format!("verified output was committed but permissions could not be restored: {e}"))?;
+                #[cfg(target_pointer_width = "64")]
+                let restored = match &transaction.witnessed {
+                    Some(witness) => witness.restore(&transaction.parent, root, &publication_pins),
+                    None => crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins),
+                };
+                #[cfg(not(target_pointer_width = "64"))]
+                let restored = crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins);
+                restored.map_err(|e| format!("verified output was committed but permissions could not be restored: {e}"))?;
                 drop(publication_pins);
             }
             ctl.set("complete", Some(100), "Extraction complete");
+            #[cfg(all(windows, target_pointer_width = "64"))]
+            if transaction.witnessed.is_some() && PhaseTimer::enabled() {
+                eprintln!("OA_PUBLICATION witnessed_directory_commit=1");
+            }
             if split_streamed && PhaseTimer::enabled() {
                 eprintln!("OA_PUBLICATION selected_directory_commit=1");
             }
@@ -2760,8 +2827,121 @@ impl StagingDir {
         }
     }
 }
-// Windows TEMP can be shared or user-selected. Always create the fallback
-// atomically with a private DACL; never repair permissions after publication.
+/// Private output of one Explorer drag. Hold its directory identity until
+/// preparation is abandoned or the shell accepts responsibility for the data.
+#[cfg(windows)]
+pub struct ShellDragDirectory {
+    path: PathBuf,
+    root: Option<File>,
+    _parent_pin: File,
+    _ancestors: CheckedDirectories,
+    retained: AtomicBool,
+}
+#[cfg(windows)]
+impl ShellDragDirectory {
+    pub fn create() -> Result<Self, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let parent = absolute(
+            std::env::temp_dir()
+                .to_str()
+                .ok_or("invalid temporary directory")?,
+        )?;
+        let mut ancestors = CheckedDirectories::default();
+        ancestors.check(&parent)?;
+        let pin = File::options()
+            .access_mode(0x20081)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(&parent)
+            .map_err(|e| e.to_string())?;
+        validate_transaction_root(&pin, &parent)?;
+        let (path, root, parent_pin) = crate::private_stage::create_drag_root(&parent, &pin)?;
+        Ok(Self {
+            path,
+            root: Some(root),
+            _parent_pin: parent_pin,
+            _ancestors: ancestors,
+            retained: AtomicBool::new(false),
+        })
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn retain_for_shell(&self) {
+        self.retained.store(true, Ordering::Release);
+    }
+    pub fn pin_for_read(&self) -> Result<File, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let pin = File::options().access_mode(0x81).share_mode(1)
+            .custom_flags(0x02200000).open(&self.path).map_err(|e| e.to_string())?;
+        validate_transaction_root(&pin, &self.path)?;
+        if directory_identity(&pin)? != directory_identity(self.root.as_ref().ok_or("missing drag root")?)? {
+            return Err("drag export directory changed".into());
+        }
+        Ok(pin)
+    }
+}
+#[cfg(windows)]
+impl Drop for ShellDragDirectory {
+    fn drop(&mut self) {
+        use std::os::windows::fs::OpenOptionsExt;
+        if self.retained.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(strong) = self.pin_for_read() else { return };
+        let Some(root) = self.root.take() else { return };
+        let open = |access| {
+            File::options()
+                .access_mode(access)
+                .share_mode(7)
+                .custom_flags(0x02200000)
+                .open(&self.path)
+        };
+        let Ok(anchor) = open(0x80) else { return };
+        let Ok(id) = directory_identity(&root) else {
+            return;
+        };
+        if directory_identity(&anchor).ok() != Some(id) {
+            return;
+        }
+        // Walk only this operation's pinned, privately created directory.
+        if let Ok(children) = fs::read_dir(&self.path) {
+            for child in children.flatten() {
+                let path = child.path();
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(path);
+                } else {
+                    if let Ok(file) = File::options()
+                        .access_mode(0x180)
+                        .share_mode(7)
+                        .custom_flags(0x00200000)
+                        .open(&path)
+                    {
+                        if let Ok(meta) = crate::private_stage::checked_metadata(&file) {
+                            if meta.permissions().readonly() {
+                                let mut permissions = meta.permissions();
+                                permissions.set_readonly(false);
+                                let _ = file.set_permissions(permissions);
+                            }
+                        }
+                    }
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        drop(strong);
+        drop(root);
+        // The anchor keeps the ID alive across reopening with DELETE access.
+        // The kernel only removes an empty directory; no replacement is walked.
+        let Ok(delete) = open(0x10080) else { return };
+        if directory_identity(&delete).ok() == Some(id) {
+            crate::private_stage::delete_empty_directory(&delete);
+        }
+    }
+}
+
+// Windows TEMP can be shared or user-selected. Create the fallback with a
+// private DACL before exposing a pathname.
 fn new_fallback_stage(parent: &Path, guards: &mut CheckedDirectories) -> Result<StagingDir, String> {
     #[cfg(windows)]
     {
@@ -2801,36 +2981,41 @@ struct MemoryOutput<'a> {
     bytes: &'a [u8],
 }
 
-fn write_memory_output(
-    job: &MemoryOutput<'_>,
-    guards: &CheckedDirectories,
-    ctl: &JobControl,
-) -> Result<(), String> {
-    use std::io::Write;
-    ctl.check()?;
-    if !job.entry.size_known || job.bytes.len() as u64 != job.entry.size {
-        return Err("verified memory file length does not match archive".into());
-    }
+fn open_prepared_stage_output(target: &Path, guards: &CheckedDirectories) -> Result<File, String> {
     let checked_create = || {
-        guards.check_prepared(&job.target)?;
-        File::options().write(true).create_new(true).open(&job.target)
+        guards.check_prepared(target)?;
+        File::options().write(true).create_new(true).open(target)
             .map_err(|error| error.to_string())
     };
     #[cfg(windows)]
-    let mut output = match job.target.parent().and_then(|p| guards.private_metadata_parent(p)) {
+    let output = match target.parent().and_then(|p| guards.private_metadata_parent(p)) {
         Some(parent) => {
-            let leaf = job.target.file_name().ok_or("missing stage filename")?;
+            let leaf = target.file_name().ok_or("missing stage filename")?;
             crate::private_stage::create_child_file(parent, leaf)?
         }
         None => checked_create()?,
     };
     #[cfg(not(windows))]
-    let mut output = checked_create()?;
-    for chunk in job.bytes.chunks(64 * 1024) {
+    let output = checked_create()?;
+    Ok(output)
+}
+
+fn write_verified_bytes(
+    entry: &Entry, target: &Path, bytes: &[u8],
+    guards: &CheckedDirectories,
+    ctl: &JobControl,
+) -> Result<(), String> {
+    use std::io::Write;
+    ctl.check()?;
+    if !entry.size_known || bytes.len() as u64 != entry.size {
+        return Err("verified memory file length does not match archive".into());
+    }
+    let mut output = open_prepared_stage_output(target, guards)?;
+    for chunk in bytes.chunks(64 * 1024) {
         ctl.check()?;
         output.write_all(chunk).map_err(|error| error.to_string())?;
     }
-    restore_open_file_metadata(&output, job.entry)
+    restore_open_file_metadata(&output, entry)
 }
 
 fn stage_verified_memory(
@@ -2876,7 +3061,7 @@ fn stage_verified_memory(
     let consume = || -> Result<(), String> {
         while !stopped.load(Ordering::Acquire) {
             let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
-            if let Err(error) = write_memory_output(job, guards, ctl) {
+            if let Err(error) = write_verified_bytes(job.entry, &job.target, job.bytes, guards, ctl) {
                 stopped.store(true, Ordering::Release);
                 return Err(error);
             }
@@ -3032,10 +3217,14 @@ fn try_publish_staged_file(
     { let _ = (staged, relative, entry, target, replace, ctl, stage_guards, output_guards); Ok(false) }
 }
 struct DirectoryTransaction {
-    stage: Option<StagingDir>,
+    // Release the no-delete-sharing root pin before a still-owned TempDir is
+    // removed, including when an archive fails qualification.
     root: File,
     parent: File,
     restore_acl: bool,
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    witnessed: Option<crate::private_stage::WitnessedInheritance>,
+    stage: Option<StagingDir>,
 }
 #[cfg(windows)]
 pub(crate) fn pin_committed_tree(
@@ -3109,7 +3298,8 @@ fn new_directory_stage(
     dest: &Path,
     safe_projection: bool,
     guards: &mut CheckedDirectories,
-    reservation_entries: Option<&[Entry]>,
+    entries: &[Entry],
+    reserve: bool,
 ) -> Result<Option<DirectoryTransaction>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
@@ -3148,7 +3338,7 @@ fn new_directory_stage(
             Err(_) => return Ok(None),
         };
         validate_transaction_root(&parent_handle, parent)?;
-        if let Some(entries) = reservation_entries {
+        if reserve {
             // Copy publication inherits storage attributes and uses the effective
             // token. Whole-tree ACL derivation uses the process token.
             let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
@@ -3158,10 +3348,16 @@ fn new_directory_stage(
             }
         }
         let private_parent = private_stage_acl_handle(&parent_handle)?;
-        if (!private_parent || reservation_entries.is_some())
-            && !crate::private_stage::supports_inheritance(&parent_handle)? {
-            return Ok(None);
-        }
+        let witnessed = if (!private_parent || reserve) && !crate::private_stage::supports_inheritance(&parent_handle)? {
+            if private_parent || !using_process_token() { return Ok(None); }
+            let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
+            if !has_stage_space(parent, required) { return Ok(None); }
+            // A missing capability (including witness creation/access) always
+            // preserves the ordinary per-file publication route.
+            let Some(witness) = crate::private_stage::WitnessedInheritance::qualify(parent, &parent_handle)?
+                else { return Ok(None); };
+            Some(witness)
+        } else { None };
         if private_parent {
             let temp = match tempfile::Builder::new()
                 .prefix(".open-archive-stage-")
@@ -3181,7 +3377,7 @@ fn new_directory_stage(
             };
             validate_transaction_root(&root, temp.path())?;
             if !private_stage_acl_handle(&root)?
-                || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+                || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
                 return Ok(None);
             }
             return Ok(Some(DirectoryTransaction {
@@ -3189,6 +3385,7 @@ fn new_directory_stage(
                 root,
                 parent: parent_handle,
                 restore_acl: false,
+                witnessed: None,
             }));
         }
         let temp = match crate::private_stage::create(parent, &parent_handle) {
@@ -3198,7 +3395,7 @@ fn new_directory_stage(
         let root = temp.root().try_clone().map_err(|e| e.to_string())?;
         validate_transaction_root(&root, temp.path())?;
         if !private_stage_acl_handle(&root)?
-            || (reservation_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
+            || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
             return Ok(None);
         }
         Ok(Some(DirectoryTransaction {
@@ -3206,11 +3403,12 @@ fn new_directory_stage(
             root,
             parent: parent_handle,
             restore_acl: true,
+            witnessed,
         }))
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
-        let _ = (path, dest, safe_projection, guards, reservation_entries);
+        let _ = (path, dest, safe_projection, guards, entries, reserve);
         Ok(None)
     }
 }
@@ -5659,7 +5857,7 @@ mod staging_tests {
             &target,
             true,
             &mut guards,
-            None,
+            &[], false,
         )
         .unwrap()
         .unwrap();
@@ -5804,7 +6002,7 @@ mod staging_tests {
             &new,
             true,
             &mut CheckedDirectories::default(),
-            None,
+            &[], false,
         )
         .unwrap()
         .expect("private parent must qualify");
@@ -5883,14 +6081,14 @@ mod staging_tests {
         security(&shared, "D:P(A;OICI;FA;;;WD)");
         assert!(!private_stage_acl(&shared).unwrap());
         assert!(new_directory_stage(archive.to_str().unwrap(), &shared.join("legacy"),
-            true, &mut CheckedDirectories::default(), None).unwrap().is_none());
+            true, &mut CheckedDirectories::default(), &[], false).unwrap().is_none());
         security(&shared, "D:PAI(A;OICI;FA;;;WD)");
         let candidate = new_directory_stage(
             archive.to_str().unwrap(),
             &shared.join("result"),
             true,
             &mut CheckedDirectories::default(),
-            None,
+            &[], false,
         )
         .unwrap().expect("shared parent must use a private stage");
         assert!(private_stage_acl_handle(&candidate.root).unwrap());
@@ -5956,7 +6154,7 @@ mod staging_tests {
         entries.last_mut().unwrap().modified = precise.into();
         let mut output_guards = CheckedDirectories::default();
         let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-            &mut output_guards, Some(&entries)).unwrap().expect("ordinary NTFS destination");
+            &mut output_guards, &entries, true).unwrap().expect("ordinary NTFS destination");
         let stage = transaction.stage.unwrap();
         let mut guards = stage.guards(Some(&transaction.root)).unwrap();
         stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control, Some(4)).unwrap();
@@ -5994,7 +6192,7 @@ mod staging_tests {
         let target = parent.join("target");
         let candidate = |options: &EngineOptions, items: &[Entry]| {
             new_directory_stage(archive.to_str().unwrap(), &target, options.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(items)).unwrap()
+                &mut CheckedDirectories::default(), items, true).unwrap()
         };
         let opts = EngineOptions::default();
         assert!(candidate(&opts, &entries).is_some());
@@ -6047,7 +6245,7 @@ mod staging_tests {
         let abandoned;
         {
             let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+                &mut CheckedDirectories::default(), &entries, true).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();
             let mut guards = stage.guards(Some(&transaction.root)).unwrap();
@@ -6081,7 +6279,7 @@ mod staging_tests {
         let abandoned;
         {
             let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, opts.selected.is_empty(),
-                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+                &mut CheckedDirectories::default(), &entries, true).unwrap().unwrap();
             let stage = transaction.stage.as_ref().unwrap();
             abandoned = stage.path().to_path_buf();
             fs::create_dir(stage.path().join("folder")).unwrap();

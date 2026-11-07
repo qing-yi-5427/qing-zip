@@ -157,7 +157,12 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
 }
 
 #[tauri::command]
-pub fn start_operation(mut request: Request, recycle_after: Option<bool>) -> Result<u64, String> {
+pub fn start_operation(request: Request, recycle_after: Option<bool>) -> Result<u64, String> {
+    start_controlled(request, recycle_after.unwrap_or(false), JobControl::new(), |_| {})
+}
+
+pub(super) fn start_controlled(mut request: Request, recycle_after: bool, control: JobControl,
+    finished: impl FnOnce(bool) + Send + 'static) -> Result<u64, String> {
     let mut jobs = registry().lock().map_err(|_|"job registry unavailable")?;
     let running = jobs.values().filter(|j|j.state.lock().map(|s|s.status=="running").unwrap_or(true)).count();
     if running >= 2 { return Err("已有两个任务运行，请等待完成后重试".into()); }
@@ -165,12 +170,13 @@ pub fn start_operation(mut request: Request, recycle_after: Option<bool>) -> Res
         let id = jobs.iter().find_map(|(id,j)|j.state.lock().ok().filter(|s|s.status!="running").map(|_|*id));
         if let Some(id)=id {jobs.remove(&id);} else {break;}
     }
-    let control = JobControl::new(); request.options.control=Some(control.clone());
+    request.options.control=Some(control.clone());
     let job=Arc::new(Job{control,state:Mutex::new(JobState{status:"running".into(),result:None,error:None}),finished:std::sync::Condvar::new()});
     let id=NEXT.fetch_add(1,Ordering::Relaxed); jobs.insert(id,job.clone());
-    std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||execute_job(request,recycle_after.unwrap_or(false),&job.control)))
+    let worker = std::thread::Builder::new().spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||execute_job(request,recycle_after,&job.control)))
             .unwrap_or_else(|_|Err("归档任务异常结束".into()));
+        finished(result.is_ok());
         let mut state=job.state.lock().unwrap_or_else(|e|e.into_inner());
         match result {
             Ok(value)=>{state.status="complete".into();state.result=Some(value);},
@@ -178,6 +184,7 @@ pub fn start_operation(mut request: Request, recycle_after: Option<bool>) -> Res
         }
         job.finished.notify_all();
     });
+    if let Err(error) = worker { jobs.remove(&id); return Err(error.to_string()); }
     Ok(id)
 }
 

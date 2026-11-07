@@ -2,8 +2,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 function fixture(){
- const prefixes=['const opts=','const filename=','const entrySize=','function compareEntries(','function visibleEntries('];
- const code=prefixes.map(prefix=>source.split('\n').find(line=>line.startsWith(prefix))).join('\n');
+ const prefixes=['const opts=','const filename=','const entrySize='];
+ const code=prefixes.map(prefix=>source.split('\n').find(line=>line.startsWith(prefix))).join('\n')+source.slice(source.indexOf('function entryType('),source.indexOf('function toast('))+source.slice(source.indexOf('const folderViews ='),source.indexOf('function archive()'));
  const context={window:{},s:{entries:[],folder:'',search:'',sort:'size',reverse:false}};
  vm.createContext(context);vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../frontend/compression-options.js'),'utf8'),context);vm.runInContext('const compressionLevels=window.qingCompression.levels;\n'+code+'\nthis.api={opts,entrySize,visibleEntries,compressionLevels};',context);
  return context;
@@ -80,4 +80,27 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
  const current=await run('new','new',2);
  assert.equal(current.cache.length,1);
  assert.equal(current.paints[0].data_url,'data:image/png;base64,AA==');
+});
+
+test('switching folder, query, sort and refreshed listings invalidates displayed rows',()=>{
+ const f=fixture(),s=f.s,get=f.api.visibleEntries;
+ s.entries=[{name:'dir/alpha.txt',size:5},{name:'dir/bravo.txt',size:1},{name:'other/beta.txt',size:4}];
+ s.folder='dir/';
+ assert.deepEqual(Array.from(get(),e=>e.leaf),['bravo.txt','alpha.txt']);
+ s.search='ALP';assert.deepEqual(Array.from(get(),e=>e.leaf),['alpha.txt']);
+ s.search='';s.sort='name';assert.deepEqual(Array.from(get(),e=>e.leaf),['alpha.txt','bravo.txt']);
+ s.folder='other/';assert.equal(get()[0].leaf,'beta.txt');
+ s.entries=[{name:'other/new.txt',size:9}];assert.equal(get()[0].leaf,'new.txt');
+});
+
+test('type and modification date sorts keep directories first and missing times last',()=>{
+ const f=fixture(),s=f.s;
+ s.entries=[{name:'folder/item',modified:'2030-01-01 00:00:00Z'},{name:'folder/',is_dir:true,modified:'2023-10-01 00:00:00Z'},
+  {name:'a.txt',modified:'2024-01-01 00:00:00Z'},{name:'b.ZIP',modified:'2023-01-01 00:00:00Z'},{name:'c.txt'}];
+ s.sort='modified';
+ const rows=()=>Array.from(f.api.visibleEntries(),e=>e.name);
+ assert.deepEqual(rows(),['folder/','b.ZIP','a.txt','c.txt']);
+ assert.equal(f.api.visibleEntries()[0].modified,'2023-10-01 00:00:00Z');
+ s.reverse=true;assert.deepEqual(rows(),['folder/','a.txt','b.ZIP','c.txt']);
+ s.sort='type';s.reverse=false;assert.deepEqual(rows(),['folder/','a.txt','c.txt','b.ZIP']);
 });

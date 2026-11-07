@@ -1,7 +1,8 @@
-// Create the one-job worker with an explicit handle allowlist. Source volumes
-// and private outputs are granted later, directly into the known child process.
+// Launch one archive reader with an explicit standard-I/O handle allowlist.
+// Only the selected worker receives additional, individually granted handles.
 #include <windows.h>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -16,13 +17,13 @@ struct Attributes {
 };
 }
 
-extern "C" DWORD qing_spawn_selected_worker(const wchar_t *exe, HANDLE *process,
-                                            HANDLE *input, HANDLE *output) noexcept {
+static DWORD spawn_archive_reader(const wchar_t *exe, const wchar_t *archive, DWORD threads,
+                                 HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
   *process = *input = *output = nullptr;
   try {
     Handle child_in, parent_in, child_out, parent_out, child_err;
     if (!CreatePipe(&child_in.value, &parent_in.value, nullptr, 0) ||
-        !CreatePipe(&parent_out.value, &child_out.value, nullptr, 0)) return GetLastError();
+        !CreatePipe(&parent_out.value, &child_out.value, nullptr, archive ? 64 * 1024 : 0)) return GetLastError();
     SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     child_err.value = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                   &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -52,7 +53,19 @@ extern "C" DWORD qing_spawn_selected_worker(const wchar_t *exe, HANDLE *process,
     startup.StartupInfo.hStdError = child_err.value;
     startup.lpAttributeList = list;
     PROCESS_INFORMATION child{};
-    std::wstring command = L"\"" + std::wstring(exe) + L"\" --internal-selected-worker";
+    std::wstring command = L"\"" + std::wstring(exe) + L"\"";
+    if (archive) {
+      // Both are existing Windows file names, so embedded quotes and a
+      // trailing directory separator cannot be valid command-line operands.
+      std::wstring_view file(archive);
+      if (file.empty() || file.find(L'"') != file.npos || file.back() == L'\\')
+        return ERROR_INVALID_NAME;
+      command += L" x -so -bso0 -bsp0 -y -spd -t7z";
+      if (threads) command += L" -mmt=" + std::to_wstring(threads);
+      command += L" -- \"" + std::wstring(file) + L"\"";
+    } else {
+      command += L" --internal-selected-worker";
+    }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
                         &startup.StartupInfo, &child)) return GetLastError();
@@ -60,4 +73,17 @@ extern "C" DWORD qing_spawn_selected_worker(const wchar_t *exe, HANDLE *process,
     *process = child.hProcess; *input = parent_in.take(); *output = parent_out.take();
     return ERROR_SUCCESS;
   } catch (...) { return ERROR_OUTOFMEMORY; }
+}
+
+extern "C" DWORD qing_spawn_selected_worker(const wchar_t *exe, HANDLE *process,
+                                            HANDLE *input, HANDLE *output) noexcept {
+  return spawn_archive_reader(exe, nullptr, 0, process, input, output);
+}
+
+extern "C" DWORD qing_spawn_solid_reader(const wchar_t *exe, const wchar_t *archive, DWORD threads,
+                                         HANDLE *process, HANDLE *output) noexcept {
+  HANDLE input = nullptr;
+  auto status = spawn_archive_reader(exe, archive, threads, process, &input, output);
+  if (input) CloseHandle(input); // This operation never supplies a password.
+  return status;
 }

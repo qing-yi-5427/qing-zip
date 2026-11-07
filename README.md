@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载 0.11.2 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.2) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载 0.11.3 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.3) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
 
 ## 软件截图
 
@@ -13,7 +13,7 @@
 
 ## 功能
 
-- 毛玻璃界面、浅深色主题、目录树和多标签浏览。
+- 毛玻璃界面、浅深色主题、目录树和多标签浏览。文件列表支持按名称、大小、压缩后大小、类型和修改日期排序。
 - ZIP / 7z 等格式压缩，ZIP / 7z / RAR 等格式解压；支持加密、分卷和完整性检查。
 - 从符合条件的 ZIP 或 `.7z.001` 分卷中选取文件时，程序校验全包，只暂存选中内容。分卷支持无加密的非固实 Copy，以及使用 LZMA2 的固实和非固实 7z，包括符合条件的 AES 加密分卷。
 - 7z 可选 ZSTD、Brotli、LZ4 等扩展压缩方法；高级设置提供字典大小、固实压缩和文件名加密。
@@ -35,7 +35,7 @@
 
 文件在本机处理。修复只能恢复仍可校验的条目，密码恢复仅尝试指定候选；不保证所有格式、损坏文件或加密方式都能处理。自动回收仅对完整成功解压的已验证单卷格式生效。
 
-包内文件拖出采用先准备临时文件、再复制到目标的方式；大文件准备时需保持按住鼠标。本版本的原生跨窗口拖放仍需更多实机验证。
+拖出包内文件时保持按住鼠标，文件准备好后可交给资源管理器复制。在准备期间松开鼠标或按 Esc 可取消此次拖出。跨窗口实际操作仍待更多桌面验证。
 
 ## 构建
 
