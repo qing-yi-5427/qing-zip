@@ -1,0 +1,1 @@
+The selected extraction worker links the bridge to the official NanaZip 7.0.1882.0 DLLs at runtime. The interface headers in `vendor/SevenZip` and their license are copied from the [upstream source](https://github.com/M2Team/NanaZip/tree/7.0.1882.0). Their archive SHA-256 is `413c4a3510d7e4c5c0e705d3a5c8a590cf9fcdbc5b6ffb5781275854354da67d`.

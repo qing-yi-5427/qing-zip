@@ -127,7 +127,7 @@ pub fn checksum(path: &str, opts: &EngineOptions) -> Result<serde_json::Value, S
     )
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

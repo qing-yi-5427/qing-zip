@@ -1,5 +1,7 @@
 //! Multi-format operations through bundled NanaZip with official 7-Zip fallback.
 //! No shell is used. Extraction stages preflighted archives before publishing files.
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+pub mod selected_worker;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -202,7 +204,7 @@ pub fn capabilities() -> Capabilities {
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),
-      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Extraction retains complete-archive integrity verification even when selecting files. Eligible ZIPs stream unselected data without writing it; other layouts may require full temporary staging","Full ZIP/7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
+      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 with the bundled NanaZip runtime, eligible non-solid, unencrypted Copy-mode split 7z archives also stage only selected files. Other layouts may require full temporary staging","Full ZIP/7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
 }
 fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
@@ -2094,8 +2096,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         decode_memory_zip(memory_source, &all_entries, opts, &ctl)?
     };
     // Bound retained publication handles; larger trees use per-file publishing.
-    let mut transaction = if memory.is_none() && expected.len() <= 65_536 {
-        new_directory_stage(path, &dest, opts, &mut output_guards)?
+    let mut transaction = if expected.len() <= 65_536 {
+        new_directory_stage(path, &dest, opts, &mut output_guards,
+            memory.as_ref().map(|_| all_entries.as_slice()))?
     } else {
         None
     };
@@ -2138,7 +2141,13 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             Some(0),
             "Decoding archive into temporary storage",
         );
-        let streamed = decode_selected_zip(
+        #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+        let split_streamed = !opts.selected.is_empty() && !_volume_guards.is_empty()
+            && selected_worker::decode(path, &source_guard, &_volume_guards, &all_entries,
+                opts, stage.path(), stage_guards, &ctl)?;
+        #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
+        let split_streamed = false;
+        let streamed = split_streamed || decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,
@@ -2146,7 +2155,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             stage_guards,
             &ctl,
         )?;
-        if !streamed {
+        if let Some(files) = &memory {
+            stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl)?;
+        } else if !streamed {
             let mut args = base("x", opts)?;
             let execute = if guarded_zealfs {
                 args.push("-tZealFS".into());
@@ -2270,6 +2281,12 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         stage_guards = Some(guards);
     }
     drop(transaction.take());
+    if memory.is_some() && stage.is_some() {
+        // After an unsupported directory rename the fallback reads verified memory.
+        // Release the staging handles and disk copy before creating more files.
+        drop(stage_guards.take());
+        drop(stage.take());
+    }
     let staged = match &memory {
         Some(files) => StagedContents::Memory(files),
         None => StagedContents::Disk(stage.as_ref().unwrap().path()),
@@ -2577,9 +2594,51 @@ fn new_fallback_stage(parent: &Path, guards: &mut CheckedDirectories) -> Result<
     }
 }
 fn create_staged_output(target: &Path, guards: &mut CheckedDirectories) -> Result<File, String> {
-    guards.create_dirs(target.parent().ok_or("missing staged parent")?)?;
+    let parent = target.parent().ok_or("missing staged parent")?;
+    if !guards.pinned(parent) {
+        guards.create_dirs(parent)?;
+    }
+    // This still checks every weak ancestor as well as the new leaf.
     guards.check(target)?;
     fs::OpenOptions::new().write(true).create_new(true).open(target).map_err(|e| e.to_string())
+}
+
+fn stage_verified_memory(
+    files: &MemoryFiles,
+    entries: &[Entry],
+    root: &Path,
+    guards: &mut CheckedDirectories,
+    ctl: &JobControl,
+) -> Result<(), String> {
+    use std::io::Write;
+    let _timer = PhaseTimer::new("stage-verified-memory");
+    ctl.check()?;
+    if files.len() != entries.iter().filter(|entry| !entry.is_dir).count() {
+        return Err("verified memory file count does not match archive".into());
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        ctl.check()?;
+        if index % 64 == 0 {
+            ctl.set("extracting", Some((index * 100 / entries.len().max(1)) as u8), &entry.name);
+        }
+        let relative = validate_name(&entry.name)?;
+        let target = root.join(&relative);
+        if entry.is_dir {
+            guards.create_dirs(&target)?;
+            continue;
+        }
+        let bytes = files.get(&path_key(&relative)).ok_or("verified memory entry missing")?.as_slice();
+        if !entry.size_known || bytes.len() as u64 != entry.size {
+            return Err("verified memory file length does not match archive".into());
+        }
+        let mut output = create_staged_output(&target, guards)?;
+        for chunk in bytes.chunks(64 * 1024) {
+            ctl.check()?;
+            output.write_all(chunk).map_err(|error| error.to_string())?;
+        }
+        restore_open_file_metadata(&output, entry)?;
+    }
+    ctl.check()
 }
 
 // Reserve enough space for both the complete stage and the existing copy
@@ -2593,6 +2652,34 @@ fn file_stage_reservation(entries: &[Entry]) -> Option<u64> {
     total.checked_mul(2)?.checked_add(64 * 1024 * 1024)?
         .checked_add((entries.len() as u64).checked_mul(4096)?)
 }
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn has_stage_space(parent: &Path, required: u64) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(path: *const u16, available: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+    let wide: Vec<_> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut available = 0;
+    unsafe {
+        GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) != 0
+            && available >= required
+    }
+}
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn using_process_token() -> bool {
+    use std::{ffi::c_void, os::windows::io::{FromRawHandle, OwnedHandle}};
+    #[link(name = "Advapi32")]
+    extern "system" {
+        fn OpenThreadToken(thread: *mut c_void, access: u32, as_self: i32, token: *mut *mut c_void) -> i32;
+    }
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenThreadToken(-2isize as *mut c_void, 8, 1, &mut token) } != 0 {
+        drop(unsafe { OwnedHandle::from_raw_handle(token) });
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(1008) // ERROR_NO_TOKEN
+}
 
 fn new_file_publication_stage(
     archive: &str, dest: &Path, opts: &EngineOptions, entries: &[Entry],
@@ -2600,12 +2687,7 @@ fn new_file_publication_stage(
 ) -> Result<Option<StagingDir>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
-        use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt};
-        #[link(name = "Kernel32")]
-        extern "system" {
-            fn GetDiskFreeSpaceExW(path: *const u16, available: *mut u64,
-                total: *mut u64, free: *mut u64) -> i32;
-        }
+        use std::os::windows::fs::OpenOptionsExt;
         if !opts.selected.is_empty() || !dest.is_dir() { return Ok(None); }
         let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
         let Some(parent) = dest.parent().filter(|p| p.is_dir()) else { return Ok(None); };
@@ -2624,10 +2706,7 @@ fn new_file_publication_stage(
         };
         validate_transaction_root(&handle, parent)?;
         if !crate::private_stage::supports_file_publication(&handle)? { return Ok(None); }
-        let wide: Vec<_> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
-        let mut available = 0;
-        if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) } == 0
-            || available < required { return Ok(None); }
+        if !has_stage_space(parent, required) { return Ok(None); }
         let stage = match crate::private_stage::create(parent, &handle) {
             Ok(stage) => stage, Err(_) => return Ok(None),
         };
@@ -2756,6 +2835,7 @@ fn new_directory_stage(
     dest: &Path,
     opts: &EngineOptions,
     guards: &mut CheckedDirectories,
+    memory_entries: Option<&[Entry]>,
 ) -> Result<Option<DirectoryTransaction>, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
@@ -2794,7 +2874,21 @@ fn new_directory_stage(
             Err(_) => return Ok(None),
         };
         validate_transaction_root(&parent_handle, parent)?;
-        if private_stage_acl_handle(&parent_handle)? {
+        if let Some(entries) = memory_entries {
+            // The per-file memory publisher inherits storage attributes and uses
+            // the effective token. Whole-tree ACL derivation uses the process token.
+            let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
+            if !using_process_token() || !has_stage_space(parent, required)
+                || !crate::private_stage::supports_file_publication(&parent_handle)? {
+                return Ok(None);
+            }
+        }
+        let private_parent = private_stage_acl_handle(&parent_handle)?;
+        if (!private_parent || memory_entries.is_some())
+            && !crate::private_stage::supports_inheritance(&parent_handle)? {
+            return Ok(None);
+        }
+        if private_parent {
             let temp = match tempfile::Builder::new()
                 .prefix(".open-archive-stage-")
                 .tempdir_in(parent)
@@ -2812,7 +2906,8 @@ fn new_directory_stage(
                 Err(_) => return Ok(None),
             };
             validate_transaction_root(&root, temp.path())?;
-            if !private_stage_acl_handle(&root)? {
+            if !private_stage_acl_handle(&root)?
+                || (memory_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
                 return Ok(None);
             }
             return Ok(Some(DirectoryTransaction {
@@ -2822,16 +2917,14 @@ fn new_directory_stage(
                 restore_acl: false,
             }));
         }
-        if !crate::private_stage::supports_inheritance(&parent_handle)? {
-            return Ok(None);
-        }
         let temp = match crate::private_stage::create(parent, &parent_handle) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
         let root = temp.root().try_clone().map_err(|e| e.to_string())?;
         validate_transaction_root(&root, temp.path())?;
-        if !private_stage_acl_handle(&root)? {
+        if !private_stage_acl_handle(&root)?
+            || (memory_entries.is_some() && !crate::private_stage::supports_file_publication(&root)?) {
             return Ok(None);
         }
         Ok(Some(DirectoryTransaction {
@@ -2843,7 +2936,7 @@ fn new_directory_stage(
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
-        let _ = (path, dest, opts, guards);
+        let _ = (path, dest, opts, guards, memory_entries);
         Ok(None)
     }
 }
@@ -5223,6 +5316,7 @@ mod staging_tests {
             &target,
             &EngineOptions::default(),
             &mut guards,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -5367,6 +5461,7 @@ mod staging_tests {
             &new,
             &EngineOptions::default(),
             &mut CheckedDirectories::default(),
+            None,
         )
         .unwrap()
         .expect("private parent must qualify");
@@ -5445,13 +5540,14 @@ mod staging_tests {
         security(&shared, "D:P(A;OICI;FA;;;WD)");
         assert!(!private_stage_acl(&shared).unwrap());
         assert!(new_directory_stage(archive.to_str().unwrap(), &shared.join("legacy"),
-            &EngineOptions::default(), &mut CheckedDirectories::default()).unwrap().is_none());
+            &EngineOptions::default(), &mut CheckedDirectories::default(), None).unwrap().is_none());
         security(&shared, "D:PAI(A;OICI;FA;;;WD)");
         let candidate = new_directory_stage(
             archive.to_str().unwrap(),
             &shared.join("result"),
             &EngineOptions::default(),
-            &mut CheckedDirectories::default()
+            &mut CheckedDirectories::default(),
+            None,
         )
         .unwrap().expect("shared parent must use a private stage");
         assert!(private_stage_acl_handle(&candidate.root).unwrap());
@@ -5485,6 +5581,171 @@ mod staging_tests {
         assert!(extract(broken.to_str().unwrap(),failed.to_str().unwrap(),&EngineOptions::default()).is_err());
         assert!(!failed.exists());
         assert_eq!(fs::read_dir(&shared).unwrap().count(),4,"failed shared stage must clean up");
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    fn memory_test_parent(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::create_dir(path).unwrap();
+        let pin = fs::OpenOptions::new().access_mode(0x600a1).share_mode(7)
+            .custom_flags(0x02200000).open(path).unwrap();
+        crate::private_stage::ordinary_file_publication_test_parent(&pin);
+        pin
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn memory_directory_transaction_preserves_verified_bytes_metadata_and_zone() {
+        let (fixture, archive, mut entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let destination = parent.join("result");
+        let opts = EngineOptions::default();
+        let control = JobControl::new();
+        let zone_bytes = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+        fs::write(format!("{}:Zone.Identifier", archive.display()), zone_bytes).unwrap();
+        let zone = crate::motw::archive_context(&archive).unwrap();
+        let files = decode_memory_zip(memory_archive_source(archive.to_str().unwrap(), &opts),
+            &entries, &opts, &control).unwrap().unwrap();
+        let precise = "2024-12-30 12:34:56.1234567Z";
+        entries[0].attributes = "R".into();
+        entries[0].modified = precise.into();
+        entries.last_mut().unwrap().modified = precise.into();
+        let mut output_guards = CheckedDirectories::default();
+        let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+            &mut output_guards, Some(&entries)).unwrap().expect("ordinary NTFS destination");
+        let stage = transaction.stage.unwrap();
+        let mut guards = stage.guards(Some(&transaction.root)).unwrap();
+        stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control).unwrap();
+        let expected = expected_tree(&entries).unwrap();
+        verify_stage_with_metadata(stage.path(), &expected, &control, &mut guards, Some(&entries), Some(&zone)).unwrap();
+        drop(guards);
+        assert!(rename_directory_noclobber_in(&transaction.root, &destination, Some(&transaction.parent)).unwrap());
+        stage.keep();
+        let pins = pin_committed_tree(&destination, &expected).unwrap();
+        crate::private_stage::inherit_tree(&transaction.root, &transaction.parent, &pins).unwrap();
+        drop(pins);
+        for entry in entries.iter().filter(|entry| !entry.is_dir) {
+            let relative = validate_name(&entry.name).unwrap();
+            let output = destination.join(&relative);
+            assert_eq!(fs::read(&output).unwrap(), files[&path_key(&relative)].as_slice());
+            assert_eq!(fs::read(format!("{}:Zone.Identifier", output.display())).unwrap(), zone_bytes);
+        }
+        let empty_file = destination.join(&entries[0].name);
+        let metadata = fs::metadata(&empty_file).unwrap();
+        assert!(metadata.permissions().readonly());
+        assert_eq!(metadata.modified().unwrap(), archive_modified_time(precise).unwrap());
+        assert_eq!(fs::metadata(destination.join("empty")).unwrap().modified().unwrap(), archive_modified_time(precise).unwrap());
+        assert_eq!(fs::read_dir(destination.join("empty")).unwrap().count(), 0);
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn memory_directory_transaction_keeps_ineligible_outputs_on_per_file_path() {
+        use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
+        #[link(name = "Kernel32")]
+        extern "system" { fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32; }
+        let (fixture, archive, entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let target = parent.join("target");
+        let candidate = |options: &EngineOptions, items: &[Entry]| {
+            new_directory_stage(archive.to_str().unwrap(), &target, options,
+                &mut CheckedDirectories::default(), Some(items)).unwrap()
+        };
+        let opts = EngineOptions::default();
+        assert!(candidate(&opts, &entries).is_some());
+        #[link(name = "Advapi32")]
+        extern "system" {
+            fn ImpersonateSelf(level: i32) -> i32;
+            fn RevertToSelf() -> i32;
+        }
+        struct Revert;
+        impl Drop for Revert {
+            fn drop(&mut self) { assert_ne!(unsafe { RevertToSelf() }, 0); }
+        }
+        {
+            assert_ne!(unsafe { ImpersonateSelf(2) }, 0);
+            let _revert = Revert;
+            assert!(candidate(&opts, &entries).is_none(), "keep the effective-token publisher");
+        }
+        let selected = EngineOptions { selected: vec![entries[0].name.clone()], ..Default::default() };
+        assert!(candidate(&selected, &entries).is_none());
+        let mut too_large = entries[0].clone();
+        too_large.size = u64::MAX / 4;
+        assert!(candidate(&opts, &[too_large]).is_none());
+        let normal = fs::metadata(&parent).unwrap().file_attributes();
+        let wide: Vec<_> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), normal | 0x2000) }, 0);
+        assert!(candidate(&opts, &entries).is_none(), "preserve inherited non-indexed attribute");
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), normal) }, 0);
+        private_test_directory(&parent); // Legacy, non-automatic DACL.
+        assert!(candidate(&opts, &entries).is_none());
+        fs::create_dir(&target).unwrap();
+        assert!(candidate(&opts, &entries).is_none());
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn memory_directory_transaction_cancellation_and_invalid_bytes_keep_destination_absent() {
+        let (fixture, archive, mut entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let destination = parent.join("result");
+        let opts = EngineOptions::default();
+        let control = JobControl::new();
+        let mut files = decode_memory_zip(memory_archive_source(archive.to_str().unwrap(), &opts),
+            &entries, &opts, &control).unwrap().unwrap();
+        let previous = path_key(&validate_name(&entries[0].name).unwrap());
+        let empty = files.remove(&previous).unwrap();
+        entries[0].name = "readonly-at-root.txt".into();
+        entries[0].attributes = "R".into();
+        files.insert(path_key(Path::new(&entries[0].name)), empty);
+        let abandoned;
+        {
+            let transaction = new_directory_stage(archive.to_str().unwrap(), &destination, &opts,
+                &mut CheckedDirectories::default(), Some(&entries)).unwrap().unwrap();
+            let stage = transaction.stage.as_ref().unwrap();
+            abandoned = stage.path().to_path_buf();
+            let mut guards = stage.guards(Some(&transaction.root)).unwrap();
+            let cancelled = JobControl::new();
+            cancelled.cancel();
+            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &cancelled)
+                .unwrap_err().contains("cancelled"));
+            assert_eq!(fs::read_dir(stage.path()).unwrap().count(), 0);
+            entries[2].size += 1;
+            assert!(stage_verified_memory(&files, &entries, stage.path(), &mut guards, &control)
+                .unwrap_err().contains("length"));
+            assert!(stage.path().join(&entries[0].name).is_file());
+        }
+        assert!(!abandoned.exists());
+        assert!(!destination.exists());
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn memory_directory_transaction_real_extract_matches_existing_target() {
+        use std::os::windows::fs::MetadataExt;
+        let (fixture, archive, entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let new = parent.join("new");
+        let existing = parent.join("existing");
+        fs::create_dir(&existing).unwrap();
+        for destination in [&new, &existing] {
+            assert_eq!(extract(archive.to_str().unwrap(), destination.to_str().unwrap(),
+                &EngineOptions::default()).unwrap(), 160);
+        }
+        for entry in &entries {
+            let path = validate_name(&entry.name).unwrap();
+            let a = new.join(&path);
+            let b = existing.join(&path);
+            let ma = fs::metadata(&a).unwrap();
+            let mb = fs::metadata(&b).unwrap();
+            assert_eq!(ma.file_attributes(), mb.file_attributes());
+            assert_eq!(ma.modified().unwrap(), mb.modified().unwrap());
+            if !entry.is_dir { assert_eq!(fs::read(&a).unwrap(), fs::read(&b).unwrap()); }
+        }
     }
 
     fn memory_zip_fixture() -> (tempfile::TempDir, PathBuf, Vec<Entry>) {

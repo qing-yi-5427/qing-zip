@@ -1,0 +1,22 @@
+{
+  "version": "7.0.1882.0",
+  "source_archive_sha256": "413c4a3510d7e4c5c0e705d3a5c8a590cf9fcdbc5b6ffb5781275854354da67d",
+  "files": {
+    "licenses/NanaZip-7.0.1882.0-License.md": "11226d29ae0a7b7df3417f957fe8e4a4bafc5635d3c9ce9e9437776516512782",
+    "vendor/SevenZip/C/7zTypes.h": "0f20b3c10874c62c35374b99c8d0acddfacec5ee473e357077f4bd5fe551f546",
+    "vendor/SevenZip/C/7zWindows.h": "3c095584cbfbcb542b484017c12f5e9c91821b04941be7f98f9e374b8fe9da35",
+    "vendor/SevenZip/C/Compiler.h": "d5f84d3daab7f3cfcd9ae191ad575c5ace3f5bd8b24269380107056d5fbdadaf",
+    "vendor/SevenZip/CPP/7zip/Archive/IArchive.h": "a20284073541883f2838083212240beb790a5077459711ead9d7ead448499f68",
+    "vendor/SevenZip/CPP/7zip/ICoder.h": "978bd8ea8f43c49f7010688632c4e832855497178773d3747000805b41c73b23",
+    "vendor/SevenZip/CPP/7zip/IDecl.h": "65898405ae1d473e284353f177c021d1fcef7431745cc53d763bfeb84ca50ad6",
+    "vendor/SevenZip/CPP/7zip/IProgress.h": "7505a2a29e78a93f322091ac1560a44e571854f32eea48c12fae463644c005d1",
+    "vendor/SevenZip/CPP/7zip/IStream.h": "9c372948e68f64e4afa8ec39e72fd2314aedde2a75c62c901fd8d73de50b0e9b",
+    "vendor/SevenZip/CPP/7zip/PropID.h": "d3e9bd0ec88d07d36d11a7efc5c30d058bba9960026beb0557be3abcb717e2fe",
+    "vendor/SevenZip/CPP/Common/Common0.h": "74e70331f98077a37168bdfe8e22eb48700e1bbb59dae9eae8ae2935a5abdf5b",
+    "vendor/SevenZip/CPP/Common/MyInitGuid.h": "2e56b1f2b052e3476a5d61276706b1435ff67f54016314e610467f96680273b0",
+    "vendor/SevenZip/CPP/Common/MyTypes.h": "8f1db237a486b626ccc715b56a5f862852931ae6335f1a09ea0f2f72a4654492",
+    "vendor/SevenZip/CPP/Common/MyUnknown.h": "b5562abaa60325d33bb8036cf3ab0010c0129bf344f1407f7fcaaaafb96c1ad6",
+    "vendor/SevenZip/CPP/Common/MyWindows.h": "e5a89bd7e50d89d4ced509d442fd26390666d6ec468c66164b9b59566bba4419",
+    "vendor/SevenZip/CPP/Common/NewHandler.h": "3b59d0a00f0784cc14ec7d236e0f56a0cf64a4e61bd6d76911792429baf31cdf"
+  }
+}

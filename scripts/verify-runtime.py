@@ -35,6 +35,18 @@ for name, expected in manifest['files'].items():
         raise SystemExit(f'Runtime integrity mismatch: {name}')
 print(f"Verified shipped NanaZip {manifest['version']} runtime hashes")
 
+interfaces = root / 'obz-rs' / 'native' / 'nana'
+headers = json.loads((interfaces / 'interfaces.json').read_text(encoding='utf-8'))
+if (headers['version'] != manifest['version'] or
+        headers['source_archive_sha256'] != manifest['source_archive_sha256']):
+    raise SystemExit('NanaZip interface source and runtime releases differ')
+actual_files = {p.relative_to(interfaces).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                for directory in ('vendor', 'licenses')
+                for p in (interfaces / directory).rglob('*') if p.is_file()}
+if actual_files != headers['files']:
+    raise SystemExit('NanaZip interface header or license inventory differs from upstream')
+print(f"Verified {len(actual_files)} NanaZip interface and license files")
+
 runtime = root / 'runtime' / 'zpaq'
 manifest = json.loads((runtime / 'SOURCE.json').read_text(encoding='utf-8'))
 assert manifest['source_archive'] == 'https://mattmahoney.net/dc/zpaq715.zip'

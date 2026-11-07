@@ -40,6 +40,10 @@ Options: --method NAME, --encryption NAME, --dictionary-bytes N,
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+    if args.as_slice() == ["--internal-selected-worker"] {
+        return ExitCode::from(obz_core::engine::selected_worker::run_child());
+    }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
