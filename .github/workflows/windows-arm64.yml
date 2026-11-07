@@ -73,6 +73,8 @@ jobs:
         run: |
           cargo build --locked --manifest-path obz-gui/Cargo.toml --bin obz-gui
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path obz-gui/Cargo.toml --all-targets
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ./scripts/check-arm64-layout.ps1 -Cli target/arm-validation/debug/obz.exe -Desktop target/arm-validation/debug/obz-gui.exe -Layout (Join-Path $env:RUNNER_TEMP 'qing-arm64-layout')
           exit $LASTEXITCODE
       - name: Build hardened ARM64 portable package

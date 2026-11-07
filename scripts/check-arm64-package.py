@@ -102,7 +102,7 @@ def main():
         exported=files(stage)
         with zipfile.ZipFile(portable) as z:z.extractall(tmp/'portable')
         assert files(tmp/'portable')==exported
-        report={'version':version,'scope':'native Windows ARM64, official x86 NSIS bootstrap for setup and uninstall only',
+        report={'version':version,'source_commit':os.environ.get('GITHUB_SHA'),'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),'scope':'native Windows ARM64, official x86 NSIS bootstrap for setup and uninstall only',
                 'portable_files':len(exported),'portable':exercise(tmp/'portable',tmp/'portable-test')}
         inst=Path(os.environ['LOCALAPPDATA'])/'Programs/qing-zip-arm64'
         arp=r'Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip-arm64'
