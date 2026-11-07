@@ -2426,7 +2426,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             // creation. Keep its identity for rollback if copying is cancelled.
             let leaf = dest.file_name().ok_or("missing fallback destination leaf")?;
             let created = crate::private_stage::create_output_directory(&transaction.parent, leaf)?;
-            output_guards.created_output_dirs.push((dest.clone(), created));
+            output_guards.created_output_dirs.push((
+                dest.clone(),
+                created_directories::Identity::Handle(created),
+            ));
             output_guards.selected_output_root = Some(dest.clone());
         } else {
             fs::create_dir(&dest).map_err(|e| format!("claim fallback destination: {e}"))?;
