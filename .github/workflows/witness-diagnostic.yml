@@ -1,0 +1,29 @@
+name: Witness diagnostics
+on:
+  push:
+    branches: [codex/ci-ntfs-witness]
+permissions:
+  contents: read
+jobs:
+  witness:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build focused test executable
+        run: cargo test --locked --manifest-path obz-rs/Cargo.toml --lib --no-run
+      - name: Probe original and both fixed disks
+        shell: pwsh
+        run: |
+          $base = $env:TEMP
+          Get-Volume | Select-Object DriveLetter,FileSystem,DriveType | Format-Table
+          foreach ($where in @($base, $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP)) {
+            $d = Join-Path $where ("witness-ci-" + [guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory $d | Out-Null
+            $env:TEMP=$d
+            $env:TMP=$d
+            Write-Host "==== $where ===="
+            cargo test --locked --manifest-path obz-rs/Cargo.toml --lib witnessed_tree_matches_normal_metadata_and_future_inheritance -- --nocapture
+            Write-Host "test exit $LASTEXITCODE"
+          }
+          exit 0

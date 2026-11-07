@@ -37,8 +37,9 @@ fn stable_policy(sd: Handle, user: &str) -> Result<bool, String> {
     }
     // Unprotected, non-null, non-defaulted DACL, no AI/AR. Reject opaque ACEs,
     // no-propagate, and security owners outside our trust boundary.
+    eprintln!("DIAG controls={control:x} rev={revision} ordinary={:?}",ordinary_aces(sd));
     if control != 0x8004 || revision != 1 || !ordinary_aces(sd)? {
-        return Ok(false);
+        eprintln!("DIAG false {}",line!()); return Ok(false);
     }
     #[link(name = "Advapi32")]
     extern "system" {
@@ -50,13 +51,13 @@ fn stable_policy(sd: Handle, user: &str) -> Result<bool, String> {
         || owner.is_null()
         || !trusted(&sid_text(owner)?)
     {
-        return Ok(false);
+        eprintln!("DIAG false {}",line!()); return Ok(false);
     }
     let (mut acl, mut present) = (std::ptr::null_mut(), 0);
     if unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut acl, &mut defaulted) } == 0
         || acl.is_null()
     {
-        return Ok(false);
+        eprintln!("DIAG false {}",line!()); return Ok(false);
     }
     let count = unsafe { std::ptr::read_unaligned((acl as *const u8).add(4).cast::<u16>()) };
     let mut inherited = false;
@@ -70,7 +71,7 @@ fn stable_policy(sd: Handle, user: &str) -> Result<bool, String> {
         let flags = unsafe { *p.add(1) };
         inherited |= flags & 0x10 != 0;
         if size < 16 || (flags & 0x10 == 0 && flags != 0) {
-            return Ok(false);
+            eprintln!("DIAG false {}",line!()); return Ok(false);
         }
         let access = unsafe { std::ptr::read_unaligned(p.add(4).cast::<u32>()) };
         // A shared writer must not be able to rewrite the witness permissions.
@@ -78,10 +79,10 @@ fn stable_policy(sd: Handle, user: &str) -> Result<bool, String> {
             && access & (0x10000000 | 0x40000 | 0x80000) != 0
             && !trusted(&sid_text(unsafe { p.add(8).cast() })?)
         {
-            return Ok(false);
+            eprintln!("DIAG false {}",line!()); return Ok(false);
         }
     }
-    Ok(inherited)
+    eprintln!("DIAG inherited={inherited}"); Ok(inherited)
 }
 
 fn ordinary_storage(handle: &File, directory: bool) -> Result<bool, String> {
@@ -92,7 +93,7 @@ fn ordinary_storage(handle: &File, directory: bool) -> Result<bool, String> {
     // Never turn compressed, sparse, encrypted, recalled or linked objects
     // into files with different storage semantics through an in-volume rename.
     if (attributes & 0x10 != 0) != directory || attributes & !0xb7 != 0 {
-        return Ok(false);
+        eprintln!("DIAG false {}",line!()); return Ok(false);
     }
     if !directory {
         return Ok(true);
@@ -108,7 +109,7 @@ fn ordinary_storage(handle: &File, directory: bool) -> Result<bool, String> {
     }
     let mut flags = 0u32;
     let ok = unsafe { GetFileInformationByHandleEx(handle.as_raw_handle(), 23, &mut flags, 4) };
-    Ok(ok != 0 && flags == 0)
+    eprintln!("DIAG volume attrs={attributes:x} case_query={ok} flags={flags}"); Ok(ok != 0 && flags == 0)
 }
 
 enum ProbeError {
@@ -116,7 +117,7 @@ enum ProbeError {
     Occupied(PathBuf),
 }
 impl From<String> for ProbeError {
-    fn from(_: String) -> Self {
+    fn from(message: String) -> Self { eprintln!("DIAG OS error: {message}");
         Self::Unavailable
     }
 }
@@ -163,16 +164,17 @@ impl WitnessedInheritance {
         let token = token()?;
         let user = current_sid(&token)?;
         let source = security_descriptor(parent, ACCESS_POLICY_FIELDS)?;
+        eprintln!("DIAG ntfs={} ordinary={} stable={}",supports_file_publication(parent)?,ordinary_storage(parent,true)?,stable_policy(source.0,&user)?);
         if !supports_file_publication(parent)?
             || !ordinary_storage(parent, true)?
             || !stable_policy(source.0, &user)?
         {
-            return Ok(None);
+            eprintln!("DIAG none {}",line!()); return Ok(None);
         }
         let parent_sd = bytes(&source)?;
         // Leave labeled/conditional policies on ordinary creation.
         if snapshot(parent, 7)? != parent_sd {
-            return Ok(None);
+            eprintln!("DIAG none {}",line!()); return Ok(None);
         }
         let protected = protected_descriptor(&user)?;
         let owner_group = snapshot(parent, EXCEPT_DACL)?;
@@ -189,11 +191,13 @@ impl WitnessedInheritance {
             if !ordinary_storage(&witness, directory)?
                 || snapshot(&witness, EXCEPT_DACL)? != owner_group
             {
-                return Ok(None);
+                eprintln!("DIAG none {}",line!()); return Ok(None);
             }
+            eprintln!("DIAG witness directory={directory}");
             let normal = snapshot(&witness, ACCESS_POLICY_FIELDS)?;
+            eprintln!("DIAG dir={directory} parentLen={} gotLen={} diff={:?}",parent_sd.len(),normal.len(),parent_sd.iter().zip(&normal).enumerate().filter(|(_, (a,b))|a!=b).take(8).collect::<Vec<_>>());
             if directory && normal != parent_sd {
-                return Ok(None);
+                eprintln!("DIAG none {}",line!()); return Ok(None);
             }
             // Different volumes materialize effective ACEs with or without
             // INHERITED_ACE. Prove an exact protected-to-ordinary transition
@@ -204,9 +208,11 @@ impl WitnessedInheritance {
                     NtSetSecurityObject(witness.as_raw_handle(), 4 | 0x80000000, protected.0)
                 } < 0
                 {
-                    return Ok(None);
+                    eprintln!("DIAG none {}",line!()); return Ok(None);
                 }
                 apply_native(&witness, &computed)?;
+                let actual=snapshot(&witness,ACCESS_POLICY_FIELDS)?;
+                eprintln!("DIAG mode={mode} dir={directory} expectLen={} gotLen={} diff={:?}",normal.len(),actual.len(),normal.iter().zip(&actual).enumerate().filter(|(_, (a,b))|a!=b).take(8).collect::<Vec<_>>());
                 if snapshot(&witness, ACCESS_POLICY_FIELDS)? == normal {
                     return Ok(Some((computed, normal)));
                 }
@@ -214,10 +220,10 @@ impl WitnessedInheritance {
             Ok(None)
         };
         let Some((directory, _)) = probe(true)? else {
-            return Ok(None);
+            eprintln!("DIAG none {}",line!()); return Ok(None);
         };
         let Some((file, file_sd)) = probe(false)? else {
-            return Ok(None);
+            eprintln!("DIAG none {}",line!()); return Ok(None);
         };
         let result = Self {
             parent_sd,
