@@ -4,6 +4,7 @@
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
+mod full_zip_stage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -1818,6 +1819,62 @@ fn decode_selected_zip(
     Ok(true)
 }
 
+fn verified_zip_order<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entries: &[Entry],
+    ctl: &JobControl,
+) -> Result<Option<Vec<usize>>, String> {
+    if archive.offset() != 0
+        || archive.len() != entries.len()
+        || archive.has_duplicate_names()
+        || archive.validate_header_consistency().is_err()
+    {
+        return Ok(None);
+    }
+    let expected = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| Ok((path_key(&validate_name(&e.name)?), i)))
+        .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
+    let mut names = Vec::with_capacity(entries.len());
+    let mut seen = vec![false; entries.len()];
+    for i in 0..archive.len() {
+        ctl.check()?;
+        let member = archive.by_index_data(i).map_err(|e| e.to_string())?;
+        let Ok(name) = std::str::from_utf8(member.name_raw()) else {
+            return Ok(None);
+        };
+        let key = path_key(&validate_name(name)?);
+        let Some(&index) = expected.get(&key) else {
+            return Ok(None);
+        };
+        let entry = &entries[index];
+        let kind = member.unix_mode().map(|m| m & 0xf000).unwrap_or(0);
+        if std::mem::replace(&mut seen[index], true)
+            || member.encrypted()
+            || member.is_symlink()
+            || !matches!(kind, 0 | 0x4000 | 0x8000)
+            || (kind == 0x4000 && !entry.is_dir)
+            || (kind == 0x8000 && entry.is_dir)
+            || member.is_dir() != entry.is_dir
+            || member.size() != entry.size
+            || !matches!(
+                member.compression(),
+                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
+            )
+            || member.external_attributes() & 0x400 != 0
+            || (!entry.is_dir && u32::from_str_radix(&entry.crc, 16).ok() != Some(member.crc32()))
+        {
+            return Ok(None);
+        }
+        names.push(index);
+    }
+    if seen.contains(&false) {
+        return Ok(None);
+    }
+    Ok(Some(names))
+}
+
 fn decode_memory_zip(
     source: Option<File>,
     entries: &[Entry],
@@ -1867,52 +1924,9 @@ fn decode_memory_zip(
         Ok(a) => a,
         Err(_) => return Ok(None),
     };
-    if archive.offset() != 0
-        || archive.len() != entries.len()
-        || archive.has_duplicate_names()
-        || archive.validate_header_consistency().is_err()
-    {
+    let Some(names) = verified_zip_order(&mut archive, entries, ctl)? else {
         return Ok(None);
-    }
-    let expected = entries
-        .iter()
-        .map(|e| Ok((path_key(&validate_name(&e.name)?), e)))
-        .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
-    let mut names = Vec::with_capacity(entries.len());
-    let mut seen = HashSet::new();
-    for i in 0..archive.len() {
-        ctl.check()?;
-        let member = archive.by_index_data(i).map_err(|e| e.to_string())?;
-        let Ok(name) = std::str::from_utf8(member.name_raw()) else {
-            return Ok(None);
-        };
-        let key = path_key(&validate_name(name)?);
-        let Some(entry) = expected.get(&key) else {
-            return Ok(None);
-        };
-        let kind = member.unix_mode().map(|m| m & 0xf000).unwrap_or(0);
-        if !seen.insert(key.clone())
-            || member.encrypted()
-            || member.is_symlink()
-            || !matches!(kind, 0 | 0x4000 | 0x8000)
-            || (kind == 0x4000 && !entry.is_dir)
-            || (kind == 0x8000 && entry.is_dir)
-            || member.is_dir() != entry.is_dir
-            || member.size() != entry.size
-            || !matches!(
-                member.compression(),
-                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
-            )
-            || member.external_attributes() & 0x400 != 0
-            || (!entry.is_dir && u32::from_str_radix(&entry.crc, 16).ok() != Some(member.crc32()))
-        {
-            return Ok(None);
-        }
-        names.push(key);
-    }
-    if seen.len() != entries.len() {
-        return Ok(None);
-    }
+    };
     ctl.set(
         "decoding",
         Some(0),
@@ -1921,9 +1935,9 @@ fn decode_memory_zip(
     let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
     let mut discard = Vec::new();
     let mut allocated = 0u64;
-    for (i, key) in names.into_iter().enumerate() {
+    for (i, index) in names.into_iter().enumerate() {
         ctl.check()?;
-        let entry = expected[&key];
+        let entry = &entries[index];
         let mut member = archive
             .by_index(i)
             .map_err(|e| format!("ZIP decode: {e}"))?;
@@ -1963,7 +1977,7 @@ fn decode_memory_zip(
         }
         if keep {
             allocated += data.capacity() as u64;
-            contents.insert(key, MemoryChunk::Owned(data));
+            contents.insert(path_key(&validate_name(&entry.name)?), MemoryChunk::Owned(data));
         } else {
             discard = data;
         }
@@ -2198,7 +2212,15 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     ctl.check()?;
     let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
-    let memory = if let PayloadSource::VerifiedZeal(files) = payload_source {
+    let (mut zip_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
+        && defer_preflight && expected.len() <= 65_536
+    {
+        full_zip_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
+            .map_or((None, None), |(plan, transaction)| (Some(plan), Some(transaction)))
+    } else {
+        (None, None)
+    };
+    let memory = if zip_plan.is_some() { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
         Some(files)
     } else if Path::new(path)
         .extension()
@@ -2220,7 +2242,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let safe_projection = opts.selected.is_empty() || plan_selection;
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
-    let mut transaction = if expected.len() <= 65_536 {
+    let mut transaction = if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
         new_directory_stage(path, &dest, safe_projection, &mut output_guards,
             projected.as_deref().or_else(|| memory.as_ref().map(|_| all_entries.as_slice())))?
     } else {
@@ -2294,7 +2316,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             stage_guards,
             &ctl,
         )?;
-        if let Some(files) = &memory {
+        if let Some(plan) = zip_plan.take() {
+            plan.decode(&all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
+        } else if let Some(files) = &memory {
             stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
             let mut args = base("x", opts)?;
@@ -2892,36 +2916,41 @@ struct MemoryOutput<'a> {
     bytes: &'a [u8],
 }
 
-fn write_memory_output(
-    job: &MemoryOutput<'_>,
-    guards: &CheckedDirectories,
-    ctl: &JobControl,
-) -> Result<(), String> {
-    use std::io::Write;
-    ctl.check()?;
-    if !job.entry.size_known || job.bytes.len() as u64 != job.entry.size {
-        return Err("verified memory file length does not match archive".into());
-    }
+fn open_prepared_stage_output(target: &Path, guards: &CheckedDirectories) -> Result<File, String> {
     let checked_create = || {
-        guards.check_prepared(&job.target)?;
-        File::options().write(true).create_new(true).open(&job.target)
+        guards.check_prepared(target)?;
+        File::options().write(true).create_new(true).open(target)
             .map_err(|error| error.to_string())
     };
     #[cfg(windows)]
-    let mut output = match job.target.parent().and_then(|p| guards.private_metadata_parent(p)) {
+    let output = match target.parent().and_then(|p| guards.private_metadata_parent(p)) {
         Some(parent) => {
-            let leaf = job.target.file_name().ok_or("missing stage filename")?;
+            let leaf = target.file_name().ok_or("missing stage filename")?;
             crate::private_stage::create_child_file(parent, leaf)?
         }
         None => checked_create()?,
     };
     #[cfg(not(windows))]
-    let mut output = checked_create()?;
-    for chunk in job.bytes.chunks(64 * 1024) {
+    let output = checked_create()?;
+    Ok(output)
+}
+
+fn write_verified_bytes(
+    entry: &Entry, target: &Path, bytes: &[u8],
+    guards: &CheckedDirectories,
+    ctl: &JobControl,
+) -> Result<(), String> {
+    use std::io::Write;
+    ctl.check()?;
+    if !entry.size_known || bytes.len() as u64 != entry.size {
+        return Err("verified memory file length does not match archive".into());
+    }
+    let mut output = open_prepared_stage_output(target, guards)?;
+    for chunk in bytes.chunks(64 * 1024) {
         ctl.check()?;
         output.write_all(chunk).map_err(|error| error.to_string())?;
     }
-    restore_open_file_metadata(&output, job.entry)
+    restore_open_file_metadata(&output, entry)
 }
 
 fn stage_verified_memory(
@@ -2967,7 +2996,7 @@ fn stage_verified_memory(
     let consume = || -> Result<(), String> {
         while !stopped.load(Ordering::Acquire) {
             let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
-            if let Err(error) = write_memory_output(job, guards, ctl) {
+            if let Err(error) = write_verified_bytes(job.entry, &job.target, job.bytes, guards, ctl) {
                 stopped.store(true, Ordering::Release);
                 return Err(error);
             }
@@ -3123,10 +3152,12 @@ fn try_publish_staged_file(
     { let _ = (staged, relative, entry, target, replace, ctl, stage_guards, output_guards); Ok(false) }
 }
 struct DirectoryTransaction {
-    stage: Option<StagingDir>,
+    // Release the no-delete-sharing root pin before a still-owned TempDir is
+    // removed, including when an archive fails qualification.
     root: File,
     parent: File,
     restore_acl: bool,
+    stage: Option<StagingDir>,
 }
 #[cfg(windows)]
 pub(crate) fn pin_committed_tree(

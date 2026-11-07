@@ -306,17 +306,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
     let tmp = tempfile::tempdir().unwrap();
     let parent = tmp.path().join("ordinary");
     fs::create_dir(&parent).unwrap();
-    // Give this test directory a normal, auto-inherited DACL regardless of the
-    // runner's TEMP policy. The readonly Users ACE exercises post-commit ACLs.
-    let acl = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command",
-            r#"$ErrorActionPreference='Stop'; $s=New-Object System.Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value+')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'); Set-Acl -LiteralPath $env:QING_TEST_OUTPUT_PARENT -AclObject $s"#])
-        .env("QING_TEST_OUTPUT_PARENT", &parent).output().unwrap();
-    assert!(
-        acl.status.success(),
-        "{}",
-        String::from_utf8_lossy(&acl.stderr)
-    );
+    set_ordinary_acl(&parent);
 
     let source = tmp.path().join("src");
     fs::create_dir_all(source.join("nested")).unwrap();
@@ -428,4 +418,100 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
         "{}",
         String::from_utf8_lossy(&acl.stderr)
     );
+}
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+fn set_ordinary_acl(parent: &Path) {
+    use std::process::Command;
+    // Give this test directory a normal, auto-inherited DACL regardless of the
+    // runner's TEMP policy. The readonly Users ACE exercises post-commit ACLs.
+    let acl = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+            r#"$ErrorActionPreference='Stop'; $s=New-Object System.Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value+')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'); Set-Acl -LiteralPath $env:QING_TEST_OUTPUT_PARENT -AclObject $s"#])
+        .env("QING_TEST_OUTPUT_PARENT", parent).output().unwrap();
+    assert!(
+        acl.status.success(),
+        "{}",
+        String::from_utf8_lossy(&acl.stderr)
+    );
+}
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[test]
+fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies() {
+    use std::{fs::File, io::Write, process::Command};
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("targets");
+    fs::create_dir(&parent).unwrap();
+    set_ordinary_acl(&parent);
+    let archive = tmp.path().join("mixed.zip");
+    let mut zip = zip::ZipWriter::new(File::create(&archive).unwrap());
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let deflated = stored.compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..140 {
+        zip.start_file(format!("nested/{i:03}.txt"), deflated)
+            .unwrap();
+        zip.write_all(format!("input-{i}").repeat(32).as_bytes())
+            .unwrap();
+    }
+    zip.add_directory("empty/", stored).unwrap();
+    zip.start_file("zero", stored).unwrap();
+    zip.start_file("large.bin", stored).unwrap();
+    let marker = b"unique final stored member marker";
+    let mut big = marker.to_vec();
+    big.resize(512 * 1024, b'A');
+    zip.write_all(&big).unwrap();
+    zip.finish().unwrap();
+    let zone = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+    fs::write(format!("{}:Zone.Identifier", archive.display()), zone).unwrap();
+    let extract = |dest: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_obz"))
+            .args(["extract"])
+            .arg(&archive)
+            .arg(dest)
+            .env("OPEN_ARCHIVE_PROFILE", "1")
+            .output()
+            .unwrap()
+    };
+    let good = parent.join("good");
+    let out = extract(&good);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("bounded-zip-private-stage"));
+    assert!(good.join("empty").is_dir() && fs::read(good.join("zero")).unwrap().is_empty());
+    assert_eq!(fs::read(good.join("large.bin")).unwrap(), big);
+    assert_eq!(
+        fs::read(format!(
+            "{}:Zone.Identifier",
+            good.join("large.bin").display()
+        ))
+        .unwrap(),
+        zone
+    );
+    for i in 0..140 {
+        assert_eq!(
+            fs::read(good.join(format!("nested/{i:03}.txt"))).unwrap(),
+            format!("input-{i}").repeat(32).as_bytes()
+        );
+    }
+    let mut data = fs::read(&archive).unwrap();
+    let idx = data
+        .windows(marker.len())
+        .position(|s| s == marker)
+        .unwrap();
+    data[idx] ^= 1;
+    fs::write(&archive, &data).unwrap();
+    let failed = parent.join("bad");
+    let out = extract(&failed);
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && log.contains("bounded-zip-private-stage"),
+        "{log}"
+    );
+    assert!(!failed.exists());
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
 }
