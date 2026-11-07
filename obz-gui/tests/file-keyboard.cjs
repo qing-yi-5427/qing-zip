@@ -79,3 +79,18 @@ test('context submenu uses the supplied location; app submenu retains original t
  f.context.menuAnchorRect={left:20,bottom:50};f.context.showMenu('edit',{closest:()=>true,getBoundingClientRect:()=>({left:40,bottom:200})});
  assert.equal(positions[1].left,20);assert.equal(positions[1].bottom,50);
 });
+
+test('range selection and keyboard focus use the logical order outside the mounted window',()=>{
+ const f=fixture(1000),all=f.buttons;
+ let mounted=all.slice(0,10);
+ f.context.root.querySelectorAll=()=>mounted;
+ f.context.testWindow={reveal(index){mounted=all.slice(Math.max(0,index-3),index+4)}};
+ vm.runInContext("detailWindow=testWindow",f.context);
+ f.context.selectRow('file2',{});
+ f.press(2,'End',{shiftKey:true});
+ assert.equal(f.state.cursor,'file999');assert.equal(f.state.selected.size,998);assert.equal(f.state.anchor,'file2');
+ f.press(999,'Home',{ctrlKey:true});
+ assert.equal(f.state.cursor,'file0');assert.equal(f.state.selected.size,998);
+ f.press(0,'ArrowDown',{shiftKey:true});
+ assert.deepEqual([...f.state.selected],['file1','file2']);
+});
