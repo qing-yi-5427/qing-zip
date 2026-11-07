@@ -218,8 +218,8 @@ fn sfx_stub() -> Result<PathBuf, String> {
     paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/7zip/7z.sfx"));
     paths
         .into_iter()
-        .find(|p| p.is_file())
-        .ok_or("7z.sfx runtime missing".into())
+        .find(|p| usable_engine(p))
+        .ok_or("matching 7z.sfx runtime missing".into())
 }
 pub fn capabilities() -> Capabilities {
     let executable = executable();

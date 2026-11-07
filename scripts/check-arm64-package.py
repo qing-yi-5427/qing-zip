@@ -30,6 +30,50 @@ def key(root,name):
             return winreg.QueryValueEx(k,name)[0]
     except FileNotFoundError:return None
 
+def smoke_desktop(application, archive, scratch):
+    """Observe the trial app starting its own WebView2 process. No UI injection."""
+    from ctypes import wintypes as w
+    class Process(ctypes.Structure):
+        _fields_=[('size',w.DWORD),('usage',w.DWORD),('pid',w.DWORD),('heap',ctypes.c_size_t),
+                  ('module',w.DWORD),('threads',w.DWORD),('parent',w.DWORD),('priority',w.LONG),
+                  ('flags',w.DWORD),('name',w.WCHAR*260)]
+    k=ctypes.WinDLL('kernel32',use_last_error=True)
+    k.CreateToolhelp32Snapshot.argtypes=(w.DWORD,w.DWORD);k.CreateToolhelp32Snapshot.restype=w.HANDLE
+    for method in (k.Process32FirstW,k.Process32NextW):method.argtypes=(w.HANDLE,ctypes.POINTER(Process));method.restype=w.BOOL
+    k.CloseHandle.argtypes=(w.HANDLE,);k.CloseHandle.restype=w.BOOL
+    k.IsWow64Process2.argtypes=(w.HANDLE,ctypes.POINTER(w.WORD),ctypes.POINTER(w.WORD));k.IsWow64Process2.restype=w.BOOL
+    env=dict(os.environ,WEBVIEW2_USER_DATA_FOLDER=str(scratch/'webview-profile'))
+    startup=subprocess.STARTUPINFO();startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW;startup.wShowWindow=0
+    proc=subprocess.Popen([str(application),str(archive)],cwd=scratch,env=env,startupinfo=startup,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        process_machine,native_machine=w.WORD(),w.WORD()
+        if not k.IsWow64Process2(w.HANDLE(proc._handle),ctypes.byref(process_machine),ctypes.byref(native_machine)) or process_machine.value!=0 or native_machine.value!=0xaa64:
+            raise ValueError('desktop app did not run as native ARM64')
+        deadline=time.monotonic()+45
+        while time.monotonic()<deadline:
+            if proc.poll() is not None: raise RuntimeError(f'desktop exited before WebView2 initialization ({proc.returncode})')
+            snapshot=k.CreateToolhelp32Snapshot(2,0)
+            if snapshot==ctypes.c_void_p(-1).value:raise ctypes.WinError(ctypes.get_last_error())
+            processes={}
+            try:
+                entry=Process();entry.size=ctypes.sizeof(entry)
+                more=k.Process32FirstW(snapshot,ctypes.byref(entry))
+                while more:
+                    processes[entry.pid]=(entry.parent,entry.name.lower())
+                    more=k.Process32NextW(snapshot,ctypes.byref(entry))
+            finally:k.CloseHandle(snapshot)
+            for pid,(parent,name) in processes.items():
+                if name!='msedgewebview2.exe':continue
+                ancestors=set()
+                while parent and parent not in ancestors:
+                    if parent==proc.pid:return {'native_process':True,'webview2_child':True,'scope':'process startup, no UI interaction'}
+                    ancestors.add(parent);parent=processes.get(parent,(0,''))[0]
+            time.sleep(.25)
+        raise RuntimeError('desktop process did not start a WebView2 child within 45s')
+    finally:
+        if proc.poll() is None:proc.terminate()
+        proc.wait(timeout=15)
+
 def exercise(app, scratch):
     scratch.mkdir()
     verify_layout(app/'runtime')
@@ -68,6 +112,7 @@ print('native Python',sys.version,ssl.OPENSSL_VERSION,sqlite3.sqlite_version)
     archive=scratch/'sample.7z'
     run([cli,'create',archive,'--format','7z',text])
     run([app/'runtime/7zip/7z.exe','t',archive])
+    desktop=smoke_desktop(app/'qing-zip.exe',archive,scratch)
     # Force the bundled fallback in a disposable layout, independently of any
     # globally installed 7-Zip. Restore the same owned directory before cleanup.
     nana=app/'runtime/nanazip-arm64';hidden=app/'runtime/temporarily-disabled-nana'
@@ -84,7 +129,7 @@ print('native Python',sys.version,ssl.OPENSSL_VERSION,sqlite3.sqlite_version)
     run([sfx,'-y','-o'+str(scratch/'sfx-out')],cwd=scratch,timeout=45)
     assert sha(scratch/'sfx-out/sample.txt')==sha(text)
     verify_layout(app/'runtime')
-    return {'python':runtime,'authored_imports':dependencies,'full_manifest_checks':checks,'native_sfx_executed':True,'native_7zip_fallback':True}
+    return {'python':runtime,'desktop':desktop,'authored_imports':dependencies,'full_manifest_checks':checks,'native_sfx_executed':True,'native_7zip_fallback':True}
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('dist',type=Path);ap.add_argument('downloads',type=Path);a=ap.parse_args()
@@ -121,12 +166,18 @@ def main():
         run([uninstall,'/S'])
         deadline=time.monotonic()+90
         while time.monotonic()<deadline and (uninstall.exists() or key(arp,'InstallLocation') is not None):time.sleep(.2)
-        assert files(inst)=={'user-sentinel.txt':sha(keep)} and keep.read_text(encoding='utf8')=='retain this local file'
+        remaining=files(inst)
+        if remaining!={'user-sentinel.txt':sha(keep)} or keep.read_text(encoding='utf8')!='retain this local file':
+            raise ValueError('uninstall residue or changed sentinel: '+str(sorted(remaining)))
         assert key(arp,'InstallLocation') is None and not shortcuts.exists()
         keep.unlink();inst.rmdir()
         assert previous_x64==(key(x64_install,'InstallDir'),key(x64_arp,'InstallLocation'))
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
-    for p in [setup,portable]: (out/(p.name+'.sha256')).write_text(sha(p)+'  '+p.name+'\n',encoding='ascii')
+    report['assets']={}
+    for p in [setup,portable]:
+        digest=sha(p)
+        report['assets'][p.name]={'sha256':digest,'bytes':p.stat().st_size}
+        (out/(p.name+'.sha256')).write_text(digest+'  '+p.name+'\n',encoding='ascii')
     (out/(prefix+'-verification.json')).write_text(json.dumps(report,indent=2),encoding='utf8')
     print(json.dumps(report))
 
