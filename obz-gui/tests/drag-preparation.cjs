@@ -62,6 +62,8 @@ test('handoff survives focus and capture transfer, waits for verification, and h
  assert.ok(!f.calls.some(x=>x.name==='finish_drag'));
  f.wait.resolve(complete);await tick();
  assert.ok(f.calls.some(x=>x.name==='finish_drag'));
+ assert.equal(f.context.s.jobs[0].result,undefined);
+ assert.ok(!f.context.s.jobs[0].summary.includes(complete.result.destination));
  assert.ok(!f.calls.some(x=>x.name==='cancel_drag_preparation'));
  f.events.get('window:pointerup')({pointerId:2});f.finish.resolve(true);await result;
  assert.match(f.toasts.at(-1),/复制/);assert.equal(f.calls.at(-1).name,'discard_drag');
