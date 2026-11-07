@@ -13,6 +13,7 @@ mod zealfs_guard;
 pub mod engine_password;
 pub mod services;
 pub mod operations;
+pub mod machine_policy;
 pub mod korean;
 pub mod legacy;
 pub mod installer;

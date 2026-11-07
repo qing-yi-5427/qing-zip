@@ -120,6 +120,7 @@ pub struct Archive {
 
 impl Archive {
     pub fn read_folder(&self, data: &[u8], index: usize) -> Result<Vec<u8>, String> {
+        let _policy = crate::machine_policy::native("native 7z codec")?;
         let folder = self.folders.get(index).ok_or("invalid folder index")?;
         let start = self
             .pack_sizes
@@ -143,6 +144,7 @@ impl Archive {
     }
 
     pub fn extract_entry(&self, data: &[u8], entry: &Entry) -> Result<Vec<u8>, String> {
+        let _policy = crate::machine_policy::native("native 7z codec")?;
         let fi = match entry.folder_index {
             Some(f) => f,
             None => return Ok(Vec::new()),
@@ -577,6 +579,7 @@ fn read_files_info(r: &mut Reader, num: usize) -> Result<FileInfoProps, String> 
 }
 
 pub fn parse_archive(data: &[u8]) -> Result<Archive, String> {
+    let _policy = crate::machine_policy::native("native 7z codec")?;
     if data.len() < 32 || &data[..6] != MAGIC {
         return Err("not a 7z archive".into());
     }

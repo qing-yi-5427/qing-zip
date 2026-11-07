@@ -18,6 +18,7 @@ pub struct ZipEntry {
 }
 
 pub fn read_central_dir(data: &[u8], start: usize, end: usize) -> Result<Vec<ZipEntry>, String> {
+    let _policy = crate::machine_policy::native("native ZIP codec")?;
     let slice = data.get(start..end).ok_or("ZIP range exceeds input")?;
     let eocd_rel = (0..slice.len().saturating_sub(21))
         .rev()
@@ -110,6 +111,7 @@ pub fn read_central_dir(data: &[u8], start: usize, end: usize) -> Result<Vec<Zip
 }
 
 pub fn extract_entry(data: &[u8], base: usize, e: &ZipEntry) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("native ZIP codec")?;
     if e.size > MAX_NATIVE_OUTPUT as u64 || e.comp_size > MAX_NATIVE_OUTPUT as u64 {
         return Err("native ZIP output exceeds 512 MiB limit".into());
     }
@@ -165,6 +167,7 @@ pub fn extract_entry(data: &[u8], base: usize, e: &ZipEntry) -> Result<Vec<u8>, 
 }
 
 pub fn create_zip(out_path: &str, inputs: &[String], store_only: bool) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("native ZIP codec")?;
     let mut locals: Vec<u8> = Vec::new();
     let mut centrals: Vec<u8> = Vec::new();
     let mut count = 0usize;

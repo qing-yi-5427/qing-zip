@@ -232,6 +232,7 @@ fn request(path: &str, opts: &EngineOptions) -> Result<serde_json::Value, String
     Ok(serde_json::json!({"path":p,"encoding":encoding,"password":opts.password}))
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("legacy archive helper")?;
     let mut req = request(path, opts)?;
     req["action"] = "list".into();
     serde_json::from_value(run(req, opts)?).map_err(|e| e.to_string())
@@ -242,6 +243,7 @@ pub fn decode(
     stage: &Path,
     opts: &EngineOptions,
 ) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("legacy archive helper")?;
     let all = list(path, opts)?;
     let private = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut req = request(path, opts)?;

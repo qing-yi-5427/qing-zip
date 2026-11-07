@@ -199,6 +199,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
     Ok(out)
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("EGG/ALZ adapter")?;
     entries(&open(path, opts)?)
 }
 // Decoder callbacks check cancellation inside ALZ reads/writes, including a single
@@ -377,6 +378,7 @@ fn decode(
     Ok(())
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("EGG/ALZ adapter")?;
     let mut a = open(path, opts)?;
     let es = entries(&a)?;
     let chosen: Vec<_> = es
@@ -434,12 +436,14 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     Ok(count)
 }
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("EGG/ALZ adapter")?;
     let mut a = open(path, opts)?;
     let es = entries(&a)?;
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
     decode(&mut a, stage.path(), &es, opts)
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("EGG/ALZ adapter")?;
     let mut a = open(path, opts)?;
     let es = entries(&a)?;
     let e = es

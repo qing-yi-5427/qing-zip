@@ -210,6 +210,7 @@ const isImage=name=>IMAGE_EXT.test(name),isText=name=>TEXT_EXT.test(name)||/^(re
 const previewArgs=name=>({path:s.archive,name,password:s.password||null,codepage:s.codepage||null});
 let previewGeneration=0,openingImage=false,thumbnailObserver=null,thumbnailActive=0,thumbnailBytes=0;
 const thumbnailCache=new Map(),thumbnailQueue=new Map(),thumbnailInflight=new Set();
+let thumbnailPolicyToken=null,thumbnailPolicyRevision=0,thumbnailPolicyBatch=Promise.resolve();
 async function loadTextPreview(target,textEncoding){const context=target.oaTextContext;if(!context)return;const request=(target.oaTextRequest||0)+1;target.oaTextRequest=request;const meta=target.querySelector('#oa-text-meta'),text=target.querySelector('#oa-text-preview');meta.textContent='正在读取文本…';try{const r=await invoke('preview_entry',{...context.args,kind:'text',textEncoding});if(target!==$('qa-file-preview')||context.generation!==previewGeneration||target.oaTextRequest!==request)return;meta.textContent=`${r.encoding||'文本'} · ${r.truncated?'仅显示部分内容':'只读预览'}`;text.textContent=r.text||'';$('qa-formerror').textContent='';}catch(e){if(target===$('qa-file-preview')&&target.oaTextRequest===request){meta.textContent='无法预览';text.textContent='';error(e);}}}
 function saveViewPreference(){const saved=load('qing-preferences',{});localStorage.setItem('qing-preferences',JSON.stringify({...saved,listStyle:s.listStyle,iconSize:s.iconSize}));}
 function viewControls(){return `<div class="oa-view-controls"><div class="oa-view-switch" role="group" aria-label="文件显示方式"><button data-action="details" aria-pressed="${s.listStyle!=='icons'}" title="详细信息">${icon('file')}<span>详情</span></button><button data-action="icons" aria-pressed="${s.listStyle==='icons'}" title="大图标和图片缩略图">${icon('grid')}<span>大图标</span></button></div><label class="oa-icon-control" ${s.listStyle==='icons'?'':'hidden'}><span>图标</span><input id="oa-icon-size" type="range" min="80" max="256" step="16" value="${s.iconSize}" aria-label="图标大小"><span id="oa-icon-size-label">${s.iconSize}</span></label><span class="oa-zoom-hint" ${s.listStyle==='icons'?'':'hidden'}>Ctrl + 滚轮调整</span><label class="oa-sort-control"><span>排序</span><select id="oa-sort" aria-label="排序依据">${opts([['name','名称'],['size','大小'],['packed_size','压缩后']],s.sort)}</select><button type="button" data-action="reverse-sort" aria-label="${s.reverse?'改为升序':'改为降序'}" title="${s.reverse?'降序':'升序'}">${s.reverse?'↓':'↑'}</button></label></div>`;}
@@ -217,14 +218,65 @@ function syncViewControls(){if($('oa-sort'))$('oa-sort').value=s.sort;const b=ro
 function setIconSize(value){s.iconSize=Math.max(80,Math.min(256,Math.round(value/16)*16));root.querySelector('.oa-table-wrap')?.style.setProperty('--oa-icon-size',s.iconSize+'px');if($('oa-icon-size'))$('oa-icon-size').value=s.iconSize;if($('oa-icon-size-label'))$('oa-icon-size-label').textContent=s.iconSize;saveViewPreference();}
 function stopThumbnailObserver(){thumbnailObserver?.disconnect();thumbnailObserver=null;thumbnailQueue.clear();}
 function resetPreviewState(){previewGeneration++;stopThumbnailObserver();thumbnailCache.clear();thumbnailBytes=0;}
-function thumbnailRecord(name){const record=thumbnailCache.get(name);if(record){thumbnailCache.delete(name);thumbnailCache.set(name,record);}return record;}
+function thumbnailRecord(name){const record=thumbnailCache.get(name);if(!thumbnailPolicyToken||record?.format_policy!==thumbnailPolicyToken)return; if(record){thumbnailCache.delete(name);thumbnailCache.set(name,record);}return record;}
 function rememberThumbnail(name,record){const old=thumbnailCache.get(name);if(old)thumbnailBytes-=old.cost;record.cost=(record.data_url?.length||0)*2+512;thumbnailCache.delete(name);thumbnailCache.set(name,record);thumbnailBytes+=record.cost;while(thumbnailCache.size>96||thumbnailBytes>12*1024*1024){const first=thumbnailCache.keys().next().value;thumbnailBytes-=thumbnailCache.get(first).cost;thumbnailCache.delete(first);}}
 function thumbnailPlaceholder(el){el.replaceChildren();el.innerHTML=icon('file');el.classList.remove('oa-thumbnail-ready');el.removeAttribute('aria-busy');}
 function paintThumbnail(el,record){if(!el.isConnected||el.dataset.thumbnailVisible!=='true')return;el.removeAttribute('aria-busy');el.title=record.error||'双击用系统默认看图程序打开原图';if(record.error){thumbnailPlaceholder(el);el.classList.add('oa-thumbnail-error');el.setAttribute('aria-label','缩略图不可用：'+record.error);return;}el.classList.remove('oa-thumbnail-error');el.classList.add('oa-thumbnail-ready');const img=document.createElement('img');img.alt=filename(el.dataset.thumbnail);img.decoding='async';img.draggable=false;img.src=record.data_url;el.replaceChildren(img);}
-function enqueueThumbnail(el){const name=el.dataset.thumbnail,record=thumbnailRecord(name);if(record){paintThumbnail(el,record);return;}el.setAttribute('aria-busy','true');const key=previewGeneration+':'+name;if(!thumbnailInflight.has(key)&&thumbnailQueue.size<128)thumbnailQueue.set(name,{name,generation:previewGeneration,args:previewArgs(name)});pumpThumbnails();}
+function enqueueThumbnail(el){const name=el.dataset.thumbnail,record=thumbnailRecord(name);if(record){if(!el.classList.contains('oa-thumbnail-ready'))paintThumbnail(el,record);return;}el.setAttribute('aria-busy','true');const key=previewGeneration+':'+thumbnailPolicyRevision+':'+name;if(!thumbnailInflight.has(key)&&thumbnailQueue.size<128)thumbnailQueue.set(name,{name,generation:previewGeneration,policyRevision:thumbnailPolicyRevision,args:previewArgs(name)});pumpThumbnails();}
 function paintMatchingThumbnails(name,record){root.querySelectorAll('[data-thumbnail]').forEach(el=>{if(el.dataset.thumbnail===name)paintThumbnail(el,record);});}
-function pumpThumbnails(){while(thumbnailActive<2&&thumbnailQueue.size){const name=thumbnailQueue.keys().next().value,task=thumbnailQueue.get(name);thumbnailQueue.delete(name);if(task.generation!==previewGeneration)continue;const key=task.generation+':'+name;thumbnailInflight.add(key);thumbnailActive++;invoke('preview_entry',{...task.args,kind:'thumbnail'}).then(r=>{if(task.generation!==previewGeneration)return;if(typeof r.data_url!=='string'||r.data_url.length>2*1024*1024||!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(r.data_url))throw Error('缩略图数据无效或超过预览限制');const record={data_url:r.data_url};rememberThumbnail(name,record);paintMatchingThumbnails(name,record);}).catch(e=>{if(task.generation!==previewGeneration)return;const record={error:String(e).slice(0,240)};rememberThumbnail(name,record);paintMatchingThumbnails(name,record);}).finally(()=>{thumbnailActive--;thumbnailInflight.delete(key);pumpThumbnails();});}}
-function observeThumbnails(){stopThumbnailObserver();if(s.page!=='files'||s.listStyle!=='icons')return;thumbnailObserver=new IntersectionObserver(entries=>{for(const {target,isIntersecting} of entries){target.dataset.thumbnailVisible=String(isIntersecting);if(isIntersecting)enqueueThumbnail(target);else{thumbnailQueue.delete(target.dataset.thumbnail);thumbnailPlaceholder(target);}}},{root:main,rootMargin:'100px 0px',threshold:0});root.querySelectorAll('[data-thumbnail]').forEach(el=>thumbnailObserver.observe(el));}
+function pumpThumbnails() {
+  while (thumbnailActive < 2 && thumbnailQueue.size) {
+    const name = thumbnailQueue.keys().next().value;
+    const task = thumbnailQueue.get(name);
+    thumbnailQueue.delete(name);
+    const current = () => task.generation === previewGeneration && task.policyRevision === thumbnailPolicyRevision;
+    if (!current()) continue;
+    const key = task.generation + ':' + task.policyRevision + ':' + name;
+    thumbnailInflight.add(key);
+    thumbnailActive++;
+    invoke('preview_entry', {...task.args, kind:'thumbnail'}).then(result => {
+      if (!current()) return;
+      if (!thumbnailPolicyToken || result.format_policy !== thumbnailPolicyToken)
+        throw Error('格式策略已更新，请重新打开预览');
+      if (typeof result.data_url !== 'string' || result.data_url.length > 2*1024*1024 ||
+          !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(result.data_url))
+        throw Error('缩略图数据无效或超过预览限制');
+      const record = {data_url:result.data_url, format_policy:result.format_policy};
+      rememberThumbnail(name, record);
+      paintMatchingThumbnails(name, record);
+    }).catch(error => {
+      if (current()) paintMatchingThumbnails(name, {error:String(error).slice(0,240)});
+    }).finally(() => {
+      thumbnailActive--;
+      thumbnailInflight.delete(key);
+      pumpThumbnails();
+    });
+  }
+}
+function observeThumbnails(){
+  stopThumbnailObserver();
+  if(s.page!=='files'||s.listStyle!=='icons')return;
+  const observer=new IntersectionObserver(entries=>{
+    for(const {target,isIntersecting} of entries){
+      target.dataset.thumbnailVisible=String(isIntersecting);
+      if(!isIntersecting){thumbnailQueue.delete(target.dataset.thumbnail);thumbnailPlaceholder(target);}
+    }
+    if(!entries.some(entry=>entry.isIntersecting))return;
+    thumbnailPolicyBatch=thumbnailPolicyBatch.then(async()=>{
+      if(observer!==thumbnailObserver)return;
+      const token=await invoke('preview_policy_token').catch(()=>null);
+      if(observer!==thumbnailObserver)return;
+      if(token!==thumbnailPolicyToken){
+        thumbnailPolicyRevision++;thumbnailQueue.clear();thumbnailCache.clear();thumbnailBytes=0;
+        thumbnailPolicyToken=token;
+        root.querySelectorAll('[data-thumbnail]').forEach(thumbnailPlaceholder);
+      }
+      root.querySelectorAll('[data-thumbnail][data-thumbnail-visible="true"]').forEach(enqueueThumbnail);
+    }).catch(()=>{});
+  },{root:main,rootMargin:'100px 0px',threshold:0});
+  thumbnailObserver=observer;
+  root.querySelectorAll('[data-thumbnail]').forEach(el=>observer.observe(el));
+}
 window.addEventListener('resize',()=>{requestAnimationFrame(()=>{const strip=root.querySelector('.oa-tab-list'),active=strip?.querySelector('[aria-selected="true"]')?.closest('.oa-archive-tab');if(strip&&active){const r=strip.getBoundingClientRect(),a=active.getBoundingClientRect();if(a.left<r.left)strip.scrollLeft+=a.left-r.left;else if(a.right>r.right)strip.scrollLeft+=a.right-r.right;}$('oa-menu').hidden=true;});});
 root.addEventListener('wheel',e=>{if(!e.ctrlKey||s.page!=='files'||!s.archive||!overlay.hidden||!e.target.closest('#qa-main'))return;e.preventDefault();e.stopPropagation();if(!e.deltaY)return;if(s.listStyle!=='icons'){s.listStyle='icons';render();}setIconSize(s.iconSize+(e.deltaY<0?16:-16));},{passive:false,capture:true});
 

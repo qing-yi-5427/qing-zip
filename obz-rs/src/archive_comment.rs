@@ -152,11 +152,13 @@ fn inspect(file: &mut File, ctl: Option<&engine::JobControl>) -> Result<Director
     Err(last_error)
 }
 pub fn get(path: &str) -> Result<String, String> {
+    let _policy = crate::machine_policy::native("ZIP comment editor")?;
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     String::from_utf8(inspect(&mut file, None)?.comment)
         .map_err(|_| "ZIP comment is not UTF-8".into())
 }
 pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("ZIP comment editor")?;
     if text.len() > 65535 {
         return Err("ZIP comment exceeds 65535 UTF-8 bytes".into());
     }

@@ -17,6 +17,7 @@ fn package(data: &[u8]) -> Result<setup::SetupPackage<'_>, String> {
         .map_err(|_| "malformed installer package".to_string())?
 }
 pub fn recognize(path: &str) -> Result<Option<Vec<u8>>, String> {
+    let _policy = crate::machine_policy::native("setup package adapter")?;
     let mut f = File::open(path).map_err(|e| e.to_string())?;
     if f.metadata().map_err(|e| e.to_string())?.len() > INPUT_LIMIT {
         return Ok(None);
@@ -99,6 +100,7 @@ fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
     Ok(es)
 }
 pub fn list(data: &[u8]) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("setup package adapter")?;
     inventory(&package(data)?)
 }
 fn check(opts: &EngineOptions) -> Result<(), String> {
@@ -191,6 +193,7 @@ fn decoded(
     .map_err(|_| "malformed installer data".to_string())?
 }
 pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("setup package adapter")?;
     check(opts)?;
     let pkg = package(data)?;
     let es: Vec<_> = inventory(&pkg)?
@@ -244,6 +247,7 @@ pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, S
     Ok(count)
 }
 pub fn test(data: &[u8], opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("setup package adapter")?;
     check(opts)?;
     let pkg = package(data)?;
     let es = inventory(&pkg)?;
@@ -251,6 +255,7 @@ pub fn test(data: &[u8], opts: &EngineOptions) -> Result<(), String> {
     decoded(&pkg, &es, stage.path(), opts)
 }
 pub fn preview(data: &[u8], name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("setup package adapter")?;
     check(opts)?;
     let pkg = package(data)?;
     let e = inventory(&pkg)?

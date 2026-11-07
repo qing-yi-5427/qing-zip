@@ -182,6 +182,7 @@ pub fn create_lzh(
     inputs: &[String],
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         check(opts)?;
         if opts.password.is_some() || opts.volume_bytes.is_some() {
@@ -461,6 +462,7 @@ fn entry_view(e: &unarc_rs::unified::ArchiveEntry) -> Result<Entry, String> {
     })
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("legacy archive adapter")?;
     if crate::legacy_worker::available() {
         check(opts)?;
         let entries = crate::legacy_worker::list(path, opts)?;
@@ -575,6 +577,7 @@ fn decode(path: &str, chosen: &[Entry], stage: &Path, opts: &EngineOptions) -> R
     check(opts)
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         let entries = list(path, opts)?;
         let chosen: Vec<_> = entries
@@ -629,6 +632,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     })
 }
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         let entries = list(path, opts)?;
         let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -636,6 +640,7 @@ pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         let entry = list(path, opts)?
             .into_iter()

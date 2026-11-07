@@ -54,6 +54,7 @@ fn capture_prefix(mut reader: impl Read, maximum: usize) -> Vec<u8> {
     result
 }
 fn confirm_single_volume(request: &Request, control: &JobControl) -> Result<(), String> {
+    let _policy = obz_core::machine_policy::scope();
     use std::os::windows::process::CommandExt;
     check_cancel(control)?;
     if let Some(password)=&request.options.password {obz_core::engine_password::validate(password)?;}

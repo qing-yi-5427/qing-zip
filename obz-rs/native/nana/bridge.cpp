@@ -483,30 +483,10 @@ struct Runtime {
   }
 };
 
-// Restrict the direct handler path to systems using the standard format inventory.
-// Only definitely empty/missing format lists qualify. Active/ambiguous policy is
-// fatal, never a generic fallback to a compatibility engine.
-bool effective_policy_or_unknown() {
-  HKEY key = nullptr;
-  LSTATUS rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Policies\\M2Team\\NanaZip", 0,
-                           KEY_READ | KEY_WOW64_64KEY, &key);
-  if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) return false;
-  if (rc != ERROR_SUCCESS) return true;
-  struct Close { HKEY h; ~Close() { RegCloseKey(h); } } close{key};
-  for (const wchar_t *name : {L"AllowedHandlers", L"BlockedHandlers", L"AllowedCodecs", L"BlockedCodecs"}) {
-    DWORD type = 0, bytes = 0;
-    rc = RegQueryValueExW(key, name, nullptr, &type, nullptr, &bytes);
-    if (rc == ERROR_FILE_NOT_FOUND) continue;
-    if (rc != ERROR_SUCCESS || type != REG_MULTI_SZ || bytes > 65536 || bytes % 2) return true;
-    if (!bytes) continue;
-    std::vector<wchar_t> data(bytes / 2, 0);
-    DWORD received = bytes;
-    rc = RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE *>(data.data()), &received);
-    if (rc != ERROR_SUCCESS || type != REG_MULTI_SZ || received != bytes) return true;
-    if (data[0] != L'\0') return true;
-  }
-  return false;
-}
+// Use the same bounded, exact machine reader as the parent. Recheck on both
+// sides of K7 initialization, independently of any parent operation snapshot.
+extern "C" int qing_machine_policy_restricts_native() noexcept;
+bool effective_policy_or_unknown() { return qing_machine_policy_restricts_native() != 0; }
 
 void archive_health(IInArchive *arc) {
   for (PROPID id : {kpidErrorFlags, kpidWarningFlags, kpidNumErrors, kpidTailSize}) {

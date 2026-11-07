@@ -24,6 +24,7 @@ pub struct SetupPackage<'a> {
 }
 
 pub fn open(data: &[u8]) -> Result<SetupPackage<'_>, String> {
+    let _policy = crate::machine_policy::native("setup package parser")?;
     let pe = pe::parse(data)?;
 
     let search_from = pe.overlay_offset.saturating_sub(64);
@@ -83,10 +84,12 @@ pub fn open(data: &[u8]) -> Result<SetupPackage<'_>, String> {
 }
 
 pub fn extract_payload(pkg: &SetupPackage<'_>, dest: &str) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("setup package parser")?;
     crate::extract::sevenz(&pkg.archive, pkg.data_sevenz(), dest)
 }
 
 pub fn extract_ui(pkg: &SetupPackage<'_>, dest: &str) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("setup package parser")?;
     crate::extract::zip(pkg.data, pkg.zip_offset, &pkg.ui_entries, dest)
 }
 

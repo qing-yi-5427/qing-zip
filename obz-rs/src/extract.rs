@@ -102,6 +102,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub fn sevenz(archive: &Archive, data: &[u8], dest: &str) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("native archive extraction")?;
     let paths = archive
         .entries
         .iter()
@@ -141,6 +142,7 @@ pub fn sevenz(archive: &Archive, data: &[u8], dest: &str) -> Result<usize, Strin
 }
 
 pub fn zip(data: &[u8], base: usize, entries: &[ZipEntry], dest: &str) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("native archive extraction")?;
     let paths = entries
         .iter()
         .map(|e| relative_path(&e.name))

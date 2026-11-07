@@ -45,6 +45,7 @@ static EXPORT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(PartialEq, Eq)]
 struct Identity {
+    format_policy: String,
     path: PathBuf,
     len: u64,
     modified: u64,
@@ -137,6 +138,7 @@ fn source(path: &str, options: &EngineOptions) -> Result<(File, Identity), Strin
         || PathBuf::from(format!("{}.001", path.display())).exists()
         || PathBuf::from(format!("{}.002", path.display())).exists();
     let identity = Identity {
+        format_policy: obz_core::machine_policy::scope().cache_token().to_owned(),
         path,
         len: meta.len(),
         modified: meta.last_write_time(),
@@ -254,6 +256,7 @@ fn bytes_for(
     limit: u64,
     epoch: u64,
 ) -> Result<Vec<u8>, String> {
+    let policy = obz_core::machine_policy::scope();
     if EPOCH.load(Ordering::SeqCst) != epoch {
         return Err("预览已取消".into());
     }
@@ -276,6 +279,8 @@ fn bytes_for(
         .as_ref()
         .is_none_or(|cache| cache.identity != identity)
     {
+        // Release the old plaintext even when listing under the new policy fails.
+        guard.take();
         let entries = operations::list_archive(path, options)?;
         if entries.len() > 100_000 {
             return Err("归档条目过多，不能进行预览".into());
@@ -309,6 +314,7 @@ fn bytes_for(
         let bytes = item.1.clone();
         cache.raw.push_back(item);
         if bytes.len() as u64 > limit { return Err("此文件超过预览限制，请解压后查看".into()); }
+        policy.validate_cached_access()?;
         return Ok(bytes);
     }
     let total = cache
@@ -372,6 +378,7 @@ fn bytes_for(
             break;
         }
     }
+    policy.validate_cached_access()?;
     cache.raw_bytes += bytes.len();
     cache.raw.push_back((name.into(), bytes.clone()));
     Ok(bytes)
@@ -539,6 +546,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 #[derive(Serialize)]
 pub struct Preview {
+    format_policy: String,
     kind: String,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,7 +569,9 @@ fn preview_inner(
     text_encoding: Option<&str>,
     epoch: u64,
 ) -> Result<Preview, String> {
+    let policy = obz_core::machine_policy::scope();
     let mut result = Preview {
+        format_policy: policy.cache_token().to_owned(),
         kind: kind.into(),
         name: name.into(),
         text: None,
@@ -596,8 +606,14 @@ fn preview_inner(
         }
         _ => return Err("不支持的预览方式".into()),
     }
+    policy.validate_cached_access()?;
     Ok(result)
 }
+#[tauri::command]
+pub fn preview_policy_token() -> String {
+    obz_core::machine_policy::scope().cache_token().to_owned()
+}
+
 #[tauri::command]
 pub async fn preview_entry(
     path: String,

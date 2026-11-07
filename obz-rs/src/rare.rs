@@ -304,6 +304,7 @@ fn pma(path: &str, stage: Option<&Path>, o: &EngineOptions) -> Result<Vec<Entry>
     Ok(entries)
 }
 pub fn list(path: &str, o: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("rare archive adapter")?;
     if is_disc(path) {
         let (_temp, iso) = disc_iso(path, o)?;
         return engine::list(&iso, o);
@@ -368,6 +369,7 @@ fn materialize(path: &str, o: &EngineOptions) -> Result<(tempfile::TempDir, Vec<
     Ok((stage, entries))
 }
 pub fn test(path: &str, o: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("rare archive adapter")?;
     if is_disc(path) {
         let (_temp, iso) = disc_iso(path, o)?;
         return engine::test(&iso, o);
@@ -376,6 +378,7 @@ pub fn test(path: &str, o: &EngineOptions) -> Result<(), String> {
     materialize(path, o).map(|_| ())
 }
 pub fn extract(path: &str, dest: &str, o: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("rare archive adapter")?;
     if is_disc(path) {
         let (_temp, iso) = disc_iso(path, o)?;
         return engine::extract(&iso, dest, o);
@@ -438,6 +441,7 @@ pub fn extract(path: &str, dest: &str, o: &EngineOptions) -> Result<usize, Strin
     Ok(count)
 }
 pub fn preview(path: &str, name: &str, o: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("rare archive adapter")?;
     if is_disc(path) {
         let (_temp, iso) = disc_iso(path, o)?;
         return engine::preview(&iso, name, o);

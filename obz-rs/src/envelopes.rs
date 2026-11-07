@@ -346,6 +346,7 @@ fn prepare(path: &str, opts: &EngineOptions) -> Result<Prepared, String> {
     Ok(Prepared { _temp: temp, items })
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::native("stream envelope adapter")?;
     check(opts)?;
     if kind(path)? == "AES Crypt" && opts.password.is_none() {
         let mut f = File::open(path).map_err(|e| e.to_string())?;
@@ -366,9 +367,11 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
         .collect())
 }
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::native("stream envelope adapter")?;
     prepare(path, opts).map(|_| ())
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::native("stream envelope adapter")?;
     let p = prepare(path, opts)?;
     let (e, file) = p
         .items
@@ -381,6 +384,7 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     fs::read(file).map_err(|e| e.to_string())
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::native("stream envelope adapter")?;
     let p = prepare(path, opts)?;
     let chosen: Vec<_> = p
         .items

@@ -16,6 +16,7 @@ pub(crate) fn preview(
     opts: &EngineOptions,
     limit: u64,
 ) -> Result<Vec<u8>, String> {
+    let policy = crate::machine_policy::scope();
     let control = opts.control.clone().unwrap_or_default();
     control.check()?;
     let mut bytes = Vec::new();
@@ -133,6 +134,7 @@ pub(crate) fn preview(
         ));
     }
     control.check()?;
+    policy.unchanged()?;
     Ok(bytes)
 }
 
@@ -146,6 +148,7 @@ pub(crate) fn decode_native(
     limit: Option<u64>,
     emit: &mut dyn FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<bool, String> {
+    if crate::machine_policy::scope().restricted() { return Ok(false); }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         decode_native_inner(path, format, opts, limit, emit)
     }))

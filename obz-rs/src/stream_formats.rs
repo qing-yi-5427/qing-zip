@@ -362,6 +362,8 @@ fn copy_item(
     Ok(())
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return crate::engine::list(path, opts); }
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::list(path, opts); }
     guarded(|| {
         Ok(open(path, opts)?
@@ -372,6 +374,8 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     })
 }
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return crate::engine::test(path, opts); }
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::test(path, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
@@ -384,6 +388,8 @@ pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return crate::engine::preview(path, name, opts); }
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::preview(path, name, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
@@ -401,6 +407,8 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     })
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return crate::engine::extract(path, dest, opts); }
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::extract(path, dest, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;

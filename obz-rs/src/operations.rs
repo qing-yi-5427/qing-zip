@@ -32,6 +32,8 @@ pub fn vault_path() -> Result<PathBuf, String> {
 }
 
 pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return engine::list(path, opts); }
     if crate::rare::supports(path){return crate::rare::list(path,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::list(path,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::list(path,opts);}
@@ -39,6 +41,8 @@ pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,St
     if crate::korean::is_supported(path){crate::korean::list(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::list(path,opts)}else{engine::list(path,opts)}
 }
 pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return engine::test(path, opts); }
     if crate::rare::supports(path){return crate::rare::test(path,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::test(path,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::test(path,opts);}
@@ -46,6 +50,8 @@ pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     if crate::korean::is_supported(path){crate::korean::test(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::test(path,opts)}else{engine::test(path,opts)}
 }
 pub fn extract_archive(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return engine::extract(path, dest, opts); }
     let mut inherited = opts.clone();
     if inherited.zone_identifier.is_none() { inherited.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(path))?); }
     let opts = &inherited;
@@ -56,6 +62,8 @@ pub fn extract_archive(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,St
     if crate::korean::is_supported(path){crate::korean::extract(path,dest,opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,opts)}else{engine::extract(path,dest,opts)}
 }
 pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,String>{
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return engine::preview(path, name, opts); }
     if crate::rare::supports(path){return crate::rare::preview(path,name,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::preview(path,name,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::preview(path,name,opts);}
@@ -65,12 +73,21 @@ pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,
 
 /// No shell commands or arbitrary application execution are accepted here.
 pub fn execute(mut r: Request) -> Result<Value, String> {
+    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
+    let policy = archive_operation.then(crate::machine_policy::scope);
+    let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
         if r.options.password.is_some() { return Err("choose password or password_id, not both".into()); }
         r.options.password = Some(services::Vault::open(vault_path()?)?.get(id)?);
     }
     match r.operation.as_str() {
         "capabilities" => {
+            if restricted {
+                let mut caps = engine::capabilities();
+                caps.read_formats.clear(); caps.write_formats.clear();
+                caps.limitations = vec!["Archive handlers and codecs are controlled by the NanaZip machine policy. The bundled official engine checks the actual format and nested methods.".into()];
+                return Ok(json!({"engine":caps, "services":["password_vault","image_preview","file_checksums","shell_menu"], "machine_format_policy":true, "schema_version":1}));
+            }
             let mut caps=engine::capabilities(); caps.write_formats.push("iso (Windows IMAPI2FS)".into());
             caps.read_formats.extend(["egg","alz","ace","asar","br","lz4","aes","lz","uu","uue","xxe","pma","zpaq","daa","isz"].map(str::to_string));
             caps.write_formats.push("lzh (LH7)".into());
@@ -107,7 +124,7 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             Ok(json!({"outputs": engine::create(&r.path, &r.inputs, format, &r.options)?}))
         },
         "add" | "delete" | "rename" => {
-            if crate::installer::recognize(&r.path)?.is_some() || crate::korean::is_supported(&r.path) || crate::legacy::is_supported(&r.path) || crate::stream_formats::is_supported(&r.path) || crate::envelopes::is_supported(&r.path) || crate::rare::supports(&r.path) {
+            if !restricted && (crate::installer::recognize(&r.path)?.is_some() || crate::korean::is_supported(&r.path) || crate::legacy::is_supported(&r.path) || crate::stream_formats::is_supported(&r.path) || crate::envelopes::is_supported(&r.path) || crate::rare::supports(&r.path)) {
                 return Err("this archive type is read-only; extract its files and create a new archive".into());
             }
             engine::update(&r.path, &r.operation, &r.inputs, &r.options)?;
@@ -131,6 +148,7 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
         },
         "vault-delete" => { services::Vault::open(vault_path()?)?.remove(&r.name)?; Ok(json!({"removed":r.name})) },
         "recover" => {
+            if restricted { return Err("Password recovery is unavailable under NanaZip machine format policy because an engine denial cannot safely be classified as a wrong password".into()); }
             let mut probe=r.options.clone(); probe.password=None;
             match list_archive(&r.path,&probe) {
                 Ok(entries) if !entries.iter().any(|e|e.encrypted) => return Err("archive has no encrypted entries".into()),

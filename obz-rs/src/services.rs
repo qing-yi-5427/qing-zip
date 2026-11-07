@@ -733,6 +733,7 @@ pub fn repair_zip_with_options(
     password: Option<&str>,
     codepage: Option<u32>,
 ) -> Result<RepairReport, String> {
+    let _policy = crate::machine_policy::native("independent archive service")?;
     if max_bytes == 0 {
         return Err("repair byte limit must be positive".into());
     }
@@ -1197,6 +1198,7 @@ pub fn create_iso_with_cancel(
     output: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
+    let _policy = crate::machine_policy::native("independent archive service")?;
     if !cfg!(windows) {
         return Err("ISO creation requires Windows IMAPI2FS".into());
     }

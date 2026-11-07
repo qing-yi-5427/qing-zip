@@ -143,6 +143,12 @@ pub struct Capabilities {
 }
 
 pub fn executable() -> Result<PathBuf, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() { return policy.official_executable(); }
+    unrestricted_executable()
+}
+
+fn unrestricted_executable() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -173,7 +179,7 @@ pub(crate) fn run_hash(args: &[String], opts: &EngineOptions) -> Result<Vec<u8>,
     if !matches!(args.first().map(String::as_str), Some("h" | "i")) {
         return Err("hash or codec discovery command required".into());
     }
-    run(args, None, opts, None)
+    run_program(unrestricted_executable()?, args, None, opts, None, false)
 }
 
 fn sfx_stub() -> Result<PathBuf, String> {
@@ -299,6 +305,13 @@ fn run_program(
     allow_zealfs: bool,
 ) -> Result<Vec<u8>, String> {
     let _timer = PhaseTimer::new("engine-process");
+    let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
+    let policy = archive_command.then(crate::machine_policy::scope);
+    if let Some(policy) = &policy {
+        if policy.restricted() && program != policy.official_executable()? {
+            return Err("machine format policy requires the verified NanaZip executable".into());
+        }
+    }
     let ctl = control(opts);
     ctl.check()?;
     if let Some(password) = &opts.password { crate::engine_password::validate(password)?; }
@@ -310,7 +323,7 @@ fn run_program(
         None => logs.reopen().map_err(|e| e.to_string())?,
     };
     let mut guarded_args = args.to_vec();
-    if !allow_zealfs && has_zealfs_handler(&program)
+    if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
         && matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) {
         guarded_args.insert(1, "-stxZealFS".into());
     }
@@ -330,6 +343,8 @@ fn run_program(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot launch archive engine: {e}"))?;
+    #[cfg(test)]
+    crate::machine_policy::child_started(cmd.get_program(), args.first().map(String::as_str).unwrap_or(""));
     let password_input = match opts.password.as_deref() {
         Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
             Ok(input) => Some(input),
@@ -422,6 +437,7 @@ fn run_program(
         ));
     }
     password_result?;
+    if let Some(policy) = &policy { policy.unchanged()?; }
     if capture {
         Ok(bytes)
     } else {
@@ -537,7 +553,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
     ctl.set("listing", None, "Reading archive directory");
     let raw_format = crate::stream_formats::raw_format(path);
     if raw_format.is_some() { crate::stream_formats::validate_raw_options(opts)?; }
-    let probe = if raw_format.is_none() && has_zealfs_handler(&executable()?) {
+    let probe = if raw_format.is_none() && crate::machine_policy::scope().handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
         Some(crate::zealfs_guard::SourceProbe::read(source)?)
     } else { None };
     let candidate = probe.as_ref().is_some_and(|p| p.is_candidate());
@@ -2023,6 +2039,7 @@ fn preflight_output_targets(
     Ok(())
 }
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let policy = crate::machine_policy::scope();
     let ctl = control(opts);
     ctl.check()?;
     // Keep both the source and its directory namespace fixed from the typed
@@ -2031,8 +2048,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let mut source_guard = crate::engine_stream::pin(&source_path)?;
     #[cfg(windows)]
     let _volume_guards = crate::engine_stream::pin_numbered_7z_parts(&source_path)?;
-    let mut memory_source = memory_archive_source(path, opts);
-    let mut selected_source = if !opts.selected.is_empty()
+    let mut memory_source = if policy.restricted() { None } else { memory_archive_source(path, opts) };
+    let mut selected_source = if !policy.restricted() && !opts.selected.is_empty()
         && Path::new(path)
             .extension()
             .is_some_and(|s| s.eq_ignore_ascii_case("zip"))
@@ -2142,7 +2159,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             "Decoding archive into temporary storage",
         );
         #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
-        let split_streamed = !opts.selected.is_empty() && !_volume_guards.is_empty()
+        let split_streamed = !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty()
             && selected_worker::decode(path, &source_guard, &_volume_guards, &all_entries,
                 opts, stage.path(), stage_guards, &ctl)?;
         #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
@@ -3396,17 +3413,19 @@ pub fn extract_with_control(
     extract(path, dest, &o)
 }
 fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let policy = crate::machine_policy::scope();
     let ctl = control(opts);
     ctl.check()?;
     ctl.set("testing", None, "Checking archive integrity");
     let mut a = base("t", opts)?;
     let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
-    let probe = if crate::stream_formats::raw_format(path).is_none() && has_zealfs_handler(&executable()?) {
+    let probe = if crate::stream_formats::raw_format(path).is_none() && policy.handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
         Some(crate::zealfs_guard::SourceProbe::read(&mut *source_guard)?)
     } else { None };
     if let Some(format) = crate::stream_formats::raw_format(path) {
         crate::stream_formats::validate_raw_options(opts)?;
         let source = absolute(path)?;
+        if policy.restricted() { list_raw_with_source(path, opts, &mut source_guard)?; }
         crate::engine_stream::validate_frame_bounds(&source, format, opts)?;
         if crate::engine_stream::decode_native(&source, format, opts, None, &mut |_| Ok(()))? {
             ctl.set("complete", Some(100), "Archive integrity verified");
@@ -3782,6 +3801,10 @@ pub fn create(
     format: &str,
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() && matches!(format, "zipx" | "sfx" | "iso" | "lzh") {
+        return Err(format!("{format} creation uses a separate writer and is unavailable under NanaZip machine format policy"));
+    }
     let _timer = PhaseTimer::new("create-total");
     let raw_format = crate::stream_formats::canonical_raw_format(format);
     let format = raw_format.unwrap_or(format);
@@ -3919,6 +3942,7 @@ pub fn update(
     inputs: &[String],
     opts: &EngineOptions,
 ) -> Result<(), String> {
+    let _policy = crate::machine_policy::scope();
     if opts.volume_bytes.is_some() {
         return Err("updating split archives is unsupported".into());
     }
@@ -4027,6 +4051,7 @@ pub fn update_with_control(
 /// Preview an independent stream with a caller-selected bound (at most 32 MiB).
 /// The decoder is stopped at limit+1 bytes; unknown size never implies unlimited IO.
 pub fn preview_raw_stream(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::scope();
     if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid raw stream preview limit".into()); }
     let format=crate::stream_formats::raw_format(path).ok_or("raw stream format required")?;
     crate::stream_formats::validate_raw_options(opts)?;
@@ -4124,6 +4149,7 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
     Ok((temp, inner.display().to_string()))
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
+    let _policy = crate::machine_policy::scope();
     if compound_tar(path) {
         let (_temp, inner) = unpack_tar(path, opts)?;
         list_raw(&inner, opts)
@@ -4132,6 +4158,7 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     }
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    let _policy = crate::machine_policy::scope();
     let mut marked;
     let opts = if opts.zone_identifier.is_none() {
         marked = opts.clone();
@@ -4149,6 +4176,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
 }
 
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
+    let _policy = crate::machine_policy::scope();
     test_raw(path, opts)?;
     if compound_tar(path) {
         let (_temp, inner) = unpack_tar(path, opts)?;
@@ -4157,6 +4185,7 @@ pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     Ok(())
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
+    let _policy = crate::machine_policy::scope();
     if compound_tar(path) {
         let (_temp, inner) = unpack_tar(path, opts)?;
         preview_raw(&inner, name, opts)

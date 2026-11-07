@@ -60,6 +60,8 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     match args[0].as_str() {
         "setup" => {
+            let policy = obz_core::machine_policy::scope();
+            if policy.restricted() { return Err("Setup-package inspection uses an independent parser and is unavailable under NanaZip machine format policy".into()); }
             let rest = &args[1..];
             match rest.first().map(|s| s.as_str()) {
                 Some("info") => cmd_setup_info(&rest[1..]),
