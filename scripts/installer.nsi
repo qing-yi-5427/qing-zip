@@ -8,13 +8,20 @@ Unicode true
 !ifndef STAGING
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"
 !endif
-Name "qing-zip"
+!ifdef ARM64_PAYLOAD
+!define PRODUCT_KEY "qing-zip-arm64"
+!define PRODUCT_LABEL "qing-zip (ARM64)"
+!else
+!define PRODUCT_KEY "qing-zip"
+!define PRODUCT_LABEL "qing-zip"
+!endif
+Name "${PRODUCT_LABEL}"
 !ifndef OUTPUT
 !define OUTPUT "..\dist\qing-zip-${VERSION}-setup.exe"
 !endif
 OutFile "${OUTPUT}"
-InstallDir "$LOCALAPPDATA\Programs\qing-zip"
-InstallDirRegKey HKCU "Software\qing-zip\Installer" "InstallDir"
+InstallDir "$LOCALAPPDATA\Programs\${PRODUCT_KEY}"
+InstallDirRegKey HKCU "Software\${PRODUCT_KEY}\Installer" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
@@ -41,10 +48,19 @@ VIAddVersionKey "LegalCopyright" "qing-zip contributors"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 Function .onInit
+!ifdef ARM64_PAYLOAD
+ ${IfNot} ${IsNativeARM64}
+  SetErrorLevel 1633
+  IfSilent +2
+  MessageBox MB_ICONSTOP "This build requires Windows on ARM64."
+  Abort
+ ${EndIf}
+!else
  ${IfNot} ${RunningX64}
   MessageBox MB_ICONSTOP "qing-zip 需要 64 位 Windows。"
   Abort
  ${EndIf}
+!endif
  SetShellVarContext current
  SetRegView 64
 FunctionEnd
@@ -57,22 +73,22 @@ Section "qing-zip（必需）" Main
  SetOutPath "$INSTDIR"
  File /r "${STAGING}\*"
  WriteUninstaller "$INSTDIR\Uninstall.exe"
- CreateDirectory "$SMPROGRAMS\qing-zip"
- CreateShortcut "$SMPROGRAMS\qing-zip\qing-zip.lnk" "$INSTDIR\qing-zip.exe"
- CreateShortcut "$SMPROGRAMS\qing-zip\卸载.lnk" "$INSTDIR\Uninstall.exe"
- WriteRegStr HKCU "Software\qing-zip\Installer" "InstallDir" "$INSTDIR"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "DisplayName" "qing-zip"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "DisplayVersion" "${VERSION}"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "DisplayIcon" "$INSTDIR\qing-zip.exe,0"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "InstallLocation" "$INSTDIR"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "URLInfoAbout" "https://github.com/qing-yi-5427/qing-zip"
- WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "NoModify" 1
- WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip" "NoRepair" 1
+ CreateDirectory "$SMPROGRAMS\${PRODUCT_KEY}"
+ CreateShortcut "$SMPROGRAMS\${PRODUCT_KEY}\qing-zip.lnk" "$INSTDIR\qing-zip.exe"
+ CreateShortcut "$SMPROGRAMS\${PRODUCT_KEY}\卸载.lnk" "$INSTDIR\Uninstall.exe"
+ WriteRegStr HKCU "Software\${PRODUCT_KEY}\Installer" "InstallDir" "$INSTDIR"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayName" "${PRODUCT_LABEL}"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayVersion" "${VERSION}"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayIcon" "$INSTDIR\qing-zip.exe,0"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "InstallLocation" "$INSTDIR"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "URLInfoAbout" "https://github.com/qing-yi-5427/qing-zip"
+ WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "NoModify" 1
+ WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "NoRepair" 1
 SectionEnd
 Section /o "桌面快捷方式" Desktop
- CreateShortcut "$DESKTOP\qing-zip.lnk" "$INSTDIR\qing-zip.exe"
+ CreateShortcut "$DESKTOP\${PRODUCT_KEY}.lnk" "$INSTDIR\qing-zip.exe"
 SectionEnd
 Section /o "资源管理器右键入口" Shell
  nsExec::ExecToLog '$\"$INSTDIR\obz.exe$\" shell-enable $\"$INSTDIR\qing-zip.exe$\"'
@@ -94,10 +110,10 @@ Section "Uninstall"
  !include "uninstall-files.nsh"
  Delete "$INSTDIR\Uninstall.exe"
  RMDir "$INSTDIR"
- Delete "$SMPROGRAMS\qing-zip\qing-zip.lnk"
- Delete "$SMPROGRAMS\qing-zip\卸载.lnk"
- RMDir "$SMPROGRAMS\qing-zip"
- Delete "$DESKTOP\qing-zip.lnk"
- DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\qing-zip"
- DeleteRegKey HKCU "Software\qing-zip\Installer"
+ Delete "$SMPROGRAMS\${PRODUCT_KEY}\qing-zip.lnk"
+ Delete "$SMPROGRAMS\${PRODUCT_KEY}\卸载.lnk"
+ RMDir "$SMPROGRAMS\${PRODUCT_KEY}"
+ Delete "$DESKTOP\${PRODUCT_KEY}.lnk"
+ DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}"
+ DeleteRegKey HKCU "Software\${PRODUCT_KEY}\Installer"
 SectionEnd

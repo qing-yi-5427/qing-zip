@@ -169,7 +169,6 @@ fn unrestricted_executable() -> Result<PathBuf, String> {
     let adjacent = current.as_deref().and_then(Path::parent);
     for dir in adjacent.into_iter().chain(std::iter::once(workspace)) {
         paths.push(dir.join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe"));
-        #[cfg(not(target_arch = "aarch64"))]
         paths.push(dir.join("runtime/7zip/7z.exe"));
     }
     if let Some(p) = std::env::var_os("ProgramFiles") {
@@ -219,8 +218,8 @@ fn sfx_stub() -> Result<PathBuf, String> {
     paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/7zip/7z.sfx"));
     paths
         .into_iter()
-        .find(|p| p.is_file())
-        .ok_or("7z.sfx runtime missing".into())
+        .find(|p| usable_engine(p))
+        .ok_or("matching 7z.sfx runtime missing".into())
 }
 pub fn capabilities() -> Capabilities {
     let executable = executable();

@@ -88,7 +88,9 @@ def inspect(path: Path) -> dict:
 
 def hardened_issues(result: dict, expected_machine: str | None = None) -> list[str]:
     """Gate actual input images, rather than trusting compiler flag strings."""
-    required = ["aslr", "base_relocations", "dep", "cfg", "cet_compatible"]
+    required = ["aslr", "base_relocations", "dep", "cfg"]
+    if result["machine"] != "0xaa64" or expected_machine != "0xaa64":
+        required.append("cet_compatible")
     if result["bits"] == 64:
         required.append("high_entropy_va")
     issues = [f"missing {key}" for key in required if not result[key]]

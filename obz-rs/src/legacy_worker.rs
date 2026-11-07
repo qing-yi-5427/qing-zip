@@ -11,6 +11,13 @@ use std::{
 fn runtime() -> Result<PathBuf, String> {
     let mut roots = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent().filter(|p| p.join("runtime").is_dir()) {
+            let python = dir.join("runtime/python");
+            if python.join("python.exe").is_file() && python.join("ace_worker.py").is_file() {
+                return Ok(python);
+            }
+            return Err("bundled ACE2 Python runtime is incomplete".into());
+        }
         for p in exe.ancestors().skip(1).take(4) {
             roots.push(p.join("runtime/python"));
         }
@@ -124,7 +131,7 @@ fn run(request: serde_json::Value, opts: &EngineOptions) -> Result<serde_json::V
     let logs = tempfile::tempfile().map_err(|e| e.to_string())?;
     let errors = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(root.join("python.exe"));
-    cmd.arg("-I")
+    cmd.args(["-I", "-B"])
         .arg(root.join("ace_worker.py"))
         .current_dir(&root)
         .stdin(Stdio::piped())

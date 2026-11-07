@@ -348,7 +348,7 @@ mod tests {
         fs::File::create(&large).unwrap().set_len(64 * 1024 * 1024).unwrap();
         let big_zip = temp.path().join("large.zip");
         let nana = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../runtime/nanazip/NanaZip.Universal.Console.exe");
+            .join("..").join(obz_core::engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
         let created = std::process::Command::new(nana).current_dir(temp.path())
             .args(["a", "-tzip", "-mx1"]).arg(&big_zip).arg("large.bin").output().unwrap();
         assert!(created.status.success());
