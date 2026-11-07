@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -517,14 +518,27 @@ void archive_health(IInArchive *arc) {
     if (!text(v.v, true).empty()) fail("archive reports diagnostic text");
   }
 }
+// The official 7z handler renders a single LZMA2 coder as LZMA2:19,
+// LZMA2:768k, etc. A space separates coders in a filter/encryption chain.
+// The decoder itself owns dictionary properties and stream validation.
+bool single_lzma2(std::wstring_view method) {
+  constexpr std::wstring_view prefix = L"LZMA2:";
+  if (!method.starts_with(prefix)) return false;
+  method.remove_prefix(prefix.size());
+  if (method.empty() || method.size() > 5) return false;
+  if (method.back() == L'k' || method.back() == L'm') method.remove_suffix(1);
+  return !method.empty() && std::all_of(method.begin(), method.end(),
+      [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+}
 void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
   archive_health(arc);
   { Variant v; exact(arc->GetArchiveProperty(kpidOffset, &v.v), "archive offset");
     if (number(v.v, true)) fail("embedded archive is outside supported method set"); }
   { Variant v; exact(arc->GetArchiveProperty(kpidPhySize, &v.v), "archive physical size");
     if (number(v.v) != source_size) fail("fixed volumes do not exactly contain archive"); }
+  bool solid = false, has_copy = false, has_lzma2 = false;
   { Variant v; exact(arc->GetArchiveProperty(kpidSolid, &v.v), "archive solid flag");
-    if (boolean(v.v, false)) throw UnsupportedLayout{"solid layout"}; }
+    solid = boolean(v.v, false); }
   UInt32 n = 0; exact(arc->GetNumberOfItems(&n), "manifest item count");
   if (!n || n > MAX_ITEMS) fail("manifest size limit");
   state.items.reserve(n); uint64_t name_units = 0, total = 0;
@@ -550,8 +564,9 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
       if (v.v.vt != VT_EMPTY) throw UnsupportedLayout{"archived security descriptor"}; }
     { Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
-      if (!method.empty() && method != L"Copy") fail("method outside supported method set");
-      if (item.value.size && method != L"Copy") fail("missing Copy method"); }
+      if (method == L"Copy") has_copy = true;
+      else if (single_lzma2(method)) has_lzma2 = true;
+      else if (item.value.size || !method.empty()) fail("unexpected 7z item method"); }
     { Variant v; exact(arc->GetProperty(i, kpidAttrib, &v.v), "item attributes");
       if (v.v.vt != VT_EMPTY) {
         if (v.v.vt != VT_UI4) fail("invalid attributes type");
@@ -569,6 +584,10 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
     if (item.value.size > UINT64_MAX - total) fail("total size overflow"); total += item.value.size;
     state.items.push_back(std::move(item));
   }
+  // Only positive layout identifications may defer to the existing decoder.
+  // Decide before the manifest ACK, granting output handles, or extracting.
+  if ((solid && !has_lzma2) || (has_copy && has_lzma2))
+    throw UnsupportedLayout{"unsupported 7z method combination"};
   state.total = total;
   state.gotten.resize(n); state.prepared.resize(n); state.done.resize(n); state.bytes.resize(n);
   std::vector<QzSelectedItem> values; values.reserve(n);

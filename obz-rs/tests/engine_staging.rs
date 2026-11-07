@@ -107,6 +107,136 @@ fn cancel_decode_does_not_publish_destination() {
 }
 
 #[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+fn extract_split(archive: &Path, dest: &Path, selected: &[&str]) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_obz"));
+    command
+        .env("OPEN_ARCHIVE_PROFILE", "1")
+        .arg("extract")
+        .arg(archive)
+        .arg(dest);
+    for name in selected {
+        command.args(["--include", name]);
+    }
+    command.output().unwrap()
+}
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+fn require_worker(result: &std::process::Output, success: bool, fields: &[&str]) {
+    let diagnostics = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.success(), success, "{diagnostics}");
+    let mut lines = diagnostics
+        .lines()
+        .filter(|l| l.starts_with("OA_SELECTED_WORKER "));
+    let receipt = lines.next().expect(&diagnostics);
+    assert!(lines.next().is_none(), "{diagnostics}");
+    for field in fields {
+        assert!(
+            receipt.split_whitespace().any(|word| word == *field),
+            "{receipt}"
+        );
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
+#[test]
+fn split_lzma2_verifies_all_blocks_and_rejects_unselected_crc() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("empty-dir")).unwrap();
+    let keep = b"selected data\n".repeat(1000);
+    let middle = b"second selected item\n".repeat(1000);
+    let sibling = b"not selected\n".repeat(1000);
+    let mut state = 12345u32;
+    let discarded: Vec<u8> = (0..64 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    for (name, data) in [
+        ("01.bin", &keep),
+        ("02.bin", &sibling),
+        ("03.bin", &middle),
+        ("04.bin", &discarded),
+    ] {
+        fs::write(input.join(name), data).unwrap();
+    }
+    for solid in ["off", "on", "2f"] {
+        let run = temp.path().join(solid);
+        fs::create_dir(&run).unwrap();
+        let archive = run.join("fixture.7z");
+        let created = std::process::Command::new(engine::executable().unwrap())
+            .current_dir(&input)
+            .args(["a", "-t7z", "-m0=LZMA2", "-mmt=1", "-mhc=off"])
+            .arg(format!("-ms={solid}"))
+            .arg(&archive)
+            .arg(".")
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "{}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let mut bytes = fs::read(archive).unwrap();
+        let volume = |index: usize| run.join(format!("test.7z.{:03}", index + 1));
+        let split = |data: &[u8]| {
+            for (index, chunk) in data.chunks(4096).enumerate() {
+                fs::write(volume(index), chunk).unwrap();
+            }
+        };
+        split(&bytes);
+        let dest = run.join("valid");
+        let selected = ["01.bin", "03.bin", "empty-dir"];
+        let ok = extract_split(&volume(0), &dest, &selected);
+        require_worker(
+            &ok,
+            true,
+            &[
+                "status=ok",
+                "completed=5",
+                &format!("selected={}", keep.len() + middle.len()),
+                &format!("discarded={}", sibling.len() + discarded.len()),
+            ],
+        );
+        assert_eq!(fs::read(dest.join("01.bin")).unwrap(), keep);
+        assert_eq!(fs::read(dest.join("03.bin")).unwrap(), middle);
+        assert!(dest.join("empty-dir").is_dir());
+        assert_eq!(fs::read_dir(dest).unwrap().count(), 3);
+
+        // -mhc=off gives this test a plain NextHeader. Change only the known
+        // unselected item's CRC and repair the envelope CRCs. All packed bytes
+        // remain valid, so detecting this failure requires checking that item.
+        let header =
+            32 + usize::try_from(u64::from_le_bytes(bytes[12..20].try_into().unwrap())).unwrap();
+        assert_eq!(bytes[header], 1);
+        let crc = crc32fast::hash(&discarded).to_le_bytes();
+        let mut matches = bytes[header..]
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == crc);
+        let offset = matches.next().unwrap().0;
+        assert!(matches.next().is_none());
+        bytes[header + offset] ^= 1;
+        let next_crc = crc32fast::hash(&bytes[header..]).to_le_bytes();
+        bytes[28..32].copy_from_slice(&next_crc);
+        let start_crc = crc32fast::hash(&bytes[12..32]).to_le_bytes();
+        bytes[8..12].copy_from_slice(&start_crc);
+        split(&bytes);
+        let dest = run.join("corrupt");
+        let rejected = extract_split(&volume(0), &dest, &selected);
+        require_worker(
+            &rejected,
+            false,
+            &["status=error", "code=3", "item_errors=1"],
+        );
+        assert!(!dest.exists());
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))]
 #[test]
 fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
     use std::process::Command;
@@ -147,33 +277,12 @@ fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
         fs::write(volume(index + 1), chunk).unwrap();
     }
 
-    let extract = |dest: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_obz"))
-            .env("OPEN_ARCHIVE_PROFILE", "1")
-            .arg("extract")
-            .arg(volume(1))
-            .arg(dest)
-            .args(["--include", "keep.txt"])
-            .output()
-            .unwrap()
-    };
     let destination = temp.path().join("valid");
-    let result = extract(&destination);
-    let diagnostics = String::from_utf8_lossy(&result.stderr);
-    assert!(result.status.success(), "{diagnostics}");
-    let receipt = diagnostics
-        .lines()
-        .find(|line| line.starts_with("OA_SELECTED_WORKER "))
-        .unwrap();
-    assert!(
-        receipt.split_whitespace().any(|s| s == "status=ok"),
-        "{receipt}"
-    );
-    assert!(
-        receipt
-            .split_whitespace()
-            .any(|s| s == format!("discarded={}", discarded.len())),
-        "{receipt}"
+    let result = extract_split(&volume(1), &destination, &["keep.txt"]);
+    require_worker(
+        &result,
+        true,
+        &["status=ok", &format!("discarded={}", discarded.len())],
     );
     assert_eq!(fs::read(destination.join("keep.txt")).unwrap(), keep);
     assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
@@ -185,20 +294,7 @@ fn split_copy_cli_discards_unselected_bytes_and_rejects_their_crc_failure() {
     chunk[offset % volume_size] ^= 0x40;
     fs::write(damaged, chunk).unwrap();
     let destination = temp.path().join("corrupt");
-    let result = extract(&destination);
-    let diagnostics = String::from_utf8_lossy(&result.stderr);
-    assert!(!result.status.success(), "{diagnostics}");
-    let receipt = diagnostics
-        .lines()
-        .find(|line| line.starts_with("OA_SELECTED_WORKER "))
-        .unwrap();
-    assert!(
-        receipt.split_whitespace().any(|s| s == "status=error"),
-        "{receipt}"
-    );
-    assert!(
-        receipt.split_whitespace().any(|s| s == "code=3"),
-        "{receipt}"
-    );
+    let result = extract_split(&volume(1), &destination, &["keep.txt"]);
+    require_worker(&result, false, &["status=error", "code=3"]);
     assert!(!destination.exists());
 }

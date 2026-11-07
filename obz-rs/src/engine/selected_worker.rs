@@ -1,4 +1,4 @@
-//! Selected extraction for a standard split, non-solid 7z using Copy. A fresh
+//! Selected extraction for split Copy or LZMA2 7z archives. A fresh
 //! child reads fixed source handles and writes parent-created private files.
 use super::*;
 use sha2::{Digest, Sha256};
@@ -146,6 +146,16 @@ fn manifest_fits(entries: &[Entry]) -> bool {
     true
 }
 
+// Match a single LZMA2 coder in the official technical listing. The worker
+// independently checks the same-object manifest before granting output handles.
+fn single_lzma2(method: &str) -> bool {
+    let Some(dictionary) = method.strip_prefix("LZMA2:") else {
+        return false;
+    };
+    let digits = dictionary.strip_suffix(['k', 'm']).unwrap_or(dictionary);
+    dictionary.len() <= 5 && !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit())
+}
+
 fn eligible(
     first: &File,
     parts: &[File],
@@ -169,7 +179,10 @@ fn eligible(
                 && !entry.encrypted
                 && (entry.is_dir
                     || entry.size == 0
-                    || (entry.method == "Copy" && entry.packed_size == entry.size))
+                    || (entry.method == "Copy" && entry.packed_size == entry.size)
+                    // For a solid folder only its first member reports a packed
+                    // size. Decoded lengths and CRCs are validated per member.
+                    || single_lzma2(&entry.method))
         })
         || entries
             .iter()
