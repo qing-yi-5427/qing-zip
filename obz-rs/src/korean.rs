@@ -381,9 +381,10 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let _policy = crate::machine_policy::native("EGG/ALZ adapter")?;
     let mut a = open(path, opts)?;
     let es = entries(&a)?;
+    let selection = engine::Selection::new(&opts.selected);
     let chosen: Vec<_> = es
         .into_iter()
-        .filter(|e| engine::selected(&e.name, opts))
+        .filter(|e| selection.contains(&e.name))
         .collect();
     if !opts.selected.is_empty() && chosen.is_empty() {
         return Err("selected archive entries were not found".into());

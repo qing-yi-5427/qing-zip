@@ -392,9 +392,10 @@ pub fn extract(path: &str, dest: &str, o: &EngineOptions) -> Result<usize, Strin
     let (stage, entries) = materialize(path, o)?;
     let dest = Path::new(dest);
     engine::no_links(dest)?;
+    let selection = engine::Selection::new(&o.selected);
     let entries: Vec<_> = entries
         .iter()
-        .filter(|e| engine::selected(&e.name, o))
+        .filter(|e| selection.contains(&e.name))
         .collect();
     if !o.selected.is_empty() && entries.is_empty() {
         return Err("selected members not found".into());

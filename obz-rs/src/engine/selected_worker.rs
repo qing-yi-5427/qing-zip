@@ -214,6 +214,7 @@ fn eligible(
     if let Some(password) = &opts.password {
         crate::engine_password::validate(password)?;
     }
+    let selection = Selection::new(&opts.selected);
     if !leaf
         .get(leaf.len().saturating_sub(7)..)
         .is_some_and(|s| s.eq_ignore_ascii_case(".7z.001"))
@@ -245,7 +246,7 @@ fn eligible(
         })
         || entries
             .iter()
-            .filter(|e| !e.is_dir && selected(&e.name, opts))
+            .filter(|e| !e.is_dir && selection.contains(&e.name))
             .count()
             > MAX_OUTPUT_HANDLES
     {
@@ -551,6 +552,7 @@ fn acknowledge(
     for (i, entry) in entries.iter().enumerate() {
         available.insert(entry.name.replace('\\', "/"), i);
     }
+    let selection = Selection::new(&opts.selected);
     let mut members = Vec::with_capacity(entries.len());
     for _ in entries {
         let name = data.wide()?.replace('\\', "/");
@@ -580,7 +582,7 @@ fn acknowledge(
         }
         members.push(Member {
             entry: i,
-            chosen: selected(&entry.name, opts),
+            chosen: selection.contains(&entry.name),
             times,
         });
     }
@@ -733,9 +735,10 @@ fn run(
                 let reason =
                     std::str::from_utf8(data.take(length)?).map_err(|_| "invalid worker reason")?;
                 data.end()?;
+                let selection = Selection::new(&opts.selected);
                 let selected_bytes = entries
                     .iter()
-                    .filter(|e| selected(&e.name, opts))
+                    .filter(|e| selection.contains(&e.name))
                     .map(|e| e.size)
                     .sum::<u64>();
                 let valid = accepted.is_some()

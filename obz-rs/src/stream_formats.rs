@@ -412,10 +412,11 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::extract(path, dest, opts); }
     guarded(|| {
         let mut a = open(path, opts)?;
+        let selection = engine::Selection::new(&opts.selected);
         let chosen: Vec<_> = a
             .items
             .iter()
-            .filter(|i| engine::selected(&i.entry.name, opts))
+            .filter(|i| selection.contains(&i.entry.name))
             .collect();
         if !opts.selected.is_empty() && chosen.is_empty() {
             return Err("selected entries not found".into());

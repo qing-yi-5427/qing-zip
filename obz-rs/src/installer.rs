@@ -196,9 +196,10 @@ pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, S
     let _policy = crate::machine_policy::native("setup package adapter")?;
     check(opts)?;
     let pkg = package(data)?;
+    let selection = engine::Selection::new(&opts.selected);
     let es: Vec<_> = inventory(&pkg)?
         .into_iter()
-        .filter(|e| engine::selected(&e.name, opts))
+        .filter(|e| selection.contains(&e.name))
         .collect();
     if !opts.selected.is_empty() && es.is_empty() {
         return Err("selected installer entries were not found".into());

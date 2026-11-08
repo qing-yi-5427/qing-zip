@@ -825,15 +825,9 @@ pub fn list_with_control(
     o.control = Some(ctl.clone());
     list(path, &o)
 }
-pub(crate) fn selected(name: &str, opts: &EngineOptions) -> bool {
-    opts.selected.is_empty()
-        || opts.selected.iter().any(|s| {
-            name.replace('\\', "/") == s.replace('\\', "/")
-                || name
-                    .replace('\\', "/")
-                    .starts_with(&(s.replace('\\', "/").trim_end_matches('/').to_owned() + "/"))
-        })
-}
+pub(crate) use selection::Selection;
+mod selection;
+
 // Attribute queries avoid opening and closing a handle for every ancestor. Keep
 // ambiguous namespaces and DOS normalization cases on std's metadata path.
 #[cfg(windows)]
@@ -1912,11 +1906,12 @@ fn decode_selected_zip(
         "Verifying archive and staging selected files",
     );
     let mut buffer = vec![0u8; 1024 * 1024];
+    let selection = Selection::new(&opts.selected);
     for (i, key) in names.into_iter().enumerate() {
         ctl.check()?;
         let e = expected[&key];
         let target = root.join(validate_name(&e.name)?);
-        let keep = selected(&e.name, opts);
+        let keep = selection.contains(&e.name);
         let mut output = if keep && !e.is_dir {
             Some(create_staged_output(&target, guards)?)
         } else {
@@ -2071,6 +2066,7 @@ fn decode_memory_zip(
         "Verifying complete archive in bounded memory",
     );
     let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
+    let selection = Selection::new(&opts.selected);
     let mut discard = Vec::new();
     let mut allocated = 0u64;
     for (i, index) in names.into_iter().enumerate() {
@@ -2079,7 +2075,7 @@ fn decode_memory_zip(
         let mut member = archive
             .by_index(i)
             .map_err(|e| format!("ZIP decode: {e}"))?;
-        let keep = !entry.is_dir && selected(&entry.name, opts);
+        let keep = !entry.is_dir && selection.contains(&entry.name);
         let mut data = if keep { Vec::new() } else { std::mem::take(&mut discard) };
         data.clear();
         data.try_reserve_exact(entry.size as usize).map_err(|e| e.to_string())?;
@@ -2348,9 +2344,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         }
     }
     let mut expected = expected_tree(&all_entries)?;
+    let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
         .iter()
-        .filter(|e| selected(&e.name, opts))
+        .filter(|e| selection.contains(&e.name))
         .collect();
     if !opts.selected.is_empty() && entries.is_empty() {
         return Err("selected archive entries were not found".into());

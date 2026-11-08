@@ -386,10 +386,11 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let _policy = crate::machine_policy::native("stream envelope adapter")?;
     let p = prepare(path, opts)?;
+    let selection = engine::Selection::new(&opts.selected);
     let chosen: Vec<_> = p
         .items
         .iter()
-        .filter(|(e, _)| engine::selected(&e.name, opts))
+        .filter(|(e, _)| selection.contains(&e.name))
         .collect();
     if !opts.selected.is_empty() && chosen.is_empty() {
         return Err("selected entries not found".into());

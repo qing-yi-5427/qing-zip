@@ -580,9 +580,10 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         let entries = list(path, opts)?;
+        let selection = engine::Selection::new(&opts.selected);
         let chosen: Vec<_> = entries
             .into_iter()
-            .filter(|e| engine::selected(&e.name, opts))
+            .filter(|e| selection.contains(&e.name))
             .collect();
         if !opts.selected.is_empty() && chosen.is_empty() {
             return Err("selected ACE entries not found".into());

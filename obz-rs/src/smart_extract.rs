@@ -23,10 +23,11 @@ pub fn destination(archive: &str, base: &str, entries: &[Entry], opts: &EngineOp
     let stem=archive_name(archive)?;
     let folder=crate::extract::relative_path(&stem)?;
     let mut already_wrapped=true;
+    let selection = engine::Selection::new(&opts.selected);
     let mut matched=false;
     for entry in entries {
         let safe=engine::validate_name(&entry.name)?;
-        if !engine::selected(&entry.name, opts) { continue; }
+        if !selection.contains(&entry.name) { continue; }
         matched=true;
         let mut parts=safe.components();
         let top=parts.next().ok_or("invalid archive entry")?.as_os_str().to_string_lossy();
