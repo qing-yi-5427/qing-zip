@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64
 use std::{io::{Read, Seek, SeekFrom}, fs::File, process::{Command, Stdio}, time::{Duration, Instant}};
 
 struct Job { control: JobControl, state: Mutex<JobState>, finished: std::sync::Condvar }
-struct JobState { status: String, result: Option<Value>, error: Option<String> }
+struct JobState { status: String, result: Option<Arc<Value>>, error: Option<String> }
 #[derive(Serialize)]
-pub struct Snapshot { id: u64, status: String, progress: Progress, result: Option<Value>, error: Option<String> }
+pub struct Snapshot { id: u64, status: String, progress: Progress, result: Option<Arc<Value>>, error: Option<String> }
 static JOBS: OnceLock<Mutex<BTreeMap<u64, Arc<Job>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 fn registry() -> &'static Mutex<BTreeMap<u64, Arc<Job>>> { JOBS.get_or_init(Default::default) }
@@ -179,7 +179,7 @@ pub(super) fn start_controlled(mut request: Request, recycle_after: bool, contro
         finished(result.is_ok());
         let mut state=job.state.lock().unwrap_or_else(|e|e.into_inner());
         match result {
-            Ok(value)=>{state.status="complete".into();state.result=Some(value);},
+            Ok(value)=>{state.status="complete".into();state.result=Some(Arc::new(value));},
             Err(e)=>{state.status=if job.control.cancelled.load(Ordering::Relaxed){"cancelled"}else{"failed"}.into();state.error=Some(e);}
         }
         job.finished.notify_all();
@@ -237,14 +237,18 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         let worker=job.clone();
         let thread=std::thread::spawn(move||{
             std::thread::sleep(Duration::from_millis(20));
-            let mut state=worker.state.lock().unwrap();state.status="complete".into();state.result=Some(serde_json::json!({"valid":true}));
+            let mut state=worker.state.lock().unwrap();state.status="complete".into();state.result=Some(Arc::new(serde_json::json!({"valid":true})));
             worker.finished.notify_all();
         });
         let start=Instant::now();
         let state=wait_snapshot(&job,1,Duration::from_secs(5)).unwrap();
-        assert_eq!(state.status,"complete");assert_eq!(state.result.unwrap()["valid"],true);
+        assert_eq!(state.status,"complete");
+        assert_eq!(serde_json::to_value(&state).unwrap()["result"],serde_json::json!({"valid":true}));
         assert!(start.elapsed()<Duration::from_secs(2));thread.join().unwrap();
-        let start=Instant::now();assert_eq!(wait_snapshot(&job,1,Duration::from_secs(5)).unwrap().status,"complete");
+        let start=Instant::now();
+        let next=wait_snapshot(&job,1,Duration::from_secs(5)).unwrap();
+        assert_eq!(next.status,"complete");
+        assert!(Arc::ptr_eq(state.result.as_ref().unwrap(), next.result.as_ref().unwrap()));
         assert!(start.elapsed()<Duration::from_secs(2));
     }
     #[test] fn unknown_job_fails(){assert!(operation_status(u64::MAX).is_err());assert!(cancel_operation(u64::MAX).is_err());}
