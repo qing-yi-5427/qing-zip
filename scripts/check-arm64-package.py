@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import winreg
@@ -338,6 +339,13 @@ def main():
             assert actual.is_file() and actual.samefile(expected), (name, str(actual), str(expected), link.stat().st_size)
         installed=files(inst);del installed['Uninstall.exe'];assert installed==exported
         report['installed']=exercise(inst,tmp/'installed-test')
+        create_report = tmp / 'installed-zip-create.json'
+        run([sys.executable, ROOT/'scripts/check-zip-create-worker.py',
+             '--cli', inst/'obz.exe', '--console', inst/'runtime/nanazip-arm64/NanaZip.Universal.Console.exe',
+             '--require-file-symlink', '--report', create_report], timeout=300)
+        create_result = json.loads(create_report.read_bytes())
+        assert create_result['cli_sha256'] == sha(inst/'obz.exe')
+        report['installed']['zip_create'] = create_result
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
         assoc_fixture=seed_runner_associations(inst/'qing-zip.exe')
         run([uninstall,'/S'])
