@@ -320,6 +320,40 @@ impl From<windows::core::Error> for RetireError {
     }
 }
 
+// Keep the key handle from comparison to deletion. A path substituted with a
+// new key cannot cause us to delete or later restore a value in that new key.
+fn remove_exact(reg: &Registry, entry: &Edit) -> Result<Option<(Key, Vec<u16>, RawValue)>, String> {
+    let path = wide(&reg.path(&entry.key))?;
+    let name = wide(&entry.name)?;
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(path.as_ptr()),
+            None,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+        return Ok(None);
+    }
+    status.ok().map_err(|e| e.to_string())?;
+    let key = Key(key);
+    let Some(before) = query_value(&key, &name)? else {
+        return Ok(None);
+    };
+    if Some(&before) != entry.value.as_ref() {
+        return Ok(None);
+    }
+    let status = unsafe { RegDeleteValueW(key.0, PCWSTR(name.as_ptr())) };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    status.ok().map_err(|e| e.to_string())?;
+    Ok(Some((key, name, before)))
+}
+
 // On a registry without active transaction support, cooperating qing-zip
 // processes still share the per-user mutex. Recheck both guard values and the
 // exact data at each write. Retire the handler and marker last, so a failed
@@ -357,36 +391,42 @@ fn retire_without_transaction(
             if !still_owned(removed_handler)? {
                 return Err("文件关联已被接管".to_owned());
             }
-            if reg.read(&entry.key, &entry.name)? != entry.value {
+            let Some(backup) = remove_exact(reg, &entry)? else {
                 continue;
-            }
-            reg.write(&entry.key, &entry.name, None)?;
+            };
             if entry.key == handler {
                 removed_handler = true;
             }
-            removed.push(entry);
+            removed.push((entry.key == handler, backup));
         }
         Ok(())
     })();
     if let Err(error) = result {
         let mut restored = true;
-        for entry in removed.iter().rev() {
+        for (is_handler, (key, name, before)) in removed.iter().rev() {
             if !still_owned(removed_handler).unwrap_or(false) {
                 restored = false;
                 break;
             }
-            if reg.read(&entry.key, &entry.name).ok() != Some(None) {
+            if query_value(key, name).ok() != Some(None) {
                 restored = false;
                 continue;
             }
-            if reg
-                .write(&entry.key, &entry.name, entry.value.as_ref())
-                .is_err()
+            if unsafe {
+                RegSetValueExW(
+                    key.0,
+                    PCWSTR(name.as_ptr()),
+                    None,
+                    before.kind,
+                    Some(&before.data),
+                )
+            }
+            .is_err()
             {
                 restored = false;
                 break;
             }
-            if entry.key == handler {
+            if *is_handler {
                 removed_handler = false;
             }
         }
@@ -627,6 +667,55 @@ mod tests {
         }
         assert!(retire_without_transaction(reg, exe, |_| Ok(())).unwrap());
         assert!(!retire_without_transaction(reg, exe, |_| Ok(())).unwrap());
+    }
+    #[test]
+    fn failed_retirement_does_not_restore_candidates_into_a_replaced_key() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let exe = r"C:\Installed\qing-zip.exe";
+        let selected = selections(vec![".zip".to_owned()]).unwrap();
+        apply_edits(reg, registration_edits(reg, &selected, exe).unwrap(), None).unwrap();
+        let old = r"Software\Classes\.zip\OpenWithProgids";
+        let moved = r"Software\Classes\.zip\PreservedOriginal";
+        let source = wide(&reg.path(old)).unwrap();
+        let target = wide("PreservedOriginal").unwrap();
+        let mut renamed = false;
+        let result = retire_without_transaction(reg, exe, |count| {
+            if count != 1 {
+                return Ok(());
+            }
+            // A different registry editor archives the old key and replaces
+            // the path before an unrelated error interrupts our operation.
+            unsafe {
+                RegRenameKey(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(source.as_ptr()),
+                    PCWSTR(target.as_ptr()),
+                )
+            }
+            .ok()
+            .map_err(|e| e.to_string())?;
+            reg.write(old, "Another.Application", Some(&string_value("external")))?;
+            renamed = true;
+            Err("injected failure".into())
+        });
+        assert!(renamed && result.is_err(), "{result:?}");
+        assert_eq!(
+            reg.read(old, "Another.Application").unwrap(),
+            Some(string_value("external"))
+        );
+        assert_eq!(
+            reg.read(old, PROGID).unwrap(),
+            None,
+            "must not introduce our candidate into a replacement key"
+        );
+        assert_eq!(
+            reg.read(moved, PROGID).unwrap(),
+            Some(RawValue {
+                kind: REG_NONE,
+                data: vec![]
+            })
+        );
     }
     #[test]
     fn untransacted_retirement_stops_when_another_installation_takes_over() {
