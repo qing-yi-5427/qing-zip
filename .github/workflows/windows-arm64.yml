@@ -41,10 +41,18 @@ jobs:
           if ($version -notmatch 'host: aarch64-pc-windows-msvc') { throw 'compiler is not native ARM64' }
       - name: Verify and stage the upstream ARM64 runtime
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $manifest = Get-Content obz-rs/native/nana/provenance-arm64.json -Raw | ConvertFrom-Json
           $archive = Join-Path $env:RUNNER_TEMP 'nanazip-binaries.zip'
-          Invoke-WebRequest $manifest.package_url -OutFile $archive
+          try {
+            Invoke-WebRequest $manifest.package_url -OutFile $archive -MaximumRetryCount 2 -RetryIntervalSec 3 -ErrorAction Stop
+          } catch {
+            $name = ([Uri]$manifest.package_url).Segments[-1]
+            gh release download $manifest.version --repo M2Team/NanaZip --pattern $name --output $archive --clobber
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
           python scripts/prepare-arm64-runtime.py $archive runtime/nanazip-arm64
           exit $LASTEXITCODE
       - name: Build architecture-matched supporting runtimes
