@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载 0.11.4 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.4) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载 0.11.5 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.5) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
 
 ## 软件截图
 
