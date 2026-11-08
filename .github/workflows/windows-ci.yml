@@ -30,11 +30,11 @@ jobs:
       - name: Fetch the candidate from its own validated commit
         shell: pwsh
         run: |
-          $run = 42456163361
+          $run = 42456853882
           gh run watch $run --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Candidate failed' }
           $ci = gh run view $run --json headSha,conclusion,url | ConvertFrom-Json
-          if (-not $ci.headSha.StartsWith('bea4fba')) { throw 'Wrong candidate revision' }
+          if (-not $ci.headSha.StartsWith('21d92f2')) { throw 'Wrong candidate revision' }
           gh run download $run --name qing-zip-windows-x64-trial --dir incoming-candidate
           if ($LASTEXITCODE) { throw 'Missing candidate GUI' }
           $portable = @(Get-ChildItem incoming-candidate -Recurse -Filter '*0.11.6*portable.zip')
