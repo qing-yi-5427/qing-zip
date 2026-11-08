@@ -113,7 +113,7 @@ def dismiss_runner_onboarding():
             w,h=screen.size
             x,y=round(.895*w),round(.856*h)
             r,g,b=screen.convert('RGB').getpixel((x,y))
-            if not (r<70 and 50<g<170 and b>155):
+            if not (r<70 and 35<g<175 and b>120 and b>g+45):
                 raise RuntimeError("Identified onboarding window has no blue continuation button")
             mouse.click(coords=(x,y))
         time.sleep(1.1)
@@ -176,14 +176,53 @@ def stop_own():
     for p in processes():
         if os.path.normcase(p['ExecutablePath'] or '')==os.path.normcase(str(exe)):
             subprocess.run(['taskkill','/F','/PID',str(p['ProcessId'])],stdout=subprocess.DEVNULL)
+def registered_commands(enabled):
+    # This packaged COM probe is separately labelled; it is never a substitute
+    # for the Explorer menu clicks and screenshots.
+    import uuid
+    ole=ctypes.OleDLL('ole32')
+    shell=ctypes.OleDLL('shell32')
+    P=ctypes.c_void_p
+    def guid(text):return (ctypes.c_ubyte*16).from_buffer_copy(uuid.UUID(text).bytes_le)
+    interface=guid('A08CE4D0-FA25-44AB-B57C-C7B1C323E0B9')
+    def method(ptr,idx,types,*args):
+        slots=ctypes.cast(ptr,ctypes.POINTER(ctypes.POINTER(P))).contents
+        f=ctypes.WINFUNCTYPE(ctypes.c_long,P,*types)(slots[idx])
+        hr=f(ptr,*args)
+        if hr<0:raise OSError(hex(hr&0xffffffff))
+        return hr
+    result={}
+    for key,cls,path in [('open','9A406E20-1F79-49F3-94F9-179D18761D4A',archive),
+                          ('compress','A65CB9C7-E692-4D0B-A5A1-4F19530EE312',folder),
+                          ('smart','8148C339-AF9A-4E1E-8BE9-469F28DA1B75',archive),
+                          ('here','0C0C73E7-2D76-4823-AB70-F9BE332B1360',archive)]:
+        obj=P();pidl=P();selection=P();title=P()
+        try:
+            ole.CoCreateInstance(ctypes.byref(guid(cls)),None,5,ctypes.byref(interface),ctypes.byref(obj))
+            shell.SHParseDisplayName(ctypes.c_wchar_p(str(path)),None,ctypes.byref(pidl),0,None)
+            shell.SHCreateShellItemArrayFromIDLists(1,ctypes.byref(pidl),ctypes.byref(selection))
+            method(obj,3,[P,ctypes.POINTER(P)],selection,ctypes.byref(title))
+            state=ctypes.c_uint()
+            method(obj,7,[P,ctypes.c_int,ctypes.POINTER(ctypes.c_uint)],selection,1,ctypes.byref(state))
+            result[key]={'title':ctypes.wstring_at(title),'state':state.value}
+            assert state.value==(0 if enabled else 2),(key,state.value)
+        finally:
+            if title:ole.CoTaskMemFree(title)
+            if selection:method(selection,2,[])
+            if pidl:ole.CoTaskMemFree(pidl)
+            if obj:method(obj,2,[])
+    return result
+
 try:
     assert not command(archive_reg) and not command(folder_reg)
+    report["registered_off"]=registered_commands(False);save()
     dismiss_runner_onboarding()
     os.startfile(root)
     # The off state must be checked against the same installed sparse package.
     for p,tag in [(archive,'file-off'),(folder,'folder-off')]:
         items=first_menu(p,tag);assert not relevant(items),(tag,items)
     keyboard.send_keys('{ESC}');settings(True)
+    report['registered_on']=registered_commands(True);save()
     items=first_menu(archive,'file-on')
     act(items,'file-on','解压到此处')
     marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
@@ -199,6 +238,11 @@ try:
         items=first_menu(p,tag);assert not relevant(items),(tag,items)
     report['complete']=True
 except Exception:
-    report['error']=traceback.format_exc();shots('last-desktop');raise
+    report['error']=traceback.format_exc();shots('last-desktop')
+    try:
+        stop_own();settings(True);report['registered_on']=registered_commands(True)
+        settings(False);report['registered_off_again']=registered_commands(False)
+    except Exception:report['independent_probe_error']=traceback.format_exc()
+    raise
 finally:
     save()
