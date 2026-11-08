@@ -231,6 +231,30 @@ pub fn forget_operation(id:u64)->Result<(),String>{
 #[cfg(test)] mod tests {
     use super::*;
     #[test]
+    fn zip_creation_job_returns_the_new_archive_and_completed_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("notes.txt"), b"desktop create").unwrap();
+        for n in 0..2048 {
+            std::fs::write(source.join(format!("entry-{n:04}.txt")), b"desktop source").unwrap();
+        }
+        let archive = temp.path().join("result.zip").display().to_string();
+        let request = Request {
+            operation: "create".into(), format: "zip".into(), path: archive.clone(),
+            inputs: vec![source.display().to_string()], ..Default::default()
+        };
+        let id = start_operation(request, None).unwrap();
+        let job = registry().lock().unwrap().get(&id).cloned().unwrap();
+        let state = wait_snapshot(&job, id, Duration::from_secs(30)).unwrap();
+        assert_eq!(state.status, "complete", "{:?}", state.error);
+        assert_eq!(state.progress.percent, Some(100));
+        assert_eq!(serde_json::to_value(&state).unwrap()["result"]["outputs"], serde_json::json!([archive]));
+        let entry = obz_core::engine::preview(&archive, "source/notes.txt", &Default::default()).unwrap();
+        assert_eq!(entry,b"desktop create");
+        forget_operation(id).unwrap();
+    }
+    #[test]
     fn real_listing_job_serializes_the_shared_entries_in_each_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let archive = root.path().join("example.zip").display().to_string();

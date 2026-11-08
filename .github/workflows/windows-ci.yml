@@ -35,7 +35,7 @@ jobs:
       - name: Public core tests (no external proprietary reference executable)
         shell: pwsh
         run: |
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams --test verified_zip_create
           exit $LASTEXITCODE
       - name: Desktop regression and embedded frontend build
         shell: pwsh
@@ -44,6 +44,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $build = ./scripts/build-hardened.ps1
           python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
+          exit $LASTEXITCODE
+      - name: Check native ZIP creation and real file symbolic links
+        shell: pwsh
+        run: |
+          python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
           exit $LASTEXITCODE
       - name: Upload validated Windows x64 portable build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

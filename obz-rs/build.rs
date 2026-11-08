@@ -22,7 +22,7 @@ fn main() {
         .define("NOMINMAX", None)
         .define("WIN32_LEAN_AND_MEAN", None)
         .compile("qing_selected_worker");
-    for library in ["ole32", "oleaut32", "advapi32", "uuid"] {
+    for library in ["ole32", "oleaut32", "advapi32", "uuid", "user32"] {
         println!("cargo:rustc-link-lib={library}");
     }
 }

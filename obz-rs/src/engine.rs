@@ -4338,6 +4338,13 @@ pub fn create(
     }
     let ctl = control(opts);
     ctl.check()?;
+    #[cfg(nana_selected_worker)]
+    if selected_worker::create_zip::eligible(format, inputs, opts)
+        && selected_worker::create_zip::try_create(out, inputs, opts, &ctl)? {
+        if PhaseTimer::enabled() { eprintln!("OA_CREATE_WORKER status=complete"); }
+        ctl.set("complete",Some(100),"Archive created");
+        return Ok(vec![absolute(out)?.display().to_string()]);
+    }
     let paths = input_paths(inputs)?;
     let out = absolute(out)?;
     no_links(&out)?;

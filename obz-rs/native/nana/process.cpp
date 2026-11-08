@@ -17,8 +17,8 @@ struct Attributes {
 };
 }
 
-static DWORD spawn_archive_reader(const wchar_t *exe, const wchar_t *archive, DWORD threads,
-                                 HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
+static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DWORD threads,
+                                 HANDLE *process, HANDLE *input, HANDLE *output, bool create_zip = false) noexcept {
   *process = *input = *output = nullptr;
   try {
     Handle child_in, parent_in, child_out, parent_out, child_err;
@@ -64,7 +64,7 @@ static DWORD spawn_archive_reader(const wchar_t *exe, const wchar_t *archive, DW
       if (threads) command += L" -mmt=" + std::to_wstring(threads);
       command += L" -- \"" + std::wstring(file) + L"\"";
     } else {
-      command += L" --internal-selected-worker";
+      command += create_zip ? L" --internal-create-worker" : L" --internal-selected-worker";
     }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
@@ -77,13 +77,17 @@ static DWORD spawn_archive_reader(const wchar_t *exe, const wchar_t *archive, DW
 
 extern "C" DWORD qing_spawn_selected_worker(const wchar_t *exe, HANDLE *process,
                                             HANDLE *input, HANDLE *output) noexcept {
-  return spawn_archive_reader(exe, nullptr, 0, process, input, output);
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output);
 }
 
 extern "C" DWORD qing_spawn_solid_reader(const wchar_t *exe, const wchar_t *archive, DWORD threads,
                                          HANDLE *process, HANDLE *output) noexcept {
   HANDLE input = nullptr;
-  auto status = spawn_archive_reader(exe, archive, threads, process, &input, output);
+  auto status = spawn_archive_worker(exe, archive, threads, process, &input, output);
   if (input) CloseHandle(input); // This operation never supplies a password.
   return status;
+}
+
+extern "C" DWORD qing_spawn_create_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output, true);
 }

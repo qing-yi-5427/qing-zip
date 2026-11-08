@@ -66,7 +66,12 @@ jobs:
           foreach ($test in 'encrypted_split_selection_checks_unselected_blocks_before_publication','split_lzma2_verifies_all_blocks_and_rejects_unselected_crc','selected_split_commits_only_verified_files_on_the_target_volume') {
             if (!$listed.Contains($test)) { throw "missing native regression: $test" }
           }
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --test encrypted_split_selection --test engine_staging -- --nocapture
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --test encrypted_split_selection --test engine_staging --test verified_zip_create -- --nocapture
+          exit $LASTEXITCODE
+      - name: Check native ARM64 ZIP creation and real file symbolic links
+        shell: pwsh
+        run: |
+          python scripts/check-zip-create-worker.py --cli target/arm-validation/debug/obz.exe --console runtime/nanazip-arm64/NanaZip.Universal.Console.exe --require-file-symlink
           exit $LASTEXITCODE
       - name: Build native desktop and verify both authored executables
         shell: pwsh
