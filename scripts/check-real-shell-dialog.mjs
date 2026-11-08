@@ -21,12 +21,14 @@ async function until(read, label, timeout=45000) {
   }
   throw new Error('Timed out waiting for '+label);
 }
+let observed;
 const target = await until(async()=>{
   let pages;
   try { pages=await (await fetch(endpoint+'/json/list',{signal:AbortSignal.timeout(1500)})).json(); }
-  catch { return false; }
+  catch(error) {observed=String(error);return false;}
+  observed=pages.map(({type,url})=>({type,url}));
   return pages.find(p=>p.type==='page' && /^https?:\/\/tauri\.localhost(?:\/|$)/i.test(p.url));
-},'isolated Tauri WebView2 target',60000);
+},'isolated Tauri WebView2 target',60000).catch(error=>{throw new Error(error.message+'; private endpoints: '+JSON.stringify(observed));});
 const address=new URL(target.webSocketDebuggerUrl);
 assert.ok(['127.0.0.1','localhost','[::1]'].includes(address.hostname) && address.port===port);
 const socket=new WebSocket(address);
