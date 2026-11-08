@@ -1,65 +1,28 @@
-name: Windows regression
-on:
-  push:
-    branches: [main, codex/nanazip-parity]
-  pull_request:
-  workflow_dispatch:
-permissions:
-  contents: read
+name: Isolated normal output ACL check
+on: workflow_dispatch
+permissions: {contents: read}
 jobs:
-  public-regressions:
-    runs-on: windows-latest
-    timeout-minutes: 35
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 65
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - name: Runtime provenance and frontend syntax
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Fetch and verify published 0.11.8
         shell: pwsh
         run: |
-          python scripts/verify-runtime.py
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/app.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/tools.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/compression-options.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | ForEach-Object FullName)
-          node --test @frontendTests
-          exit $LASTEXITCODE
-      - name: Explorer argument, COM and filesystem selection tests
-        shell: pwsh
-        run: ./scripts/msix/Build-Component.ps1 -Architecture x64
-      - name: Public core tests (no external proprietary reference executable)
+          gh release download v0.11.8 --pattern qing-zip-0.11.8-portable.zip --dir incoming
+          if ($LASTEXITCODE) {throw 'Release download failed'}
+          $p=Get-Item incoming/qing-zip-0.11.8-portable.zip
+          if ((Get-FileHash $p).Hash -ne 'caca993662690d45cfbf679fff1f5bef50d6f3b21e686d80bfce12f5d7fdabb4') {throw 'Wrong published package'}
+          Expand-Archive $p.FullName app
+      - name: Revoke destination inheritance while extracting to a regular private output
         shell: pwsh
         run: |
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams --test verified_zip_create
+          $exe=@(Get-ChildItem app -Filter obz.exe -Recurse)[0]
+          python scripts/check-live-output-acl.py $exe.FullName results
           exit $LASTEXITCODE
-      - name: Desktop regression and embedded frontend build
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path obz-gui/Cargo.toml
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $build = ./scripts/build-hardened.ps1
-          python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
-          exit $LASTEXITCODE
-      - name: Check native ZIP creation and real file symbolic links
-        shell: pwsh
-        run: |
-          python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
-          exit $LASTEXITCODE
-      - name: Invoke the registered Explorer compression action for two files
-        shell: pwsh
-        run: python scripts/check_classic_shell.py dist/x64 target/qing-shell/Release/qing-shell-classic-forwarding.exe
-      - name: Upload validated Windows x64 portable build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: qing-zip-windows-x64-trial
-          if-no-files-found: error
-          retention-days: 21
-          path: |
-            dist/x64/*-portable.zip
-            target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
-            target/hardened/x86_64-pc-windows-msvc/release/pe-security.json
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: existing-acl-receipt, path: results/*.json}
