@@ -1,6 +1,7 @@
 """Build the ARM64 trial installer; run both distributions on the native CI host."""
 import argparse
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import importlib
 import json
@@ -29,6 +30,167 @@ def key(root,name):
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,root,0,winreg.KEY_READ|winreg.KEY_WOW64_64KEY) as k:
             return winreg.QueryValueEx(k,name)[0]
     except FileNotFoundError:return None
+
+def seed_runner_associations(application):
+    """Model candidates left by the installed version on a disposable hosted runner."""
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+        return None
+    prog = r'Software\Classes\OpenArchive.Archive'
+    caps = r'Software\OpenArchive\Capabilities'
+    openwith = r'Software\Classes\.zip\OpenWithProgids'
+    owner = r'Software\OpenArchive\Associations'
+    registered = r'Software\RegisteredApplications'
+    entries = [
+        (owner, 'ManagedBy', winreg.REG_SZ, 'OpenArchive.Associations.v1'),
+        (prog, '', winreg.REG_SZ, 'qing-zip 压缩文件'),
+        (prog+r'\shell\open\command', '', winreg.REG_SZ, f'"{application}" "%1"'),
+        (prog+r'\DefaultIcon', '', winreg.REG_SZ, f'"{application}",0'),
+        (openwith, 'OpenArchive.Archive', winreg.REG_NONE, b''),
+        (caps+r'\FileAssociations', '.zip', winreg.REG_SZ, 'OpenArchive.Archive'),
+        (caps, 'ApplicationName', winreg.REG_SZ, 'qing-zip'),
+        (caps, 'ApplicationDescription', winreg.REG_SZ, '本地压缩与解压工具'),
+        (caps, 'ApplicationIcon', winreg.REG_SZ, f'"{application}",0'),
+        (registered, 'qing-zip', winreg.REG_SZ, caps),
+    ]
+    external = (openwith, 'QingZipTest.OtherArchive', winreg.REG_SZ, 'preserve')
+    for path, name, _, _ in [*entries, external]:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path) as h:
+                winreg.QueryValueEx(h,name)
+        except FileNotFoundError:
+            continue
+        raise ValueError(f'Runner already contains {path}:{name}')
+    for path, name, kind, value in [*entries, external]:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as h:
+            winreg.SetValueEx(h,name,0,kind,value)
+    return entries, external
+
+def check_runner_associations(fixture):
+    entries, (path, name, _, value) = fixture
+    for candidate, setting, _, _ in entries:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,candidate) as h:
+                winreg.QueryValueEx(h,setting)
+        except FileNotFoundError:
+            continue
+        raise ValueError(f'Uninstall left an advertised association at {candidate}:{setting}')
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as h:
+        assert winreg.QueryValueEx(h,name)[0] == value
+        winreg.DeleteValue(h,name)
+    return {'owned_values_removed':len(entries),'other_candidate_preserved':True}
+
+def shortcut_target(link):
+    env=dict(os.environ,QING_CI_SHORTCUT=str(link))
+    # WScript.Shell silently returns an empty target for shortcut names outside
+    # the system ANSI code page. Inspect the existing Unicode shell item.
+    command="""[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$path=$env:QING_CI_SHORTCUT
+$folder=(New-Object -ComObject Shell.Application).NameSpace([IO.Path]::GetDirectoryName($path))
+$item=$folder.ParseName([IO.Path]::GetFileName($path))
+if (-not $item.IsLink) { throw 'Expected an existing shell link' }
+$item.GetLink.Path"""
+    return Path(subprocess.check_output(['powershell','-NoProfile','-Command',command],env=env).decode('utf8').strip())
+
+@contextmanager
+def block_delete(path):
+    from ctypes import wintypes as w
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateFileW.argtypes=(w.LPCWSTR,w.DWORD,w.DWORD,w.LPVOID,w.DWORD,w.DWORD,w.HANDLE)
+    kernel.CreateFileW.restype=w.HANDLE
+    kernel.CloseHandle.argtypes=(w.HANDLE,)
+    handle=kernel.CreateFileW(str(path),0x80000000,1,None,3,0,None)
+    if handle in (None,w.HANDLE(-1).value):raise ctypes.WinError(ctypes.get_last_error())
+    try:yield
+    finally:kernel.CloseHandle(handle)
+
+def run_removal(inst, arp, log_dir, *, required_failure=False):
+    log_dir.mkdir()
+    env=dict(os.environ,TMP=str(log_dir),TEMP=str(log_dir))
+    args=[str(inst/'Uninstall.exe'),'/S']
+    if required_failure:args.append('_?='+str(inst))  # run synchronously in-place for the failure exit code
+    proc=subprocess.run(args,env=env,capture_output=True,timeout=120)
+    if required_failure:
+        assert proc.returncode!=0 and (inst/'Uninstall.exe').is_file() and key(arp,'InstallLocation') is not None
+    else:
+        assert proc.returncode==0
+        until=time.monotonic()+90
+        while time.monotonic()<until and (key(arp,'InstallLocation') is not None or (inst/'Uninstall.exe').exists()):time.sleep(.2)
+        assert key(arp,'InstallLocation') is None and not (inst/'Uninstall.exe').exists()
+    messages=[]
+    for file in log_dir.iterdir():
+        try:
+            if not file.is_file() or file.stat().st_size>=65536:continue
+            raw=file.read_bytes()
+        except (FileNotFoundError, PermissionError):
+            # The NSIS bootstrap may still own or remove its scratch file after
+            # the ARP entry and installed uninstaller have already disappeared.
+            continue
+        if raw.startswith(b'\xff\xfe'):
+            value=raw.decode('utf-16')
+            if value.startswith('qing-zip uninstall'):messages.append(value)
+    assert len(messages)==1, messages
+    return messages[0]
+
+def verify_retry(setup,inst,shortcuts,arp,scratch):
+    run([setup,'/S'])
+    # Simulate an incomplete older install so the optional cleanup helper cannot start.
+    fixture=seed_runner_associations(inst/'qing-zip.exe')
+    assert fixture is not None
+    (inst/'qing-zip.exe').rename(scratch/'removed-helper.exe')
+    owned_links={p:sha(p) for p in shortcuts.iterdir()}
+    with block_delete(inst/'README.md'):
+        first=run_removal(inst,arp,scratch/'retry-first',required_failure=True)
+        assert '[optional-associations]' in first and '[required-file]' in first and 'README.md' in first, first
+    last=run_removal(inst,arp,scratch/'retry-finish')
+    assert '[optional-associations]' in last and '[required-file]' not in last,last
+    assert not inst.exists()
+    entries,external=fixture
+    for path,name,kind,value in [*entries,external]:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_QUERY_VALUE|winreg.KEY_SET_VALUE) as h:
+            actual,actual_kind=winreg.QueryValueEx(h,name)
+            if kind==winreg.REG_NONE:actual=actual or b''
+            assert (actual_kind,actual)==(kind,value)
+            winreg.DeleteValue(h,name)
+    for path,digest in owned_links.items():
+        assert sha(path)==digest
+        path.unlink()
+    shortcuts.rmdir()
+    return {'optional_association_failure_logged':True,'retained_candidate_values':len(entries),
+            'locked_payload_returned_failure':True,'retry_removed_payload':True}
+
+def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp, scratch):
+    # Only the disposable native runner may create test shortcuts on its Desktop.
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+        return None
+    desktop = Path(run(['powershell','-NoProfile','-Command',
+                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;[Environment]::GetFolderPath('DesktopDirectory')"]).stdout.decode('utf8').strip())
+    desktop_link = desktop/'qing-zip-arm64.lnk'
+    start = shortcuts/'qing-zip.lnk'
+    uninstall_link = shortcuts/'卸载.lnk'
+    assert desktop.is_dir() and not shortcuts.exists() and not desktop_link.exists()
+    shortcuts.mkdir()
+    def create_link(path, arguments):
+        with tempfile.TemporaryDirectory(dir=scratch) as temp:
+            staged=Path(temp)/'portable.lnk'
+            env=dict(os.environ,QING_CI_SHORTCUT=str(staged),QING_CI_TARGET=str(portable),QING_CI_ARGUMENTS=arguments)
+            command="$link=(New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT);$link.TargetPath=$env:QING_CI_TARGET;$link.Arguments=$env:QING_CI_ARGUMENTS;$link.Save()"
+            subprocess.run(['powershell','-NoProfile','-Command',command],check=True,env=env)
+            shutil.copyfile(staged,path)
+        assert shortcut_target(path).samefile(portable)
+        return sha(path)
+    before = {start:create_link(start,'--user-start'), desktop_link:create_link(desktop_link,'--user-desktop')}
+    run([setup,'/S'])
+    assert all(sha(path)==digest for path,digest in before.items()) and uninstall_link.is_file()
+    before[uninstall_link]=create_link(uninstall_link,'--portable-takeover')
+    with block_delete(uninstall_link):
+        log=run_removal(installed,arp,scratch/'locked-shortcut')
+        assert '[optional-shortcuts]' in log and '[required-file]' not in log,log
+    assert not installed.exists()
+    for path,digest in before.items():
+        assert sha(path)==digest, f'Uninstall altered user shortcut {path.name}'
+        path.unlink()
+    shortcuts.rmdir()
+    return {'preexisting_start_preserved':True,'unselected_desktop_preserved':True,'reassigned_uninstall_preserved':True,'locked_shortcut_did_not_block_uninstall':True}
 
 def smoke_desktop(application, archive, scratch):
     """Observe the trial app starting its own WebView2 process. No UI injection."""
@@ -169,9 +331,15 @@ def main():
         assert inst.is_dir() and Path(key(arp,'InstallLocation')).resolve()==inst.resolve()
         uninstall=inst/'Uninstall.exe'
         assert machine(uninstall)==0x14c and (shortcuts/'qing-zip.lnk').is_file()
+        for name, expected in [('qing-zip.lnk', inst/'qing-zip.exe'), ('卸载.lnk', uninstall)]:
+            link = shortcuts/name
+            assert link.is_file(), (name, sorted(x.name for x in shortcuts.iterdir()), str(inst))
+            actual = shortcut_target(link)
+            assert actual.is_file() and actual.samefile(expected), (name, str(actual), str(expected), link.stat().st_size)
         installed=files(inst);del installed['Uninstall.exe'];assert installed==exported
         report['installed']=exercise(inst,tmp/'installed-test')
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
+        assoc_fixture=seed_runner_associations(inst/'qing-zip.exe')
         run([uninstall,'/S'])
         deadline=time.monotonic()+90
         while time.monotonic()<deadline and (uninstall.exists() or key(arp,'InstallLocation') is not None):time.sleep(.2)
@@ -182,6 +350,10 @@ def main():
         keep.unlink();inst.rmdir()
         assert previous_x64==(key(x64_install,'InstallDir'),key(x64_arp,'InstallLocation'))
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
+        if assoc_fixture:
+            report['uninstall']['file_associations']=check_runner_associations(assoc_fixture)
+            report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp,tmp)
+            report['uninstall']['retry']=verify_retry(setup,inst,shortcuts,arp,tmp)
     report['assets']={}
     for p in [setup,portable]:
         digest=sha(p)
