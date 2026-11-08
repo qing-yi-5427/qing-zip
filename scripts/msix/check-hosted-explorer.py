@@ -30,6 +30,11 @@ archive=root/'Archive sample.zip'; folder=root/'Folder sample';folder.mkdir()
 (folder/'source.txt').write_text('compression marker',encoding='utf8')
 payload=b'modern context menu extraction marker'
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_STORED) as z:z.writestr('extracted-marker.txt',payload)
+smart_archive=root/"Smart sample.zip"
+with zipfile.ZipFile(smart_archive,'w') as z:
+    z.writestr("alpha.txt","alpha")
+    z.writestr("beta.txt","beta")
+
 ui=IUIA().iuia
 desktop=Desktop(backend="uia")
 def shots(label):
@@ -357,32 +362,21 @@ try:
     keyboard.send_keys('{ESC}');settings(True)
     report['registered_on']=registered_commands(True);save()
     clear_lab_overlays()
-    try:
-        items=first_menu(archive,'file-on')
-        if not relevant(items):
-            # Microsoft documents restarting Explorer to refresh a newly registered
-            # shell extension. Preserve the first observation separately.
-            script='$s=(Get-Process -Id $PID).SessionId; Get-Process -Name explorer | Where-Object { $_.SessionId -eq $s -and $_.Path -eq "$env:SystemRoot\explorer.exe" } | Stop-Process -Force'
-            subprocess.run(['powershell','-NoProfile','-Command',script],capture_output=True)
-            time.sleep(1.5);os.startfile(root);time.sleep(1)
-            items=first_menu(archive,'file-on-after-shell-restart')
-        act(items,'file-on','\u89e3\u538b\u5230\u6b64\u5904')
-        marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
-        report['actions']['actual_archive_extraction']=True
-    except Exception:
-        report['actions']['extract_error']=traceback.format_exc()
-    finally:
-        save();keyboard.send_keys('{ESC}{ESC}');stop_own()
     for category in ("smart","open"):
         try:
             testfile=archive
-            if category=="smart":
-                testfile=root/"Smart sample.zip"
-                with zipfile.ZipFile(testfile,"w") as z:
-                    z.writestr("alpha.txt","alpha")
-                    z.writestr("beta.txt","beta")
-            items=first_menu(testfile,category+"-on")
-            act(items,category+"-on","\u667a\u80fd\u89e3\u538b" if category=="smart" else "\u7528 qing-zip \u6253\u5f00")
+            if category=="smart":testfile=smart_archive
+            target="\u667a\u80fd\u89e3\u538b" if category=="smart" else "\u7528 qing-zip \u6253\u5f00"
+            for attempt in range(3):
+                label=category+"-on-"+str(attempt)
+                items=first_menu(testfile,label)
+                try:
+                    act(items,label,target)
+                    break
+                except (AssertionError,RuntimeError):
+                    if attempt==2:raise
+                    keyboard.send_keys('{ESC}{ESC}');clear_lab_overlays();time.sleep(.5)
+
             if category=="smart":
                 target=root/"Smart sample"
                 wait(lambda:(target/"beta.txt").exists(),35)
@@ -399,6 +393,22 @@ try:
         except Exception:report['actions'][category+"_error"]=traceback.format_exc()
         finally:
             save();keyboard.send_keys('{ESC}{ESC}');stop_own()
+    try:
+        items=first_menu(archive,'file-on')
+        if not relevant(items):
+            # Microsoft documents restarting Explorer to refresh a newly registered
+            # shell extension. Preserve the first observation separately.
+            script='$s=(Get-Process -Id $PID).SessionId; Get-Process -Name explorer | Where-Object { $_.SessionId -eq $s -and $_.Path -eq "$env:SystemRoot\explorer.exe" } | Stop-Process -Force'
+            subprocess.run(['powershell','-NoProfile','-Command',script],capture_output=True)
+            time.sleep(1.5);os.startfile(root);time.sleep(1)
+            items=first_menu(archive,'file-on-after-shell-restart')
+        act(items,'file-on','\u89e3\u538b\u5230\u6b64\u5904')
+        marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
+        report['actions']['actual_archive_extraction']=True
+    except Exception:
+        report['actions']['extract_error']=traceback.format_exc()
+    finally:
+        save();keyboard.send_keys('{ESC}{ESC}');stop_own()
     try:
         items=first_menu(folder,'folder-on')
         act(items,'folder-on','\u538b\u7f29')
