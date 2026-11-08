@@ -86,6 +86,21 @@ def main():
                     stored = archive.getinfo("source/hidden-sys-ro.txt")
                     assert stored.external_attr & 7 == 7
                 cases.append([label, digest(out)])
+            # Plain uncompressed bytes fit ZIP32, but the *combined* conservative
+            # payload/metadata budget does not. The old writer must still succeed.
+            budget_file = src / "budget.bin"
+            length = 480 << 20
+            with budget_file.open("wb") as f:
+                f.truncate(length)
+            assert kernel.GetFileAttributesW(str(budget_file)) & 0x200 == 0
+            out = root / "budget.zip"
+            errors = run([cli, "create", out, src, "--level","1","--threads","1"], profile=True)
+            assert "OA_CREATE_WORKER status=encoding" not in errors and "OA_PHASE engine-process" in errors
+            with zipfile.ZipFile(out) as archive:
+                assert archive.getinfo("source/budget.bin").file_size == length
+                assert archive.testzip() is None
+            budget_file.unlink()
+            cases.append(["classic-layout-upper-bound","console before encoding; valid full payload"])
             # A replaceable directory's writer handle can block our stronger pin.
             # The ordinary console still works; assert this with both processes.
             kernel.CreateFileW.restype = ctypes.c_void_p

@@ -87,6 +87,51 @@ int path_order(std::wstring_view left, std::wstring_view right) {
   return left.size() == right.size() ? 0
                                      : (left.size() < right.size() ? -1 : 1);
 }
+// Budget the whole *possible* representation before UpdateItems starts.
+// A fresh ZIP has no prefix. Reserve the maximum EOCD comment too. ZIP32
+// stores 0xffff/0xffffffff as ZIP64 sentinels, so those exact values are out.
+constexpr uint64_t EndRecordsBound = 22 + UINT16_MAX;
+constexpr uint64_t NotClassic = UINT64_MAX;
+
+constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
+                                      uint64_t bytes, size_t utf16_units) {
+  constexpr uint64_t limit = UINT32_MAX - 1ull;
+  // ZipAddCommon::Set_Pre_CompressionResult preselects ZIP64 at 0xf8000000.
+  if (entries >= UINT16_MAX - 1u || bytes >= 0xf8000000ull ||
+      utf16_units >= UINT16_MAX / 4 || before > limit)
+    return NotClassic;
+  // Windows UTF-8/OEM output fits four bytes per UTF-16 unit; allow the
+  // trailing slash even for a file. Budget both filename fields. Each extra
+  // area and the central comment have separate 16-bit length fields.
+  const uint64_t name = 4ull * (utf16_units + 1);
+  const uint64_t records = 30 + 46 + 24 + 2 * name + 3ull * UINT16_MAX;
+  // Only the pinned built-in unencrypted Deflate/Store writer is eligible.
+  // Its seekable streams retry Store when Deflate expands (ZipAddCommon).
+  // Also reserve tentative output: DeflateEncoder::GetBlockPrice compares
+  // against a stored block; even a stored block per input byte costs at
+  // most six bytes of framing per byte, plus a final empty block.
+  constexpr uint64_t tail = 16;
+  if (records + tail > limit - before ||
+      bytes > (limit - before - records - tail) / 8)
+    return NotClassic;
+  return before + records + tail + bytes * 8;
+}
+static_assert(next_classic_bound(EndRecordsBound, 65533, 0, 1) != NotClassic);
+static_assert(next_classic_bound(EndRecordsBound, 65534, 0, 1) == NotClassic);
+static_assert(next_classic_bound(EndRecordsBound, 1, UINT64_MAX, 1) ==
+              NotClassic);
+static_assert(next_classic_bound(EndRecordsBound, 1, 0, 20000) == NotClassic);
+// Input alone fits in each case. Metadata, filename length or tentative
+// Deflate output makes the otherwise identical case exceed 32-bit offsets.
+static_assert(next_classic_bound(UINT32_MAX - 210000ull, 1, 0, 8) !=
+              NotClassic);
+static_assert(next_classic_bound(UINT32_MAX - 210000ull, 1, 0, 3000) ==
+              NotClassic);
+static_assert(next_classic_bound(UINT32_MAX - 196800ull, 1, 0, 1) !=
+              NotClassic);
+static_assert(next_classic_bound(UINT32_MAX - 196800ull, 1, 16, 1) ==
+              NotClassic);
+
 class Source {
   using Open = NTSTATUS(NTAPI *)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                  PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG,
@@ -95,19 +140,18 @@ class Source {
   HANDLE owner_;
   std::vector<File> pins_;
   size_t units_ = 0;
-  uint64_t total_ = 0;
+  uint64_t layout_bound_ = EndRecordsBound;
   void append(Record r) {
     if (r.attributes & FILE_ATTRIBUTE_REPARSE_POINT)
       fail("linked input path rejected");
     if (!valid_leaf(r.name) || r.path.size() > 32767 ||
-        items.size() >= 100000 || (units_ += r.path.size()) > 8 * 1024 * 1024 ||
+        (units_ += r.path.size()) > 8 * 1024 * 1024 ||
         (r.attributes & ~DWORD(0xb7)))
       throw NotEligible{};
-    // ZIP64 and untested sparse/offline storage use the established console.
-    if (!r.directory() && (r.size > UINT32_MAX || total_ > UINT32_MAX - r.size))
+    layout_bound_ = next_classic_bound(
+        layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size());
+    if (layout_bound_ == NotClassic)
       throw NotEligible{};
-    if (!r.directory())
-      total_ += r.size;
     items.emplace_back(std::move(r));
   }
 
