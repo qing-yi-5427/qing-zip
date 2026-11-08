@@ -2687,17 +2687,23 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             if transaction.is_some() || file_publication_stage { opts.zone_identifier.as_ref() } else { None },
         )?;
     }
-    let journal=transaction.as_ref().map(|_|PublicationJournal::default());
+    // A private decoder stage is optional. The verified output contract must
+    // also hold on ordinary staging and memory routes, including short paths.
+    #[cfg(windows)]
+    let claim_destination = transaction.is_some() || (defer_preflight && expected.len() <= 65_536);
+    #[cfg(not(windows))]
+    let claim_destination = transaction.is_some();
+    let journal=claim_destination.then(PublicationJournal::default);
     let publication=(|| -> Result<usize,String> {
     policy.validate_output()?;
-    if let Some(transaction) = transaction.as_ref() {
-        let root = &transaction.root;
-        let temp = stage.as_ref().unwrap();
+    if claim_destination {
         ctl.check()?;
         output_guards.check(&dest)?;
         output_guards.allow_publication(dest.parent().ok_or("missing output parent")?)?;
         output_guards.check(&dest)?;
-        validate_transaction_root(root, temp.path())?;
+        if let Some(transaction) = transaction.as_ref() {
+            validate_transaction_root(&transaction.root, stage.as_ref().unwrap().path())?;
+        }
         // A directory pin can suppress NTFS propagation to its descendants.
         // Publishing the entire staged tree could expose stale inherited grants
         // even when the staging root happens to have only trusted principals.
@@ -2711,7 +2717,16 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         let leaf = dest.file_name().ok_or("missing destination leaf")?;
         #[cfg(windows)]
         {
-            let created = crate::private_stage::create_journal_directory(&transaction.parent, leaf)?;
+            use std::os::windows::fs::OpenOptionsExt;
+            let fallback_parent;
+            let parent = if let Some(t) = transaction.as_ref() { &t.parent } else {
+                let path = dest.parent().ok_or("missing output parent")?;
+                fallback_parent = fs::OpenOptions::new().access_mode(0x200a0)
+                    .share_mode(3).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
+                validate_transaction_root(&fallback_parent,path)?;
+                &fallback_parent
+            };
+            let created = crate::private_stage::create_journal_directory(parent, leaf)?;
             output_guards.exclusive_claim = true;
             let proof=match created_directories::Identity::owned(&created) {
                 Ok(proof)=>proof,
@@ -2724,7 +2739,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         #[cfg(not(windows))]
         fs::create_dir(&dest).map_err(|e|e.to_string())?;
         output_guards.check(&dest)?;
-        if memory.is_none() && serial_publication && stage.as_ref().is_some_and(StagingDir::protected_stage) {
+        if transaction.is_some() && memory.is_none() && serial_publication && stage.as_ref().is_some_and(StagingDir::protected_stage) {
             file_publication_stage = true;
             publication_receipt = PhaseTimer::enabled().then_some([0usize;2]);
         }
