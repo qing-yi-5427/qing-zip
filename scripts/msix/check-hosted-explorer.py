@@ -353,6 +353,32 @@ try:
         report['actions']['extract_error']=traceback.format_exc()
     finally:
         save();keyboard.send_keys('{ESC}{ESC}');stop_own()
+    for category in ("smart","open"):
+        try:
+            testfile=archive
+            if category=="smart":
+                testfile=root/"Smart sample.zip"
+                with zipfile.ZipFile(testfile,"w") as z:
+                    z.writestr("alpha.txt","alpha")
+                    z.writestr("beta.txt","beta")
+            items=first_menu(testfile,category+"-on")
+            act(items,category+"-on","\u667a\u80fd\u89e3\u538b" if category=="smart" else "\u7528 qing-zip \u6253\u5f00")
+            if category=="smart":
+                target=root/"Smart sample"
+                wait(lambda:(target/"beta.txt").exists(),35)
+                assert (target/"alpha.txt").read_bytes()==b"alpha" and (target/"beta.txt").read_bytes()==b"beta"
+                assert not (root/"alpha.txt").exists() and not (root/"beta.txt").exists()
+                report['actions']['actual_smart_extraction']=True
+            else:
+                def displayed_entry():
+                    for win in desktop.windows():
+                        if win.class_name()=='Tauri Window' and any(w.window_text()=='extracted-marker.txt' for w in win.descendants()):
+                            return True
+                wait(displayed_entry,22)
+                report['actions']['actual_archive_open']=True;shots("opened-archive")
+        except Exception:report['actions'][category+"_error"]=traceback.format_exc()
+        finally:
+            save();keyboard.send_keys('{ESC}{ESC}');stop_own()
     try:
         items=first_menu(folder,'folder-on')
         act(items,'folder-on','\u538b\u7f29')
@@ -365,6 +391,24 @@ try:
             return None
         report['actions']['folder_activation']=wait(genuine_folder_activation,22)
         time.sleep(2);shots('compression-dialog')
+        def create_button():
+            for win in desktop.windows():
+                if win.class_name()!='Tauri Window':continue
+                for w in win.descendants():
+                    if w.window_text()=='\u521b\u5efa\u538b\u7f29\u6587\u4ef6':return w
+        button=wait(create_button,15)
+        try:button.iface_invoke.Invoke()
+        except Exception:button.click_input()
+        output=root/(folder.name+'.zip')
+        def correct_archive():
+            if not output.is_file():return False
+            try:
+                with zipfile.ZipFile(output) as z:
+                    return z.testzip() is None and z.read('Folder sample/source.txt')==b'compression marker'
+            except (OSError,KeyError,zipfile.BadZipFile):return False
+        wait(correct_archive,35)
+        report['actions']['actual_folder_zip']={'path':str(output),'member':'Folder sample/source.txt','crc_ok':True}
+        shots('completed-compression')
     except Exception:
         report['actions']['folder_error']=traceback.format_exc()
     finally:
@@ -374,7 +418,7 @@ try:
         try:
             items=first_menu(p,tag);assert not relevant(items),(tag,items)
         except Exception:report.setdefault('separate_off_probe_errors',{})[tag]=traceback.format_exc();save()
-    assert report['actions'].get('actual_archive_extraction') and report['actions'].get('folder_activation'),report['actions']
+    assert report['actions'].get('actual_archive_extraction') and all(report['actions'].get(k) for k in ('actual_folder_zip','actual_smart_extraction','actual_archive_open')),report['actions']
     report['complete']=True
 except Exception:
     report['error']=traceback.format_exc();shots('last-desktop')
