@@ -4546,6 +4546,38 @@ pub(crate) fn update_lock(path: &Path, ctl: &JobControl) -> Result<File, String>
     }
 }
 
+// Index names once so a large selection does not repeatedly scan and normalize
+// the archive. An implicit directory can be a source; rename targets retain
+// their original exact-entry, ASCII-insensitive collision rule.
+fn validate_update_names(mut names: Vec<String>, inputs: &[String], rename: bool) -> Result<(), String> {
+    for name in &mut names {
+        if name.contains('\\') {
+            *name = name.replace('\\', "/");
+        }
+    }
+    names.sort_unstable();
+    for source in inputs.iter().step_by(if rename { 2 } else { 1 }) {
+        let name = source.replace('\\', "/");
+        if names.binary_search(&name).is_ok() { continue; }
+        let prefix = format!("{}/", name.trim_end_matches('/'));
+        let next = names.partition_point(|item| item < &prefix);
+        if !names.get(next).is_some_and(|item| item.starts_with(&prefix)) {
+            return Err(format!("archive entry not found: {source}"));
+        }
+    }
+    if rename {
+        for name in &mut names { name.make_ascii_lowercase(); }
+        names.sort_unstable();
+        for target in inputs.iter().skip(1).step_by(2) {
+            let name = target.replace('\\', "/").to_ascii_lowercase();
+            if names.binary_search(&name).is_ok() {
+                return Err(format!("rename destination exists: {target}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// action: add, delete, rename (flat old/new pairs).
 pub fn update(
     path: &str,
@@ -4572,32 +4604,7 @@ pub fn update(
     zip_volume_view::require_editable(&locked_path)?;
     if action != "add" {
         let existing = list(path, opts)?;
-        let sources: Vec<&String> = if action == "rename" {
-            inputs.iter().step_by(2).collect()
-        } else {
-            inputs.iter().collect()
-        };
-        for source in sources {
-            if !existing.iter().any(|e| {
-                e.name.replace('\\', "/") == source.replace('\\', "/")
-                    || e.name.replace('\\', "/").starts_with(
-                        &(source.replace('\\', "/").trim_end_matches('/').to_owned() + "/"),
-                    )
-            }) {
-                return Err(format!("archive entry not found: {source}"));
-            }
-        }
-        if action == "rename" {
-            for new_name in inputs.iter().skip(1).step_by(2) {
-                if existing.iter().any(|e| {
-                    e.name
-                        .replace('\\', "/")
-                        .eq_ignore_ascii_case(&new_name.replace('\\', "/"))
-                }) {
-                    return Err(format!("rename destination exists: {new_name}"));
-                }
-            }
-        }
+        validate_update_names(existing.into_iter().map(|entry| entry.name).collect(), inputs, action == "rename")?;
     }
     let path = absolute(path)?;
     no_links(&path)?;
@@ -5130,6 +5137,20 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn indexed_update_sources_and_destinations_keep_their_original_matching_rules() {
+        let check = |inputs: &[&str], rename| {
+            let archive = ["a-obstacle", "dir!unrelated", "dir\\item", "plain.txt", "CASE", "sub/explicit/"];
+            validate_update_names(archive.map(str::to_owned).to_vec(),
+                &inputs.iter().map(|s| s.to_string()).collect::<Vec<_>>(), rename)
+        };
+        assert!(check(&["plain.txt", "dir", "sub/explicit/", "dir///", "dir/item"], false).is_ok());
+        assert!(check(&["plain.txt/", "missing"], false).unwrap_err().ends_with("plain.txt/"));
+        assert!(check(&["DIR"], false).is_err());
+        assert!(check(&["dir", "fresh", "plain.txt", "case"], true).unwrap_err().ends_with("case"));
+        assert!(check(&["dir", "fresh", "missing", "CASE"], true).unwrap_err().ends_with("missing"));
+        assert!(check(&["plain.txt", "dir"], true).is_ok());
+    }
     #[test]
     fn large_listing_preserves_record_boundaries_and_global_validation() {
         use std::io::Write;
