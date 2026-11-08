@@ -169,12 +169,21 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
     engine::no_links(&path)?;
     let _lock = engine::update_lock(&path, &ctl)?;
+    #[cfg(windows)]
+    let edit = engine::edit_source::EditSource::open(&path)?;
     let mut source = File::open(&path).map_err(|e| e.to_string())?;
     let before = source.metadata().map_err(|e| e.to_string())?;
     let directory = inspect(&mut source, Some(&ctl))?;
+    #[cfg(windows)]
+    let output = edit.output()?;
+    #[cfg(windows)]
+    let mut writer = File::create_new(output.path()).map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
     let mut temp =
         tempfile::NamedTempFile::new_in(path.parent().ok_or("missing parent directory")?)
             .map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    let writer = temp.as_file_mut();
     source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let length = directory.end + 20;
     let mut remaining = length;
@@ -186,7 +195,7 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
         if n == 0 {
             return Err("ZIP changed while copying".into());
         }
-        temp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        writer.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         remaining -= n as u64;
         ctl.set(
             "comment",
@@ -194,18 +203,25 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
             "Updating archive comment",
         );
     }
-    temp.write_all(&(text.len() as u16).to_le_bytes())
+    writer.write_all(&(text.len() as u16).to_le_bytes())
         .map_err(|e| e.to_string())?;
-    temp.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    writer.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    writer.sync_all().map_err(|e| e.to_string())?;
     let after = source.metadata().map_err(|e| e.to_string())?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err("ZIP changed during comment update".into());
     }
+    #[cfg(not(windows))]
     fs::set_permissions(temp.path(), before.permissions()).map_err(|e| e.to_string())?;
     ctl.check()?;
     engine::no_links(&path)?;
     drop(source);
+    #[cfg(windows)]
+    {
+        drop(writer);
+        edit.commit(output)?;
+    }
+    #[cfg(not(windows))]
     temp.persist(&path).map_err(|e| e.error.to_string())?;
     ctl.set("complete", Some(100), "Archive comment updated");
     Ok(())
