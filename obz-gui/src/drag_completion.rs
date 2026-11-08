@@ -81,3 +81,68 @@ pub(super) fn after_copy(directory: &Arc<ShellDragDirectory>, data: &IDataObject
         _ => (),
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drag::{data_object, Ole};
+    use std::time::Instant;
+    use windows::Win32::{
+        Foundation::S_OK,
+        System::Ole::OleInitialize,
+        UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE},
+    };
+
+    fn pump() {
+        unsafe {
+            let mut message = MSG::default();
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    #[test]
+    fn delayed_shell_reader_keeps_source_until_end_operation() {
+        unsafe { OleInitialize(None).unwrap() };
+        let _ole = Ole;
+        let directory = Arc::new(ShellDragDirectory::create().unwrap());
+        let path = directory.path().join("late.txt");
+        let root = directory.path().to_owned();
+        std::fs::write(&path, b"copy after Drop returned").unwrap();
+        let data = data_object(vec![path.to_string_lossy().into_owned()]).unwrap();
+        let capability = enable(&data).unwrap();
+        assert!(!copy_reported(&data));
+        unsafe { capability.StartOperation(None).unwrap() };
+        directory.retain_for_shell();
+        after_copy(&directory, &data, Some(&capability));
+        drop(directory);
+        let wait = Instant::now();
+        while wait.elapsed() < Duration::from_millis(450) { pump(); }
+        assert_eq!(std::fs::read(&path).unwrap(), b"copy after Drop returned");
+        unsafe { capability.EndOperation(S_OK, None, DROPEFFECT_COPY.0).unwrap() };
+        let wait = Instant::now();
+        while root.exists() && wait.elapsed() < Duration::from_secs(8) { pump(); }
+        assert!(!root.exists(), "EndOperation must reclaim the pinned export");
+    }
+
+    #[test]
+    fn target_that_never_acknowledges_copy_can_read_after_releasing_com() {
+        unsafe { OleInitialize(None).unwrap() };
+        let _ole = Ole;
+        let directory = Arc::new(ShellDragDirectory::create().unwrap());
+        let path = directory.path().join("unreported.txt");
+        let root = directory.path().to_owned();
+        std::fs::write(&path, b"read retained paths").unwrap();
+        let data = data_object(vec![path.to_string_lossy().into_owned()]).unwrap();
+        let capability = enable(&data).unwrap();
+        assert!(!unsafe { capability.InOperation().unwrap() }.as_bool());
+        directory.retain_for_shell();
+        after_copy(&directory, &data, Some(&capability));
+        drop((capability, data, directory));
+        assert_eq!(std::fs::read(&path).unwrap(), b"read retained paths");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+}
