@@ -6,6 +6,8 @@ pub mod selected_worker;
 mod created_directories;
 mod bounded_archive_stage;
 mod zip_volume_view;
+#[cfg(windows)]
+pub(crate) mod edit_source;
 mod zip_preview;
 pub use zip_preview::ZipPreviewBatch;
 #[cfg(windows)]
@@ -4601,23 +4603,37 @@ pub fn update(
     let locked_path = absolute(path)?;
     no_links(&locked_path)?;
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
+    #[cfg(windows)]
+    let source = edit_source::EditSource::open(&locked_path)?;
     zip_volume_view::require_editable(&locked_path)?;
     if action != "add" {
         let existing = list(path, opts)?;
         validate_update_names(existing.into_iter().map(|entry| entry.name).collect(), inputs, action == "rename")?;
     }
-    let path = absolute(path)?;
+    let path = locked_path;
     no_links(&path)?;
     if !path.is_file() {
         return Err("archive not found".into());
     }
     let parent = path.parent().ok_or("missing archive parent")?;
+    #[cfg(windows)]
+    let output = source.output()?;
+    #[cfg(windows)]
+    let staged = output.path().to_owned();
+    #[cfg(not(windows))]
     let temp = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
-    let staged = temp
-        .path()
-        .join(path.file_name().ok_or("missing archive filename")?);
-    fs::copy(&path, &staged).map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    let staged = temp.path().join(path.file_name().ok_or("missing archive filename")?);
+    #[cfg(windows)]
+    let direct = source.direct_zip(&path)?;
+    #[cfg(not(windows))]
+    let direct = false;
     let mut a = base(command, opts)?;
+    if direct {
+        a.extend(["-u-".to_owned(), format!("-u!{}", staged.display())]);
+    } else {
+        fs::copy(&path, &staged).map_err(|e| e.to_string())?;
+    }
     let names = if action == "add" {
         {
             let paths = input_paths(inputs)?;
@@ -4644,7 +4660,7 @@ pub fn update(
         inputs.to_vec()
     };
     a.push("--".into());
-    a.push(staged.display().to_string());
+    a.push(if direct { &path } else { &staged }.display().to_string());
     a.extend(names);
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
@@ -4652,6 +4668,9 @@ pub fn update(
     test(staged.to_str().ok_or("invalid archive path")?, opts)?;
     ctl.check()?;
     no_links(&path)?;
+    #[cfg(windows)]
+    source.commit(output)?;
+    #[cfg(not(windows))]
     fs::rename(&staged, &path).map_err(|e| e.to_string())?;
     ctl.set("complete", Some(100), "Archive updated");
     Ok(())
