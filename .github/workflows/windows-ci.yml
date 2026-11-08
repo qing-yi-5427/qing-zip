@@ -11,13 +11,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: c0a5e9891b098b1faeda5df94e6687a418630435
+          ref: 0ea90c462b52b2ae93021abcbc9e9203fc0eb862
           path: candidate-source
       - name: Build hardened candidate CLI and run publication tests
         shell: pwsh
         run: |
           Push-Location candidate-source
-          if (-not (git rev-parse HEAD).StartsWith('c0a5e9891b098b1faeda5df94e6687a418630435')) { throw 'Unexpected candidate revision' }
+          if (-not (git rev-parse HEAD).StartsWith('0ea90c462b52b2ae93021abcbc9e9203fc0eb862')) { throw 'Unexpected candidate revision' }
           $target='x86_64-pc-windows-msvc'
           $cfg=Join-Path $env:RUNNER_TEMP 'file-copy-hardening.toml'
           @'
