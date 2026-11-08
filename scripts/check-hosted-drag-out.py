@@ -1,9 +1,17 @@
-﻿"""Exercise WebView2 pointer events and Windows OLE using a disposable, live Explorer."""
+"""Exercise WebView2 pointer events and Windows OLE using a disposable, live Explorer."""
 from pathlib import Path
 import ctypes as c, hashlib, json, os, subprocess, tempfile, time, urllib.parse, zipfile
 
 assert os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted' and os.environ.get('GITHUB_ACTIONS')=='true'
-u=c.windll.user32
+from ctypes import wintypes as w
+u=c.WinDLL('user32',use_last_error=True)
+u.SetWindowPos.argtypes=[w.HWND,w.HWND,c.c_int,c.c_int,c.c_int,c.c_int,w.UINT]
+u.SetWindowPos.restype=w.BOOL
+u.GetAncestor.argtypes=[w.HWND,w.UINT];u.GetAncestor.restype=w.HWND
+u.WindowFromPoint.argtypes=[w.POINT];u.WindowFromPoint.restype=w.HWND
+def place(hwnd,z,x,y,width,height):
+    if not u.SetWindowPos(hwnd,z,x,y,width,height,0x50):raise c.WinError(c.get_last_error())
+
 u.SetProcessDPIAware()
 from PIL import ImageGrab
 from pywinauto import Desktop, mouse
@@ -24,7 +32,7 @@ def save(label):
     ImageGrab.grab().save(result/(label+'.png'))
 def owner(point):
     x,y=point
-    return u.GetAncestor(u.WindowFromPoint(c.c_int64((y<<32)|(x&0xffffffff))),2)
+    return u.GetAncestor(u.WindowFromPoint(w.POINT(x,y)),2)
 def center(rect):
     return (int((rect.left+rect.right)/2),int((rect.top+rect.bottom)/2))
 def find(win,name,kind):
@@ -60,12 +68,17 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
             cb=wait(lambda:find(win,'选择 '+name,'CheckBox'),'checkbox '+name)
             coords=center(cb.rectangle());assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
             mouse.click(coords=coords)
+        # Place windows after WebView startup and Explorer navigation have settled.
+        # Explorer remains topmost so clicking the source cannot cover the drop.
+        u.ShowWindow(win.handle,9);place(win.handle,-2,0,0,left_width,height-65)
+        u.ShowWindow(target_hwnd,9);place(target_hwnd,-1,width-320,5,750,height-65)
+        time.sleep(.6)
         point=center(row.rectangle())
         xp=desktop.window(handle=target_hwnd).wrapper_object()
         report['desktop']=[width,height];report['source_rect']=str(win.rectangle());report['destination_rect']=str(xp.rectangle())
         # The right part of the folder's item view stays exposed beside the archiver.
         qing_right=win.rectangle().right
-        xr=xp.rectangle();drop=((max(qing_right+5,xr.left+180)+xr.right-25)//2,int(xr.top+xr.height()*.65))
+        xr=xp.rectangle();drop=(width-55,int(xr.top+xr.height()*.65))
         report.update(source=point,destination=drop,source_owner=owner(point),target_owner=owner(drop),expected_hwnds=[win.handle,target_hwnd])
         assert owner(point)==win.handle and owner(drop)==target_hwnd,report
         report['drop_control']=desktop.from_point(*drop).element_info.name
