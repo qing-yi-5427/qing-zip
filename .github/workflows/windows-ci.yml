@@ -56,7 +56,7 @@ jobs:
           "QING_CLIP_SOURCE_RUN=$sourceId" >> $env:GITHUB_ENV
           "QING_CLIP_SOURCE_SHA=$sourceSha" >> $env:GITHUB_ENV
           "QING_CLIP_ARTIFACT_DIGEST=$($artifact.digest)" >> $env:GITHUB_ENV
-          python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1
+          python -m pip install pywinauto==0.6.9 pillow==11.3.0
       - name: Copy, cancel, reject corrupt data and paste after exit into Explorer
         run: python -u scripts/check-hosted-clipboard.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
