@@ -332,6 +332,26 @@ fn run_program(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<Vec<u8>, String> {
+    read_engine_output(run_program_log(program, args, cwd, opts, output, allow_zealfs)?)
+}
+
+const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
+
+fn read_engine_output(file: File) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    file.take(OUTPUT_LIMIT + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > OUTPUT_LIMIT { return Err("engine listing exceeds supported limit".into()); }
+    Ok(bytes)
+}
+
+fn run_program_log(
+    program: PathBuf,
+    args: &[String],
+    cwd: Option<&Path>,
+    opts: &EngineOptions,
+    output: Option<File>,
+    allow_zealfs: bool,
+) -> Result<File, String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
     let policy = archive_command.then(crate::machine_policy::scope);
@@ -345,7 +365,6 @@ fn run_program(
     if let Some(password) = &opts.password { crate::engine_password::validate(password)?; }
     let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
     let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
-    let capture = output.is_none();
     let stdout = match output {
         Some(f) => f,
         None => logs.try_clone().map_err(|e| e.to_string())?,
@@ -440,14 +459,11 @@ fn run_program(
     // Child writers share these file positions. Rewind only after the child
     // exits; the live progress reader above has an independent position.
     logs.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    logs.take(64 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > 64 * 1024 * 1024 {
+    if logs.metadata().map_err(|e| e.to_string())?.len() > OUTPUT_LIMIT {
         return Err("engine listing exceeds supported limit".into());
     }
     if !status.success() {
+        let bytes = read_engine_output(logs)?;
         let errors = errors.as_file_mut();
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut err = String::new();
@@ -467,11 +483,7 @@ fn run_program(
     }
     password_result?;
     if let Some(policy) = &policy { policy.unchanged()?; }
-    if capture {
-        Ok(bytes)
-    } else {
-        Ok(Vec::new())
-    }
+    Ok(logs)
 }
 /// Resolve a member name to the same safe relative path used during extraction.
 pub fn validate_name(name: &str) -> Result<PathBuf, String> {
@@ -507,6 +519,15 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
 fn parse_listing_lines<'a>(lines: impl Iterator<Item = Option<&'a str>>) -> Result<Vec<Entry>, String> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
+    append_listing_lines(lines, &mut result, &mut seen)?;
+    Ok(result)
+}
+
+fn append_listing_lines<'a>(
+    lines: impl Iterator<Item = Option<&'a str>>,
+    result: &mut Vec<Entry>,
+    seen: &mut HashSet<String>,
+) -> Result<(), String> {
     let mut props = HashMap::new();
     for line in lines {
         if let Some(line) = line {
@@ -519,7 +540,7 @@ fn parse_listing_lines<'a>(lines: impl Iterator<Item = Option<&'a str>>) -> Resu
             }
         } else {
             if let Some(&name) = props.get("Path") {
-                if let Some(entry) = listing_entry(name, &props, &mut seen)? {
+                if let Some(entry) = listing_entry(name, &props, seen)? {
                     result.push(entry);
                 }
             }
@@ -532,7 +553,52 @@ fn parse_listing_lines<'a>(lines: impl Iterator<Item = Option<&'a str>>) -> Resu
             }
         }
     }
-    Ok(result)
+    Ok(())
+}
+
+// The technical listing is already in a private file. Parse complete records
+// in batches so its whole text never coexists in memory with the decoded tree.
+fn large_directory(log: &mut File, ctl: &JobControl) -> Result<Option<Vec<Entry>>, String> {
+    const BATCH: usize = 128 * 1024;
+    let mut reader = (&mut *log).take(OUTPUT_LIMIT + 1);
+    let mut buffer = Vec::with_capacity(BATCH * 2);
+    let mut block = vec![0; BATCH];
+    let mut consumed = 0;
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        ctl.check()?;
+        let count = reader.read(&mut block).map_err(|e| e.to_string())?;
+        consumed += count as u64;
+        if consumed > OUTPUT_LIMIT { return Err("engine listing exceeds supported limit".into()); }
+        let start = buffer.len();
+        buffer.extend_from_slice(&block[..count]);
+        let end = if count == 0 {
+            buffer.len()
+        } else {
+            let last_blank = (start..buffer.len()).rev().find(|&i| {
+                buffer[i] == b'\n' && (buffer[..i].ends_with(b"\n") || buffer[..i].ends_with(b"\n\r"))
+            });
+            let Some(index) = last_blank else { continue; };
+            index + 1
+        };
+        let parsed = std::str::from_utf8(&buffer[..end]).ok()
+            .filter(|text| !text.contains("\r\r\n"))
+            .is_some_and(|text| {
+                let lines = text.lines().map(|line| (!line.is_empty()).then_some(line));
+                append_listing_lines(lines.chain(std::iter::once(None)), &mut entries, &mut seen).is_ok()
+            });
+        if !parsed { break; }
+        if count == 0 {
+            if !entries.is_empty() { return Ok(Some(entries)); }
+            break;
+        }
+        buffer.drain(..end);
+    }
+    // Preserve whole-list UTF-8 error precedence, unusual CR records and
+    // anonymous stream headers by replaying the existing parser on fallback.
+    log.rewind().map_err(|e| e.to_string())?;
+    Ok(None)
 }
 
 fn listing_entry(
@@ -635,14 +701,22 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         absolute(path)?.display().to_string(),
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
-    let execute = if candidate { run_with_zealfs } else { run };
-    let listing = match execute(&args, None, opts, None) {
+    let execute = |args: &[String]| run_program_log(executable()?, args, None, opts, None, candidate);
+    let mut log = match execute(&args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
             args.retain(|argument| argument != "-slmu");
-            execute(&args, None, opts, None)?
+            execute(&args)?
         }
         result => result?,
     };
+    if !candidate && raw_format.is_none() && opts.password.is_none()
+        && log.metadata().map_err(|e| e.to_string())?.len() >= 1024 * 1024 {
+        if let Some(entries) = large_directory(&mut log, &ctl)? {
+            ctl.set("complete", Some(100), "Archive directory ready");
+            return Ok((entries, PayloadSource::Engine));
+        }
+    }
+    let listing = read_engine_output(log)?;
     let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
     let bare_listing;
     let listing = if candidate {
@@ -4932,6 +5006,28 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn large_listing_preserves_record_boundaries_and_global_validation() {
+        use std::io::Write;
+        let first = "Path = a\nComment = ";
+        for boundary in [131071, 131072, 131073] {
+            let mut text = first.to_owned();
+            text.push_str(&"x".repeat(boundary - first.len()));
+            text.push_str("\r\n\r\nPath = 中文\nSize = 1");
+            let mut log = tempfile::tempfile().unwrap();
+            log.write_all(text.as_bytes()).unwrap();
+            log.rewind().unwrap();
+            let actual = large_directory(&mut log, &JobControl::new()).unwrap().unwrap();
+            let expected = parse_listing(text.as_bytes()).unwrap();
+            assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
+            log.seek(SeekFrom::End(0)).unwrap();
+            log.write_all(b"\n\nPath = A\nSize = 1").unwrap();
+            log.rewind().unwrap();
+            assert!(large_directory(&mut log, &JobControl::new()).unwrap().is_none());
+            assert_eq!(log.stream_position().unwrap(), 0);
+            assert!(parse_listing(&read_engine_output(log).unwrap()).unwrap_err().contains("duplicate"));
+        }
+    }
     #[test]
     fn technical_listing_preserves_mixed_line_endings_and_metadata() {
         let data = b"Path = a\r\nSize = 2\nPacked Size = 1\r\nCRC = ff\n\t\nEncrypted = +\r\nModified = date\nMethod = M\nComment = kept \r\nAttributes = A\r\n\nPath = b/\nFolder = +";
