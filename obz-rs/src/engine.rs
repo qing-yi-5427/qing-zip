@@ -7,6 +7,8 @@ mod created_directories;
 mod bounded_archive_stage;
 mod zip_volume_view;
 mod zip_preview;
+#[cfg(windows)]
+mod update_list;
 pub use zip_preview::ZipPreviewBatch;
 #[cfg(windows)]
 pub use crate::engine_stream::canonical_input_path;
@@ -4652,9 +4654,14 @@ pub fn update(
         }
         inputs.to_vec()
     };
-    a.push("--".into());
-    a.push(staged.display().to_string());
-    a.extend(names);
+    #[cfg(windows)]
+    let _list = update_list::append(&mut a, &staged, names)?;
+    #[cfg(not(windows))]
+    {
+        a.push("--".into());
+        a.push(staged.display().to_string());
+        a.extend(names);
+    }
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
     run(&a, None, opts, None)?;
