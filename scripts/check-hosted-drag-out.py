@@ -93,11 +93,23 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
                 mouse.move(coords=(x,y));time.sleep(.075)
             time.sleep(.5)
         move_selection()
-        from pywinauto import keyboard
-        keyboard.send_keys('{ESC}')
-        time.sleep(.3);mouse.release(coords=drop)
-        wait(lambda:find(win,'已取消拖放。','Text'),'cancelled drag acknowledgement',4)
+        # Hold Escape through a mouse move while the primary button remains
+        # pressed, then inspect the durable job record before starting again.
+        u.keybd_event(0x1b,1,0,0)
+        try:
+            time.sleep(.15)
+            assert u.GetAsyncKeyState(0x1b)&0x8000
+            mouse.move(coords=(drop[0]-4,drop[1]))
+            time.sleep(.3)
+        finally:u.keybd_event(0x1b,1,2,0)
+        mouse.release(coords=drop);time.sleep(.6)
+        report['after_escape']=manifest(dest)
+        task=wait(lambda:find(win,'任务','Button'),'task navigation')
+        mouse.click(coords=center(task.rectangle()))
+        wait(lambda:find(win,'已取消拖放。','Text'),'cancelled drag acknowledgement',6)
         assert manifest(dest)=={}
+        mouse.click(coords=center(find(win,'文件','Button').rectangle()))
+        wait(lambda:find(win,'take.txt','Button'),'return to archive')
         report['escape_left_empty_destination']=True
         move_selection();save('dragging');mouse.release(coords=drop)
         expected={name:hashlib.sha256(data).hexdigest() for name,data in contents.items() if name!='dont-copy.txt'}
