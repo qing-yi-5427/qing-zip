@@ -76,11 +76,42 @@ def trial(exe, directory, template, operation, writer, repeated):
             child.kill()
             child.wait()
 
+def interrupt_real_edit(exe, root):
+    # Observe the public name disappearing. No fault hook or modified binary.
+    for attempt in range(16):
+        folder = root / f"interrupt-{attempt}"
+        folder.mkdir()
+        path = folder / "interrupted.zip"
+        with zipfile.ZipFile(path,"w") as archive:
+            archive.writestr("original.txt",b"keep original contents")
+        before = path.read_bytes()
+        added = root / "added-before-crash.txt"
+        added.write_bytes(b"uncommitted")
+        child = subprocess.Popen([exe,"add",path,added],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 20
+            while child.poll() is None and path.exists() and time.monotonic()<deadline:
+                pass
+            if child.poll() is None and not path.exists():
+                child.kill()
+            child.communicate(timeout=20)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+        if child.returncode and not path.exists():
+            reopened=subprocess.run([exe,"list",path],capture_output=True,timeout=30)
+            assert reopened.returncode==0, reopened.stderr.decode("utf-8","replace")
+            assert path.read_bytes()==before
+            return {"test":"terminate-real-edit","attempt":attempt+1,"recovered_sha256":hashlib.sha256(before).hexdigest()}
+    raise RuntimeError("Could not interrupt the real CLI before publication")
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("obz",type=Path)
     parser.add_argument("--output",type=Path)
     parser.add_argument("--root",type=Path)
+    parser.add_argument("--kill",action="store_true",help="also kill a real edit at the publication boundary and reopen it")
     args=parser.parse_args()
     exe=args.obz.resolve(strict=True)
     rows=[]
@@ -94,6 +125,8 @@ def main():
             for operation in ("add","rename","delete"):
                 for writer in ("replace","inplace"):
                     rows.append(trial(exe,root/f"try-{len(rows)}",source,operation,writer,repeated))
+        if args.kill:
+            rows.append(interrupt_real_edit(exe,root))
     result=json.dumps(rows,indent=2)
     if args.output:
         args.output.write_text(result,encoding="utf-8")

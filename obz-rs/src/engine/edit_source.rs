@@ -590,8 +590,11 @@ mod tests {
                 assert!(!path.exists());
             } else {
                 if mode == "list" {
-                    let entries =
-                        super::super::list(path.to_str().unwrap(), &Default::default()).unwrap();
+                    let entries = crate::operations::list_archive(
+                        path.to_str().unwrap(),
+                        &Default::default(),
+                    )
+                    .unwrap();
                     assert!(entries.iter().any(|e| e.name == "original-member"));
                 } else {
                     crate::engine_stream::canonical_input_path(&path, false).unwrap();
