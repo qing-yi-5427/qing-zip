@@ -184,11 +184,10 @@ def main():
             for change in changes:
                 tail.write_bytes(b"" if change == "empty-file-replacement" else b"original")
                 if change == "empty-file-replacement":
-                    replacement = root / "replacement.tmp"
-                    replacement.touch()
+                    # Retain the original allocation so NTFS cannot reuse its ID.
+                    original_empty = root / "original-empty.tmp"
+                    os.link(tail, original_empty)
                     meta = tail.stat()
-                    os.utime(replacement, ns=(meta.st_atime_ns, meta.st_mtime_ns))
-                    assert not replacement.samefile(tail)
                 dest = root / ("in-flight-" + change)
                 dest.mkdir()
                 bad = dest / "result.zip"
@@ -219,7 +218,10 @@ def main():
                     elif change == "empty-file-replacement":
                         # Same size and modification time, different file ID. The
                         # codec need not issue a Read for a zero-byte file.
-                        replacement.replace(tail)
+                        tail.unlink()
+                        tail.touch()
+                        os.utime(tail, ns=(meta.st_atime_ns, meta.st_mtime_ns))
+                        assert not original_empty.samefile(tail)
                     else:
                         tail.unlink()
                         tail.symlink_to(outside)
