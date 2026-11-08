@@ -1,5 +1,12 @@
 name: Physical drag from qing-zip into Explorer
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Verified drag-completion build to exercise
+        type: choice
+        options: ['final', 'initial']
+        default: final
 permissions:
   contents: read
   actions: read
@@ -16,9 +23,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $id='42463804415'
+          $id=if('${{ inputs.candidate }}' -eq 'initial'){'42463804415'}else{'42464488049'}
+          $expected=if('${{ inputs.candidate }}' -eq 'initial'){'96a766d'}else{'153f0f2'}
           $donor=gh run view $id --json headSha,conclusion|ConvertFrom-Json
-          if(!$donor.headSha.StartsWith('96a766d') -or $donor.conclusion -ne 'success'){throw "Unexpected donor"}
+          if(!$donor.headSha.StartsWith($expected) -or $donor.conclusion -ne 'success'){throw "Unexpected donor"}
           gh run download $id -n qing-zip-windows-x64-trial -D incoming
           if($LASTEXITCODE){exit $LASTEXITCODE}
           $p=@(Get-ChildItem incoming -Filter '*-portable.zip' -Recurse)
