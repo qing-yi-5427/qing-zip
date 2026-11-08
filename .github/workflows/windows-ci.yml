@@ -1,4 +1,4 @@
-﻿name: Existing-directory extraction comparison
+name: Existing-directory publication candidate comparison
 on: workflow_dispatch
 permissions: {contents: read}
 jobs:
@@ -9,6 +9,26 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/bounded-existing-publication
+          path: candidate-source
+      - name: Build hardened candidate CLI and run publication tests
+        shell: pwsh
+        run: |
+          Push-Location candidate-source
+          if (-not (git rev-parse HEAD).StartsWith('80073ed')) { throw 'Unexpected candidate revision' }
+          $target='x86_64-pc-windows-msvc'
+          $cfg=Join-Path $env:RUNNER_TEMP 'file-copy-hardening.toml'
+          @'
+          [target.x86_64-pc-windows-msvc]
+          rustflags=["-C","target-feature=+crt-static","-C","control-flow-guard=yes","-C","link-arg=/CETCOMPAT","-C","link-arg=/DYNAMICBASE","-C","link-arg=/HIGHENTROPYVA","-C","link-arg=/NXCOMPAT"]
+          '@ | Set-Content $cfg
+          cargo --config $cfg build --target $target --release --locked --manifest-path obz-rs/Cargo.toml --bin obz
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib --test engine_staging --test motw_propagation --test encrypted_split_selection
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          Pop-Location
       - name: Fetch and verify published 0.11.8
         shell: pwsh
         run: |
@@ -21,8 +41,8 @@ jobs:
         shell: pwsh
         run: |
           $exe=@(Get-ChildItem app -Filter obz.exe -Recurse)[0]
-          python scripts/compare-existing-extract.py $exe.FullName results
+          python scripts/compare-existing-extract.py $exe.FullName results candidate-source/obz-rs/target/x86_64-pc-windows-msvc/release/obz.exe
           exit $LASTEXITCODE
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: {name: existing-extraction-evidence, path: results/*.json}
+        with: {name: trial-extraction-evidence, path: results/*.json}
