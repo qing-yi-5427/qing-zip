@@ -138,3 +138,21 @@ test('type and modification date sorts keep directories first and missing times 
  s.reverse=true;assert.deepEqual(rows(),['folder/','a.txt','b.ZIP','c.txt']);
  s.sort='type';s.reverse=false;assert.deepEqual(rows(),['folder/','a.txt','c.txt','b.ZIP']);
 });
+
+test('flat view includes implied and empty directories, scopes search, and preserves full member identity',()=>{
+ const {api,s}=fixture();
+ s.entries=[
+  {name:'outside.txt',size:42},{name:'top/b/same.txt',size:2},{name:'top/a/same.txt',size:1},
+  {name:'top/b/empty/',is_dir:true,modified:'2026-01-01'},{name:'top/a/',is_dir:true,modified:'2026-04-01'},
+ ];
+ Object.assign(s,{folder:'top/',flatView:true,sort:'name'});
+ const names=()=>Array.from(api.visibleEntries(),e=>e.name);
+ assert.deepEqual(names(),['top/a/','top/b/','top/b/empty/','top/a/same.txt','top/b/same.txt']);
+ assert.equal(api.visibleEntries()[0].modified,'2026-04-01');
+ s.reverse=true;
+ assert.deepEqual(names(),['top/b/empty/','top/b/','top/a/','top/b/same.txt','top/a/same.txt']);
+ s.search='b/same';assert.deepEqual(names(),['top/b/same.txt']);
+ s.folder='top/a/';s.search='';assert.deepEqual(names(),['top/a/same.txt']);
+ s.folder='top/';s.flatView=false;s.reverse=false;
+ assert.deepEqual(names(),['top/a/','top/b/']);
+});
