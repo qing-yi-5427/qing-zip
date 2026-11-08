@@ -956,6 +956,9 @@ fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
             return None;
         }
         let stem = part.split(|c| *c == 46).next().unwrap();
+        // Only three- or four-unit ASCII stems can match a reserved name
+        // below. Avoid allocating and folding every ordinary path component.
+        if !matches!(stem.len(), 3 | 4) { continue; }
         let name = String::from_utf16_lossy(stem).to_ascii_uppercase();
         if matches!(name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
             || ((name.starts_with("COM") || name.starts_with("LPT"))
@@ -2464,6 +2467,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         && !dest.try_exists().map_err(|e| e.to_string())?
         && dest.parent().is_some_and(Path::is_dir);
     if !defer_preflight {
+        let _timer = PhaseTimer::new("existing-output-preflight");
         preflight_output_targets(&entries, &dest, &opts.overwrite, &mut output_guards)?;
     }
     ctl.check()?;
@@ -2769,6 +2773,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     if !opts.selected.is_empty() {
         output_guards.selected_output_root = Some(dest.clone());
     }
+    let _timer = PhaseTimer::new("file-publication");
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
     let count = if opts.overwrite == "error"
         && (opts.selected.is_empty() || memory_selection)
@@ -2787,6 +2792,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         )?
     } else {
         let mut count = 0;
+        let mut copy_buffer = Vec::new();
         for (i, e) in entries.iter().enumerate() {
             ctl.check()?;
             ctl.set(
@@ -2796,8 +2802,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             );
             let rel = validate_name(&e.name)?;
             let target = dest.join(&rel);
-            output_guards.check(&target)?;
             if e.is_dir {
+                output_guards.check(&target)?;
                 output_guards.create_dirs(&target)?;
                 continue;
             }
@@ -2825,13 +2831,18 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             output_guards.allow_publication(parent)?;
             with_output_temp(parent, &output_guards, |tmp| {
                 let mut source = staged.reader(&rel)?;
-                let mut buf = vec![0; 1024 * 1024];
+                let chunk = if e.size_known {
+                    e.size.clamp(1, 1024 * 1024) as usize
+                } else {
+                    1024 * 1024
+                };
+                if copy_buffer.len() < chunk { copy_buffer.resize(chunk, 0); }
                 loop {
                     ctl.check()?;
-                    let n = source.read(&mut buf).map_err(|e| e.to_string())?;
+                    let n = source.read(&mut copy_buffer[..chunk]).map_err(|e| e.to_string())?;
                     if n == 0 { break; }
                     use std::io::Write;
-                    tmp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    tmp.write_all(&copy_buffer[..n]).map_err(|e| e.to_string())?;
                 }
                 crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
                 restore_open_file_metadata(tmp.as_file(), e).map_err(|e| format!("file metadata: {e}"))?;
@@ -3941,6 +3952,9 @@ fn publish_staged_files_parallel(
                             choose_target_checked(target.clone(), "error", &mut |p| {
                                 prepared_guards.check_prepared(p)
                             })?;
+                            // The Windows output-temp constructor performs this
+                            // same fresh parent check immediately before opening it.
+                            #[cfg(not(windows))]
                             prepared_guards.check_prepared(parent)?;
                             let committed = with_output_temp(parent, prepared_guards, |temp| {
                                 let mut source = stage.reader(&relative)?;
