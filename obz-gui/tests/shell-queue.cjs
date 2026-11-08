@@ -5,8 +5,9 @@ const names=['canRecycleArchive','finishExtraction','shellQueueStatus','clearShe
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
 function fixture(options={}){
- const calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
+ const timers=[],calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
  const context={
+  setTimeout:callback=>{timers.push(callback);return timers.length;},
   s:{archive:'',password:'',codepage:null,overwrite:'error',recycleAfter:false,openAfter:false,closeAfter:false,jobs:[],recent:[],view:'jobs',...options},
   pendingShellExtractions:[],pendingFolders:[],pendingFileGroups:[],pendingArchivePaths:[],archiveTabs:[],
   shellQueueRunning:false,shellQueuePaused:false,shellQueueInterrupted:false,shellActiveRequest:null,shellPasswordRequest:null,openQueueRunning:false,drainingNativeQueue:false,nativeDrainAgain:false,
@@ -27,7 +28,7 @@ function fixture(options={}){
  const actions=source.split('\n').find(line=>line.startsWith("case'shell-continue':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
- return {context,calls,errors,elements,native,queue:(path,smart=true)=>context.enqueueShellExtractions([{path,dest:'C:\\archives',smart}])};
+ return {context,calls,errors,elements,native,timers,queue:(path,smart=true)=>context.enqueueShellExtractions([{path,dest:'C:\\archives',smart}])};
 }
 test('Explorer file selections are grouped in one compression dialog, including deferred selections',async()=>{
  const f=fixture();
@@ -193,4 +194,23 @@ test('empty password is rejected and stale dialog cannot retry a different archi
  assert.equal(f.context.pendingShellExtractions[0].state,'failed');f.context.clearShellQueue();f.queue('C:\\archives\\different.zip');
  await assert.rejects(f.context.retryShellExtraction(true),/已移出队列/);
  assert.equal('password' in f.context.pendingShellExtractions[0],false);
+});
+
+test('queue retry wakes only for pending work and disarms after it drains',async()=>{
+ const f=fixture();
+ f.context.schedulePendingQueue();
+ assert.equal(f.timers.length,0);
+ f.context.overlay.hidden=false;
+ f.native.archives.push('C:\\archives\\queued.zip');
+ await f.context.drainNativeArchives();
+ f.context.schedulePendingQueue();
+ assert.equal(f.timers.length,1);
+ await f.timers.shift()();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.timers.length,1);
+ f.context.overlay.hidden=true;
+ await f.timers.shift()();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.timers.length,0);
+ assert.equal(f.calls.filter(([name])=>name==='open').length,1);
 });
