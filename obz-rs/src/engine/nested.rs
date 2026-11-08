@@ -206,4 +206,111 @@ mod tests {
         assert_eq!(member(&file, "a.zip"), foreign);
         assert_eq!(fs::read(tab.path()).unwrap(), mine);
     }
+    #[test]
+    fn replacing_parent_with_identical_member_does_not_redirect_writeback() {
+        let original = zip(&[("item", b"first")]);
+        let temp = tempfile::tempdir().unwrap();
+        let outer = temp.path().join("outer.zip");
+        fs::write(&outer, zip(&[("member.zip", &original)])).unwrap();
+        let opts = EngineOptions::default();
+        let mut tab = NestedArchive::open(utf8(&outer).unwrap(), "member.zip", &opts).unwrap();
+        let other = temp.path().join("other.zip");
+        let foreign = zip(&[("member.zip", &original), ("new", b"external")]);
+        fs::write(&other, &foreign).unwrap();
+        fs::rename(&other, &outer).unwrap();
+        fs::write(tab.path(), zip(&[("my edit", b"edit")])).unwrap();
+        assert!(tab.save(&opts).is_err());
+        assert_eq!(fs::read(&outer).unwrap(), foreign);
+    }
+
+    #[test]
+    fn two_levels_of_nested_edits_round_trip_to_the_outer_archive() {
+        let leaf = zip(&[("note.txt", b"old")]);
+        let middle = zip(&[("folder/leaf.zip", &leaf), ("sibling", b"unchanged")]);
+        let temp = tempfile::tempdir().unwrap();
+        let outer = temp.path().join("outer.zip");
+        fs::write(&outer, zip(&[("middle.zip", &middle)])).unwrap();
+        let opts = EngineOptions::default();
+        let mut middle = NestedArchive::open(utf8(&outer).unwrap(), "middle.zip", &opts).unwrap();
+        let mut child =
+            NestedArchive::open(utf8(middle.path()).unwrap(), "folder/leaf.zip", &opts).unwrap();
+        let updated = zip(&[("note.txt", b"new")]);
+        fs::write(child.path(), &updated).unwrap();
+        child.save(&opts).unwrap();
+        middle.save(&opts).unwrap();
+        drop(child);
+        drop(middle);
+        let reopened = NestedArchive::open(utf8(&outer).unwrap(), "middle.zip", &opts).unwrap();
+        assert_eq!(member(reopened.path(), "folder/leaf.zip"), updated);
+        assert_eq!(member(reopened.path(), "sibling"), b"unchanged");
+    }
+
+    #[test]
+    fn corrupt_unselected_member_prevents_nested_open() {
+        let nested = zip(&[("entry", b"verified")]);
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        archive.start_file("good.zip", options).unwrap();
+        archive.write_all(&nested).unwrap();
+        archive.start_file("other", options).unwrap();
+        let signature = b"unique corrupt sibling payload";
+        archive.write_all(signature).unwrap();
+        let mut bytes = archive.finish().unwrap().into_inner();
+        let at = bytes
+            .windows(signature.len())
+            .position(|w| w == signature)
+            .unwrap();
+        bytes[at] ^= 1;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bad.zip");
+        fs::write(&path, &bytes).unwrap();
+        assert!(
+            NestedArchive::open(utf8(&path).unwrap(), "good.zip", &EngineOptions::default())
+                .is_err()
+        );
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    #[test]
+    fn authenticated_outer_zip_keeps_member_encrypted_after_nested_writeback() {
+        let temp = tempfile::tempdir().unwrap();
+        let inner = temp.path().join("inner.zip");
+        let parent = temp.path().join("encrypted.zip");
+        fs::write(&inner, zip(&[("note", b"old")])).unwrap();
+        let parent_options = EngineOptions {
+            password: Some("test-outer".into()),
+            encryption: Some("AES256".into()),
+            ..Default::default()
+        };
+        crate::engine::create(
+            utf8(&parent).unwrap(),
+            &[utf8(&inner).unwrap().to_owned()],
+            "zip",
+            &parent_options,
+        )
+        .unwrap();
+        let credentials = EngineOptions {
+            password: Some("test-outer".into()),
+            ..Default::default()
+        };
+        let wrong = EngineOptions {
+            password: Some("wrong".into()),
+            ..Default::default()
+        };
+        assert!(NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &wrong).is_err());
+        let mut tab =
+            NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &credentials).unwrap();
+        fs::write(tab.path(), zip(&[("note", b"updated")])).unwrap();
+        tab.save(&credentials).unwrap();
+        let entries = operations::list_archive(utf8(&parent).unwrap(), &credentials).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].encrypted && entries[0].method.contains("AES-256"),
+            "{:?}",
+            entries[0]
+        );
+        assert!(NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &wrong).is_err());
+        let valid = NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &credentials).unwrap();
+        assert_eq!(member(valid.path(), "note"), b"updated");
+    }
 }
