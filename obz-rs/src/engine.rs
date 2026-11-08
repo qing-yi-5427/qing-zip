@@ -4,6 +4,8 @@
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
+#[cfg(windows)]
+pub(crate) use created_directories::Stamp as OutputRevision;
 mod bounded_archive_stage;
 mod zip_volume_view;
 mod zip_preview;
@@ -2416,6 +2418,15 @@ pub(crate) struct PublicationJournal {
 impl PublicationJournal {
     #[cfg(windows)]
     pub(crate) fn record(&self,receipt:crate::private_stage::OutputReceipt){
+        // The first few files retain the cheap held-handle path. Compact each
+        // later receipt outside the mutex so hashing cannot serialize workers.
+        let mut files = self.files.lock().unwrap_or_else(|p|p.into_inner());
+        if files.len() < 128 {
+            files.push(receipt);
+            return;
+        }
+        drop(files);
+        let receipt = receipt.compact();
         self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
     }
     fn rollback(&self)->Vec<String>{

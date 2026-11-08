@@ -13,7 +13,7 @@ pub(super) enum Identity {
     Journal(Stamp),
 }
 
-pub(super) struct Stamp {
+pub(crate) struct Stamp {
     file_id: (u32, u64),
     journal: u64,
     usn: i64,
@@ -99,7 +99,7 @@ pub(super) fn read_revision(file: &File, index: u64) -> Option<(u64, i64)> {
 }
 
 impl Stamp {
-    pub(super) fn capture(created: &File) -> Option<Self> {
+    pub(crate) fn capture(created: &File) -> Option<Self> {
         let before = Journal::read(created)?;
         let file_id = directory_identity(created).ok()?;
         let mut buf = [0; 8];
@@ -115,7 +115,7 @@ impl Stamp {
         // the same volume journal to span the explicit close-record request.
         stamp.matches(created).then_some(stamp)
     }
-    fn matches(&self, current: &File) -> bool {
+    pub(crate) fn matches(&self, current: &File) -> bool {
         if directory_identity(current).ok() != Some(self.file_id) {
             return false;
         }
