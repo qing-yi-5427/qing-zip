@@ -6,6 +6,8 @@ pub mod selected_worker;
 mod created_directories;
 mod bounded_archive_stage;
 mod zip_volume_view;
+mod zip_preview;
+pub use zip_preview::ZipPreviewBatch;
 pub(crate) use zip_volume_view::with_source as with_zip_source;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -701,14 +703,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         absolute(path)?.display().to_string(),
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
-    let execute = |args: &[String]| run_program_log(executable()?, args, None, opts, None, candidate);
-    let mut log = match execute(&args) {
-        Err(error) if unsupported_utc_listing_switch(&error) => {
-            args.retain(|argument| argument != "-slmu");
-            execute(&args)?
-        }
-        result => result?,
-    };
+    let mut log = run_technical_listing(&mut args, opts, candidate)?;
     if !candidate && raw_format.is_none() && opts.password.is_none()
         && log.metadata().map_err(|e| e.to_string())?.len() >= 1024 * 1024 {
         if let Some(entries) = large_directory(&mut log, &ctl)? {
@@ -809,6 +804,17 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
     }
     ctl.set("complete", Some(100), "Archive directory ready");
     Ok((out, PayloadSource::Engine))
+}
+
+fn run_technical_listing(args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool) -> Result<File, String> {
+    let execute = |args: &[String]| run_program_log(executable()?, args, None, opts, None, allow_zealfs);
+    match execute(args) {
+        Err(error) if unsupported_utc_listing_switch(&error) => {
+            args.retain(|argument| argument != "-slmu");
+            execute(args)
+        }
+        result => result,
+    }
 }
 pub fn list_with_control(
     path: &str,

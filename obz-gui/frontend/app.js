@@ -390,7 +390,7 @@ const IMAGE_EXT=/\.(png|jpe?g|gif|webp|bmp|tiff?|ico|avif)$/i;
 const TEXT_EXT=/\.(txt|md|markdown|log|csv|tsv|json|jsonl|xml|yaml|yml|toml|ini|cfg|conf|config|properties|html?|css|js|mjs|cjs|ts|tsx|jsx|rs|py|java|c|h|cpp|hpp|cs|sql|sh|bat|ps1|svg|srt|ass|vtt|tex|vue|go|kt|dart|rb|php)$/i;
 const isImage=name=>IMAGE_EXT.test(name),isText=name=>TEXT_EXT.test(name)||/^(readme|license|notice|changelog|authors|makefile|dockerfile|\.gitignore|\.editorconfig|\.env)$/i.test(filename(name));
 const previewArgs=name=>({path:s.archive,name,password:s.password||null,codepage:s.codepage||null});
-let previewGeneration=0,openingImage=false,thumbnailObserver=null,thumbnailActive=0,thumbnailBytes=0;
+let previewGeneration=0,openingImage=false,thumbnailObserver=null,thumbnailActive=0,thumbnailBytes=0,thumbnailPumpPending=false;
 const thumbnailCache=new Map(),thumbnailQueue=new Map(),thumbnailInflight=new Set();
 let thumbnailPolicyToken=null,thumbnailPolicyRevision=0,thumbnailPolicyBatch=Promise.resolve();
 async function loadTextPreview(target,textEncoding){const context=target.oaTextContext;if(!context)return;const request=(target.oaTextRequest||0)+1;target.oaTextRequest=request;const meta=target.querySelector('#oa-text-meta'),text=target.querySelector('#oa-text-preview');meta.textContent='正在读取文本…';try{const r=await invoke('preview_entry',{...context.args,kind:'text',textEncoding});if(target!==$('qa-file-preview')||context.generation!==previewGeneration||target.oaTextRequest!==request)return;meta.textContent=`${r.encoding||'文本'} · ${r.truncated?'仅显示部分内容':'只读预览'}`;text.textContent=r.text||'';$('qa-formerror').textContent='';}catch(e){if(target===$('qa-file-preview')&&target.oaTextRequest===request){meta.textContent='无法预览';text.textContent='';error(e);}}}
@@ -417,33 +417,67 @@ function thumbnailRecord(name){const record=thumbnailCache.get(name);if(!thumbna
 function rememberThumbnail(name,record){const old=thumbnailCache.get(name);if(old)thumbnailBytes-=old.cost;record.cost=(record.data_url?.length||0)*2+512;thumbnailCache.delete(name);thumbnailCache.set(name,record);thumbnailBytes+=record.cost;while(thumbnailCache.size>96||thumbnailBytes>12*1024*1024){const first=thumbnailCache.keys().next().value;thumbnailBytes-=thumbnailCache.get(first).cost;thumbnailCache.delete(first);}}
 function thumbnailPlaceholder(el){el.replaceChildren();el.innerHTML=icon('file');el.classList.remove('oa-thumbnail-ready');el.removeAttribute('aria-busy');}
 function paintThumbnail(el,record){if(!el.isConnected||el.dataset.thumbnailVisible!=='true')return;el.removeAttribute('aria-busy');el.title=record.error||'双击用系统默认看图程序打开原图';if(record.error){thumbnailPlaceholder(el);el.classList.add('oa-thumbnail-error');el.setAttribute('aria-label','缩略图不可用：'+record.error);return;}el.classList.remove('oa-thumbnail-error');el.classList.add('oa-thumbnail-ready');const img=document.createElement('img');img.alt=filename(el.dataset.thumbnail);img.decoding='async';img.draggable=false;img.src=record.data_url;el.replaceChildren(img);}
-function enqueueThumbnail(el){const name=el.dataset.thumbnail,record=thumbnailRecord(name);if(record){if(!el.classList.contains('oa-thumbnail-ready'))paintThumbnail(el,record);return;}el.setAttribute('aria-busy','true');const key=previewGeneration+':'+thumbnailPolicyRevision+':'+name;if(!thumbnailInflight.has(key)&&thumbnailQueue.size<128)thumbnailQueue.set(name,{name,generation:previewGeneration,policyRevision:thumbnailPolicyRevision,args:previewArgs(name)});pumpThumbnails();}
+function enqueueThumbnail(el){
+  const name=el.dataset.thumbnail, record=thumbnailRecord(name);
+  if(record){if(!el.classList.contains('oa-thumbnail-ready'))paintThumbnail(el,record);return;}
+  el.setAttribute('aria-busy','true');
+  const key=previewGeneration+':'+thumbnailPolicyRevision+':'+name;
+  if(!thumbnailInflight.has(key) && thumbnailQueue.size<128){
+    const batch=s.entries.length>4096 && /\.zip$/i.test(s.archive) && !s.password && !s.codepage;
+    thumbnailQueue.set(name,{name,batch,generation:previewGeneration,policyRevision:thumbnailPolicyRevision,args:previewArgs(name)});
+  }
+  if(!thumbnailPumpPending){
+    thumbnailPumpPending=true;
+    queueMicrotask(()=>{thumbnailPumpPending=false;pumpThumbnails();});
+  }
+}
 function paintMatchingThumbnails(name,record){root.querySelectorAll('[data-thumbnail]').forEach(el=>{if(el.dataset.thumbnail===name)paintThumbnail(el,record);});}
 function pumpThumbnails() {
   while (thumbnailActive < 2 && thumbnailQueue.size) {
-    const name = thumbnailQueue.keys().next().value;
-    const task = thumbnailQueue.get(name);
-    thumbnailQueue.delete(name);
-    const current = () => task.generation === previewGeneration && task.policyRevision === thumbnailPolicyRevision;
-    if (!current()) continue;
-    const key = task.generation + ':' + task.policyRevision + ':' + name;
-    thumbnailInflight.add(key);
+    const tasks = [];
+    const batch = thumbnailQueue.values().next().value.batch;
+    if (batch && thumbnailActive) break;
+    for (const [name, task] of thumbnailQueue) {
+      if (task.batch !== batch) break;
+      thumbnailQueue.delete(name);
+      if (task.generation !== previewGeneration || task.policyRevision !== thumbnailPolicyRevision) continue;
+      const key = task.generation + ':' + task.policyRevision + ':' + name;
+      thumbnailInflight.add(key);
+      tasks.push({...task, name, key});
+      if (tasks.length === (batch ? 8 : 1)) break;
+    }
+    if (!tasks.length) continue;
+    const {args, generation, policyRevision} = tasks[0];
+    const current = () => generation === previewGeneration && policyRevision === thumbnailPolicyRevision;
     thumbnailActive++;
-    invoke('preview_entry', {...task.args, kind:'thumbnail'}).then(result => {
+    const request = batch
+      ? invoke('preview_thumbnails', {path:args.path, password:args.password, codepage:args.codepage, names:tasks.map(t=>t.name)})
+      : invoke('preview_entry', {...args, name:tasks[0].name, kind:'thumbnail'}).then(result=>[result]);
+    request.then(results => {
       if (!current()) return;
-      if (!thumbnailPolicyToken || result.format_policy !== thumbnailPolicyToken)
-        throw Error('格式策略已更新，请重新打开预览');
-      if (typeof result.data_url !== 'string' || result.data_url.length > 2*1024*1024 ||
-          !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(result.data_url))
-        throw Error('缩略图数据无效或超过预览限制');
-      const record = {data_url:result.data_url, format_policy:result.format_policy};
-      rememberThumbnail(name, record);
-      paintMatchingThumbnails(name, record);
+      if (!Array.isArray(results) || results.length !== tasks.length) throw Error('缩略图响应不完整');
+      tasks.forEach(({name}, i) => {
+        const r = results[i];
+        try {
+          if (r?.name !== name) throw Error('缩略图响应与文件不匹配');
+          if (r.error) throw Error(r.error);
+          if (!thumbnailPolicyToken || r.format_policy !== thumbnailPolicyToken)
+            throw Error('格式策略已更新，请重新打开预览');
+          if (typeof r.data_url !== 'string' || r.data_url.length > 2*1024*1024 ||
+              !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(r.data_url))
+            throw Error('缩略图数据无效或超过预览限制');
+          const record = {data_url:r.data_url, format_policy:r.format_policy};
+          rememberThumbnail(name, record);
+          paintMatchingThumbnails(name, record);
+        } catch (error) {
+          paintMatchingThumbnails(name, {error:String(error).slice(0,240)});
+        }
+      });
     }).catch(error => {
-      if (current()) paintMatchingThumbnails(name, {error:String(error).slice(0,240)});
+      if (current()) tasks.forEach(({name})=>paintMatchingThumbnails(name, {error:String(error).slice(0,240)}));
     }).finally(() => {
       thumbnailActive--;
-      thumbnailInflight.delete(key);
+      tasks.forEach(({key})=>thumbnailInflight.delete(key));
       pumpThumbnails();
     });
   }
