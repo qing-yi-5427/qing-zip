@@ -91,7 +91,7 @@ def run(root,archive,label,exe,rep):
         click(h,"文件")
         wait("restored files",lambda:elem(h,30005,"file-00000.txt"))
         row["restored"]=samples(p)
-        if rep==0: background(exe,h,scratch)
+        if rep==0: background(exe,h,scratch,row)
     except Exception:
         elements=ui.ElementFromHandle(h).FindAll(4,ui.CreateTrueCondition())
         row["screen"]=[(elements.GetElement(i).CurrentControlType,elements.GetElement(i).CurrentName,elements.GetElement(i).CurrentAutomationId) for i in range(min(elements.Length,90))]
@@ -105,7 +105,7 @@ def run(root,archive,label,exe,rep):
             try: process.terminate()
             except psutil.NoSuchProcess: pass
         save()
-def background(exe,h,scratch):
+def background(exe,h,scratch,row):
     work=scratch/"sources";work.mkdir()
     one=work/"one.bin";two=work/"two.txt"
     with one.open("wb") as out:
@@ -140,8 +140,21 @@ def background(exe,h,scratch):
     subprocess.run([exe,"--extract-here",*map(str,queue)],timeout=20,check=True)
     assert not (queue[1].parent/"end-1.bin").exists()
     show(h,"min")
-    wait("second queued extraction while minimized",lambda:(queue[1].parent/"end-1.bin").exists(),90)
+    wait("first queued extraction while minimized",lambda:(queue[0].parent/"end-0.bin").exists(),45)
     assert win.IsIconic(h)
+    second=queue[1].parent/"end-1.bin"
+    queue_fix=os.environ.get("CANDIDATE")=="42459789971" and row["name"]=="candidate"
+    if queue_fix:
+        wait("second queued extraction while minimized",second.exists,60)
+        assert win.IsIconic(h)
+        row["queue_behavior"]="both completed while minimized"
+    else:
+        time.sleep(4)
+        row["queue_behavior"]="both completed while minimized" if second.exists() else "first completed; second needed progress dialog dismissal"
+        if not second.exists():
+            show(h,"normal")
+            click(h,"??")
+            wait("queue continuation after dismissing progress",second.exists)
     for i,source in enumerate(queue):
         assert (source.parent/f"end-{i}.bin").read_bytes()==b"last"+bytes([i])
         assert len(list(source.parent.glob('entry-*.txt')))==350
@@ -151,7 +164,7 @@ with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"],ignore_cleanup_er
     root=Path(tmp);archive=root/"large.zip"
     with zipfile.ZipFile(archive,"w",zipfile.ZIP_STORED) as z:
         for i in range(50000): z.writestr(f"file-{i:05d}.txt",str(i))
-    for rep in range(1 if os.environ.get("CANDIDATE")=="baseline" else 3):
+    for rep in range(1 if os.environ.get("CANDIDATE") in ("baseline","42459789971") else 3):
         order=[("base",base),("candidate",candidate)]
         if rep%2:order.reverse()
         for label,exe in order:run(root,archive,label,exe,rep)

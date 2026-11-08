@@ -1,4 +1,4 @@
-﻿name: Minimized workbench experiment
+name: Minimized workbench experiment
 on:
   workflow_dispatch:
     inputs:
@@ -25,7 +25,7 @@ jobs:
             $id=if($build -eq 'candidate' -and $env:CANDIDATE -ne 'baseline'){$env:CANDIDATE}else{$baseline}
             if($id -notmatch '^[0-9]+$'){throw "Invalid run ID"}
             $result=gh run view $id --json headSha,conclusion|ConvertFrom-Json
-            $expected=if($id -eq $baseline){'336be6e'}else{'8695991'}
+            $expected=if($id -eq $baseline){'336be6e'}elseif($id -eq '42459789971'){'d2a2314'}else{'8695991'}
             if(!$result.headSha.StartsWith($expected) -or $result.conclusion -ne 'success'){throw "Unexpected build"}
             gh run download $id -n qing-zip-windows-x64-trial -D "incoming-$build"
             if($LASTEXITCODE){exit $LASTEXITCODE}
