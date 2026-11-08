@@ -1155,10 +1155,9 @@ impl CheckedDirectories {
                     match result {
                         Ok(created) => {
                             let proof = if self.exclusive_claim {
-                                match created_directories::Identity::owned(&created) {
-                                    Ok(proof)=>Some(proof),
-                                    Err(error)=>{self.created_output_dirs.push((component.to_owned(),created_directories::Identity::Handle(created)));return Err(error);}
-                                }
+                                // If observation raced a foreign stream or failed, preserve
+                                // the directory. An identity alone cannot prove it unchanged.
+                                Some(created_directories::Identity::owned(&created)?)
                             } else if self.created_output_dirs.len() < 4096 {
                                 Some(created_directories::Identity::Handle(created))
                             } else {
@@ -2728,10 +2727,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             };
             let created = crate::private_stage::create_journal_directory(parent, leaf)?;
             output_guards.exclusive_claim = true;
-            let proof=match created_directories::Identity::owned(&created) {
-                Ok(proof)=>proof,
-                Err(error)=>{output_guards.created_output_dirs.push((dest.clone(),created_directories::Identity::Handle(created)));return Err(error);}
-            };
+            let proof = created_directories::Identity::owned(&created)?;
             output_guards.created_output_dirs.push((dest.clone(),proof));
             output_guards.selected_output_root = Some(dest.clone());
             output_guards.owned_dirs.insert(dest.clone());
