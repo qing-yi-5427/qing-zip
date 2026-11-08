@@ -2,9 +2,7 @@
 use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 use windows::{
     core::{GUID, PCWSTR},
@@ -122,15 +120,6 @@ pub fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-struct Temporary {
-    path: PathBuf,
-    file: File,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
 fn copy_inner(path: &str, dest: &str) -> Result<String, String> {
     let src = existing(path)?;
     if !src.is_file() {
@@ -149,54 +138,7 @@ fn copy_inner(path: &str, dest: &str) -> Result<String, String> {
         return Err("目标目录不存在".into());
     }
     no_links(parent)?;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let mut staged = None;
-    for _ in 0..100 {
-        let p = parent.join(format!(
-            ".open-archive-copy-{}-{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        match OpenOptions::new().write(true).create_new(true).open(&p) {
-            Ok(file) => {
-                staged = Some(Temporary { path: p, file });
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    let mut staged = staged.ok_or("无法创建安全临时文件")?;
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    let mut input = OpenOptions::new()
-        .read(true)
-        .share_mode(1)
-        .custom_flags(0x00200000)
-        .open(&src)
-        .map_err(|e| e.to_string())?;
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    unsafe {
-        GetFileInformationByHandle(HANDLE(input.as_raw_handle()), &mut info)
-            .map_err(|e| e.to_string())?;
-    }
-    if info.nNumberOfLinks > 1 || info.dwFileAttributes & 0x400 != 0 {
-        return Err("不能复制链接文件".into());
-    }
-    let before = input.metadata().map_err(|e| e.to_string())?;
-    let count = std::io::copy(&mut input, &mut staged.file).map_err(|e| e.to_string())?;
-    let after = input.metadata().map_err(|e| e.to_string())?;
-    if count != before.len()
-        || after.len() != before.len()
-        || before.modified().ok() != after.modified().ok()
-    {
-        return Err("复制时源文件发生改变，请重试".into());
-    }
-    staged.file.flush().map_err(|e| e.to_string())?;
-    staged.file.sync_all().map_err(|e| e.to_string())?;
-    no_links(&src)?;
-    no_links(&dst)?;
-    fs::hard_link(&staged.path, &dst)
-        .map_err(|e| format!("无法安全创建副本（未覆盖现有文件）：{e}"))?;
+    obz_core::engine::copy_archive_file(&src, &dst)?;
     Ok(dst.to_string_lossy().into_owned())
 }
 #[tauri::command]
@@ -632,6 +574,7 @@ impl ArchiveRecycleGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
@@ -724,6 +667,23 @@ mod tests {
             t.0.join("other.zip").to_str().unwrap()
         )
         .is_err());
+    }
+    #[test]
+    fn archive_copy_preserves_internet_zone_and_refuses_malformed_marker() {
+        let t = Temp::new();
+        let source = t.0.join("archive.zip");
+        let copy = t.0.join("copy.zip");
+        let marker = |p: &Path| PathBuf::from(format!("{}:Zone.Identifier", p.display()));
+        let bytes = b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.invalid/archive.zip\r\n";
+        fs::write(&source, b"archive data").unwrap();
+        fs::write(marker(&source), bytes).unwrap();
+        copy_inner(source.to_str().unwrap(), copy.to_str().unwrap()).unwrap();
+        assert_eq!(fs::read(marker(&copy)).unwrap(), bytes);
+        fs::write(marker(&source), b"not a zone").unwrap();
+        let other = t.0.join("other.zip");
+        assert!(copy_inner(source.to_str().unwrap(), other.to_str().unwrap()).is_err());
+        assert!(!other.exists());
+        assert_eq!(fs::read_dir(&t.0).unwrap().count(), 2);
     }
     #[test]
     fn clipboard_directories_are_distinct_and_empty() {

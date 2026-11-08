@@ -3827,6 +3827,30 @@ impl std::io::Write for OutputTemp {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.as_file_mut().write(bytes) }
     fn flush(&mut self) -> std::io::Result<()> { self.as_file_mut().flush() }
 }
+/// Copy the archive bytes and Windows zone marker into a newly claimed name.
+/// The same private output transaction used by extraction pins the destination;
+/// an existing file cannot be overwritten or substituted at publication.
+#[cfg(windows)]
+pub fn copy_archive_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let mut input = crate::engine_stream::pin(source)?;
+    let before = crate::private_stage::checked_metadata(&input)?;
+    let zone = crate::motw::archive_context(source)?;
+    let parent = destination.parent().ok_or("missing output directory")?;
+    let mut guards = CheckedDirectories::default();
+    guards.check(destination)?;
+    guards.allow_publication(parent)?;
+    with_output_temp(parent, &guards, |output| {
+        crate::motw::apply_to_file(output.as_file(), Some(&zone))?;
+        let count = std::io::copy(&mut *input, output.as_file_mut()).map_err(|e| e.to_string())?;
+        let after = crate::private_stage::checked_metadata(&input)?;
+        if count != before.len() || after.len() != count || after.modified().ok() != before.modified().ok() {
+            return Err("archive changed during copy".into());
+        }
+        output.as_file().sync_all().map_err(|e| e.to_string())?;
+        publish_output(output, destination, false).map(drop)
+    })
+}
+
 fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
     #[cfg(windows)] {
         use std::os::windows::fs::OpenOptionsExt;
