@@ -1,7 +1,7 @@
 """Build the ARM64 trial installer; run both distributions on the native CI host."""
 import argparse
 import ctypes
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import importlib
 import json
@@ -15,6 +15,7 @@ import time
 import winreg
 import zipfile
 
+import check_classic_shell
 from arm64_package_runtime import ROOT, NSIS, fetch, machine, sha, verify_layout, verify_private_imports
 
 def run(args, *, data=None, check=True, cwd=None, timeout=120):
@@ -348,9 +349,12 @@ def main():
         report['installed']['zip_create'] = create_result
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
         assoc_fixture=seed_runner_associations(inst/'qing-zip.exe')
-        run([uninstall,'/S'])
-        deadline=time.monotonic()+90
-        while time.monotonic()<deadline and (uninstall.exists() or key(arp,'InstallLocation') is not None):time.sleep(.2)
+        with (check_classic_shell.registration(inst/'qing-zip.exe') if assoc_fixture else nullcontext()) as file_menu:
+            run([uninstall,'/S'])
+            deadline=time.monotonic()+90
+            while time.monotonic()<deadline and (uninstall.exists() or key(arp,'InstallLocation') is not None):time.sleep(.2)
+            if file_menu:
+                check_classic_shell.verify_registration(file_menu,present=False)
         remaining=files(inst)
         if remaining!={'user-sentinel.txt':sha(keep)} or keep.read_text(encoding='utf8')!='retain this local file':
             raise ValueError('uninstall residue or changed sentinel: '+str(sorted(remaining)))
@@ -360,7 +364,10 @@ def main():
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
         if assoc_fixture:
             report['uninstall']['file_associations']=check_runner_associations(assoc_fixture)
-            report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp,tmp)
+            with check_classic_shell.registration(tmp/'portable/qing-zip.exe') as file_menu:
+                report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp,tmp)
+                check_classic_shell.verify_registration(file_menu,present=True)
+            report['uninstall']['file_compression_menu']={'installed_registration_removed':True,'portable_registration_preserved':True}
             report['uninstall']['retry']=verify_retry(setup,inst,shortcuts,arp,tmp)
     report['assets']={}
     for p in [setup,portable]:

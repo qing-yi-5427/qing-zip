@@ -1,4 +1,5 @@
 """Exercise the registered classic Explorer action only in a disposable hosted account."""
+from contextlib import contextmanager
 import argparse
 import ctypes
 import json
@@ -19,19 +20,10 @@ def notify_shell():
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('portable', type=Path)
-    parser.add_argument('probe', type=Path)
-    args = parser.parse_args()
+@contextmanager
+def registration(exe):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
-        raise SystemExit('This test requires a disposable GitHub-hosted Windows runner')
-    apps = list(args.portable.glob('*-portable/qing-zip.exe'))
-    if len(apps) != 1:
-        raise ValueError(f'Expected one freshly built portable application under {args.portable}')
-    exe = apps[0].resolve(strict=True)
-    probe = args.probe.resolve(strict=True)
-
+        raise RuntimeError('Disposable hosted account required for shell registration')
     for root in (CLASS, VERB):
         try:
             with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, root, 0, winreg.KEY_READ | VIEW):
@@ -57,6 +49,40 @@ def main():
                 for name, text in data.items():
                     winreg.SetValueEx(h,name,0,winreg.REG_SZ,text)
         notify_shell()
+        yield values
+    finally:
+        for path in reversed(created):
+            try:
+                winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER,path,VIEW)
+            except FileNotFoundError:
+                pass
+        notify_shell()
+
+def verify_registration(values, present):
+    for key, names in values.items():
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,CLASSES+'\\'+key,0,winreg.KEY_READ|VIEW) as handle:
+                assert present, f"Uninstall left {key}"
+                for name, expected in names.items():
+                    assert winreg.QueryValueEx(handle,name)==(expected,winreg.REG_SZ), (key,name)
+        except FileNotFoundError:
+            if present:
+                raise
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('portable', type=Path)
+    parser.add_argument('probe', type=Path)
+    args = parser.parse_args()
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+        raise SystemExit('This test requires a disposable GitHub-hosted Windows runner')
+    apps = list(args.portable.glob('*-portable/qing-zip.exe'))
+    if len(apps) != 1:
+        raise ValueError(f'Expected one freshly built portable application under {args.portable}')
+    exe = apps[0].resolve(strict=True)
+    probe = args.probe.resolve(strict=True)
+
+    with registration(exe):
         with tempfile.TemporaryDirectory(prefix='qing-shell-two-') as temp:
             source = Path(temp)
             first = source/'first 甲 & 25%.txt'
@@ -72,10 +98,6 @@ def main():
             result['source_commit'] = os.environ['GITHUB_SHA']
             result['receiver'] = 'test window, matching actual Tauri single-instance IPC'
             print(json.dumps(result),flush=True)
-    finally:
-        for path in reversed(created):
-            winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER,path,VIEW)
-        notify_shell()
 
 
 if __name__ == '__main__':

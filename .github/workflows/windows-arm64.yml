@@ -91,6 +91,15 @@ jobs:
           $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
           python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
           exit $LASTEXITCODE
+      - name: Invoke the classic Explorer action on native ARM64
+        shell: pwsh
+        run: |
+          cmake -S qing-shell -B target/qing-shell-arm -A ARM64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build target/qing-shell-arm --config Release --target qing-shell-classic-forwarding
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check_classic_shell.py dist/arm64 target/qing-shell-arm/Release/qing-shell-classic-forwarding.exe
+          exit $LASTEXITCODE
       - name: Install, exercise helpers, and uninstall on ARM64
         shell: pwsh
         run: |
