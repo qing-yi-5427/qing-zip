@@ -76,8 +76,14 @@ fn evidence(file: &File) -> Result<[u8; 32], String> {
     hash.update(meta.creation_time().to_le_bytes());
     hash.update(meta.last_write_time().to_le_bytes());
     hash.update(policy_stamp(file)?);
-    if let Some(zone) = output::output_marker(file)? {
-        hash.update(zone);
+    match output::output_marker(file) {
+        Ok(Some(zone)) => hash.update(zone),
+        Ok(None) => {}
+        // FAT32/exFAT reject FileStreamInfo even for ordinary files. The
+        // volume flag is queried on the same held file. NTFS stream-query
+        // failures and unknown streams still prevent deletion.
+        Err(_) if !crate::motw::named_streams(file)? => {}
+        Err(error) => return Err(error),
     }
     Ok(hash.finalize().into())
 }
