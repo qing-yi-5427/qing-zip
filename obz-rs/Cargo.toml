@@ -1,6 +1,6 @@
 [package]
 name = "obz-rs"
-version = "0.11.5"
+version = "0.11.6"
 edition = "2021"
 description = "qing-zip native toolkit: packages and archives"
 license = "MIT"

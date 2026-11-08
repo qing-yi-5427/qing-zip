@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载 0.11.5 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.5) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载 0.11.6 试用版](https://github.com/qing-yi-5427/qing-zip/releases/tag/v0.11.6) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
 
 ## 软件截图
 
@@ -20,6 +20,7 @@
 - 支持 Brotli、LZ4、LZ5、Lizard、ZSTD 单文件流格式的压缩与解压，也可浏览和提取 WASM、ROMFS、UFS 分区镜像，以及 ZealFS v1 直接镜像中的多级目录。
 - 文件校验支持 SHA-2 / SHA-3、BLAKE3、xxHash 等算法，可一次计算多种校验值。
 - 常见文本预览、图片缩略图与原图打开；支持多选和包内文件复制。
+- 在“新建压缩文件”或“添加文件”对话框中，可从资源管理器拖入要打包的文件和文件夹。
 - 解压偏好自动记忆：智能解压、成功后回收原包、打开目标文件夹、关闭窗口。
 - 文件关联与资源管理器右键入口；ZIP 修复、密码管理和有限范围密码恢复。
 
