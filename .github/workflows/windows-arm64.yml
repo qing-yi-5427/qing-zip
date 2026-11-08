@@ -56,6 +56,8 @@ jobs:
           python scripts/prepare-arm64-runtime.py $archive runtime/nanazip-arm64
           exit $LASTEXITCODE
       - name: Build architecture-matched supporting runtimes
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $runtime = Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime'

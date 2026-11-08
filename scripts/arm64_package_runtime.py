@@ -41,16 +41,30 @@ def fetch(directory, source):
     target = directory / url.rsplit('/',1)[1]
     if not target.is_file():
         for attempt in range(3):
-            try:
-                req = urllib.request.Request(url, headers={'User-Agent':'qing-zip-build'})
-                with urllib.request.urlopen(req,timeout=90) as response, tempfile.NamedTemporaryFile(dir=directory,delete=False) as output:
-                    temp=Path(output.name)
-                    shutil.copyfileobj(response,output)
-                if sha(temp)!=digest: raise ValueError(f'upstream archive hash mismatch: {url}')
+            with tempfile.TemporaryDirectory(dir=directory) as work:
+                temp = Path(work) / target.name
+                try:
+                    req = urllib.request.Request(url, headers={'User-Agent': 'qing-zip-build'})
+                    with urllib.request.urlopen(req, timeout=90) as response, temp.open('wb') as output:
+                        shutil.copyfileobj(response, output)
+                except OSError:
+                    prefix = 'https://github.com/ip7z/7zip/releases/download/'
+                    if url.startswith(prefix) and shutil.which('gh'):
+                        tag, filename = url[len(prefix):].split('/')
+                        download = subprocess.run(['gh', 'release', 'download', tag, '--repo', 'ip7z/7zip',
+                                                   '--pattern', filename, '--output', str(temp), '--clobber'])
+                        if download.returncode:
+                            if attempt == 2:
+                                download.check_returncode()
+                            continue
+                    elif attempt == 2:
+                        raise
+                    else:
+                        continue
+                if sha(temp) != digest:
+                    raise ValueError(f'upstream archive hash mismatch: {url}')
                 temp.replace(target)
                 break
-            except OSError:
-                if attempt==2: raise
     if sha(target)!=digest: raise ValueError(f'upstream archive hash mismatch: {url}')
     return target
 
