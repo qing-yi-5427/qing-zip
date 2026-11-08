@@ -12,23 +12,29 @@ const PROGID: &str = "OpenArchive.Archive";
 const APP_NAME: &str = "qing-zip";
 const FOLDER_MENU: &str = r"Software\Classes\Directory\shell\qing-zip-compress";
 
+fn executable_path() -> Result<String, String> {
+    std::env::current_exe().map_err(|e| e.to_string())?
+        .into_os_string().into_string().map_err(|_| "程序路径不是有效Unicode".into())
+}
+
 #[tauri::command]
 pub fn folder_menu_enabled() -> Result<bool,String> {
-    Ok(string_data(read_value(HKEY_CURRENT_USER,&format!(r"{FOLDER_MENU}\command"),"")?).is_some())
+    Registry::user().owns_folder_menu(&handler_command(&executable_path()?, " --compress-folder")?)
 }
 #[tauri::command]
 pub fn set_folder_menu(enabled: bool) -> Result<bool,String> {
     let _lock=REGISTRATION.lock().map_err(|_| "设置暂不可用")?;
+    let reg = Registry::user();
+    let exe = executable_path()?;
+    let command = handler_command(&exe, " --compress-folder")?;
     if enabled {
-        let exe=std::env::current_exe().map_err(|e|e.to_string())?.to_string_lossy().into_owned();
-        let command=open_command(&exe)?.replace("\" \"%1\"", "\" --compress-folder \"%1\"");
-        apply_edits(&Registry::user(),vec![
+        apply_edits(&reg,vec![
             edit(FOLDER_MENU,"",Some(string_value("用 qing-zip 压缩…"))),
             edit(FOLDER_MENU,"Icon",Some(string_value(&format!("\"{exe}\",0")))),
             edit(FOLDER_MENU,"MultiSelectModel",Some(string_value("Single"))),
             edit(format!(r"{FOLDER_MENU}\command"),"",Some(string_value(&command))),
         ],None)?;
-    } else {
+    } else if reg.owns_folder_menu(&command)? {
         let key=wide(FOLDER_MENU)?;
         let result=unsafe{RegDeleteTreeW(HKEY_CURRENT_USER,PCWSTR(key.as_ptr()))};
         if result!=ERROR_FILE_NOT_FOUND && result!=ERROR_PATH_NOT_FOUND {result.ok().map_err(|e|e.to_string())?;}
@@ -118,6 +124,10 @@ impl Registry {
         Ok(string_data(self.read(r"Software\RegisteredApplications", APP_NAME)?)
             .as_deref() == Some(CAPABILITIES))
     }
+    fn owns_folder_menu(&self, command: &str) -> Result<bool, String> {
+        Ok(string_data(self.read(&format!(r"{FOLDER_MENU}\command"), "")?)
+            .as_deref() == Some(command))
+    }
     fn default_apps_uri(&self) -> Result<String, String> {
         let page = "ms-settings:defaultapps";
         if self.advertised()? {
@@ -151,12 +161,15 @@ fn selections(extensions:Vec<String>)->Result<BTreeSet<String>,String>{
     Ok(selected)
 }
 fn open_command(exe:&str)->Result<String,String>{
+    handler_command(exe, "")
+}
+fn handler_command(exe:&str, arguments:&str)->Result<String,String>{
     let path=Path::new(exe);
     if exe.contains(['\0','\r','\n','"']) || !path.is_absolute()
         || !path.extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("exe")) {
         return Err("程序路径不能用于文件关联".into());
     }
-    Ok(format!("\"{exe}\" \"%1\""))
+    Ok(format!("\"{exe}\"{arguments} \"%1\""))
 }
 fn registration_edits(reg:&Registry,selected:&BTreeSet<String>,exe:&str)->Result<Vec<Edit>,String>{
     let command=open_command(exe)?;
@@ -248,10 +261,9 @@ pub fn association_status()->Result<Vec<AssociationStatus>,String>{Registry::use
 pub fn set_file_associations(extensions:Vec<String>)->Result<Vec<AssociationStatus>,String>{
     let _lock=REGISTRATION.lock().map_err(|_|"文件关联操作不可用")?;
     let selected=selections(extensions)?;
-    let exe=std::env::current_exe().map_err(|e|e.to_string())?;
-    let exe=exe.to_str().ok_or("程序路径不是有效Unicode")?;
+    let exe=executable_path()?;
     let reg=Registry::user();
-    let edits=registration_edits(&reg,&selected,exe)?;
+    let edits=registration_edits(&reg,&selected,&exe)?;
     apply_edits(&reg,edits,None)?;
     unsafe{SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,None,None);}
     reg.statuses()
@@ -279,6 +291,19 @@ mod tests {
         assert!(open_command("relative.exe").is_err());
         assert!(open_command("C:\\bad\"name.exe").is_err());
         assert_eq!(open_command("C:\\Program Files\\qing-zip\\qing-zip.exe").unwrap(),"\"C:\\Program Files\\qing-zip\\qing-zip.exe\" \"%1\"");
+    }
+    #[test]
+    fn folder_menu_status_tracks_the_executable_registered_by_explorer() {
+        let t = TestRegistry::new();
+        let reg = &t.0;
+        let command = handler_command(r"C:\My Programs\qing-zip.exe", " --compress-folder").unwrap();
+        assert_eq!(command, r#""C:\My Programs\qing-zip.exe" --compress-folder "%1""#);
+        assert!(!reg.owns_folder_menu(&command).unwrap());
+        let key = format!(r"{FOLDER_MENU}\command");
+        reg.write(&key, "", Some(&string_value(&command))).unwrap();
+        assert!(reg.owns_folder_menu(&command).unwrap());
+        let moved = handler_command(r"D:\Portable\qing-zip.exe", " --compress-folder").unwrap();
+        assert!(!reg.owns_folder_menu(&moved).unwrap());
     }
     #[test]fn registration_preserves_other_defaults_and_candidates(){
         let t=TestRegistry::new();let reg=&t.0;
