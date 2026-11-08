@@ -86,7 +86,7 @@ def run(root,archive,label,exe,rep):
         start=time.perf_counter()
         show(h,"normal")
         click(h,"设置")
-        wait("restored settings",lambda:elem(h,30011,"qa-theme") or elem(h,30005,"????"))
+        wait("restored settings",lambda:elem(h,30011,"qa-theme") or elem(h,30005,"应用主题"))
         row["restore_ms"]=(time.perf_counter()-start)*1000
         click(h,"文件")
         wait("restored files",lambda:elem(h,30005,"file-00000.txt"))
@@ -153,7 +153,7 @@ def background(exe,h,scratch,row):
         row["queue_behavior"]="both completed while minimized" if second.exists() else "first completed; second needed progress dialog dismissal"
         if not second.exists():
             show(h,"normal")
-            click(h,"??")
+            click(h,"关闭")
             wait("queue continuation after dismissing progress",second.exists)
     for i,source in enumerate(queue):
         assert (source.parent/f"end-{i}.bin").read_bytes()==b"last"+bytes([i])
