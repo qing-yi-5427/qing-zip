@@ -269,12 +269,12 @@ pub(crate) fn create(parent: &Path, parent_handle: &File) -> Result<PrivateStage
     Ok(PrivateStage { path: Some(path), parent: parent.to_owned(), root, _parent_pin: parent_pin })
 }
 
-pub(crate) fn create_drag_root(parent: &Path, parent_handle: &File) -> Result<(PathBuf, File, File), String> {
+pub(crate) fn create_drag_root(parent: &Path, parent_handle: &File, prefix: &str) -> Result<(PathBuf, File, File), String> {
     // A separate extraction request must be able to open this directory as
     // an ordinary ancestor. Its held pin denies rename, but requests no DELETE.
     // Windows needs write sharing on the destination parent to rename a
     // verified child into it. Keep its namespace pinned against deletion.
-    create_root(parent, parent_handle, "qing-zip-drag-", 0x120081, 3)
+    create_root(parent, parent_handle, prefix, 0x120081, 3)
 }
 
 fn protected_descriptor(sid: &str) -> Result<Allocation, String> {

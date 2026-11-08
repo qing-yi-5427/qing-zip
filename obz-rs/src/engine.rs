@@ -4,6 +4,8 @@
 pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
+#[cfg(windows)]
+pub mod nested;
 mod bounded_archive_stage;
 mod zip_volume_view;
 mod zip_input_probe;
@@ -3152,6 +3154,9 @@ pub struct ShellDragDirectory {
 #[cfg(windows)]
 impl ShellDragDirectory {
     pub fn create() -> Result<Self, String> {
+        Self::create_named("qing-zip-drag-")
+    }
+    fn create_named(prefix: &str) -> Result<Self, String> {
         use std::os::windows::fs::OpenOptionsExt;
         let parent = absolute(
             std::env::temp_dir()
@@ -3167,7 +3172,7 @@ impl ShellDragDirectory {
             .open(&parent)
             .map_err(|e| e.to_string())?;
         validate_transaction_root(&pin, &parent)?;
-        let (path, root, parent_pin) = crate::private_stage::create_drag_root(&parent, &pin)?;
+        let (path, root, parent_pin) = crate::private_stage::create_drag_root(&parent, &pin, prefix)?;
         Ok(Self {
             path,
             root: Some(root),
