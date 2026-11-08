@@ -19,8 +19,10 @@ from win32com.client import Dispatch
 
 result=Path('drag-evidence');result.mkdir()
 exe=next((Path(os.environ['RUNNER_TEMP'])/'qing-trial').rglob('qing-zip.exe'))
-assert hashlib.sha256(exe.read_bytes()).hexdigest()=='319112564bbeb8fbb18f6a9a2f45576dd05d7e215ec4b458250b373f48884ac7'
-report={'binary':hashlib.sha256(exe.read_bytes()).hexdigest()}
+assert hashlib.sha256(exe.read_bytes()).hexdigest()==os.environ['QING_DRAG_GUI_SHA']
+report={'binary':hashlib.sha256(exe.read_bytes()).hexdigest(),
+        'tested_source':os.environ['QING_DRAG_SOURCE_SHA'],'source_run':os.environ['QING_DRAG_SOURCE_RUN'],
+        'source_artifact':os.environ['QING_DRAG_ARTIFACT_DIGEST']}
 def wait(fn,why,seconds=30):
     end=time.monotonic()+seconds
     while time.monotonic()<end:
@@ -94,7 +96,12 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
                 x=int((point[0]+22)*(1-step/14)+drop[0]*step/14);y=int(point[1]*(1-step/14)+drop[1]*step/14)
                 mouse.move(coords=(x,y));time.sleep(.075)
             time.sleep(.5)
+        expected={name:hashlib.sha256(data).hexdigest() for name,data in contents.items() if name!='dont-copy.txt'}
+        assert not drag_stages()
         move_selection()
+        active=drag_stages()
+        assert len(active)==1 and next(iter(active.values()))==expected,active
+        report['before_escape_stages']=active
         # Hold Escape through a mouse move while the primary button remains
         # pressed, then inspect the durable job record before starting again.
         u.keybd_event(0x1b,1,0,0)
@@ -112,13 +119,14 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         assert manifest(dest)=={}
         mouse.click(coords=center(find(win,'文件','Button').rectangle()))
         wait(lambda:find(win,'take.txt','Button'),'return to archive')
+        wait(lambda:not drag_stages(),'private export files released after Escape',8)
         report['after_escape_stages']=drag_stages()
         report['escape_left_empty_destination']=True
         move_selection();save('dragging');mouse.release(coords=drop)
-        expected={name:hashlib.sha256(data).hexdigest() for name,data in contents.items() if name!='dont-copy.txt'}
         wait(lambda:manifest(dest)==expected,'exact dropped files',25)
         report['verified']=manifest(dest)
         time.sleep(.75);report['after_copy_stages']=drag_stages()
+        assert len(report['after_copy_stages'])==1 and next(iter(report['after_copy_stages'].values()))==expected
         save('after')
     except Exception as exc:
         report['error']=repr(exc);save('failure')

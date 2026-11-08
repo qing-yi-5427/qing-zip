@@ -2,6 +2,7 @@ name: Physical drag from qing-zip into Explorer
 on: workflow_dispatch
 permissions:
   contents: read
+  actions: read
 jobs:
   drag:
     runs-on: windows-latest
@@ -10,17 +11,42 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Fetch verified public 0.11.8 x64 trial
+      - name: Fetch the verified cancel-cleanup Windows x64 build
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $file=Join-Path $env:RUNNER_TEMP 'qing-zip-0.11.8-portable.zip'
-          Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.8/qing-zip-0.11.8-portable.zip' -OutFile $file
-          if ((Get-FileHash $file).Hash -ne 'CACA993662690D45CFBF679FFF1F5BEF50D6F3B21E686D80BFCE12F5D7FDABB4'){throw 'Unexpected portable'}
-          Expand-Archive -LiteralPath $file -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
+          $ErrorActionPreference='Stop'
+          $repo=$env:GITHUB_REPOSITORY
+          $sourceId='42463507424'
+          $sourceSha='80c91adb0ea15753f7bf6ea24c67086dab11af7d'
+          $run=gh api "repos/$repo/actions/runs/$sourceId" | ConvertFrom-Json
+          if ($run.head_sha -cne $sourceSha -or $run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/windows-ci.yml') { throw 'Unexpected source workflow' }
+          $items=@((gh api "repos/$repo/actions/runs/$sourceId/artifacts" | ConvertFrom-Json).artifacts | Where-Object { $_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired })
+          if ($items.Count -ne 1 -or $items[0].workflow_run.head_sha -cne $sourceSha) { throw 'Unexpected source artifacts' }
+          $artifact=$items[0]
+          $pack=Join-Path $env:RUNNER_TEMP 'source-artifact.zip'
+          $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json' }
+          Invoke-WebRequest -Uri $artifact.archive_download_url -Headers $headers -OutFile $pack
+          if (('sha256:'+(Get-FileHash $pack).Hash.ToLowerInvariant()) -cne $artifact.digest) { throw 'Artifact digest mismatch' }
+          $dir=Join-Path $env:RUNNER_TEMP 'source-artifact'
+          Expand-Archive -LiteralPath $pack -DestinationPath $dir
+          $portables=@(Get-ChildItem $dir -Recurse -File -Filter '*-portable.zip')
+          $builds=@(Get-ChildItem $dir -Recurse -File -Filter 'hardened-build.json')
+          if ($portables.Count -ne 1 -or $builds.Count -ne 1) { throw 'Unexpected nested artifact layout' }
+          $build=Get-Content -Raw $builds[0].FullName | ConvertFrom-Json
+          if ($build.target -cne 'x86_64-pc-windows-msvc') { throw 'Unexpected architecture' }
+          $gui=@($build.binaries | Where-Object name -eq 'obz-gui.exe')
+          if ($gui.Count -ne 1 -or $gui[0].sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'No GUI digest in build receipt' }
+          Expand-Archive -LiteralPath $portables[0].FullName -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
+          "QING_DRAG_GUI_SHA=$($gui[0].sha256)" >> $env:GITHUB_ENV
+          "QING_DRAG_SOURCE_RUN=$sourceId" >> $env:GITHUB_ENV
+          "QING_DRAG_SOURCE_SHA=$sourceSha" >> $env:GITHUB_ENV
+          "QING_DRAG_ARTIFACT_DIGEST=$($artifact.digest)" >> $env:GITHUB_ENV
           python -m pip install pywinauto==0.6.9 pillow==11.3.0
       - name: Drag two selected items into a real destination folder
         run: python -u scripts/check-hosted-drag-out.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: drag-out-desktop
