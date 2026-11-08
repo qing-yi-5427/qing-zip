@@ -1,4 +1,4 @@
-﻿name: Hosted x64 desktop comparison
+name: Hosted x64 desktop comparison
 on: workflow_dispatch
 permissions:
   contents: read
@@ -6,7 +6,7 @@ permissions:
 jobs:
   desktop:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -27,6 +27,20 @@ jobs:
           Expand-Archive -LiteralPath $portable[0].FullName -DestinationPath qing
           New-Item -ItemType Directory results
           $ci | ConvertTo-Json | Set-Content results/qing-source.json
+      - name: Fetch the candidate from its own validated commit
+        shell: pwsh
+        run: |
+          $run = 42456163361
+          gh run watch $run --exit-status --interval 30
+          if ($LASTEXITCODE) { throw 'Candidate failed' }
+          $ci = gh run view $run --json headSha,conclusion,url | ConvertFrom-Json
+          if (-not $ci.headSha.StartsWith('bea4fba')) { throw 'Wrong candidate revision' }
+          gh run download $run --name qing-zip-windows-x64-trial --dir incoming-candidate
+          if ($LASTEXITCODE) { throw 'Missing candidate GUI' }
+          $portable = @(Get-ChildItem incoming-candidate -Recurse -Filter '*0.11.6*portable.zip')
+          if ($portable.Count -ne 1) { throw 'Expected one archive' }
+          Expand-Archive -LiteralPath $portable[0].FullName -DestinationPath candidate
+          $ci | ConvertTo-Json | Set-Content results/candidate-source.json
       - name: Register official NanaZip stable MSIX and open both file managers
         shell: powershell
         run: |
@@ -45,7 +59,8 @@ jobs:
           $qing = @(Get-ChildItem qing -Filter qing-zip.exe -File -Recurse)
           python -m pip install psutil==6.1.1 pywinauto==0.6.9 Pillow==11.3.0
           if ($LASTEXITCODE) { throw 'Desktop probes unavailable' }
-          python scripts/compare-hosted-desktops.py $qing[0].FullName $nana results
+          $candidate = @(Get-ChildItem candidate -Filter qing-zip.exe -File -Recurse)
+          python scripts/compare-hosted-desktops.py $qing[0].FullName $candidate[0].FullName $nana results
           exit $LASTEXITCODE
       - name: Save observed desktop evidence
         if: always()

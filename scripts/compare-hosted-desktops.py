@@ -1,4 +1,4 @@
-﻿"""Measure visible archive content and an idle process tree on a disposable x64 runner."""
+"""Measure visible archive content and an idle process tree on a disposable x64 runner."""
 import ctypes
 import hashlib
 import json
@@ -16,11 +16,11 @@ import psutil
 from PIL import ImageGrab, ImageStat
 from pywinauto.uia_defines import IUIA
 
-qing, nana, result = map(lambda x: Path(x).resolve(), sys.argv[1:])
+qing, candidate, nana, result = map(lambda x: Path(x).resolve(), sys.argv[1:])
 assert qing.name.lower() == "qing-zip.exe"
 assert nana.name.lower() == "nanazip.modern.filemanager.exe"
 data = {"platform": platform.platform(), "cpu_count": psutil.cpu_count(),
-        "executables": {x.name: hashlib.sha256(x.read_bytes()).hexdigest() for x in (qing, nana)},
+        "executables": {name: hashlib.sha256(x.read_bytes()).hexdigest() for name, x in (("production", qing), ("candidate", candidate), ("nana", nana))},
         "trials": [], "notes": [
             "Startup measures request to first UIA descendant with matching filename, visible bounds and IsOffscreen false.",
             "First launch per app is distinguished. Subsequent samples are warm, not disk-cold.",
@@ -32,14 +32,15 @@ def save():
 save()
 machine = IUIA().iuia
 # UIA client setup is complete before either application's first launch.
-fname = "A001-archive-content-visible"
-archive = result / "gui-probe.zip"
-with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr(fname, "make visible in both file managers")
-    for i in range(120):
-        z.writestr(f"item-{i:03}.txt", f"sample {i}")
+fname = "file-00000.txt"
+archive = result / "large.zip"
+with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
+    for i in range(50000):
+        info = zipfile.ZipInfo(f"file-{i:05d}.txt", (2025,1,1,0,0,0))
+        z.writestr(info, f"row {i:05d}\n".encode())
 data["archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
-data["fixture_members"] = 121
+assert data["archive_sha256"] == "f7243bf7f9448c1187613759a9f0be60ff4064f57ce025ba321a8345ae483e00"
+data["fixture_members"] = 50000
 data["marker"] = fname
 name_filter = machine.CreatePropertyCondition(30005, fname)
 hwnds = ctypes.windll.user32
@@ -79,7 +80,10 @@ def snap(proc):
 def run(label, exe, rep):
     before = set(psutil.pids())
     start = time.perf_counter()
-    child = subprocess.Popen([str(exe), str(archive)])
+    env = dict(os.environ)
+    if label != "nana":
+        env["WEBVIEW2_USER_DATA_FOLDER"] = str(result.parent / (label + "-profile"))
+    child = subprocess.Popen([str(exe), str(archive)], env=env)
     app = None
     item = None
     row = {"app":label, "rep":rep}
@@ -132,10 +136,10 @@ def run(label, exe, rep):
             psutil.wait_procs(stubborn, timeout=3)
         if child.poll() is None: child.terminate()
         save()
-apps = [("qing", qing), ("nana", nana)]
+apps = [("production", qing), ("candidate", candidate), ("nana", nana)]
 try:
     for rep in range(4):
-        for name, exe in (apps if rep % 2 == 0 else reversed(apps)):
+        for name, exe in apps[rep%3:] + apps[:rep%3]:
             run(name, exe, rep)
     data["complete"] = True
 except Exception:
