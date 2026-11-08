@@ -55,7 +55,7 @@ test('UTC listing display follows local timezone without changing old local stri
 });
 
 test('an in-flight thumbnail cannot repaint or cache plaintext under a different policy',async()=>{
- const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function observeThumbnails()'));
+ const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function watchTile('));
  const run=async(token,returned,revisionAfterStart)=>{
   const paints=[],cache=[];
   let finish;

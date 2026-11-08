@@ -133,3 +133,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .oa-table-wrap:has(.oa-windowed){overflow-anchor:none}
 #qing-archive .oa-row-gap{pointer-events:none}
 #qing-archive .qa-table .oa-row-gap>td{padding:0;border:0;line-height:0;font-size:0}
+
+#qing-archive .oa-icons.oa-windowed tbody{position:relative}
+#qing-archive .oa-icons.oa-windowed tbody tr{position:absolute}

@@ -85,19 +85,21 @@ test('the archive view uses the window only for large details and keeps icon thu
   const table={attributes:{},classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v}};
   const body={closest:()=>table,innerHTML:''};
   const state={selected:new Set(),listStyle:'details'},calls=[];
-  const env={s:state,main:{},document:{activeElement:null},detailWindow:null,
+  const env={s:state,main:{},document:{activeElement:null},listingWindow:null,
     $:()=>body,positionsFor:l=>new Map(l.map((e,i)=>[e.name,i])),visibleEntries:()=>env.list,
     refreshSelection:()=>calls.push('selection'),stopThumbnailObserver:()=>calls.push('stop'),observeThumbnails:()=>calls.push('observe'),
     icon:()=>'',esc:s=>s,size:()=>'',entrySize:()=>'',displayModified:()=>'',isImage:()=>true,
+    watchTile(){},unwatchTile(){},ArchiveIconWindow:class{constructor(b,m,l,row){Object.assign(this,{body:b,list:l,row,iconGrid:true});calls.push('icon mount')}stop(){calls.push('release icons')}},
     ArchiveRowWindow:class{constructor(b,m,l,row,cursor){Object.assign(this,{body:b,list:l,row,cursor});calls.push('mount')}paint(){calls.push('paint')}stop(){calls.push('release')}}};
   vm.createContext(env);vm.runInContext(excerpt,env);
   const entries=n=>Array.from({length:n},(_,i)=>({name:i+'.png',leaf:i+'.png',is_dir:false}));
   env.list=entries(256);env.rows();assert.equal((body.innerHTML.match(/<tr /g)||[]).length,256);
   assert.equal(table.attributes['aria-rowcount'],'257');assert.ok(!body.innerHTML.includes('data-thumbnail='));
   env.list=entries(257);env.rows();assert.equal(calls.filter(x=>x==='mount').length,1);
-  assert.match(env.detailWindow.row(env.list[256],256),/aria-rowindex="258"/);
+  assert.match(env.listingWindow.row(env.list[256],256),/aria-rowindex="258"/);
   env.rows();assert.ok(calls.includes('paint'));
-  state.listStyle='icons';env.rows();assert.equal(calls.at(-1),'observe');assert.equal(env.detailWindow,null);
-  assert.equal((body.innerHTML.match(/data-thumbnail=/g)||[]).length,257);
+  state.listStyle='icons';env.rows();assert.ok(env.listingWindow.iconGrid);assert.ok(calls.includes('icon mount'));assert.match(env.listingWindow.row(env.list[256],256),/data-thumbnail=/);
+  env.list=entries(64);env.rows();assert.equal(calls.at(-1),'observe');assert.equal(env.listingWindow,null);
+  assert.equal((body.innerHTML.match(/data-thumbnail=/g)||[]).length,64);
   state.listStyle='details';env.list=[];env.rows();assert.ok(body.innerHTML.includes('colspan="6"'));assert.equal(calls.at(-1),'stop');
 });

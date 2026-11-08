@@ -85,7 +85,7 @@ test('range selection and keyboard focus use the logical order outside the mount
  let mounted=all.slice(0,10);
  f.context.root.querySelectorAll=()=>mounted;
  f.context.testWindow={reveal(index){mounted=all.slice(Math.max(0,index-3),index+4)}};
- vm.runInContext("detailWindow=testWindow",f.context);
+ vm.runInContext("listingWindow=testWindow",f.context);
  f.context.selectRow('file2',{});
  f.press(2,'End',{shiftKey:true});
  assert.equal(f.state.cursor,'file999');assert.equal(f.state.selected.size,998);assert.equal(f.state.anchor,'file2');
