@@ -3731,10 +3731,10 @@ fn normalize_staged_entry(
 }
 #[cfg(test)]
 fn rename_directory_noclobber(root: &File, target: &Path) -> Result<bool, String> {
-    rename_directory_noclobber_in(root, target, None)
+    rename_handle_noclobber_in(root, target, None)
 }
-#[cfg(test)]
-fn rename_directory_noclobber_in(
+#[cfg(any(windows, test))]
+fn rename_handle_noclobber_in(
     root: &File,
     target: &Path,
     parent: Option<&File>,
@@ -6498,7 +6498,7 @@ mod staging_tests {
         assert_eq!(stage.path().parent(), Some(shared.as_path()));
         let final_path = shared.join("committed");
         fs::write(stage.path().join("data"), b"verified").unwrap();
-        assert!(rename_directory_noclobber_in(&candidate.root, &final_path, Some(&candidate.parent)).unwrap());
+        assert!(rename_handle_noclobber_in(&candidate.root, &final_path, Some(&candidate.parent)).unwrap());
         stage.keep();
         let expected=BTreeMap::from([("data".into(),(false,8))]);
         let pins=pin_committed_tree(&final_path,&expected).unwrap();
@@ -6563,7 +6563,7 @@ mod staging_tests {
         let expected = expected_tree(&entries).unwrap();
         verify_stage_with_metadata(stage.path(), &expected, &control, &mut guards, Some(&entries), Some(&zone)).unwrap();
         drop(guards);
-        assert!(rename_directory_noclobber_in(&transaction.root, &destination, Some(&transaction.parent)).unwrap());
+        assert!(rename_handle_noclobber_in(&transaction.root, &destination, Some(&transaction.parent)).unwrap());
         stage.keep();
         let pins = pin_committed_tree(&destination, &expected).unwrap();
         crate::private_stage::inherit_tree(&transaction.root, &transaction.parent, &pins).unwrap();

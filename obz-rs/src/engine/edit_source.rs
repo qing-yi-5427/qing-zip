@@ -1,7 +1,7 @@
 #[path = "edit_recovery.rs"]
 mod journal;
 use super::{
-    directory_identity, rename_directory_noclobber_in, validate_transaction_root,
+    directory_identity, rename_handle_noclobber_in, validate_transaction_root,
     CheckedDirectories,
 };
 use crate::{
@@ -334,7 +334,7 @@ impl EditSource {
         {
             return Err("Archive changed before commit; edit cancelled".into());
         }
-        if !rename_directory_noclobber_in(&original, &merge_path, Some(&merge_parent))? {
+        if !rename_handle_noclobber_in(&original, &merge_path, Some(&merge_parent))? {
             return Err("Could not claim the original archive for editing".into());
         }
         // After this point an unwind must not recursively remove the original.
@@ -348,7 +348,7 @@ impl EditSource {
                 return Err("Private replacement archive changed".into());
             }
             drop(proposed);
-            if !rename_directory_noclobber_in(&candidate, path, Some(&self.parent))? {
+            if !rename_handle_noclobber_in(&candidate, path, Some(&self.parent))? {
                 return Err(
                     "Another file occupies the archive name, or publication was denied".into(),
                 );
@@ -362,7 +362,7 @@ impl EditSource {
             for saved in [&backup, &merge_path] {
                 if let Ok(handle) = leaf(saved, 0x10080, 1) {
                     if id(&handle).ok().as_ref() == Some(&self.identity)
-                        && rename_directory_noclobber_in(&handle, path, Some(&self.parent))
+                        && rename_handle_noclobber_in(&handle, path, Some(&self.parent))
                             .unwrap_or(false)
                     {
                         drop(handle);

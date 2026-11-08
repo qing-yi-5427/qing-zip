@@ -173,7 +173,7 @@ pub(in crate::engine) fn recover_missing(input: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     if found.len() == 1 && found[0].ready {
-        if super::rename_directory_noclobber_in(&found[0].original, &target, Some(&parent))? {
+        if super::rename_handle_noclobber_in(&found[0].original, &target, Some(&parent))? {
             let _ = found[0].marker.set_len(0);
             return Ok(true);
         }

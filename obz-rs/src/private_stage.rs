@@ -222,7 +222,6 @@ impl PrivateStage {
     pub(crate) fn path(&self) -> &Path {
         self.path.as_deref().expect("owned private stage")
     }
-    #[cfg(test)]
     pub(crate) fn keep(mut self) -> PathBuf {
         self.path.take().expect("owned private stage")
     }
