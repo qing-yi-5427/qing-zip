@@ -118,11 +118,16 @@ def run_removal(inst, arp, log_dir, *, required_failure=False):
         assert key(arp,'InstallLocation') is None and not (inst/'Uninstall.exe').exists()
     messages=[]
     for file in log_dir.iterdir():
-        if file.is_file() and file.stat().st_size<65536:
+        try:
+            if not file.is_file() or file.stat().st_size>=65536:continue
             raw=file.read_bytes()
-            if raw.startswith(b'\xff\xfe'):
-                value=raw.decode('utf-16')
-                if value.startswith('qing-zip uninstall'):messages.append(value)
+        except (FileNotFoundError, PermissionError):
+            # The NSIS bootstrap may still own or remove its scratch file after
+            # the ARP entry and installed uninstaller have already disappeared.
+            continue
+        if raw.startswith(b'\xff\xfe'):
+            value=raw.decode('utf-16')
+            if value.startswith('qing-zip uninstall'):messages.append(value)
     assert len(messages)==1, messages
     return messages[0]
 
