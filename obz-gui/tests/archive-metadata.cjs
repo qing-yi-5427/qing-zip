@@ -54,8 +54,9 @@ test('UTC listing display follows local timezone without changing old local stri
  }
 });
 
+const thumbnailPump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function watchTile('));
+
 test('an in-flight thumbnail cannot repaint or cache plaintext under a different policy',async()=>{
- const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function watchTile('));
  const run=async(token,returned,revisionAfterStart)=>{
   const paints=[],cache=[];
   let finish;
@@ -66,7 +67,7 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
    invoke:()=>new Promise(resolve=>{finish=resolve;}),
    paintMatchingThumbnails:(_,record)=>paints.push(record),rememberThumbnail:(_,record)=>cache.push(record)
   };
-  vm.runInNewContext(pump+'\npumpThumbnails();',context);
+  vm.runInNewContext(thumbnailPump+'\npumpThumbnails();',context);
   context.thumbnailPolicyRevision=revisionAfterStart;
   finish([{name:'a.png',data_url:'data:image/png;base64,AA==',format_policy:returned}]);
   await new Promise(resolve=>setImmediate(resolve));
@@ -83,7 +84,6 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
 });
 
 test('visible thumbnails use bounded batches and one corrupt image does not discard valid neighbors', async()=>{
- const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function observeThumbnails()'));
  const names=Array.from({length:20},(_,i)=>i+'.png'), requests=[], paints=new Map(), cache=new Map();
  const context={
   thumbnailQueue:new Map(names.map(name=>[name,{name,batch:true,generation:2,policyRevision:3,args:{path:'archive.zip'}}])),
@@ -93,7 +93,7 @@ test('visible thumbnails use bounded batches and one corrupt image does not disc
       {name,data_url:'data:image/png;base64,AA==',format_policy:'token'}));},
   paintMatchingThumbnails:(name,value)=>paints.set(name,value), rememberThumbnail:(name,value)=>cache.set(name,value)
  };
- vm.runInNewContext(pump+'\npumpThumbnails();',context);
+ vm.runInNewContext(thumbnailPump+'\npumpThumbnails();',context);
  assert.deepEqual(requests.map(batch=>batch.length),[8]);
  await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual(requests.flat(),names);assert.equal(requests[2].length,4);
@@ -102,7 +102,6 @@ test('visible thumbnails use bounded batches and one corrupt image does not disc
 });
 
 test('small or password-protected archives retain the individual thumbnail calls', async()=>{
- const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function observeThumbnails()'));
  const names=['a.png','b.png','c.png'], sent=[], painted=[];
  const context={
   thumbnailQueue:new Map(names.map(name=>[name,{name,batch:false,generation:1,policyRevision:1,args:{path:'a.zip',password:'pw'}}])),
@@ -111,7 +110,7 @@ test('small or password-protected archives retain the individual thumbnail calls
     sent.push(args.name);return Promise.resolve({name:args.name,data_url:'data:image/png;base64,QQ==',format_policy:'default'});},
   paintMatchingThumbnails:name=>painted.push(name),rememberThumbnail:()=>{}
  };
- vm.runInNewContext(pump+'\npumpThumbnails();',context);
+ vm.runInNewContext(thumbnailPump+'\npumpThumbnails();',context);
  assert.deepEqual(sent,['a.png','b.png']);
  await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual(painted,names);assert.equal(context.thumbnailActive,0);
