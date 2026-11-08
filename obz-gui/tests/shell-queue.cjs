@@ -11,7 +11,7 @@ function fixture(options={}){
   s:{archive:'',password:'',codepage:null,overwrite:'error',recycleAfter:false,openAfter:false,closeAfter:false,jobs:[],recent:[],view:'jobs',...options},
   pendingShellExtractions:[],pendingFolders:[],pendingFileGroups:[],pendingArchivePaths:[],archiveTabs:[],
   shellQueueRunning:false,shellQueuePaused:false,shellQueueInterrupted:false,shellActiveRequest:null,shellPasswordRequest:null,openQueueRunning:false,drainingNativeQueue:false,nativeDrainAgain:false,
-  overlay:{hidden:true},archiveKey:p=>(p||'').replaceAll('/','\\').toLowerCase(),filename:p=>p.split(/[\\/]/).at(-1),
+  overlay:{hidden:true,dataset:{}},archiveKey:p=>(p||'').replaceAll('/','\\').toLowerCase(),filename:p=>p.split(/[\\/]/).at(-1),
   esc:x=>String(x),btn:(label,action)=>`<button data-action="${action}">${label}</button>`,
   renderProgress:()=>{},render:()=>{},renderArchiveTabs:()=>{},toast:x=>calls.push(['toast',x]),error:e=>errors.push(String(e)),
   localStorage:{setItem:(key,value)=>calls.push(['storage',key,value])},discardArchiveTab:(path)=>calls.push(['discard',path]),
@@ -63,6 +63,22 @@ test('smart and here retain exact request rules and inherit completion preferenc
  assert.equal(f.calls.filter(c=>c[0]==='discard').length,2);
  assert.equal(f.calls.filter(c=>c[0]==='window_action').length,1);
  assert.equal(f.calls.at(-1)[0],'window_action');
+});
+test('the first completed job progress dialog permits the next extraction but never a user confirmation',async()=>{
+ for(const modal of ['jobs','close-confirm']){
+  const f=fixture();
+  const run=f.context.run;
+  f.context.run=async(...args)=>{
+   const result=await run(...args);
+   f.context.overlay.hidden=false;
+   f.context.overlay.dataset.page=modal;
+   return result;
+  };
+  f.queue('C:\\archives\\one.zip');f.queue('C:\\archives\\two.zip');
+  await f.context.pumpShellExtractions();
+  assert.equal(f.calls.filter(c=>c[0]==='run').length,modal==='jobs'?2:1);
+  assert.equal(f.context.pendingShellExtractions.length,modal==='jobs'?0:1);
+ }
 });
 test('skip and unverified or split formats preserve source despite saved recycle preference',async()=>{
  for(const [path,overwrite] of [['a.zip','skip'],['a.rar','error'],['a.7z.001','rename']]){
