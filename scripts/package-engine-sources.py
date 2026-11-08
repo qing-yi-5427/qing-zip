@@ -16,6 +16,7 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--arm64-runtime', type=Path, help='Verified staged ARM64 runtime to accompany the trial package')
 parser.add_argument('--output-directory', type=Path)
+parser.add_argument('--source-cache', type=Path, help='Reuse source archives downloaded during the runtime build')
 args = parser.parse_args()
 runtime = args.arm64_runtime.resolve(strict=True) if args.arm64_runtime else root / 'runtime'
 if args.arm64_runtime:
@@ -35,21 +36,27 @@ for component, relative in components:
     if not url.startswith(('https://github.com/ip7z/7zip/', 'https://api.github.com/repos/M2Team/NanaZip/')):
         raise SystemExit('Unrecognized source origin')
     cached = root / 'tools' / relative
-    cached.parent.mkdir(parents=True, exist_ok=True)
+    if args.source_cache and (args.source_cache / cached.name).is_file():
+        cached = args.source_cache / cached.name
     if not cached.is_file():
-        with tempfile.NamedTemporaryFile(dir=cached.parent, delete=False) as staged:
-            staged_path = Path(staged.name)
-            try:
-                with urllib.request.urlopen(url, timeout=120) as response:
-                    shutil.copyfileobj(response, staged)
-            except BaseException:
-                staged.close()
-                staged_path.unlink(missing_ok=True)
-                raise
-        if hashlib.sha256(staged_path.read_bytes()).hexdigest() != expected:
-            staged_path.unlink()
-            raise SystemExit(f'Source integrity mismatch: {component}')
-        staged_path.replace(cached)
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        urls = [url]
+        prefix = 'https://api.github.com/repos/M2Team/NanaZip/zipball/'
+        if url.startswith(prefix):
+            urls.append('https://codeload.github.com/M2Team/NanaZip/legacy.zip/refs/tags/' + url[len(prefix):])
+        with tempfile.TemporaryDirectory(dir=cached.parent) as temp:
+            staged = Path(temp) / cached.name
+            for address in urls:
+                try:
+                    with urllib.request.urlopen(address, timeout=120) as response, staged.open('wb') as out:
+                        shutil.copyfileobj(response, out)
+                    break
+                except OSError:
+                    if address == urls[-1]:
+                        raise
+            if hashlib.sha256(staged.read_bytes()).hexdigest() != expected:
+                raise SystemExit(f'Source integrity mismatch: {component}')
+            staged.replace(cached)
     if hashlib.sha256(cached.read_bytes()).hexdigest() != expected:
         raise SystemExit(f'Cached source integrity mismatch: {component}')
     sources.append((component, cached, manifest))
