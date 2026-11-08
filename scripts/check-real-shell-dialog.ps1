@@ -54,7 +54,7 @@ try{
   if($LASTEXITCODE -ne 0 -or $evidence.real_primary_pid -ne $ApplicationPid -or $evidence.invoked_for_files -ne 2){throw 'Shell invocation failed'}
   $dialog=Wait-Value 'creation dialog' {Find-Elem '新建压缩文件'}
   $dialogName=$dialog.Current.Name
-  $dialogCondition=[System.Windows.Automation.PropertyCondition]::new($automation::AriaRoleProperty,'dialog')
+  $dialogCondition=[System.Windows.Automation.PropertyCondition]::new($automation::ControlTypeProperty,[System.Windows.Automation.ControlType]::Window)
   $dialogs=$script:root.FindAll($scope,$dialogCondition)
   if($dialogs.Count -ne 1){throw "Expected one live modal dialog; got $($dialogs.Count)"}
   $modal=$dialogs.Item(0)
