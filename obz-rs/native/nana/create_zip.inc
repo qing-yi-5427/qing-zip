@@ -548,6 +548,11 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
       fail("invalid ZIP request");
     if (qing_machine_policy_restricts_native())
       fail("machine policy rejects native route");
+    CPINFO oem{};
+    // The ZIP layout budget assumes at most four filename bytes per UTF-16
+    // unit. UTF-8 satisfies this; qualify the machine's actual OEM page too.
+    if (!GetCPInfo(CP_OEMCP, &oem) || oem.MaxCharSize > 4)
+      throw NotEligible{};
     Runtime dll;
     dll.init(runtime);
     Ref<IOutArchive> archive;
