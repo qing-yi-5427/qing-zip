@@ -1,6 +1,28 @@
 const invoke=(window.__TAURI__||window.parent.__TAURI__).core.invoke,$=id=>document.getElementById(id),lines=id=>$(id).value.split(/\r?\n/).filter(s=>s.length>0);let active=null;
+let hashDiscovery=null;
+const listedHashes=new Set();
+function addHashChoice(name){
+ if(listedHashes.has(name))return;
+ listedHashes.add(name);
+ $('hash-algorithm').add(new Option(name,name));
+ const label=document.createElement('label'),input=document.createElement('input');
+ input.type='checkbox';input.value=name;
+ label.append(input,document.createTextNode(name));$('hash-choices').append(label);
+}
+function loadHashAlgorithms(){
+ if(!listedHashes.size){
+   $('hash-algorithm').add(new Option('自选多项…','custom'));
+   ['CRC32','MD5','SHA1','SHA256'].forEach(addHashChoice);
+ }
+ if(!hashDiscovery){
+   hashDiscovery=invoke('checksum_algorithms').then(algorithms=>{
+     $('hash-algorithm').add(new Option('全部可用算法','*'));
+     algorithms.forEach(({name})=>addHashChoice(name));
+   }).catch(()=>{hashDiscovery=null;});
+ }
+}
 const show=(id,yes)=>$(id).classList.toggle('hidden',!yes);const fileOps=['list','extract','test','add','delete','rename','preview','repair','recover','checksum'];
-function update(){const op=$('operation').value,creating=op==='create',vault=op.startsWith('vault');show('path-group',op!=='checksum'&&(fileOps.includes(op)||creating));show('checksum-paths-group',op==='checksum');$('path-label').textContent=creating?'新压缩包保存路径':'压缩包路径';show('dest-group',['extract','repair'].includes(op));$('dest-label').textContent=op==='repair'?'修复后另存为（必须是新文件）':'解压到';show('inputs-group',['create','add','delete','rename'].includes(op));$('inputs-label').textContent=op==='rename'?'旧名称、新名称交替填写，每行一个（如：旧名.txt 换行 新名.txt）':op==='delete'?'要删除的包内完整名称（每行一个）':'输入文件（每行一个完整路径）';show('files',['create','add'].includes(op));show('folder',['create','add'].includes(op));show('format-group',creating);show('hash-group',op==='checksum');if(op==='checksum')$('path-label').textContent='文件路径';show('overwrite-group',op==='extract');show('selected-group',op==='extract');show('name-group',op==='preview'||['vault-put','vault-delete'].includes(op));$('name-label').textContent=vault?'密码 ID':'图片在包内的完整名称';show('label-group',op==='vault-put');show('password-group',!['capabilities','checksum','recover','vault-list','vault-delete','shell-enable','shell-disable'].includes(op));show('password-id-group',!vault&&!['capabilities','checksum','recover','shell-enable','shell-disable'].includes(op));show('recovery-group',op==='recover');show('advanced',!vault&&['list','extract','test','add','create','preview','delete','rename','repair'].includes(op));$('hint').textContent=op==='repair'?'修复仅恢复能验证的 ZIP 条目；原文件保留不变，不能保证恢复全部内容。':op==='recover'?'按候选顺序进行有上限的尝试；并非保证成功的密码破解。':op==='shell-enable'?'仅增加当前用户的“使用 qing-zip 打开”右键入口，不修改默认打开方式。':creating?'新建操作不会覆盖已有压缩包。GZip、XZ、BZip2 以及 Brotli、LZ4、LZ5、Lizard、Zstandard 单流格式只能直接输入一个文件。':'';}
+function update(){const op=$('operation').value,creating=op==='create',vault=op.startsWith('vault');show('path-group',op!=='checksum'&&(fileOps.includes(op)||creating));show('checksum-paths-group',op==='checksum');$('path-label').textContent=creating?'新压缩包保存路径':'压缩包路径';show('dest-group',['extract','repair'].includes(op));$('dest-label').textContent=op==='repair'?'修复后另存为（必须是新文件）':'解压到';show('inputs-group',['create','add','delete','rename'].includes(op));$('inputs-label').textContent=op==='rename'?'旧名称、新名称交替填写，每行一个（如：旧名.txt 换行 新名.txt）':op==='delete'?'要删除的包内完整名称（每行一个）':'输入文件（每行一个完整路径）';show('files',['create','add'].includes(op));show('folder',['create','add'].includes(op));show('format-group',creating);show('hash-group',op==='checksum');if(op==='checksum')loadHashAlgorithms();show('overwrite-group',op==='extract');show('selected-group',op==='extract');show('name-group',op==='preview'||['vault-put','vault-delete'].includes(op));$('name-label').textContent=vault?'密码 ID':'图片在包内的完整名称';show('label-group',op==='vault-put');show('password-group',!['capabilities','checksum','recover','vault-list','vault-delete','shell-enable','shell-disable'].includes(op));show('password-id-group',!vault&&!['capabilities','checksum','recover','shell-enable','shell-disable'].includes(op));show('recovery-group',op==='recover');show('advanced',!vault&&['list','extract','test','add','create','preview','delete','rename','repair'].includes(op));$('hint').textContent=op==='repair'?'修复仅恢复能验证的 ZIP 条目；原文件保留不变，不能保证恢复全部内容。':op==='recover'?'按候选顺序进行有上限的尝试；并非保证成功的密码破解。':op==='shell-enable'?'仅增加当前用户的“使用 qing-zip 打开”右键入口，不修改默认打开方式。':creating?'新建操作不会覆盖已有压缩包。GZip、XZ、BZip2 以及 Brotli、LZ4、LZ5、Lizard、Zstandard 单流格式只能直接输入一个文件。':'';}
 function updateFormat(){const creating=$('operation').value==='create',format=$('format').value,raw=['zstd','brotli','lz4','lz5','lizard'].includes(format),previous=$('level').value,levels=window.qingCompression.levels(format);$('level').replaceChildren(new Option('默认',''),...levels.map(([value,label])=>new Option(label,String(value))));$('level').value=levels.some(([value])=>String(value)===previous)?previous:'';$('volume').disabled=creating&&raw;if(creating){const encrypted=['zip','zipx','7z','sfx'].includes(format);show('password-group',encrypted);show('password-id-group',encrypted);}}
 const updateOperation=()=>{update();updateFormat();};$('operation').onchange=updateOperation;$('format').onchange=updateOperation;updateOperation();
 $('browse').onclick=async()=>{if($('operation').value==='create'){$('path').value=await invoke('pick_archive_save',{format:$('format').value})||$('path').value;}else{const f=await invoke('pick_files');if(f.length)$('path').value=f[0];}};
@@ -43,14 +65,3 @@ $('checksum-browse').onclick=async()=>{
  if(picked.length)$('checksum-paths').value=[...new Set([...lines('checksum-paths'),...picked])].join('\n');
 };
 $('hash-algorithm').onchange=()=>show('hash-choices',$('hash-algorithm').value==='custom');
-invoke('checksum_algorithms').then(algorithms=>{
- const select=$('hash-algorithm');
- select.add(new Option('自选多项…','custom'));
- select.add(new Option('全部可用算法','*'));
- for(const {name} of algorithms){
-   select.add(new Option(name,name));
-   const label=document.createElement('label'),input=document.createElement('input');
-   input.type='checkbox';input.value=name;
-   label.append(input,document.createTextNode(name));$('hash-choices').append(label);
- }
-}).catch(()=>{});
