@@ -2,12 +2,15 @@
 //! Never writes Explorer FileExts/UserChoice or any extension's default value.
 pub(crate) mod shortcuts;
 use serde::Serialize;
-use std::{collections::BTreeSet, path::Path, sync::Mutex};
+use std::{collections::BTreeSet, path::Path};
 use windows::{core::PCWSTR, Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND},
     System::Registry::*,
     UI::{Shell::{ShellExecuteW, SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST}, WindowsAndMessaging::SW_SHOWNORMAL},
 }};
+
+mod registration_lock;
+pub(crate) use registration_lock::registration_lock;
 
 const PROGID: &str = "OpenArchive.Archive";
 const APP_NAME: &str = "qing-zip";
@@ -24,7 +27,7 @@ pub fn folder_menu_enabled() -> Result<bool,String> {
 }
 #[tauri::command]
 pub fn set_folder_menu(enabled: bool) -> Result<bool,String> {
-    let _lock=REGISTRATION.lock().map_err(|_| "设置暂不可用")?;
+    let _lock=registration_lock()?;
     let reg = Registry::user();
     let exe = executable_path()?;
     let command = handler_command(&exe, " --compress-folder")?;
@@ -53,7 +56,6 @@ pub(crate) fn file_dialog_extensions() -> Vec<&'static str> {
         .chain(["exe", "001", "z01", "img", "udf", "dmg", "arj", "deb", "rpm", "vhd", "vhdx", "msi"])
         .collect()
 }
-static REGISTRATION: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Serialize)]
 pub struct AssociationStatus {
@@ -265,50 +267,215 @@ fn apply_edits(reg:&Registry,edits:Vec<Edit>,fail_after:Option<usize>)->Result<(
     }
     Ok(())
 }
+fn owned_values(progid: &str, exe: &str, command: &str) -> Vec<Edit> {
+    let mut values = Vec::new();
+    for ext in EXTENSIONS {
+        values.push(edit(
+            format!(r"Software\Classes\{ext}\OpenWithProgids"),
+            PROGID,
+            Some(RawValue {
+                kind: REG_NONE,
+                data: vec![],
+            }),
+        ));
+        values.push(edit(
+            format!(r"{CAPABILITIES}\FileAssociations"),
+            *ext,
+            Some(string_value(PROGID)),
+        ));
+    }
+    values.extend(capability_values(exe));
+    values.extend(handler_values(progid, exe, command));
+    values
+}
+
+enum RetireError {
+    Unavailable(String),
+    Other(String),
+}
+impl From<String> for RetireError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+impl From<windows::core::Error> for RetireError {
+    fn from(error: windows::core::Error) -> Self {
+        use windows::Win32::Foundation::{
+            ERROR_CALL_NOT_IMPLEMENTED, ERROR_NOT_SUPPORTED, ERROR_RM_NOT_ACTIVE,
+            ERROR_TRANSACTIONS_UNSUPPORTED_REMOTE,
+        };
+        if [
+            ERROR_RM_NOT_ACTIVE,
+            ERROR_NOT_SUPPORTED,
+            ERROR_CALL_NOT_IMPLEMENTED,
+            ERROR_TRANSACTIONS_UNSUPPORTED_REMOTE,
+        ]
+        .iter()
+        .any(|code| code.to_hresult() == error.code())
+        {
+            Self::Unavailable(error.to_string())
+        } else {
+            Self::Other(error.to_string())
+        }
+    }
+}
+
+// On a registry without active transaction support, cooperating qing-zip
+// processes still share the per-user mutex. Recheck both guard values and the
+// exact data at each write. Retire the handler and marker last, so a failed
+// attempt can restore its changes without reviving a superseded handler.
+fn retire_without_transaction(
+    reg: &Registry,
+    exe: &str,
+    mut before_delete: impl FnMut(usize) -> Result<(), String>,
+) -> Result<bool, String> {
+    let progid = format!(r"Software\Classes\{PROGID}");
+    let handler = format!(r"{progid}\shell\open\command");
+    let command = open_command(exe)?;
+    let owner_value = Some(string_value(OWNER));
+    let open_value = Some(string_value(&command));
+    let still_owned = |removed_handler: bool| -> Result<bool, String> {
+        let live = reg.read(&handler, "")?;
+        Ok(reg.read(OWNER_KEY, "ManagedBy")? == owner_value
+            && if removed_handler {
+                live.is_none()
+            } else {
+                live == open_value
+            })
+    };
+    if !still_owned(false)? {
+        return Ok(false);
+    }
+    let mut removed = Vec::new();
+    let mut removed_handler = false;
+    let result = (|| {
+        for entry in owned_values(&progid, exe, &command) {
+            if reg.read(&entry.key, &entry.name)? != entry.value {
+                continue;
+            }
+            before_delete(removed.len())?;
+            if !still_owned(removed_handler)? {
+                return Err("文件关联已被接管".to_owned());
+            }
+            if reg.read(&entry.key, &entry.name)? != entry.value {
+                continue;
+            }
+            reg.write(&entry.key, &entry.name, None)?;
+            if entry.key == handler {
+                removed_handler = true;
+            }
+            removed.push(entry);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let mut restored = true;
+        for entry in removed.iter().rev() {
+            if !still_owned(removed_handler).unwrap_or(false) {
+                restored = false;
+                break;
+            }
+            if reg.read(&entry.key, &entry.name).ok() != Some(None) {
+                restored = false;
+                continue;
+            }
+            if reg
+                .write(&entry.key, &entry.name, entry.value.as_ref())
+                .is_err()
+            {
+                restored = false;
+                break;
+            }
+            if entry.key == handler {
+                removed_handler = false;
+            }
+        }
+        return Err(if restored {
+            format!("{error}；本次移除已还原")
+        } else {
+            format!("{error}；保留已变化的注册，部分移除未还原")
+        });
+    }
+    Ok(true)
+}
+fn uninstall_associations(reg: &Registry, exe: &str) -> Result<bool, String> {
+    let _lock = registration_lock()?;
+    match retire_transactionally(reg, exe) {
+        Ok(changed) => Ok(changed),
+        Err(RetireError::Other(error)) => Err(error),
+        Err(RetireError::Unavailable(reason)) => retire_without_transaction(reg, exe, |_| Ok(()))
+            .map_err(|error| format!("{error} (Windows registry transactions: {reason})")),
+    }
+}
 // Pin the ownership reads and all matching removals to one registry transaction.
 // A conflicting registration must never leave mixed candidates or a dead handler.
-fn uninstall_associations(reg: &Registry, exe: &str) -> Result<bool, String> {
+fn retire_transactionally(reg: &Registry, exe: &str) -> Result<bool, RetireError> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{CommitTransaction, CreateTransaction}};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{CommitTransaction, CreateTransaction},
+    };
 
     let command = open_command(exe)?;
     let progid = format!(r"Software\Classes\{PROGID}");
-    let tx = unsafe { CreateTransaction(std::ptr::null_mut(), std::ptr::null_mut(), 0, 0, 0, 0, PCWSTR::null()) }
-        .map_err(|e| e.to_string())?;
+    let tx = unsafe {
+        CreateTransaction(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            PCWSTR::null(),
+        )
+    }?;
     let tx = unsafe { OwnedHandle::from_raw_handle(tx.0) };
-    let open = |path: &str, access: REG_SAM_FLAGS| -> Result<Option<Key>, String> {
+    let open = |path: &str, access: REG_SAM_FLAGS| -> Result<Option<Key>, RetireError> {
         let path = wide(&reg.path(path))?;
         let mut key = HKEY::default();
-        let status = unsafe { RegOpenKeyTransactedW(HKEY_CURRENT_USER, PCWSTR(path.as_ptr()), None, access,
-            &mut key, HANDLE(tx.as_raw_handle()), None) };
-        if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND { return Ok(None); }
-        status.ok().map_err(|e| e.to_string())?;
+        let status = unsafe {
+            RegOpenKeyTransactedW(
+                HKEY_CURRENT_USER,
+                PCWSTR(path.as_ptr()),
+                None,
+                access,
+                &mut key,
+                HANDLE(tx.as_raw_handle()),
+                None,
+            )
+        };
+        if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+            return Ok(None);
+        }
+        status.ok()?;
         Ok(Some(Key(key)))
     };
     let handler = format!(r"{progid}\shell\open\command");
-    for (path, name, expected) in [(OWNER_KEY, "ManagedBy", OWNER), (handler.as_str(), "", command.as_str())] {
-        let Some(key) = open(path, KEY_QUERY_VALUE)? else { return Ok(false); };
-        if query_value(&key, &wide(name)?)? != Some(string_value(expected)) { return Ok(false); }
+    for (path, name, expected) in [
+        (OWNER_KEY, "ManagedBy", OWNER),
+        (handler.as_str(), "", command.as_str()),
+    ] {
+        let Some(key) = open(path, KEY_QUERY_VALUE)? else {
+            return Ok(false);
+        };
+        if query_value(&key, &wide(name)?)? != Some(string_value(expected)) {
+            return Ok(false);
+        }
     }
 
     // An extension default or Explorer UserChoice is never among the owned values.
-    let mut values = Vec::new();
-    for ext in EXTENSIONS {
-        values.push(edit(format!(r"Software\Classes\{ext}\OpenWithProgids"), PROGID,
-            Some(RawValue { kind: REG_NONE, data: vec![] })));
-        values.push(edit(format!(r"{CAPABILITIES}\FileAssociations"), *ext, Some(string_value(PROGID))));
-    }
-    values.extend(capability_values(exe));
-    values.extend(handler_values(&progid, exe, &command));
+    let values = owned_values(&progid, exe, &command);
     for value in values {
-        let Some(key) = open(&value.key, KEY_QUERY_VALUE)? else { continue; };
+        let Some(key) = open(&value.key, KEY_QUERY_VALUE)? else {
+            continue;
+        };
         let name = wide(&value.name)?;
         if query_value(&key, &name)? == value.value {
-            let key = open(&value.key, KEY_SET_VALUE)?.ok_or("注册项已改变")?;
-            unsafe { RegDeleteValueW(key.0, PCWSTR(name.as_ptr())) }.ok().map_err(|e| e.to_string())?;
+            let key = open(&value.key, KEY_SET_VALUE)?.ok_or_else(|| "注册项已改变".to_owned())?;
+            unsafe { RegDeleteValueW(key.0, PCWSTR(name.as_ptr())) }.ok()?;
         }
     }
-    unsafe { CommitTransaction(HANDLE(tx.as_raw_handle())) }.map_err(|e| e.to_string())?;
+    unsafe { CommitTransaction(HANDLE(tx.as_raw_handle())) }?;
     Ok(true)
 }
 
@@ -323,7 +490,7 @@ pub(crate) fn unregister_for_uninstall() -> Result<(), String> {
 pub fn association_status()->Result<Vec<AssociationStatus>,String>{Registry::user().statuses()}
 #[tauri::command]
 pub fn set_file_associations(extensions:Vec<String>)->Result<Vec<AssociationStatus>,String>{
-    let _lock=REGISTRATION.lock().map_err(|_|"文件关联操作不可用")?;
+    let _lock=registration_lock()?;
     let selected=selections(extensions)?;
     let exe=executable_path()?;
     let reg=Registry::user();
@@ -438,6 +605,49 @@ mod tests {
             (openwith, "Another.Archive", "foreign"), (r"Software\Classes\.zip", "", "Another.Archive"),
             (caps.as_str(), ".rar", "Other.RAR"), (CAPABILITIES, "ApplicationDescription", "custom"),
         ] { assert_eq!(reg.read(path, name).unwrap(), Some(string_value(expected))); }
+    }
+    #[test]
+    fn untransacted_retirement_restores_its_changes_on_failure_then_retries() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let exe = r"C:\Installed\qing-zip.exe";
+        let selected = selections(vec![".zip".into(), ".rar".into()]).unwrap();
+        let registered = registration_edits(reg, &selected, exe).unwrap();
+        apply_edits(reg, registered.clone(), None).unwrap();
+        assert!(retire_without_transaction(reg, exe, |removed| {
+            if removed == 3 {
+                Err("injected failure".into())
+            } else {
+                Ok(())
+            }
+        })
+        .is_err());
+        for e in registered {
+            assert_eq!(reg.read(&e.key, &e.name).unwrap(), e.value);
+        }
+        assert!(retire_without_transaction(reg, exe, |_| Ok(())).unwrap());
+        assert!(!retire_without_transaction(reg, exe, |_| Ok(())).unwrap());
+    }
+    #[test]
+    fn untransacted_retirement_stops_when_another_installation_takes_over() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let installed = r"C:\Installed\qing-zip.exe";
+        let portable = r"D:\Portable\qing-zip.exe";
+        let zip = selections(vec![".zip".into()]).unwrap();
+        let rar = selections(vec![".rar".into()]).unwrap();
+        apply_edits(reg, registration_edits(reg, &zip, installed).unwrap(), None).unwrap();
+        let takeover = registration_edits(reg, &rar, portable).unwrap();
+        assert!(retire_without_transaction(reg, installed, |removed| {
+            if removed == 1 {
+                apply_edits(reg, takeover.clone(), None)?;
+            }
+            Ok(())
+        })
+        .is_err());
+        for e in takeover {
+            assert_eq!(reg.read(&e.key, &e.name).unwrap(), e.value);
+        }
     }
     #[test]
     fn uninstall_after_settings_deselection_retires_the_default_handler() {
