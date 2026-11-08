@@ -50,6 +50,9 @@ jobs:
         run: |
           python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
           exit $LASTEXITCODE
+      - name: Invoke the registered Explorer compression action for two files
+        shell: pwsh
+        run: python scripts/check-classic-shell.py dist/x64 target/qing-shell/Release/qing-shell-classic-forwarding.exe
       - name: Upload validated Windows x64 portable build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

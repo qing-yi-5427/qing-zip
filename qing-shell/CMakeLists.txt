@@ -29,3 +29,7 @@ add_executable(qing-shell-selection-tests tests/selection.cpp)
 target_link_libraries(qing-shell-selection-tests PRIVATE ole32 shell32 shlwapi advapi32 uuid)
 add_test(NAME filesystem_selection COMMAND qing-shell-selection-tests)
 install(TARGETS qing-shell qing-shell-host RUNTIME DESTINATION . LIBRARY DESTINATION .)
+
+# Invoked only by the disposable Windows runner, after the desktop build.
+add_executable(qing-shell-classic-forwarding tests/classic-menu-forwarding.cpp)
+target_link_libraries(qing-shell-classic-forwarding PRIVATE ole32 shell32 user32 uuid)
