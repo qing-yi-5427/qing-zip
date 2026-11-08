@@ -4548,7 +4548,7 @@ pub(crate) fn update_lock(path: &Path, ctl: &JobControl) -> Result<File, String>
 
 // Index names once so a large selection does not repeatedly scan and normalize
 // the archive. An implicit directory can be a source; rename targets retain
-// their original exact-entry, ASCII-insensitive collision rule.
+// their ASCII-insensitive collision check, including ambiguous existing names.
 fn validate_update_names(mut names: Vec<String>, inputs: &[String], rename: bool) -> Result<(), String> {
     for name in &mut names {
         if name.contains('\\') {
@@ -4566,12 +4566,21 @@ fn validate_update_names(mut names: Vec<String>, inputs: &[String], rename: bool
         }
     }
     if rename {
-        for name in &mut names { name.make_ascii_lowercase(); }
-        names.sort_unstable();
-        for target in inputs.iter().skip(1).step_by(2) {
-            let name = target.replace('\\', "/").to_ascii_lowercase();
-            if names.binary_search(&name).is_ok() {
-                return Err(format!("rename destination exists: {target}"));
+        let mut destinations: HashMap<String, Vec<&str>> = inputs.chunks_exact(2)
+            .map(|pair| (pair[1].replace('\\', "/").to_ascii_lowercase(), Vec::new()))
+            .collect();
+        for name in &names {
+            if let Some(matches) = destinations.get_mut(&name.to_ascii_lowercase()) {
+                matches.push(name);
+            }
+        }
+        for pair in inputs.chunks_exact(2) {
+            let source = pair[0].replace('\\', "/");
+            let target = pair[1].replace('\\', "/");
+            let matches = &destinations[&target.to_ascii_lowercase()];
+            // One existing match is safe only when changing that entry's own spelling.
+            if !matches.is_empty() && !(matches.as_slice() == [source.as_str()] && source != target) {
+                return Err(format!("rename destination exists: {}", pair[1]));
             }
         }
     }
@@ -5150,6 +5159,10 @@ mod staging_tests {
         assert!(check(&["dir", "fresh", "plain.txt", "case"], true).unwrap_err().ends_with("case"));
         assert!(check(&["dir", "fresh", "missing", "CASE"], true).unwrap_err().ends_with("missing"));
         assert!(check(&["plain.txt", "dir"], true).is_ok());
+        assert!(check(&["plain.txt", "Plain.TXT"], true).is_ok());
+        assert!(check(&["plain.txt", "plain.txt"], true).is_err());
+        let ambiguous = ["plain.txt", "PLAIN.txt"].map(str::to_owned).to_vec();
+        assert!(validate_update_names(ambiguous, &["plain.txt".into(), "Plain.txt".into()], true).is_err());
     }
     #[test]
     fn large_listing_preserves_record_boundaries_and_global_validation() {
