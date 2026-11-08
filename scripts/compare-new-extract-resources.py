@@ -1,4 +1,4 @@
-﻿"""Sample the real parent and contemporaneous process tree on the same absent destination."""
+"""Sample the real parent and contemporaneous process tree on the same absent destination."""
 import hashlib
 import json
 import os
@@ -14,7 +14,9 @@ import zipfile
 
 import psutil
 
-old, new, output = (Path(s).resolve() for s in sys.argv[1:])
+old, safe, new, output = (Path(s).resolve() for s in sys.argv[1:5])
+count=int(sys.argv[5])
+assert count in (12000,50000)
 output.parent.mkdir(exist_ok=True)
 nana = old.parent / "runtime/nanazip/NanaZip.Universal.Console.exe"
 
@@ -58,10 +60,10 @@ def measure(cmd):
     return dict(seconds=elapsed, samples=samples, **metrics)
 
 
-programs = {"0.11.8": old, "candidate": new, "NanaZip": nana}
+programs = {"0.11.8": old, "847d399": safe, "bounded": new, "NanaZip": nana}
 provenance = json.loads(Path("runtime/nanazip/provenance.json").read_bytes())
 assert all(digest(nana.parent / path) == expected for path, expected in provenance["files"].items())
-report = {"os": platform.platform(), "psutil": psutil.__version__, "count": 12000,
+report = {"os": platform.platform(), "psutil": psutil.__version__, "count": count,
           "note": "20ms polling after each process tree walk. CPU sampling, polling and checkout included in wall time; very short descendants may be missed.",
           "tools": {k:digest(p) for k,p in programs.items()}, "runs":[]}
 with tempfile.TemporaryDirectory() as tmp:
@@ -75,7 +77,7 @@ with tempfile.TemporaryDirectory() as tmp:
             z.writestr(name, data)
             expected[name] = hashlib.sha256(data).hexdigest()
     report["archive_sha"] = digest(arc)
-    for index in range(3):
+    for index in range(len(programs)):
         keys = list(programs)
         for name in keys[index:]+keys[:index]:
             dst=root/"fresh"
