@@ -40,16 +40,18 @@ def settings(on):
     subprocess.run([exe.parent/'obz.exe','shell-enable' if on else 'shell-disable',exe],
                    capture_output=True,check=True,timeout=25)
     profile=root.parent/('qing-cdp-'+str(on)+'-'+str(os.getpid()))
+    port=9227 if on else 9228
     env={**os.environ,'WEBVIEW2_USER_DATA_FOLDER':str(profile),
-         'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS':'--remote-debugging-port=0 --remote-debugging-address=127.0.0.1'}
-    app=subprocess.Popen([exe],env=env)
+         'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS':f'--remote-debugging-port={port} --remote-debugging-address=127.0.0.1'}
+    app=subprocess.Popen([exe,archive],env=env)
     try:
         def target():
-            file=next(profile.rglob('DevToolsActivePort'),None)
-            if not file:return
+            if app.poll() is not None:
+                raise RuntimeError(f'GUI exited before settings {app.returncode}; existing={processes()}')
             try:
-                port=int(file.read_text().splitlines()[0])
-                return next((x for x in json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=2)) if 'tauri.localhost' in x['url']),None)
+                tabs=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=2))
+                report['cdp_pages']=[x.get('url') for x in tabs]
+                return next((x for x in tabs if x.get('type')=='page' and ('tauri.localhost' in x['url'] or 'tauri://' in x['url'])),None)
             except (OSError,ValueError,IndexError):return
         tab=wait(target,35)
         with connect(tab['webSocketDebuggerUrl'],proxy=None) as ws:
@@ -119,14 +121,39 @@ def dismiss_runner_onboarding():
         time.sleep(1.1)
     if shown():raise RuntimeError("Hosted onboarding still covers Explorer")
 
+def focus_item(window,item):
+    from ctypes import wintypes as w
+    user=ctypes.windll.user32;kernel=ctypes.windll.kernel32
+    hwnd=window.handle
+    user.WindowFromPoint.argtypes=[w.POINT]
+    user.WindowFromPoint.restype=w.HWND
+    user.GetAncestor.argtypes=[w.HWND,w.UINT];user.GetAncestor.restype=w.HWND
+    pos=item.rectangle().mid_point()
+    def visible():
+        hit=user.WindowFromPoint(w.POINT(pos.x,pos.y))
+        return bool(hit and user.GetAncestor(hit,2)==hwnd)
+    for attempt in range(6):
+        if visible() and user.GetForegroundWindow()==hwnd:return
+        keyboard.send_keys('{ESC}{ESC}')
+        fg=user.GetForegroundWindow();foreign=user.GetWindowThreadProcessId(fg,None);local=kernel.GetCurrentThreadId()
+        attached=foreign!=local and user.AttachThreadInput(local,foreign,True)
+        try:
+            user.ShowWindow(hwnd,9);user.SetWindowPos(hwnd,-1,0,0,0,0,3)
+            user.BringWindowToTop(hwnd);user.SetForegroundWindow(hwnd)
+        finally:
+            if attached:user.AttachThreadInput(local,foreign,False)
+        time.sleep(.25)
+        if visible():
+            user.SetWindowPos(hwnd,-2,0,0,0,0,3);time.sleep(.15)
+            if visible():return
+    raise RuntimeError('Explorer item remains occluded at its actual screen position')
 def explorer_item(path):
     def selected():
         for window in desktop.windows(class_name='CabinetWClass'):
             if root.name not in window.window_text(): continue
             for item in window.descendants(control_type="ListItem"):
                 if item.window_text() in (path.name,path.stem):
-                    try:window.set_focus()
-                    except Exception:pass
+                    focus_item(window,item)
                     return item
     return wait(selected,24)
 def menuitems():
@@ -217,6 +244,7 @@ try:
     assert not command(archive_reg) and not command(folder_reg)
     report["registered_off"]=registered_commands(False);save()
     dismiss_runner_onboarding()
+    keyboard.send_keys('{ESC}{ESC}');time.sleep(1)
     os.startfile(root)
     # The off state must be checked against the same installed sparse package.
     for p,tag in [(archive,'file-off'),(folder,'folder-off')]:
