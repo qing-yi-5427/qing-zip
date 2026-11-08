@@ -1,4 +1,4 @@
-name: Disposable Windows 11 Explorer and sparse MSIX
+name: Verify actual RFC3161 MSIX timestamp and negative control
 on: workflow_dispatch
 permissions: { contents: read, actions: read }
 jobs:
@@ -10,6 +10,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 28fa49e09e0f20de4b1d304d847801832065a6a5
+          path: verified-signing-source
       - name: Build actual ARM64 shell extension
         shell: pwsh
         run: |
@@ -43,25 +47,42 @@ jobs:
           Export-Certificate -Cert $cert -FilePath $public | Out-Null
           foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPeople')) { Import-Certificate -FilePath $public -CertStoreLocation $store | Out-Null }
           $package=@(Get-ChildItem prepared -Filter '*.msix')[0]
-          # This disposable 8-hour test key and package never leave the runner.
-          # The shipping signing policy remains unchanged.
           $signTool=Join-Path $sdk signtool.exe
-          & $signTool sign /sha1 $cert.Thumbprint /fd SHA256 $package.FullName
-          if ($LASTEXITCODE) { throw 'Disposable local package signature failed' }
-          & $signTool verify /pa /v $package.FullName | Out-File results/test-signature.txt
-          if ($LASTEXITCODE) { throw 'Disposable signature did not verify' }
-          $external=Join-Path $app.DirectoryName shell
-          Copy-Item -LiteralPath prepared/shell -Destination $external -Recurse
-          & ./scripts/msix/Register-Package.ps1 -PackagePath $package.FullName -ExternalLocation $external -Publisher $publisher -SignToolPath (Join-Path $sdk signtool.exe)
-          Get-AppxPackage 'QingYi.QingZip.Shell' | Select-Object Name,PackageFullName,Publisher,Status | ConvertTo-Json | Set-Content results/registration.json
-          $app.FullName | Set-Content "$env:RUNNER_TEMP\qing-menu-exe.txt"
-      - name: Observe actual Explorer context menus and invoke operations
-        shell: pwsh
-        run: |
-          python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1
-          if ($LASTEXITCODE) { throw 'Desktop probes unavailable' }
-          python scripts/msix/check-hosted-explorer.py (Get-Content "$env:RUNNER_TEMP\qing-menu-exe.txt") results
-          exit $LASTEXITCODE
+          $control=Join-Path $env:RUNNER_TEMP 'test-no-timestamp.msix'
+          Copy-Item -LiteralPath $package.FullName -Destination $control
+          & $signTool sign /sha1 $cert.Thumbprint /fd SHA256 $control
+          if ($LASTEXITCODE) {throw 'Negative control signature failed'}
+          & $signTool verify /pa $control
+          if ($LASTEXITCODE) {throw 'Control must have a trusted signature'}
+          & $signTool verify /pa /all /tw $control
+          if ($LASTEXITCODE -ne 2) {throw 'The missing timestamp must generate warnings'}
+          $toolInfo=[Diagnostics.FileVersionInfo]::GetVersionInfo($signTool)
+          @{tool=$toolInfo.FileVersion; sha256=(Get-FileHash $signTool).Hash; negative_verify=2} | ConvertTo-Json | Set-Content results/tools.json
+          $script='.\verified-signing-source\scripts\msix\Sign-Package.ps1'
+          foreach ($bad in @('file:///C:/test','not-a-url','http://user@timestamp.digicert.com','http://timestamp.digicert.com/#invalid')) {
+            try {
+              & $script -PackagePath $package.FullName -CertificateThumbprint $cert.Thumbprint -Publisher $publisher -TimestampServer $bad -SignToolPath $signTool
+              throw 'Invalid endpoint passed validation'
+            } catch [System.Management.Automation.ParameterBindingException] {}
+          }
+          & $script -PackagePath $package.FullName -CertificateThumbprint $cert.Thumbprint -Publisher $publisher -TimestampServer 'http://timestamp.digicert.com' -SignToolPath $signTool
+          & $signTool verify /pa /all /tw /v $package.FullName | Out-File results/verified-timestamp.txt
+          if ($LASTEXITCODE) {throw 'Timestamped MSIX did not pass strict verification'}
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          Add-Type -AssemblyName System.Security
+          $zip=[IO.Compression.ZipFile]::OpenRead($package.FullName)
+          try {
+            $stream=$zip.GetEntry('AppxSignature.p7x').Open()
+            $m=New-Object IO.MemoryStream
+            $stream.CopyTo($m)
+            $bytes=$m.ToArray()
+            if ([Text.Encoding]::ASCII.GetString($bytes,0,4) -ne 'PKCX') {throw 'Invalid MSIX signature envelope'}
+            $cms=New-Object Security.Cryptography.Pkcs.SignedCms
+            $cms.Decode([byte[]]$bytes[4..($bytes.Length-1)])
+            $oids=@($cms.SignerInfos[0].UnsignedAttributes | ForEach-Object {$_.Oid.Value})
+            if ($oids -notcontains '1.3.6.1.4.1.311.3.3.1' -and $oids -notcontains '1.2.840.113549.1.9.16.2.14') {throw 'Missing embedded RFC3161 token'}
+            @{package=(Get-FileHash $package.FullName).Hash; oids=$oids; rfc3161='http://timestamp.digicert.com'; verify_exit=0; signer_scope='disposable runner only'} | ConvertTo-Json | Set-Content results/rfc3161.json
+          } finally {if ($stream) {$stream.Dispose()};$zip.Dispose()}
       - name: Remove only the test registration and disposable certificates
         if: always()
         shell: powershell
@@ -84,7 +105,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: modern-explorer-public-evidence
+          name: rfc3161-public-evidence
           path: |
             results/*.json
             results/*.txt
