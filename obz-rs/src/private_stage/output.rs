@@ -6,7 +6,7 @@ use std::os::windows::fs::MetadataExt;
 
 #[link(name = "Kernel32")]
 extern "system" {
-    fn GetVolumeInformationByHandleW(
+    pub(super) fn GetVolumeInformationByHandleW(
         file: Handle,
         name: *mut u16,
         name_size: u32,

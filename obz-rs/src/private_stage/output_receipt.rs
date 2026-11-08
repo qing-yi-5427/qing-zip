@@ -202,12 +202,34 @@ impl OutputReceipt {
             evidence: evidence(file)?,
         })
     }
-    pub(crate) fn compact(mut self) -> Self {
+    pub(crate) fn compact(mut self, volume: &std::sync::OnceLock<Option<u32>>) -> Self {
         let OutputIdentity::Held(file) = &self.identity else {
             return self;
         };
         let verified = (|| {
             use std::os::windows::fs::MetadataExt;
+            let info = output::info(file).ok()?;
+            let qualified = volume.get_or_init(|| {
+                let mut name = [0u16; 32];
+                let (mut flags, mut serial) = (0, 0);
+                let ok = unsafe {
+                    output::GetVolumeInformationByHandleW(
+                        file.as_raw_handle(),
+                        std::ptr::null_mut(),
+                        0,
+                        &mut serial,
+                        std::ptr::null_mut(),
+                        &mut flags,
+                        name.as_mut_ptr(),
+                        name.len() as u32,
+                    )
+                };
+                (ok != 0 && flags & 0x40008 == 0x40008 && name[..5] == [78, 84, 70, 83, 0])
+                    .then_some(serial)
+            });
+            if *qualified != Some(info[7]) || info[10] != 1 {
+                return None;
+            }
             if !can_reopen(file) || !suppress_automatic_access_time(file) {
                 return None;
             }
@@ -295,6 +317,25 @@ mod tests {
     use std::{fs, os::windows::fs::OpenOptionsExt};
 
     #[test]
+    fn unavailable_volume_keeps_exclusive_rollback_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ordinary");
+        fs::write(&path, b"owned").unwrap();
+        let file = File::options()
+            .access_mode(0x17019f)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let receipt = OutputReceipt::capture(&path, &file)
+            .unwrap()
+            .compact(&std::sync::OnceLock::from(None));
+        assert!(matches!(receipt.identity, OutputIdentity::Held(_)));
+        drop(file);
+        assert!(File::options().write(true).open(&path).is_err());
+        receipt.remove().unwrap();
+        assert!(!path.exists());
+    }
+    #[test]
     fn compact_receipt_retains_replacements_rewrites_and_stream_changes() {
         let temp = tempfile::tempdir().unwrap();
         for mode in ["clean", "replacement", "changed", "stream", "written-back"] {
@@ -305,7 +346,9 @@ mod tests {
                 .share_mode(0)
                 .open(&path)
                 .unwrap();
-            let receipt = OutputReceipt::capture(&path, &file).unwrap().compact();
+            let receipt = OutputReceipt::capture(&path, &file)
+                .unwrap()
+                .compact(&std::sync::OnceLock::new());
             assert!(
                 matches!(receipt.identity, OutputIdentity::Revision { .. }),
                 "NTFS USN required"

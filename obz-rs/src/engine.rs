@@ -2414,6 +2414,8 @@ fn preflight_output_targets(
 pub(crate) struct PublicationJournal {
     #[cfg(windows)]
     files: Mutex<Vec<crate::private_stage::OutputReceipt>>,
+    #[cfg(windows)]
+    ntfs: std::sync::OnceLock<Option<u32>>,
 }
 impl PublicationJournal {
     #[cfg(windows)]
@@ -2426,7 +2428,7 @@ impl PublicationJournal {
             return;
         }
         drop(files);
-        let receipt = receipt.compact();
+        let receipt = receipt.compact(&self.ntfs);
         self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
     }
     fn rollback(&self)->Vec<String>{
