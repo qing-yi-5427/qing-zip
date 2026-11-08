@@ -252,10 +252,30 @@ def act(items,label,target):
     if not entry:
         group=next(((n,xy) for n,xy in items if 'qing' in n.lower()),None)
         assert group,(label,items)
-        if group[1]:mouse.move(coords=group[1]);time.sleep(.8)
-        items=menuitems()
+        def wait_child(seconds):
+            end=time.monotonic()+seconds
+            current=[]
+            while time.monotonic()<end:
+                current=menuitems()
+                if find(current):return current
+                time.sleep(.3)
+            return current
+        if group[1]:mouse.move(coords=group[1])
+        items=wait_child(5)
         if not find(items):
-            trigger(*group);time.sleep(.65);items=menuitems()
+            # Do not click the row again during XAML's asynchronous expansion:
+            # that can close exactly the popup whose children are appearing.
+            win=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
+            node=next((w for w in win.descendants() if w.element_info.control_type=="MenuItem" and w.window_text()==group[0]),None)
+            try:node.iface_expand_collapse.Expand()
+            except Exception:
+                if node:
+                    try:node.set_focus()
+                    except Exception:pass
+                keyboard.send_keys('{RIGHT}')
+            items=wait_child(5)
+        if not find(items):
+            trigger(*group);items=wait_child(4)
         report['menus'][label+'-expanded']=[n for n,xy in items];shots(label+'-expanded');save()
         entry=find(items)
     assert entry,(label,items)
