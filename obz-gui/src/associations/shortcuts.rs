@@ -188,10 +188,19 @@ pub(crate) fn configure(args: &[OsString]) -> Option<Result<(), String>> {
         [command] if command == "--uninstall-owned-shortcuts" => Some((|| {
             let reg = Registry::user();
             let owner = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mut errors = Vec::new();
             for slot in SLOTS {
-                remove(&reg, &owner, slot, &slot_path(slot)?)?;
+                if let Err(error) =
+                    slot_path(slot).and_then(|path| remove(&reg, &owner, slot, &path))
+                {
+                    errors.push(format!("{slot}: {error}"));
+                }
             }
-            Ok(())
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
         })()),
         _ => None,
     }

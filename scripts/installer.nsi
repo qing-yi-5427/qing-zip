@@ -106,20 +106,46 @@ Section /o "资源管理器右键入口" Shell
   MessageBox MB_ICONEXCLAMATION "右键入口未能注册，可稍后在程序设置中重试。"
  ${EndIf}
 SectionEnd
+Var UninstallLog
+Var RequiredFileFailed
+Function un.LogIssue
+ Exch $R8
+ Push $R9
+ DetailPrint "$R8"
+ ${If} $UninstallLog == ""
+  GetTempFileName $UninstallLog
+  FileOpen $R9 "$UninstallLog" w
+  FileWriteUTF16LE /BOM $R9 "qing-zip uninstall $\r$\n"
+  FileClose $R9
+  DetailPrint "卸载日志：$UninstallLog"
+ ${EndIf}
+ FileOpen $R9 "$UninstallLog" a
+ FileSeek $R9 0 END
+ FileWriteUTF16LE $R9 "$R8$\r$\n"
+ FileClose $R9
+ Pop $R9
+ Pop $R8
+FunctionEnd
+!macro RemoveShippedFile NAME
+ Delete "$INSTDIR\${NAME}"
+ ${If} ${FileExists} "$INSTDIR\${NAME}"
+  StrCpy $RequiredFileFailed 1
+  Push "[required-file] 无法移除程序文件：$INSTDIR\${NAME}"
+  Call un.LogIssue
+ ${EndIf}
+!macroend
 Section "Uninstall"
  ; The desktop binary derives its own path and atomically removes matching candidates.
  ReadRegStr $0 HKCU "Software\OpenArchive\Associations" "ManagedBy"
  ReadRegStr $1 HKCU "Software\Classes\OpenArchive.Archive\shell\open\command" ""
  ${If} $0 == "OpenArchive.Associations.v1"
  ${AndIf} $1 == '$\"$INSTDIR\qing-zip.exe$\" $\"%1$\"'
-  ClearErrors
-  ExecWait '$\"$INSTDIR\qing-zip.exe$\" --unregister-owned-associations' $0
-  ${If} ${Errors}
-  ${OrIf} $0 != 0
-   SetErrorLevel 1
-   IfSilent +2
-   MessageBox MB_ICONSTOP "无法清理本安装的文件关联。请关闭相关程序，必要时重新安装后再卸载。"
-   Abort
+  nsExec::ExecToStack '$\"$INSTDIR\qing-zip.exe$\" --unregister-owned-associations'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+   Push "[optional-associations] 未清理无法核对的文件关联，继续卸载。($0) $1"
+   Call un.LogIssue
   ${EndIf}
  ${EndIf}
  ReadRegStr $0 HKCU "Software\Classes\*\shell\qing-zip\command" ""
@@ -130,19 +156,30 @@ Section "Uninstall"
  ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" --compress-folder $\"%1$\"'
   DeleteRegKey HKCU "Software\Classes\Directory\shell\qing-zip-compress"
  ${EndIf}
- IfFileExists "$INSTDIR\qing-zip.exe" 0 shortcuts_done
- ClearErrors
- ExecWait '$\"$INSTDIR\qing-zip.exe$\" --uninstall-owned-shortcuts' $0
- ${If} ${Errors}
- ${OrIf} $0 != 0
-  SetErrorLevel 1
-  IfSilent +2
-  MessageBox MB_ICONSTOP "无法核对快捷方式。请关闭占用它的程序后重试。"
-  Abort
+ ${If} ${FileExists} "$INSTDIR\qing-zip.exe"
+  nsExec::ExecToStack '$\"$INSTDIR\qing-zip.exe$\" --uninstall-owned-shortcuts'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+   Push "[optional-shortcuts] 部分快捷方式无法核对或移除，已保留，继续卸载。($0) $1"
+   Call un.LogIssue
+  ${EndIf}
+ ${Else}
+  ReadRegStr $0 HKCU "Software\${PRODUCT_KEY}\Installer" "InstallDir"
+  ${If} $0 == "$INSTDIR"
+   Push "[optional-shortcuts] 程序不存在，无法核对快捷方式，继续卸载。"
+   Call un.LogIssue
+  ${EndIf}
  ${EndIf}
- shortcuts_done:
+ StrCpy $RequiredFileFailed 0
  ; Delete only shipped files. Archives or other files the user placed here survive.
  !include "uninstall-files.nsh"
+ ${If} $RequiredFileFailed != 0
+  SetErrorLevel 1
+  IfSilent +2
+  MessageBox MB_ICONEXCLAMATION "部分程序文件仍在使用。关闭占用后可重试。日志：$UninstallLog"
+  Abort
+ ${EndIf}
  Delete "$INSTDIR\Uninstall.exe"
  RMDir "$INSTDIR"
  RMDir "$SMPROGRAMS\${PRODUCT_KEY}"

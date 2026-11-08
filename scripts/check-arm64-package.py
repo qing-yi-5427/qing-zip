@@ -1,6 +1,7 @@
 """Build the ARM64 trial installer; run both distributions on the native CI host."""
 import argparse
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import importlib
 import json
@@ -83,7 +84,69 @@ def shortcut_target(link):
     command="[Console]::OutputEncoding=[Text.Encoding]::UTF8; (New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT).TargetPath"
     return Path(subprocess.check_output(['powershell','-NoProfile','-Command',command],env=env).decode('utf8').strip())
 
-def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp):
+@contextmanager
+def block_delete(path):
+    from ctypes import wintypes as w
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateFileW.argtypes=(w.LPCWSTR,w.DWORD,w.DWORD,w.LPVOID,w.DWORD,w.DWORD,w.HANDLE)
+    kernel.CreateFileW.restype=w.HANDLE
+    kernel.CloseHandle.argtypes=(w.HANDLE,)
+    handle=kernel.CreateFileW(str(path),0x80000000,1,None,3,0,None)
+    if handle in (None,w.HANDLE(-1).value):raise ctypes.WinError(ctypes.get_last_error())
+    try:yield
+    finally:kernel.CloseHandle(handle)
+
+def run_removal(inst, arp, log_dir, *, required_failure=False):
+    log_dir.mkdir()
+    env=dict(os.environ,TMP=str(log_dir),TEMP=str(log_dir))
+    args=[str(inst/'Uninstall.exe'),'/S']
+    if required_failure:args.append('_?='+str(inst))  # run synchronously in-place for the failure exit code
+    proc=subprocess.run(args,env=env,capture_output=True,timeout=120)
+    if required_failure:
+        assert proc.returncode!=0 and (inst/'Uninstall.exe').is_file() and key(arp,'InstallLocation') is not None
+    else:
+        assert proc.returncode==0
+        until=time.monotonic()+90
+        while time.monotonic()<until and (key(arp,'InstallLocation') is not None or (inst/'Uninstall.exe').exists()):time.sleep(.2)
+        assert key(arp,'InstallLocation') is None and not (inst/'Uninstall.exe').exists()
+    messages=[]
+    for file in log_dir.iterdir():
+        if file.is_file() and file.stat().st_size<65536:
+            raw=file.read_bytes()
+            if raw.startswith(b'\xff\xfe'):
+                value=raw.decode('utf-16')
+                if value.startswith('qing-zip uninstall'):messages.append(value)
+    assert len(messages)==1, messages
+    return messages[0]
+
+def verify_retry(setup,inst,shortcuts,arp,scratch):
+    run([setup,'/S'])
+    # Simulate an incomplete older install so the optional cleanup helper cannot start.
+    fixture=seed_runner_associations(inst/'qing-zip.exe')
+    assert fixture is not None
+    (inst/'qing-zip.exe').rename(scratch/'removed-helper.exe')
+    owned_links={p:sha(p) for p in shortcuts.iterdir()}
+    with block_delete(inst/'README.md'):
+        first=run_removal(inst,arp,scratch/'retry-first',required_failure=True)
+        assert '[optional-associations]' in first and '[required-file]' in first and 'README.md' in first, first
+    last=run_removal(inst,arp,scratch/'retry-finish')
+    assert '[optional-associations]' in last and '[required-file]' not in last,last
+    assert not inst.exists()
+    entries,external=fixture
+    for path,name,kind,value in [*entries,external]:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_QUERY_VALUE|winreg.KEY_SET_VALUE) as h:
+            actual,actual_kind=winreg.QueryValueEx(h,name)
+            if kind==winreg.REG_NONE:actual=actual or b''
+            assert (actual_kind,actual)==(kind,value)
+            winreg.DeleteValue(h,name)
+    for path,digest in owned_links.items():
+        assert sha(path)==digest
+        path.unlink()
+    shortcuts.rmdir()
+    return {'optional_association_failure_logged':True,'retained_candidate_values':len(entries),
+            'locked_payload_returned_failure':True,'retry_removed_payload':True}
+
+def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp, scratch):
     # Only the disposable native runner may create test shortcuts on its Desktop.
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         return None
@@ -103,15 +166,15 @@ def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp):
     run([setup,'/S'])
     assert all(sha(path)==digest for path,digest in before.items()) and uninstall_link.is_file()
     before[uninstall_link]=create_link(uninstall_link,'--portable-takeover')
-    run([installed/'Uninstall.exe','/S'])
-    until=time.monotonic()+90
-    while time.monotonic()<until and key(arp,'InstallLocation') is not None:time.sleep(.2)
-    assert key(arp,'InstallLocation') is None
+    with block_delete(uninstall_link):
+        log=run_removal(installed,arp,scratch/'locked-shortcut')
+        assert '[optional-shortcuts]' in log and '[required-file]' not in log,log
+    assert not installed.exists()
     for path,digest in before.items():
         assert sha(path)==digest, f'Uninstall altered user shortcut {path.name}'
         path.unlink()
     shortcuts.rmdir()
-    return {'preexisting_start_preserved':True,'unselected_desktop_preserved':True,'reassigned_uninstall_preserved':True}
+    return {'preexisting_start_preserved':True,'unselected_desktop_preserved':True,'reassigned_uninstall_preserved':True,'locked_shortcut_did_not_block_uninstall':True}
 
 def smoke_desktop(application, archive, scratch):
     """Observe the trial app starting its own WebView2 process. No UI injection."""
@@ -270,7 +333,8 @@ def main():
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
         if assoc_fixture:
             report['uninstall']['file_associations']=check_runner_associations(assoc_fixture)
-            report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp)
+            report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp,tmp)
+            report['uninstall']['retry']=verify_retry(setup,inst,shortcuts,arp,tmp)
     report['assets']={}
     for p in [setup,portable]:
         digest=sha(p)
