@@ -1,8 +1,7 @@
 #[path = "edit_recovery.rs"]
 mod journal;
 use super::{
-    directory_identity, rename_handle_noclobber_in, validate_transaction_root,
-    CheckedDirectories,
+    directory_identity, rename_handle_noclobber_in, validate_transaction_root, CheckedDirectories,
 };
 use crate::{
     engine_stream::{pin, PinnedSource},
@@ -222,6 +221,11 @@ fn atomic_replace(target: &Path, replacement: &Path, backup: &Path) -> io::Resul
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    static BEFORE_PUBLIC:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=std::cell::RefCell::new(None);
+}
+
 pub(crate) struct EditOutput {
     output_pin: File,
     stage: PrivateStage,
@@ -330,10 +334,18 @@ impl EditSource {
             &output_pin,
             staged.parent().ok_or("missing private output parent")?,
         )?;
+        let permissions = crate::private_stage::EditPermissions::capture(&self.read)?;
         let proposed = leaf(staged, 0, 7)?;
         let identity = id_checked(&self.read, Some(&self.control))?;
         let proposed_id = id_checked(&proposed, Some(&self.control))?;
-        let intent = journal::Intent::write(&stage, &self.parent, path, &identity, &proposed_id)?;
+        let intent = journal::Intent::write(
+            &stage,
+            &self.parent,
+            path,
+            &identity,
+            &proposed_id,
+            permissions.as_ref(),
+        )?;
 
         // The read handle used by Nana must not request DELETE. A second
         // handle continues to deny writes during the handoff. If a competing
@@ -363,32 +375,70 @@ impl EditSource {
             }
             drop(proposed);
             self.control.check()?;
-            if !rename_handle_noclobber_in(&candidate, path, Some(&self.parent))? {
-                return Err(
-                    "Another file occupies the archive name, or publication was denied".into(),
-                );
-            }
+            let scratch = scratch_path(recovery.path(), path, false)?;
+            publish_with_live_permissions(
+                &candidate,
+                &merge_path,
+                &merge_parent,
+                path,
+                &self.parent,
+                &scratch,
+                permissions.as_ref(),
+                || {
+                    #[cfg(test)]
+                    BEFORE_PUBLIC.with(|slot| {
+                        if let Some(hook) = slot.borrow_mut().take() {
+                            hook();
+                        }
+                    });
+                    self.control.check()
+                },
+            )?;
             Ok(())
         })();
         drop(self.bridge);
         if let Err(reason) = publish {
             // ReplaceFileW can fail with the original at either private name.
             // Restore by verified handle, and only into a vacant public name.
-            for saved in [&backup, &merge_path] {
+            let original_scratch = scratch_path(recovery.path(), path, true)?;
+            let mut restored = false;
+            for (saved, saved_parent) in [(&backup, &recovery_parent), (&merge_path, &merge_parent)]
+            {
                 if let Ok(handle) = leaf(saved, 0x10080, 1) {
                     if id(&handle).ok().as_ref() == Some(&identity)
-                        && rename_handle_noclobber_in(&handle, path, Some(&self.parent))
-                            .unwrap_or(false)
+                        && publish_with_live_permissions(
+                            &handle,
+                            saved,
+                            saved_parent,
+                            path,
+                            &self.parent,
+                            &original_scratch,
+                            permissions.as_ref(),
+                            || Ok(()),
+                        )
+                        .is_ok()
                     {
-                        drop(handle);
-                        drop(recovery_parent);
-                        drop(merge_parent);
-                        drop(output_pin);
-                        intent.disarm();
-                        recovery.finished();
-                        return Err(format!("{reason}. Original archive restored."));
+                        restored = true;
+                        break;
                     }
                 }
+            }
+            if restored {
+                let scratch = scratch_path(recovery.path(), path, false)?;
+                if std::fs::symlink_metadata(&scratch).is_ok() {
+                    intent.disarm();
+                    return Err(format!(
+                        "{reason}. Original archive restored. Check {} and {}",
+                        scratch.display(),
+                        recovery.path().display()
+                    ));
+                }
+                drop(recovery_parent);
+                drop(merge_parent);
+                drop(output_pin);
+                intent.disarm();
+                recovery.finished();
+                return Err(format!("{reason}. Original archive restored."));
             }
             if std::fs::symlink_metadata(path).is_ok() {
                 intent.disarm();
@@ -403,6 +453,68 @@ impl EditSource {
         recovery.finished();
         Ok(())
     }
+}
+
+fn scratch_path(stage: &Path, target: &Path, original: bool) -> Result<PathBuf, String> {
+    let id = stage
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix(".qing-zip-stage-"))
+        .ok_or("invalid edit stage name")?;
+    let kind = if original { "original" } else { "result" };
+    Ok(target
+        .parent()
+        .ok_or("missing edit parent")?
+        .join(format!(".qing-zip-edit-{id}-{kind}")))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_with_live_permissions(
+    file: &File,
+    previous: &Path,
+    previous_parent: &File,
+    target: &Path,
+    target_parent: &File,
+    scratch: &Path,
+    security: Option<&crate::private_stage::EditPermissions>,
+    before_final: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Err("Archive name is occupied".into());
+    }
+    if let Some(security) = security {
+        let acl_handle = reopen(file, 0x60000, 7)?;
+        security.protect(&acl_handle)?;
+        if previous != scratch && !rename_handle_noclobber_in(file, scratch, Some(target_parent))? {
+            return Err("Could not reserve the temporary archive name".into());
+        }
+        let result = (|| {
+            security.inherit(&acl_handle)?;
+            before_final()?;
+            if !rename_handle_noclobber_in(file, target, Some(target_parent))? {
+                return Err("Archive name is occupied or publication was denied".into());
+            }
+            Ok(())
+        })();
+        if let Err(reason) = result {
+            security.protect(&acl_handle)?;
+            if previous != scratch
+                && !rename_handle_noclobber_in(file, previous, Some(previous_parent))?
+            {
+                return Err(format!(
+                    "{reason}. Private candidate retained at {}",
+                    scratch.display()
+                ));
+            }
+            return Err(reason);
+        }
+    } else {
+        before_final()?;
+        if !rename_handle_noclobber_in(file, target, Some(target_parent))? {
+            return Err("Archive name is occupied or publication was denied".into());
+        }
+    }
+    Ok(())
 }
 
 // The transaction owns user data between claiming the old name and a verified
@@ -506,6 +618,71 @@ mod tests {
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
+    fn powershell(path: &Path, script: &str) -> String {
+        let run = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("QING_TEST_ACL", path)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        String::from_utf8_lossy(&run.stdout).trim().to_string()
+    }
+    fn install_reader(path: &Path, protected: bool) {
+        let protect = if protected {
+            "$acl.SetAccessRuleProtection($true,$true);"
+        } else {
+            ""
+        };
+        let script=format!("$ErrorActionPreference='Stop';$p=$env:QING_TEST_ACL;$acl=Get-Acl -LiteralPath $p;{protect}$sid=[System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-546');$inherit=if([IO.Directory]::Exists($p)){{[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'}}else{{[Security.AccessControl.InheritanceFlags]::None}};$rule=[Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::Read,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow);$acl.AddAccessRule($rule);Set-Acl -LiteralPath $p -AclObject $acl");
+        powershell(path, &script);
+    }
+    fn permissions(path: &Path) -> String {
+        powershell(path,"$a=Get-Acl -LiteralPath $env:QING_TEST_ACL; $a.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)")
+    }
+
+    #[test]
+    fn late_parent_revocation_matches_normal_file_and_preserves_explicit_or_protected_access() {
+        for (explicit, protected) in [(false, false), (true, false), (true, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let parent = temp.path().join("destination");
+            fs::create_dir(&parent).unwrap();
+            install_reader(&parent, true);
+            let archive = parent.join("source.zip");
+            fs::write(&archive, b"old").unwrap();
+            let peer = parent.join("reference.zip");
+            fs::write(&peer, b"reference").unwrap();
+            if explicit {
+                install_reader(&archive, protected);
+                install_reader(&peer, protected);
+            }
+            let before = permissions(&archive);
+            let edit = EditSource::open(&archive).unwrap();
+            let output = edit.output().unwrap();
+            fs::write(output.path(), b"updated").unwrap();
+            let scope = parent.clone();
+            BEFORE_PUBLIC.with(|slot|*slot.borrow_mut()=Some(Box::new(move||{
+                powershell(&scope,"$ErrorActionPreference='Stop';$p=$env:QING_TEST_ACL;$acl=Get-Acl -LiteralPath $p;$null=& icacls.exe $p '/remove:g' '*S-1-5-32-546';if($LASTEXITCODE){throw 'parent DACL revoke failed'}");
+            })));
+            edit.commit(output).unwrap();
+            let after = permissions(&archive);
+            let expected = permissions(&peer);
+            let fresh = parent.join("new-file");
+            fs::write(&fresh, b"fresh").unwrap();
+            let native_new = permissions(&fresh);
+            assert!(before.contains(";;;BG)"));
+            assert!(!native_new.contains(";;;BG)"));
+            assert_eq!(after, expected);
+            if !explicit {
+                assert_eq!(after, native_new);
+            }
+            assert_eq!(fs::read(&archive).unwrap(), b"updated");
+        }
+    }
+
     #[test]
     fn cancellation_after_claim_rolls_back_without_publishing() {
         let temp = tempfile::tempdir().unwrap();
@@ -530,13 +707,23 @@ mod tests {
         let edit = EditSource::open(&root.join("archive.zip")).unwrap();
         let output = edit.output().unwrap();
         fs::copy(root.join("proposal.zip"), output.path()).unwrap();
+        fn pause(path: &Path) {
+            fs::write(path.join("ready-to-kill"), b"claimed").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let public_scratch = std::env::var_os("QING_TEST_PUBLIC_SCRATCH").is_some();
+        if public_scratch {
+            let copy = root.clone();
+            BEFORE_PUBLIC.with(|slot| *slot.borrow_mut() = Some(Box::new(move || pause(&copy))));
+        }
         let _ = edit.commit_with(
             output,
             || {},
             || {
-                fs::write(root.join("ready-to-kill"), b"claimed").unwrap();
-                loop {
-                    std::thread::park();
+                if !public_scratch {
+                    pause(&root)
                 }
             },
         );
@@ -549,9 +736,19 @@ mod tests {
             process::{Command, Stdio},
             time::{Duration, Instant},
         };
-        for mode in ["list", "gui-path", "external", "tampered-original"] {
+        for mode in [
+            "list",
+            "gui-path",
+            "external",
+            "tampered-original",
+            "public-scratch",
+            "parent-revoked",
+        ] {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path();
+            if mode == "parent-revoked" {
+                install_reader(root, true);
+            }
             let path = root.join("archive.zip");
             for (name, file) in [
                 ("original-member", &path),
@@ -566,7 +763,11 @@ mod tests {
             let original = fs::read(&path).unwrap();
             let marker = PathBuf::from(format!("{}:Zone.Identifier", path.display()));
             fs::write(&marker, b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
-            let mut child = Command::new(std::env::current_exe().unwrap())
+            let mut cmd = Command::new(std::env::current_exe().unwrap());
+            if mode == "public-scratch" {
+                cmd.env("QING_TEST_PUBLIC_SCRATCH", "yes");
+            }
+            let mut child = cmd
                 .args([
                     "--exact",
                     "engine::edit_source::tests::framework_child_pauses_with_original_in_recovery",
@@ -595,6 +796,9 @@ mod tests {
             let _ = child.kill();
             let _ = child.wait();
             assert!(ready, "child did not reach the commit boundary");
+            if mode == "parent-revoked" {
+                powershell(root,"$null=& icacls.exe $env:QING_TEST_ACL '/remove:g' '*S-1-5-32-546';if($LASTEXITCODE){throw 'parent revoke failed'}");
+            }
             if mode == "external" {
                 fs::copy(root.join("proposal.zip"), &path).unwrap();
                 assert!(!recover_missing(&path).unwrap());
@@ -628,6 +832,18 @@ mod tests {
                     assert!(entries.iter().any(|e| e.name == "original-member"));
                 } else {
                     crate::engine_stream::canonical_input_path(&path, false).unwrap();
+                }
+                if mode == "public-scratch" {
+                    assert!(!fs::read_dir(root).unwrap().flatten().any(|e| e
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".qing-zip-edit-")));
+                }
+                if mode == "parent-revoked" {
+                    let peer = root.join("fresh");
+                    fs::write(&peer, b"check").unwrap();
+                    assert!(!permissions(&peer).contains(";;;BG)"));
+                    assert_eq!(permissions(&path), permissions(&peer));
                 }
                 assert_eq!(fs::read(&path).unwrap(), original);
                 assert_eq!(fs::read(marker).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");

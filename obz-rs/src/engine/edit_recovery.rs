@@ -1,4 +1,5 @@
-use super::{id, leaf, pin_directory, FileId};
+use super::{id, leaf, pin_directory, publish_with_live_permissions, scratch_path, FileId};
+use crate::private_stage::EditPermissions;
 use crate::private_stage::PrivateStage;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,6 +20,8 @@ struct Record {
     original: FileId,
     proposal: FileId,
     basename: Vec<u16>,
+    #[serde(default)]
+    explicit_acl: Option<Vec<u32>>,
 }
 
 pub(super) struct Intent(File);
@@ -29,6 +32,7 @@ impl Intent {
         target: &Path,
         original: &FileId,
         proposal: &FileId,
+        permissions: Option<&EditPermissions>,
     ) -> Result<Self, String> {
         let basename = target
             .file_name()
@@ -42,6 +46,7 @@ impl Intent {
             original: original.clone(),
             proposal: proposal.clone(),
             basename,
+            explicit_acl: permissions.map(EditPermissions::recipe),
         };
         let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
         let sealed = crate::services::protect(&bytes, true)?;
@@ -71,6 +76,10 @@ struct Match {
     original: File,
     marker: File,
     saved: PathBuf,
+    previous_parent: File,
+    public_proposal: Option<(PathBuf, PathBuf, FileId)>,
+    scratch: PathBuf,
+    permissions: Option<EditPermissions>,
     ready: bool,
     _pins: Vec<File>,
 }
@@ -96,45 +105,88 @@ fn match_stage(stage: &Path, parent: &FileId, name: &std::ffi::OsStr) -> Option<
     {
         return None;
     }
+    let target_parent = stage.parent()?;
+    let target = target_parent.join(name);
+    let result_scratch = scratch_path(stage, &target, false).ok()?;
+    let original_scratch = scratch_path(stage, &target, true).ok()?;
+    let candidates = [
+        (stage.join("merge").join(name), true, true),
+        (stage.join("original").join(name), true, false),
+        (stage.join("output").join(name), false, true),
+        (result_scratch.clone(), false, true),
+        (original_scratch.clone(), true, false),
+    ];
     let mut pins = vec![stage_handle];
     let mut original = None;
     let mut proposal = None;
-    for dir in ["merge", "original", "output"] {
-        let directory = stage.join(dir);
-        let Ok(pin) = pin_directory(&directory) else {
+    let mut public_proposal = None;
+    for (path, may_be_original, may_be_proposal) in candidates {
+        let Ok(pin) = pin_directory(path.parent()?) else {
             continue;
         };
-        pins.push(pin);
-        let path = directory.join(name);
         let Ok(check) = leaf(&path, 0, 7) else {
             continue;
         };
         let Ok(identity) = id(&check) else { continue };
-        if dir != "output" && identity == record.original {
-            // Lock the exact original against writes/renames before offering it.
+        if may_be_original && identity == record.original {
             let handle = leaf(&path, 0x10080, 1).ok()?;
             if id(&handle).ok()? != record.original {
                 return None;
             }
-            original = Some((handle, path));
-        } else if dir != "original" && identity == record.proposal {
-            // Once a proposal has been published its private name is gone. Do
-            // not resurrect an archive the user deliberately removed later.
+            original = Some((handle, path, pin));
+        } else if may_be_proposal && identity == record.proposal {
+            if path == result_scratch
+                && matches!(identity, FileId::Extended(..) | FileId::Legacy(..))
+            {
+                public_proposal = Some((path, stage.join("merge").join(name), identity));
+            }
             proposal = Some(check);
+            pins.push(pin);
         }
     }
     let ready = proposal.is_some();
     if let Some(guard) = proposal {
         pins.push(guard);
     }
-    let (original, saved) = original?;
+    let (original, saved, previous_parent) = original?;
+    let permissions = if let Some(explicit) = record.explicit_acl {
+        Some(EditPermissions::from_recipe(explicit).ok()?)
+    } else {
+        // Compatible with intents written before explicit ACLs were stored.
+        EditPermissions::capture(&super::reopen(&original, 0x20000, 7).ok()?).ok()?
+    };
     Some(Match {
         original,
+        public_proposal,
         marker,
         saved,
+        previous_parent,
+        scratch: original_scratch,
+        permissions,
         ready,
         _pins: pins,
     })
+}
+
+fn park_interrupted_proposal(item: &Match) -> Result<(), String> {
+    let Some((public, private, expected)) = &item.public_proposal else {
+        return Ok(());
+    };
+    let file = leaf(public, 0x10080, 1)?;
+    if id(&file)? != *expected {
+        return Ok(());
+    } // Never take a same-named external file.
+    let parent = pin_directory(private.parent().ok_or("missing private result parent")?)?;
+    if let Some(security) = &item.permissions {
+        security.protect(&super::reopen(&file, 0x60000, 7)?)?;
+    }
+    if !super::rename_handle_noclobber_in(&file, private, Some(&parent))? {
+        return Err(format!(
+            "Uncommitted archive remains at {}",
+            public.display()
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::engine) fn recover_missing(input: &Path) -> Result<bool, String> {
@@ -177,8 +229,22 @@ pub(in crate::engine) fn recover_missing(input: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     if found.len() == 1 && found[0].ready {
-        if super::rename_handle_noclobber_in(&found[0].original, &target, Some(&parent))? {
+        let item = &found[0];
+        let parked = park_interrupted_proposal(item);
+        if publish_with_live_permissions(
+            &item.original,
+            &item.saved,
+            &item.previous_parent,
+            &target,
+            &parent,
+            &item.scratch,
+            item.permissions.as_ref(),
+            || Ok(()),
+        )
+        .is_ok()
+        {
             let _ = found[0].marker.set_len(0);
+            parked.map_err(|e| format!("Original archive restored. {e}"))?;
             return Ok(true);
         }
         if fs::symlink_metadata(&target).is_ok() {
