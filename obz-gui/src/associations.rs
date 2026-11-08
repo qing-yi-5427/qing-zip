@@ -156,8 +156,8 @@ impl Registry {
     }
 }
 #[derive(Clone)]
-struct Edit {key:String,name:String,value:Option<RawValue>}
-fn edit(key:impl Into<String>,name:impl Into<String>,value:Option<RawValue>)->Edit{Edit{key:key.into(),name:name.into(),value}}
+struct Edit {key:String,name:String,value:Option<RawValue>,expected:Option<Option<RawValue>>}
+fn edit(key:impl Into<String>,name:impl Into<String>,value:Option<RawValue>)->Edit{Edit{key:key.into(),name:name.into(),value,expected:None}}
 fn selections(extensions:Vec<String>)->Result<BTreeSet<String>,String>{
     if extensions.len()>EXTENSIONS.len(){return Err("文件类型数量超出支持范围".into());}
     let mut selected=BTreeSet::new();
@@ -249,6 +249,9 @@ fn apply_edits(reg:&Registry,edits:Vec<Edit>,fail_after:Option<usize>)->Result<(
         for (index,entry) in edits.into_iter().enumerate() {
             if fail_after==Some(index){return Err("injected registration failure".to_string());}
             let before=reg.read(&entry.key,&entry.name)?;
+            if entry.expected.as_ref().is_some_and(|expected| expected != &before) {
+                return Err("注册值已被其他程序修改".into());
+            }
             reg.write(&entry.key,&entry.name,entry.value.as_ref())?;
             applied.push((entry,before));
         }
@@ -291,9 +294,9 @@ pub fn open_default_apps()->Result<(),String>{
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64,Ordering};
-    struct TestRegistry(Registry);
+    pub(super) struct TestRegistry(pub(super) Registry);
     impl TestRegistry {
-        fn new()->Self{static NEXT:AtomicU64=AtomicU64::new(0);Self(Registry{prefix:format!(r"Software\OpenArchiveTests\Associations-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed))})}
+        pub(super) fn new()->Self{static NEXT:AtomicU64=AtomicU64::new(0);Self(Registry{prefix:format!(r"Software\OpenArchiveTests\Associations-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed))})}
     }
     impl Drop for TestRegistry{fn drop(&mut self){let key=wide(&self.0.prefix).unwrap();unsafe{let _=RegDeleteTreeW(HKEY_CURRENT_USER,PCWSTR(key.as_ptr()));}}}
     #[test]fn invalid_extensions_and_unquoted_paths_are_rejected(){
