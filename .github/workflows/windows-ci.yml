@@ -26,11 +26,22 @@ jobs:
           $env:PACKAGE_SOURCE_COMMIT=$commit.headSha
           git diff --quiet $commit.headSha HEAD -- obz-gui obz-rs runtime
           if($LASTEXITCODE) { throw "Packaged product changed" }
-          gh run download ${{ matrix.donor }} --name ${{ matrix.artifact }} --dir dist
+          if('${{ matrix.arch }}' -eq 'x64'){
+            $packageHash='c420e655f8436751f62e39a38e8e57979f00e080714baef5e16ec8dfab406cc7'
+            $guiHash='a04fda1b8665339e93b4863614d64393c8cff21c6529987bc45cf7c0ffbfcb76'
+            gh release download v0.11.7 --pattern qing-zip-0.11.7-portable.zip --dir dist
+          }else{
+            $packageHash='d525bc824db465f32684fc20ec3e36a47eedf65d98b70de8de45f55ac9d3efe8'
+            $guiHash='11a948ed3ba4bc3a4dbadd8b9de44244b15a32fe08b826f63bcb14fc97029d33'
+            gh run download ${{ matrix.donor }} --name ${{ matrix.artifact }} --dir dist
+          }
           if($LASTEXITCODE) { exit $LASTEXITCODE }
           $archive = @(Get-ChildItem dist -Recurse -Filter '*-portable.zip')
-          if($archive.Count -ne 1) { throw "Missing portable package" }
-          Expand-Archive $archive[0].FullName (Join-Path dist $archive[0].BaseName)
+          if($archive.Count -ne 1 -or (Get-FileHash $archive[0].FullName).Hash -ne $packageHash) { throw "Unexpected release portable archive" }
+          $env:RELEASE_ARCHIVE_SHA256=$packageHash
+          $portable=Join-Path dist $archive[0].BaseName
+          Expand-Archive $archive[0].FullName $portable
+          if((Get-FileHash (Join-Path $portable qing-zip.exe)).Hash -ne $guiHash){throw "Unexpected release executable"}
           cmake -S qing-shell -B target/shell -A ${{ matrix.arch }}
           if($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build target/shell --config Release --target qing-shell-classic-forwarding
