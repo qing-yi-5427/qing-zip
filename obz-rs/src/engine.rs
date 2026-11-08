@@ -4658,7 +4658,7 @@ pub fn update(
     no_links(&locked_path)?;
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
     #[cfg(windows)]
-    let source = edit_source::EditSource::open(&locked_path)?;
+    let source = edit_source::EditSource::open_controlled(&locked_path,&control(opts))?;
     zip_volume_view::require_editable(&locked_path)?;
     if action != "add" {
         let existing = list(path, opts)?;

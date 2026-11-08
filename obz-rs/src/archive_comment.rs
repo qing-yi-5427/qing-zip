@@ -170,7 +170,7 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     engine::no_links(&path)?;
     let _lock = engine::update_lock(&path, &ctl)?;
     #[cfg(windows)]
-    let edit = engine::edit_source::EditSource::open(&path)?;
+    let edit = engine::edit_source::EditSource::open_controlled(&path, &ctl)?;
     let mut source = File::open(&path).map_err(|e| e.to_string())?;
     let before = source.metadata().map_err(|e| e.to_string())?;
     let directory = inspect(&mut source, Some(&ctl))?;
