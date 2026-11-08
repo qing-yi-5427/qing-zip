@@ -143,7 +143,7 @@ def background(exe,h,scratch,row):
     wait("first queued extraction while minimized",lambda:(queue[0].parent/"end-0.bin").exists(),45)
     assert win.IsIconic(h)
     second=queue[1].parent/"end-1.bin"
-    queue_fix=os.environ.get("CANDIDATE") in ("42459789971","42460552244") and row["name"]=="candidate"
+    queue_fix=os.environ.get("CANDIDATE") in ("42459789971","42460552244","42460612763","42460612721") and row["name"]=="candidate"
     if queue_fix:
         wait("second queued extraction while minimized",second.exists,60)
         assert win.IsIconic(h)
@@ -158,14 +158,22 @@ def background(exe,h,scratch,row):
     for i,source in enumerate(queue):
         assert (source.parent/f"end-{i}.bin").read_bytes()==b"last"+bytes([i])
         assert len(list(source.parent.glob('entry-*.txt')))==350
+        assert all((source.parent/f"entry-{j}.txt").read_bytes()==b"data"*32 for j in range(350))
     show(h,"normal")
+    wait("last queue job shown after restore",lambda:elem(h,30005,"\u89e3\u538b\u5230\u6b64\u5904 \u00b7 archive1.zip"))
+    wait("last queue job complete",lambda:elem(h,30005,"\u5df2\u5b8c\u6210"))
+    click(h,"\u5173\u95ed")
+    wait("original archive still interactive",lambda:elem(h,30005,"file-00000.txt"))
+    row["source_bytes"]=one.stat().st_size+two.stat().st_size
+    row["verified_created_names"]=[one.name,two.name]
+    row["queued_files"]=702
     result.setdefault("background",[]).append(str(exe))
 with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"],ignore_cleanup_errors=True) as tmp:
     root=Path(tmp);archive=root/"large.zip"
     with zipfile.ZipFile(archive,"w",zipfile.ZIP_STORED) as z:
         for i in range(50000): z.writestr(f"file-{i:05d}.txt",str(i))
-    for rep in range(1 if os.environ.get("CANDIDATE") in ("baseline","42459789971","42460552244") else 3):
-        order=[("base",base),("candidate",candidate)]
+    for rep in range(1):
+        order=[("candidate",candidate)]
         if (rep+int(os.environ.get("REVERSE_PAIRS","0")))%2:order.reverse()
         for label,exe in order:run(root,archive,label,exe,rep)
 result["complete"]=True;save()

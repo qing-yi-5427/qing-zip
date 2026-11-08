@@ -1,49 +1,39 @@
-name: Minimized workbench experiment
-on:
-  workflow_dispatch:
-    inputs:
-      candidate_run:
-        description: Candidate build run, or baseline for harness verification
-        required: true
-        type: string
-      reverse_pairs:
-        description: Start with candidate for an independent block
-        default: "0"
-        type: string
+﻿name: Frozen minimized queue acceptance
+on: workflow_dispatch
 permissions:
   contents: read
   actions: read
 jobs:
-  memory:
-    runs-on: windows-latest
-    timeout-minutes: 22
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-latest, arch: x64, donor: '42460612763', artifact: qing-zip-windows-x64-trial}
+          - {runner: windows-11-arm, arch: ARM64, donor: '42460612721', artifact: qing-zip-0.11.8-windows-arm64-trial}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          REVERSE_PAIRS: ${{ inputs.reverse_pairs }}
-          CANDIDATE: ${{ inputs.candidate_run }}
+          CANDIDATE: ${{ matrix.donor }}
         run: |
-          $baseline='42456912193'
-          foreach($build in @('baseline','candidate')){
-            $id=if($build -eq 'candidate' -and $env:CANDIDATE -ne 'baseline'){$env:CANDIDATE}else{$baseline}
-            if($id -notmatch '^[0-9]+$'){throw "Invalid run ID"}
-            $result=gh run view $id --json headSha,conclusion|ConvertFrom-Json
-            $expected=if($id -eq $baseline){'336be6e'}elseif($id -eq '42460552244'){'1a46121'}elseif($id -eq '42459789971'){'d2a2314'}else{'8695991'}
-            if(!$result.headSha.StartsWith($expected) -or $result.conclusion -ne 'success'){throw "Unexpected build"}
-            gh run download $id -n qing-zip-windows-x64-trial -D "incoming-$build"
-            if($LASTEXITCODE){exit $LASTEXITCODE}
-            $z=@(Get-ChildItem "incoming-$build" -Filter '*-portable.zip' -Recurse)
-            if($z.Count -ne 1){throw "Missing package"}
-            Expand-Archive $z[0].FullName $build
-          }
+          $result=gh run view $env:CANDIDATE --json headSha,conclusion|ConvertFrom-Json
+          if($result.headSha -ne '55f874e52e04067752dc697eb46e0aa8af1a42da' -or $result.conclusion -ne 'success'){throw 'Unexpected frozen build'}
+          gh run download $env:CANDIDATE -n '${{ matrix.artifact }}' -D incoming
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+          $z=@(Get-ChildItem incoming -Filter '*-portable.zip' -Recurse)
+          if($z.Count -ne 1){throw 'Missing portable'}
+          Expand-Archive $z[0].FullName app
+          Write-Host "Portable SHA-256" (Get-FileHash $z[0].FullName).Hash
           python -m pip install psutil==6.1.1 pywinauto==0.6.9
           if($LASTEXITCODE){exit $LASTEXITCODE}
-          python -X utf8 scripts/compare-minimized-desktops.py baseline/qing-zip.exe candidate/qing-zip.exe results
+          python -X utf8 scripts/compare-minimized-desktops.py app/qing-zip.exe app/qing-zip.exe results
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: memory-observations
+          name: frozen-minimized-queue-${{ matrix.arch }}
           path: results/
