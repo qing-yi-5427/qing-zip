@@ -1,5 +1,15 @@
-name: Physical drag from qing-zip into Explorer
-on: workflow_dispatch
+name: Copy archive selections into real Explorer after desktop exit
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Validated x64 build run ID
+        required: true
+        type: string
+      source_sha:
+        description: Exact x64 build source commit
+        required: true
+        type: string
 permissions:
   contents: read
   actions: read
@@ -11,15 +21,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Fetch the verified cancel-cleanup Windows x64 build
+      - name: Fetch the exact verified Windows x64 build
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          UPSTREAM_RUN: ${{ inputs.source_run }}
+          UPSTREAM_SHA: ${{ inputs.source_sha }}
         run: |
           $ErrorActionPreference='Stop'
           $repo=$env:GITHUB_REPOSITORY
-          $sourceId='42463507424'
-          $sourceSha='80c91adb0ea15753f7bf6ea24c67086dab11af7d'
+          $sourceId=$env:UPSTREAM_RUN
+          $sourceSha=$env:UPSTREAM_SHA
+          if ($sourceId -cnotmatch '^[0-9]+$' -or $sourceSha -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid source request' }
           $run=gh api "repos/$repo/actions/runs/$sourceId" | ConvertFrom-Json
           if ($run.head_sha -cne $sourceSha -or $run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/windows-ci.yml') { throw 'Unexpected source workflow' }
           $items=@((gh api "repos/$repo/actions/runs/$sourceId/artifacts" | ConvertFrom-Json).artifacts | Where-Object { $_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired })
@@ -39,15 +52,15 @@ jobs:
           $gui=@($build.binaries | Where-Object name -eq 'obz-gui.exe')
           if ($gui.Count -ne 1 -or $gui[0].sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'No GUI digest in build receipt' }
           Expand-Archive -LiteralPath $portables[0].FullName -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
-          "QING_DRAG_GUI_SHA=$($gui[0].sha256)" >> $env:GITHUB_ENV
-          "QING_DRAG_SOURCE_RUN=$sourceId" >> $env:GITHUB_ENV
-          "QING_DRAG_SOURCE_SHA=$sourceSha" >> $env:GITHUB_ENV
-          "QING_DRAG_ARTIFACT_DIGEST=$($artifact.digest)" >> $env:GITHUB_ENV
-          python -m pip install pywinauto==0.6.9 pillow==11.3.0
-      - name: Drag two selected items into a real destination folder
-        run: python -u scripts/check-hosted-drag-out.py
+          "QING_CLIP_GUI_SHA=$($gui[0].sha256)" >> $env:GITHUB_ENV
+          "QING_CLIP_SOURCE_RUN=$sourceId" >> $env:GITHUB_ENV
+          "QING_CLIP_SOURCE_SHA=$sourceSha" >> $env:GITHUB_ENV
+          "QING_CLIP_ARTIFACT_DIGEST=$($artifact.digest)" >> $env:GITHUB_ENV
+          python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1
+      - name: Copy, cancel, reject corrupt data and paste after exit into Explorer
+        run: python -u scripts/check-hosted-clipboard.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: drag-out-desktop
-          path: drag-evidence
+          name: clipboard-desktop
+          path: clipboard-evidence

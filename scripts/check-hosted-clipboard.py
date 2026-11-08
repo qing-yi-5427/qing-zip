@@ -1,0 +1,171 @@
+"""Physical Windows clipboard export and paste on a disposable hosted desktop."""
+from contextlib import contextmanager
+from pathlib import Path
+import ctypes, hashlib, json, os, subprocess, tempfile, time, urllib.request, zipfile
+
+assert os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and os.environ.get("GITHUB_ACTIONS") == "true"
+from PIL import ImageGrab
+from pywinauto import Desktop, keyboard, mouse
+from websockets.sync.client import connect
+import win32clipboard
+from win32com.client import Dispatch
+
+u = ctypes.WinDLL("user32")
+u.SetProcessDPIAware()
+evidence = Path("clipboard-evidence")
+evidence.mkdir()
+exe, = (Path(os.environ["RUNNER_TEMP"])/"qing-trial").rglob("qing-zip.exe")
+digest = lambda b:hashlib.sha256(b).hexdigest()
+assert digest(exe.read_bytes()) == os.environ["QING_CLIP_GUI_SHA"]
+report = {"binary":digest(exe.read_bytes()), "tested_source":os.environ["QING_CLIP_SOURCE_SHA"],
+          "source_run":os.environ["QING_CLIP_SOURCE_RUN"],"source_artifact":os.environ["QING_CLIP_ARTIFACT_DIGEST"]}
+desktop = Desktop(backend="uia")
+def wait(fn, description, seconds=40):
+    deadline=time.monotonic()+seconds
+    while time.monotonic()<deadline:
+        value=fn()
+        if value:return value
+        time.sleep(.08)
+    raise RuntimeError("Timed out: "+description)
+def manifest(where):
+    return {p.relative_to(where).as_posix():digest(p.read_bytes()) for p in where.rglob("*") if p.is_file()}
+def clip(action):
+    def attempt():
+        try:win32clipboard.OpenClipboard()
+        except Exception:return None
+        try:return True,action()
+        finally:win32clipboard.CloseClipboard()
+    return wait(attempt,"access clipboard",8)[1]
+def set_sentinel():
+    def seed():
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardText("qing hosted clipboard sentinel",13)
+    clip(seed)
+def sentinel_preserved():
+    return clip(lambda:win32clipboard.IsClipboardFormatAvailable(13) and win32clipboard.GetClipboardData(13)=="qing hosted clipboard sentinel" and not win32clipboard.IsClipboardFormatAvailable(15))
+def drop_paths():
+    return clip(lambda:list(win32clipboard.GetClipboardData(15)) if win32clipboard.IsClipboardFormatAvailable(15) else [])
+def find(win, title, kind):
+    return next((v for v in win.descendants(control_type=kind) if v.element_info.name==title and v.is_visible()),None)
+def click(button):
+    r=button.rectangle()
+    mouse.click(coords=(int((r.left+r.right)/2),int((r.top+r.bottom)/2)))
+def endpoint(profile):
+    f=next(profile.rglob("DevToolsActivePort"),None)
+    if not f:return
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:"+f.read_text().splitlines()[0]+"/json/list",timeout=2) as resp:
+            return next((x["webSocketDebuggerUrl"] for x in json.load(resp) if x["type"]=="page" and "tauri.localhost" in x["url"]),None)
+    except (OSError,IndexError,ValueError):return
+@contextmanager
+def application(root, archive):
+    tmp=root/"temp";tmp.mkdir()
+    profile=root/"profile";local=root/"local";local.mkdir()
+    env={**os.environ,"TMP":str(tmp),"TEMP":str(tmp),"LOCALAPPDATA":str(local),
+         "WEBVIEW2_USER_DATA_FOLDER":str(profile),"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS":"--remote-debugging-port=0 --remote-debugging-address=127.0.0.1"}
+    process=subprocess.Popen([str(exe),str(archive)],env=env)
+    try:
+        win=wait(lambda:next((w for w in desktop.windows(process=process.pid) if w.is_visible() and w.window_text()=="qing-zip"),None),"visible main qing-zip window")
+        win.set_focus()
+        with connect(wait(lambda:endpoint(profile),"actual webview"),proxy=None) as ws:
+            count=0
+            def observe(expr):
+                nonlocal count
+                count+=1;ws.send(json.dumps({"id":count,"method":"Runtime.evaluate","params":{"expression":expr,"returnByValue":True}}))
+                while True:
+                    result=json.loads(ws.recv(timeout=5))
+                    if result.get("id")==count:
+                        assert "error" not in result and "exceptionDetails" not in result["result"],result
+                        return result["result"]["result"].get("value")
+            yield process,win,observe,tmp
+    finally:
+        if process.poll() is None:
+            process.terminate();process.wait(timeout=10)
+def select_and_copy(main,observe,names):
+    for name in names:
+        box=wait(lambda:find(main,"选择 "+name,"CheckBox"),"checkbox "+name)
+        click(box)
+    wait(lambda:observe("document.querySelectorAll('[data-select]:checked').length")==len(names),"selection")
+    if observe("['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)"):
+        keyboard.send_keys("{TAB}")
+    assert observe("!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)")
+    keyboard.send_keys("^c")
+def stages(tmp):
+    return sorted(p.name for p in tmp.glob("qing-zip-drag-*"))
+def job_status(observe):
+    return observe("document.querySelector('.qa-jobcard .qa-badge')?.textContent")
+def exercise_negative(base,case):
+    root=base/case;root.mkdir();archive=root/"input.zip"
+    with zipfile.ZipFile(archive,"w",compression=zipfile.ZIP_STORED) as z:
+        if case=="cancel":
+            for i in range(12000):
+                z.writestr(f"bulk/f{i:05d}.txt",("payload"+str(i)).encode()*32)
+        else:
+            z.writestr("bad.txt",b"qing-damaged-copy-payload")
+    if case=="corrupt":
+        original=archive.read_bytes();assert original.count(b"qing-damaged-copy-payload")==1
+        archive.write_bytes(original.replace(b"qing-damaged-copy-payload",b"Qing-damaged-copy-payload"))
+    set_sentinel()
+    with application(root,archive) as (proc,main,observe,tmp):
+        before=stages(tmp);assert before==[]
+        select_and_copy(main,observe,["bulk" if case=="cancel" else "bad.txt"])
+        if case=="cancel":
+            active=wait(lambda:stages(tmp),"private export appeared")
+            assert len(active)==1
+            click(wait(lambda:find(main,"取消任务","Button"),"real cancel job"))
+            status="已取消"
+        else:status="失败"
+        wait(lambda:job_status(observe)==status,"durable copy status "+status)
+        wait(lambda:stages(tmp)==before,"discard private export")
+        assert sentinel_preserved()
+        report[case]={"status":status,"stages_before":before,"stages_after":stages(tmp),"clipboard_unchanged":True}
+        if case=="cancel":report[case]["active_stages"]=active
+def exercise_paste(base):
+    root=base/"paste";root.mkdir();archive=root/"mixed.zip";dest=root/"Destination";dest.mkdir()
+    files={"文档 & 1.txt":b"selected plain","嵌套目录/子层/#one.txt":b"nested payload","未选择.txt":b"ignored"}
+    selected_names=["文档 & 1.txt","嵌套目录"]
+    expected={k:digest(v) for k,v in files.items() if k!="未选择.txt"}
+    with zipfile.ZipFile(archive,"w") as z:
+        for name,data in files.items():z.writestr(name,data)
+    set_sentinel()
+    with application(root,archive) as (proc,main,observe,tmp):
+        select_and_copy(main,observe,selected_names)
+        paths=wait(drop_paths,"CF_HDROP")
+        assert sorted(Path(p).name for p in paths)==sorted(selected_names),paths
+        stage_names=stages(tmp);assert len(stage_names)==1
+        stage=tmp/stage_names[0]
+        assert all(Path(p).parent.samefile(stage) for p in paths)
+        assert manifest(stage)==expected
+        wait(lambda:job_status(observe)=="已完成","successful copy")
+        ImageGrab.grab().save(evidence/"copied.png")
+        main.set_focus();keyboard.send_keys("%{F4}")
+        assert proc.wait(timeout=20)==0
+        assert drop_paths()==paths and manifest(stage)==expected
+    shell=Dispatch("Shell.Application")
+    shell.Open(str(dest))
+    def target():
+        for wnd in shell.Windows():
+            try:
+                if Path(wnd.Document.Folder.Self.Path).samefile(dest):return wnd
+            except (OSError,AttributeError):pass
+    explorer=wait(target,"real Explorer destination")
+    try:
+        win=desktop.window(handle=int(explorer.HWND)).wrapper_object()
+        win.set_focus()
+        view=wait(lambda:next((ctrl for ctrl in win.descendants() if ctrl.element_info.class_name=="UIItemsView" and ctrl.is_visible()),None),"Explorer item view")
+        click(view)
+        keyboard.send_keys("^v")
+        wait(lambda:manifest(dest)==expected,"post-exit Explorer paste",30)
+        ImageGrab.grab().save(evidence/"pasted.png")
+        report["paste"]={"clipboard_basenames":[Path(p).name for p in paths],"exited_before_paste":True,"destination":manifest(dest),"private_export_retained":stage_names}
+    finally:explorer.Quit()
+try:
+    with tempfile.TemporaryDirectory(prefix="qing-clipboard-",dir=os.environ["RUNNER_TEMP"],ignore_cleanup_errors=True) as temp:
+        root=Path(temp)
+        exercise_negative(root,"cancel")
+        exercise_negative(root,"corrupt")
+        exercise_paste(root)
+except Exception as exc:
+    report["error"]=repr(exc);ImageGrab.grab().save(evidence/"failure.png");raise
+finally:
+    (evidence/"receipt.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf8")
