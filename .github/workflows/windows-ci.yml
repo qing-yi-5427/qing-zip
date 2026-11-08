@@ -1,71 +1,38 @@
-name: Hosted x64 desktop comparison
+﻿name: Hosted x64 typed directory comparison
 on: workflow_dispatch
-permissions:
-  contents: read
-  actions: read
+permissions: {contents: read, actions: read}
 jobs:
-  desktop:
+  profile:
     runs-on: windows-2025
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Obtain exact hardened qing-zip 0.11.6 build
+      - name: Fetch exact validated release candidates
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $run = 42451348904
-          gh run watch $run --exit-status --interval 30
-          if ($LASTEXITCODE) { throw 'Integration build failed' }
-          $ci = gh run view $run --json headSha,conclusion,url | ConvertFrom-Json
-          if ($ci.headSha -ne '50b97362b800ef8e69a9c082a3d4bd87ff3e036f') { throw 'Wrong integration source' }
-          gh run download $run --name qing-zip-windows-x64-trial --dir incoming
-          if ($LASTEXITCODE) { throw 'Missing packaged application' }
-          $portable = @(Get-ChildItem incoming -Recurse -Filter '*0.11.6*portable.zip')
-          if ($portable.Count -ne 1) { throw 'Expected one 0.11.6 portable distribution' }
-          Expand-Archive -LiteralPath $portable[0].FullName -DestinationPath qing
+          $ErrorActionPreference='Stop'
           New-Item -ItemType Directory results
-          $ci | ConvertTo-Json | Set-Content results/qing-source.json
-      - name: Fetch the candidate from its own validated commit
-        shell: pwsh
-        run: |
-          $run = 42456853882
-          gh run watch $run --exit-status --interval 30
-          if ($LASTEXITCODE) { throw 'Candidate failed' }
-          $ci = gh run view $run --json headSha,conclusion,url | ConvertFrom-Json
-          if (-not $ci.headSha.StartsWith('21d92f2')) { throw 'Wrong candidate revision' }
-          gh run download $run --name qing-zip-windows-x64-trial --dir incoming-candidate
-          if ($LASTEXITCODE) { throw 'Missing candidate GUI' }
-          $portable = @(Get-ChildItem incoming-candidate -Recurse -Filter '*0.11.6*portable.zip')
-          if ($portable.Count -ne 1) { throw 'Expected one archive' }
-          Expand-Archive -LiteralPath $portable[0].FullName -DestinationPath candidate
-          $ci | ConvertTo-Json | Set-Content results/candidate-source.json
-      - name: Register official NanaZip stable MSIX and open both file managers
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pkg = "$env:RUNNER_TEMP\NanaZip_7.0.1882.0.msixbundle"
-          gh release download 7.0.1882.0 --repo M2Team/NanaZip --pattern 'NanaZip_7.0.1882.0.msixbundle' --dir $env:RUNNER_TEMP
-          if ($LASTEXITCODE -or (Get-FileHash $pkg).Hash -ne 'c32c33e5a59a0d02db89f1e85889f942cd7b22ad81110289214187c20e2b6168') { throw 'Wrong official MSIX' }
-          Get-AuthenticodeSignature $pkg | Format-List Status,StatusMessage | Out-File results/package-signature.txt
-          Get-Process -Id $PID | Format-List SessionId,Path | Out-File results/desktop-session.txt
-          qwinsta | Out-File results/desktop-session.txt -Append
-          Add-AppxPackage -Path $pkg
-          $installed = @(Get-AppxPackage | Where-Object { $_.Name -like '*NanaZip*' -and $_.Version -eq '7.0.1882.0' })
-          if ($installed.Count -ne 1) { throw 'Wrong registered package' }
-          $installed[0] | Select-Object Name,Version,Architecture,PackageFullName,SignatureKind | ConvertTo-Json | Set-Content results/nana-source.json
-          $nana = Join-Path $installed[0].InstallLocation 'NanaZip.Modern.FileManager.exe'
-          $qing = @(Get-ChildItem qing -Filter qing-zip.exe -File -Recurse)
-          python -m pip install psutil==6.1.1 pywinauto==0.6.9 Pillow==11.3.0
-          if ($LASTEXITCODE) { throw 'Desktop probes unavailable' }
-          $candidate = @(Get-ChildItem candidate -Filter qing-zip.exe -File -Recurse)
-          python scripts/compare-hosted-desktops.py $qing[0].FullName $candidate[0].FullName $nana results
+          foreach ($v in @(@('bounded',42456853882,'21d92f208fa00b03ae19b54b8be4ba1046d4b92f'),@('typed',42457151341,'3701157'))) {
+            $run=$v[1]; $label=$v[0]
+            gh run watch $run --exit-status --interval 30
+            if ($LASTEXITCODE) {throw 'Build did not pass'}
+            $r=gh run view $run --json headSha,url | ConvertFrom-Json
+            if (-not $r.headSha.StartsWith($v[2])) {throw 'Wrong source'}
+            $r | ConvertTo-Json | Set-Content "results/$label-source.json"
+            gh run download $run --name qing-zip-windows-x64-trial --dir "download-$label"
+            if ($LASTEXITCODE) {throw 'Missing hardened portable application'}
+            $zip=@(Get-ChildItem "download-$label" -Recurse -Filter '*-portable.zip')
+            if ($zip.Count -ne 1) {throw 'Invalid artifact'}
+            Expand-Archive $zip[0].FullName $label
+          }
+          $a=@(Get-ChildItem bounded -Recurse -Filter obz.exe)[0]
+          $b=@(Get-ChildItem typed -Recurse -Filter obz.exe)[0]
+          python scripts/compare-hosted-list.py $a.FullName $b.FullName results
           exit $LASTEXITCODE
-      - name: Save observed desktop evidence
-        if: always()
+      - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hosted-file-manager-comparison
-          path: results
-          if-no-files-found: warn
+          name: hosted-typed-list-evidence
+          path: results/*.json
