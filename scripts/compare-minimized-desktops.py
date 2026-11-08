@@ -143,7 +143,7 @@ def background(exe,h,scratch,row):
     wait("first queued extraction while minimized",lambda:(queue[0].parent/"end-0.bin").exists(),45)
     assert win.IsIconic(h)
     second=queue[1].parent/"end-1.bin"
-    queue_fix=os.environ.get("CANDIDATE")=="42459789971" and row["name"]=="candidate"
+    queue_fix=os.environ.get("CANDIDATE") in ("42459789971","42460552244") and row["name"]=="candidate"
     if queue_fix:
         wait("second queued extraction while minimized",second.exists,60)
         assert win.IsIconic(h)
@@ -164,7 +164,7 @@ with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"],ignore_cleanup_er
     root=Path(tmp);archive=root/"large.zip"
     with zipfile.ZipFile(archive,"w",zipfile.ZIP_STORED) as z:
         for i in range(50000): z.writestr(f"file-{i:05d}.txt",str(i))
-    for rep in range(1 if os.environ.get("CANDIDATE") in ("baseline","42459789971") else 3):
+    for rep in range(1 if os.environ.get("CANDIDATE") in ("baseline","42459789971","42460552244") else 3):
         order=[("base",base),("candidate",candidate)]
         if (rep+int(os.environ.get("REVERSE_PAIRS","0")))%2:order.reverse()
         for label,exe in order:run(root,archive,label,exe,rep)
