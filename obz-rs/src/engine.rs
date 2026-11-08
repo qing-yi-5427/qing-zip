@@ -9,7 +9,7 @@ mod zip_volume_view;
 pub(crate) use zip_volume_view::with_source as with_zip_source;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -487,14 +487,27 @@ pub fn validate_name(name: &str) -> Result<PathBuf, String> {
     crate::extract::relative_path(&normalized)
 }
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
-    let text = String::from_utf8(bytes.to_vec())
-        .map_err(|_| "engine returned invalid UTF-8")?
-        .replace("\r\n", "\n");
+    let text = std::str::from_utf8(bytes).map_err(|_| "engine returned invalid UTF-8")?;
+    if text.contains("\r\r\n") {
+        // A carriage return within a value immediately before CRLF has
+        // different line-end semantics at a record boundary. Preserve those
+        // historical semantics without copying ordinary LF or CRLF listings.
+        let normalized = text.replace("\r\n", "\n");
+        return parse_listing_lines(normalized.split("\n\n").flat_map(|block| {
+            block.lines().map(Some).chain(std::iter::once(None))
+        }));
+    }
+    parse_listing_lines(text.lines().map(|line| {
+        if line.is_empty() { None } else { Some(line) }
+    }).chain(std::iter::once(None)))
+}
+
+fn parse_listing_lines<'a>(lines: impl Iterator<Item = Option<&'a str>>) -> Result<Vec<Entry>, String> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
-    for block in text.split("\n\n").filter(|s| !s.trim().is_empty()) {
-        let mut props = BTreeMap::new();
-        for line in block.lines() {
+    let mut props = HashMap::new();
+    for line in lines {
+        if let Some(line) = line {
             if let Some((k, v)) = line.split_once(" = ") {
                 if props.insert(k, v).is_some() {
                     return Err("ambiguous archive entry metadata".into());
@@ -502,55 +515,72 @@ fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
             } else if !line.trim().is_empty() {
                 return Err("unsupported archive filename or metadata".into());
             }
-        }
-        let Some(name) = props.get("Path") else {
-            continue;
-        };
-        if ["Symbolic Link", "Hard Link", "Alternate Stream"]
-            .iter()
-            .any(|k| props.get(k).is_some_and(|s| !s.is_empty() && *s != "-"))
-        {
-            return Err("archive links or alternate streams are unsupported".into());
-        }
-        let attrs = props.get("Attributes").copied().unwrap_or("");
-        if attrs.starts_with('l') || attrs.contains(" lrwx") {
-            return Err("archive symbolic link unsupported".into());
-        }
-        let is_dir = props.get("Folder") == Some(&"+")
-            || attrs.starts_with('D')
-            || attrs.starts_with('d')
-            || name.ends_with('/');
-        if matches!(*name, "." | "./") {
-            if !is_dir {
-                return Err("archive root must be a directory".into());
+        } else {
+            if let Some(&name) = props.get("Path") {
+                if let Some(entry) = listing_entry(name, &props, &mut seen)? {
+                    result.push(entry);
+                }
             }
-            continue;
+            // An unusually wide metadata block must not make clearing every
+            // subsequent ordinary record proportional to the outlier's size.
+            if props.capacity() > 128 {
+                props = HashMap::new();
+            } else {
+                props.clear();
+            }
         }
-        if !seen.insert(path_key(&validate_name(name)?)) {
-            return Err("duplicate or case-colliding archive names".into());
-        }
-        let size = match props.get("Size").filter(|value| !value.is_empty()) {
-            Some(value) => Some(value.parse::<u64>().map_err(|_| "invalid archive entry size")?),
-            None => None,
-        };
-        result.push(Entry {
-            size_known: is_dir || size.is_some(),
-            name: (*name).into(),
-            size: size.unwrap_or(0),
-            packed_size: props
-                .get("Packed Size")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            is_dir,
-            crc: props.get("CRC").unwrap_or(&"").to_string(),
-            encrypted: props.get("Encrypted") == Some(&"+"),
-            modified: props.get("Modified").unwrap_or(&"").to_string(),
-            method: props.get("Method").unwrap_or(&"").to_string(),
-            comment: props.get("Comment").unwrap_or(&"").to_string(),
-            attributes: attrs.to_string(),
-        });
     }
     Ok(result)
+}
+
+fn listing_entry(
+    name: &str,
+    props: &HashMap<&str, &str>,
+    seen: &mut HashSet<String>,
+) -> Result<Option<Entry>, String> {
+    if ["Symbolic Link", "Hard Link", "Alternate Stream"]
+        .iter()
+        .any(|k| props.get(k).is_some_and(|s| !s.is_empty() && *s != "-"))
+    {
+        return Err("archive links or alternate streams are unsupported".into());
+    }
+    let attrs = props.get("Attributes").copied().unwrap_or("");
+    if attrs.starts_with('l') || attrs.contains(" lrwx") {
+        return Err("archive symbolic link unsupported".into());
+    }
+    let is_dir = props.get("Folder") == Some(&"+")
+        || attrs.starts_with('D')
+        || attrs.starts_with('d')
+        || name.ends_with('/');
+    if matches!(name, "." | "./") {
+        if !is_dir {
+            return Err("archive root must be a directory".into());
+        }
+        return Ok(None);
+    }
+    if !seen.insert(path_key(&validate_name(name)?)) {
+        return Err("duplicate or case-colliding archive names".into());
+    }
+    let size = match props.get("Size").filter(|value| !value.is_empty()) {
+        Some(value) => Some(value.parse::<u64>().map_err(|_| "invalid archive entry size")?),
+        None => None,
+    };
+    Ok(Some(Entry {
+        size_known: is_dir || size.is_some(),
+        name: name.into(),
+        size: size.unwrap_or(0),
+        packed_size: props
+            .get("Packed Size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+        is_dir,
+        crc: props.get("CRC").unwrap_or(&"").to_string(),
+        encrypted: props.get("Encrypted") == Some(&"+"),
+        modified: props.get("Modified").unwrap_or(&"").to_string(),
+        method: props.get("Method").unwrap_or(&"").to_string(),
+        comment: props.get("Comment").unwrap_or(&"").to_string(),
+        attributes: attrs.to_string(),
+    }))
 }
 fn unsupported_utc_listing_switch(error: &str) -> bool {
     // Older external engines can lack -slmu. Retry only the explicit command
@@ -4900,6 +4930,37 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn technical_listing_preserves_mixed_line_endings_and_metadata() {
+        let data = b"Path = a\r\nSize = 2\nPacked Size = 1\r\nCRC = ff\n\t\nEncrypted = +\r\nModified = date\nMethod = M\nComment = kept \r\nAttributes = A\r\n\nPath = b/\nFolder = +";
+        let entries = parse_listing(data).unwrap();
+        assert_eq!(entries.len(), 2);
+        let a = &entries[0];
+        assert_eq!((&*a.name, a.size, a.size_known, a.packed_size, a.is_dir), ("a", 2, true, 1, false));
+        assert_eq!((&*a.crc, a.encrypted, &*a.modified, &*a.method, &*a.comment, &*a.attributes),
+                   ("ff", true, "date", "M", "kept ", "A"));
+        assert!(entries[1].is_dir && entries[1].size_known && entries[1].crc.is_empty());
+        let controls = parse_listing(b"Path = a\r\nComment = inner\r\r\nCRC = c\r\n\r\nPath = b\nComment = end\r\r\n\r\n").unwrap();
+        assert_eq!((&*controls[0].comment, &*controls[1].comment), ("inner", "end\r"));
+    }
+
+    #[test]
+    fn technical_listing_rejects_ambiguous_and_unsafe_records() {
+        for data in [
+            b"Unknown = 1\r\nUnknown = 2".as_slice(),
+            b"Path = a\r\n \nPath = b",
+            b"Path = a\r\ninvalid continuation",
+            b"Path = a\nHard Link = target",
+            b"Path = a\nAlternate Stream = +",
+            b"Path = a\nSymbolic Link = target",
+            b"Path = ../outside",
+            b"Path = a\n\r\nPath = A",
+            b"Path = a\nSize = -1",
+            b"Path = a\xff",
+        ] {
+            assert!(parse_listing(data).is_err(), "{data:?}");
+        }
+    }
     #[cfg(windows)]
     #[test]
     fn abandoned_selected_publication_removes_only_its_own_empty_directories() {
