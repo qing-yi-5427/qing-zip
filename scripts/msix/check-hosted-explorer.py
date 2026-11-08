@@ -1,4 +1,4 @@
-﻿"""Exercise the context menu on a disposable, active Windows 11 desktop."""
+"""Exercise the context menu on a disposable, active Windows 11 desktop."""
 from pathlib import Path
 import ctypes, json, os, subprocess, sys, tempfile, time, traceback, urllib.request, winreg, zipfile
 from PIL import ImageGrab

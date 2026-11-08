@@ -1,4 +1,4 @@
-﻿name: Disposable Windows 11 Explorer and sparse MSIX
+name: Disposable Windows 11 Explorer and sparse MSIX
 on: workflow_dispatch
 permissions: { contents: read, actions: read }
 jobs:
@@ -6,6 +6,7 @@ jobs:
     runs-on: windows-11-arm
     timeout-minutes: 45
     env:
+      PYTHONUTF8: 1
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -42,7 +43,13 @@ jobs:
           Export-Certificate -Cert $cert -FilePath $public | Out-Null
           foreach ($store in @('Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPeople')) { Import-Certificate -FilePath $public -CertStoreLocation $store | Out-Null }
           $package=@(Get-ChildItem prepared -Filter '*.msix')[0]
-          & ./scripts/msix/Sign-Package.ps1 -PackagePath $package.FullName -CertificateThumbprint $cert.Thumbprint -Publisher $publisher -TimestampServer 'https://timestamp.digicert.com' -SignToolPath (Join-Path $sdk signtool.exe)
+          # This disposable 8-hour test key and package never leave the runner.
+          # The shipping signing policy remains unchanged.
+          $signTool=Join-Path $sdk signtool.exe
+          & $signTool sign /sha1 $cert.Thumbprint /fd SHA256 $package.FullName
+          if ($LASTEXITCODE) { throw 'Disposable local package signature failed' }
+          & $signTool verify /pa /v $package.FullName | Out-File results/test-signature.txt
+          if ($LASTEXITCODE) { throw 'Disposable signature did not verify' }
           $external=Join-Path $app.DirectoryName shell
           Copy-Item -LiteralPath prepared/shell -Destination $external -Recurse
           & ./scripts/msix/Register-Package.ps1 -PackagePath $package.FullName -ExternalLocation $external -Publisher $publisher -SignToolPath (Join-Path $sdk signtool.exe)
