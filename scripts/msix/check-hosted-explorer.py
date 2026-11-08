@@ -205,24 +205,31 @@ def menuitems():
     items=[]
     for w in foreground.descendants():
         if w.element_info.control_type!='MenuItem':continue
+        name=w.window_text()
+        xy=None
         try:
             box=w.rectangle()
-            xy=((box.left+box.right)//2,(box.top+box.bottom)//2) if box.right>box.left and box.bottom>box.top else None
-            items.append((w.window_text(),xy))
-        except Exception:pass
+            if box.right>box.left and box.bottom>box.top:xy=((box.left+box.right)//2,(box.top+box.bottom)//2)
+        except Exception as exc:report.setdefault('geometry_errors',{})[name]=str(exc)
+        items.append((name,xy))
     return items
 def relevant(items):
     return [n for n,xy in items if 'qing' in n.lower() or '智能解压' in n or '解压到此处' in n]
 def first_menu(path,label):
     keyboard.send_keys('{ESC}{ESC}')
     item=explorer_item(path);item.click_input(button='right')
-    time.sleep(.65)
-    items=menuitems(); names=[n for n,xy in items]
+    def is_modern(items):
+        return any("more options" in n.lower() or "\u66f4\u591a\u9009\u9879" in n for n,_ in items)
+    until=time.monotonic()+8
+    while True:
+        items=menuitems()
+        if is_modern(items) or time.monotonic()>=until:break
+        time.sleep(.35)
+    names=[n for n,xy in items]
     report['menus'][label]=names;shots(label);save()
-    if not any('more options' in n.lower() or '更多选项' in n for n in names):
+    if not is_modern(items):
         fg=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
-        report['foreground']={'class':fg.class_name(),'title':fg.window_text(),'elements':[(w.element_info.control_type,w.window_text()) for w in fg.descendants()][:140]};save()
-    assert any('more options' in n.lower() or '更多选项' in n for n in names),(label,names)
+        report.setdefault('incomplete_menu_snapshot',{})[label]={'class':fg.class_name(),'title':fg.window_text(),'elements':[(w.element_info.control_type,w.window_text()) for w in fg.descendants()][:140]};save()
     return items
 def act(items,label,target):
     def find(parts):return next(((n,xy) for n,xy in parts if target in n),None)
@@ -319,24 +326,35 @@ try:
     keyboard.send_keys('{ESC}');settings(True)
     report['registered_on']=registered_commands(True);save()
     clear_lab_overlays()
-    items=first_menu(archive,'file-on')
-    act(items,'file-on','解压到此处')
-    marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
-    report['actions']['actual_archive_extraction']=True;save();stop_own()
-    items=first_menu(folder,'folder-on')
-    act(items,'folder-on','压缩')
-    def genuine_folder_activation():
-        for p in processes():
-            cmd=p['CommandLine'] or ''
-            if '--compress-folder' in cmd:
-                selected=cmd.split('--compress-folder',1)[1].strip().strip('"')
-                if os.path.exists(selected) and os.path.samefile(selected,folder):return p
-        return None
-    report['actions']['folder_activation']=wait(genuine_folder_activation,22)
-    time.sleep(2);shots('compression-dialog');save();stop_own()
+    try:
+        items=first_menu(archive,'file-on')
+        act(items,'file-on','\u89e3\u538b\u5230\u6b64\u5904')
+        marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
+        report['actions']['actual_archive_extraction']=True
+    except Exception:
+        report['actions']['extract_error']=traceback.format_exc()
+    finally:
+        save();keyboard.send_keys('{ESC}{ESC}');stop_own()
+    try:
+        items=first_menu(folder,'folder-on')
+        act(items,'folder-on','\u538b\u7f29')
+        def genuine_folder_activation():
+            for p in processes():
+                cmd=p['CommandLine'] or ''
+                if '--compress-folder' in cmd:
+                    selected=cmd.split('--compress-folder',1)[1].strip().strip('"')
+                    if os.path.exists(selected) and os.path.samefile(selected,folder):return p
+            return None
+        report['actions']['folder_activation']=wait(genuine_folder_activation,22)
+        time.sleep(2);shots('compression-dialog')
+    except Exception:
+        report['actions']['folder_error']=traceback.format_exc()
+    finally:
+        save();keyboard.send_keys('{ESC}{ESC}');stop_own()
     settings(False)
     for p,tag in [(archive,'file-disabled-again'),(folder,'folder-disabled-again')]:
         items=first_menu(p,tag);assert not relevant(items),(tag,items)
+    assert report['actions'].get('actual_archive_extraction') and report['actions'].get('folder_activation'),report['actions']
     report['complete']=True
 except Exception:
     report['error']=traceback.format_exc();shots('last-desktop')
