@@ -103,8 +103,20 @@ def dismiss_runner_onboarding():
                 if toggle.CurrentToggleState==1:toggle.Toggle()
             except Exception:pass
         action=next((w for w in descendants if w.window_text() in ("Next","Accept") and w.is_visible()),None)
-        if not action:raise RuntimeError("Hosted privacy prompt has no known continuation")
-        action.click_input();time.sleep(.65)
+        if action:
+            action.click_input()
+        else:
+            # Win11 OOBE's blue Next/Accept control has no accessible name on
+            # some builds. Verify the identified foreground prompt and its
+            # visible button before clicking this same observed control.
+            screen=ImageGrab.grab()
+            w,h=screen.size
+            x,y=round(.895*w),round(.856*h)
+            r,g,b=screen.convert('RGB').getpixel((x,y))
+            if not (r<70 and 50<g<170 and b>155):
+                raise RuntimeError("Identified onboarding window has no blue continuation button")
+            mouse.click(coords=(x,y))
+        time.sleep(1.1)
     if shown():raise RuntimeError("Hosted onboarding still covers Explorer")
 
 def explorer_item(path):
@@ -136,6 +148,9 @@ def first_menu(path,label):
     time.sleep(.65)
     items=menuitems(); names=[n for n,xy in items]
     report['menus'][label]=names;shots(label);save()
+    if not any('more options' in n.lower() or '????' in n for n in names):
+        fg=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
+        report['foreground']={'class':fg.class_name(),'title':fg.window_text(),'elements':[(w.element_info.control_type,w.window_text()) for w in fg.descendants()][:140]};save()
     assert any('more options' in n.lower() or '更多选项' in n for n in names),(label,names)
     return items
 def act(items,label,target):
