@@ -159,7 +159,25 @@ pub(in crate::engine) fn try_create(
         .collect::<Result<Vec<_>, String>>()?;
     let _runtime = pin_runtime(&runtime, ctl)?;
     let _image = crate::engine_stream::pin(&exe)?;
-    let mut output = crate::private_stage::ArchiveOutput::new(parent, destination)?;
+    let parent_pin = match File::options()
+        .access_mode(0x200a0)
+        .share_mode(3)
+        .custom_flags(0x02200000)
+        .open(parent)
+    {
+        Ok(file) => file,
+        Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    if directory_identity(&parent_pin)? != directory_identity(destination)?
+        || directory_attributes(&parent_pin)? & 0x410 != 0x10
+    {
+        return Err("ZIP destination directory identity changed".into());
+    }
+    let Some(mut output) = crate::private_stage::ArchiveOutput::try_new(parent, &parent_pin)?
+    else {
+        return Ok(false);
+    };
     let encode = encode(
         &exe,
         &src,
@@ -189,7 +207,10 @@ pub(in crate::engine) fn try_create(
     });
     match (result, output.cleanup()) {
         (Err(error), Err(cleanup)) => Err(format!("{error}; staging cleanup failed: {cleanup}")),
-        (_, Err(cleanup)) => Err(cleanup),
+        (Ok(true), Err(cleanup)) => Err(format!(
+            "archive was committed but staging cleanup failed: {cleanup}"
+        )),
+        (Ok(false), Err(cleanup)) => Err(cleanup),
         (result, Ok(())) => result,
     }
 }
@@ -224,6 +245,9 @@ fn encode(
         match (kind, body.as_slice()) {
             (47, []) if !began => {
                 began = true;
+                if PhaseTimer::enabled() {
+                    eprintln!("OA_CREATE_WORKER status=encoding");
+                }
                 ctl.set("compressing", Some(0), "Creating archive");
             }
             (46, [percent]) if began && *percent <= 99 => {

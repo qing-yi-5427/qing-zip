@@ -293,14 +293,15 @@ fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, s
     let token = token()?;
     let memory = protected_descriptor(&current_sid(&token)?)?;
     create_root_with_descriptor(parent, parent_handle, prefix, access, share, memory.0)
+        .map_err(|error| format!("create private stage: {error}"))
 }
 fn create_root_with_descriptor(parent: &Path, parent_handle: &File, prefix: &str, access: u32,
-    share:u32, security:Handle) -> Result<(PathBuf,File,File),String> {
-    let parent_pin=parent_handle.try_clone().map_err(|e|e.to_string())?;
+    share: u32, security: Handle) -> io::Result<(PathBuf, File, File)> {
+    let parent_pin = parent_handle.try_clone()?;
     for _ in 0..16 {
         let mut random = [0u8; 16];
         if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
-            return Err("cannot generate stage name".into());
+            return Err(io::Error::other("cannot generate stage name"));
         }
         let name = random
             .iter()
@@ -327,7 +328,7 @@ fn create_root_with_descriptor(parent: &Path, parent_handle: &File, prefix: &str
             information: 0,
         };
         let mut handle = std::ptr::null_mut();
-        // FILE_CREATE + private DACL + deny-delete pin are atomic. No
+        // FILE_CREATE + requested descriptor + deny-delete pin are atomic. No
         // parent DELETE_CHILD actor can replace the directory before pinning.
         let result = unsafe {
             NtCreateFile(
@@ -349,10 +350,10 @@ fn create_root_with_descriptor(parent: &Path, parent_handle: &File, prefix: &str
         }
         let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32);
         if error.raw_os_error() != Some(183) {
-            return Err(format!("create private stage: {error}"));
+            return Err(error);
         }
     }
-    Err("could not reserve private stage directory".into())
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not reserve stage directory"))
 }
 /// Query one current leaf through a strongly pinned private directory. The
 /// caller owns that qualification; no ancestor path is resolved by this call.

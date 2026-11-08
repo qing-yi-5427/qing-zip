@@ -10,26 +10,36 @@ pub(crate) struct ArchiveOutput {
     directory: PathBuf,
 }
 impl ArchiveOutput {
-    pub(crate) fn new(path: &Path, parent: &File) -> Result<Self, String> {
-        let (directory, root, parent) = create_root_with_descriptor(
+    pub(crate) fn try_new(path: &Path, parent: &File) -> Result<Option<Self>, String> {
+        let (directory, root, parent) = match create_root_with_descriptor(
             path,
             parent,
             ".qing-zip-create-",
             0x1300a3,
             3,
             std::ptr::null_mut(),
-        )?;
+        ) {
+            Ok(stage) => stage,
+            // No object was created. The console may work with fewer rights.
+            Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) => return Ok(None),
+            Err(e) => return Err(format!("create ZIP staging directory: {e}")),
+        };
         let mut output = Self {
             temp: None,
             root: Some(root),
             parent,
             directory,
         };
-        output.temp = Some(create_output(
-            &output.directory,
-            output.root.as_ref().unwrap(),
-        )?);
-        Ok(output)
+        match create_output(&output.directory, output.root.as_ref().unwrap()) {
+            Ok(file) => output.temp = Some(file),
+            Err(reason) => {
+                return Err(match output.cleanup() {
+                    Ok(()) => reason,
+                    Err(cleanup) => format!("{reason}; staging cleanup failed: {cleanup}"),
+                })
+            }
+        }
+        Ok(Some(output))
     }
     pub(crate) fn file(&self) -> &File {
         self.temp.as_ref().unwrap().as_file()

@@ -91,6 +91,19 @@ def main():
                     cases.append([label, "console fallback"])
                 finally:
                     kernel.CloseHandle(pin)
+            # A locked *file* is different: both engines reject it. Once native
+            # encoding starts, do not try the console a second time.
+            file_lock = kernel.CreateFileW(str(src/"stream.rs"), 0x40000000, 7, None, 3, 0, None)
+            assert file_lock != ctypes.c_void_p(-1).value, ctypes.get_last_error()
+            try:
+                target = root/"writer-conflict.zip"
+                errors = run([cli, "create", target, src], False, True)
+                assert "OA_CREATE_WORKER status=encoding" in errors and "OA_PHASE engine-process" not in errors
+                assert not target.exists()
+                run([console, "a", "-sse", "-tzip", "--", root/"ref-conflict.zip", src], False)
+                cases.append(["file-write-sharing", "both reject, no retry"])
+            finally:
+                kernel.CloseHandle(file_lock)
             for label, extra in [("store", ["--method", "Store"]), ("split",["--volume","5000"])]:
                 out = root/(label+".zip"); errors=run([cli,"create",out,src,"--format","zip",*extra],profile=True)
                 assert "OA_CREATE_WORKER status=complete" not in errors
