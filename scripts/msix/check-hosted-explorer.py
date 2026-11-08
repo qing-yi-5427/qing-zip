@@ -78,6 +78,35 @@ def settings(on):
         assert state['directory'].casefold()==f'"{exe}" --compress-folder "%1"'.casefold()
     report.setdefault('settings',{})[str(on)]=state;save()
 
+def dismiss_runner_onboarding():
+    # Hosted Windows 11 VMs sometimes display first-logon privacy over Explorer.
+    # Scope the handling to the actual onboarding heading in this disposable session.
+    condition=ui.CreatePropertyCondition(30005,"Choose privacy settings for your device")
+    def shown():return bool(ui.GetRootElement().FindFirst(4,condition))
+    if not shown():return
+    shots("runner-onboarding")
+    keyboard.send_keys("%{F4}")
+    time.sleep(.6)
+    if not shown():
+        report["onboarding"]="dismissed with Alt+F4";return
+    for attempt in range(8):
+        if not shown():
+            report["onboarding"]="finished disposable profile with optional toggles off";save();return
+        foreground=ctypes.windll.user32.GetForegroundWindow()
+        window=desktop.window(handle=foreground).wrapper_object()
+        descendants=window.descendants()
+        if not any(w.window_text()=="Choose privacy settings for your device" for w in descendants):
+            raise RuntimeError("Refusing to act outside the identified hosted onboarding window")
+        for w in descendants:
+            try:
+                toggle=w.iface_toggle
+                if toggle.CurrentToggleState==1:toggle.Toggle()
+            except Exception:pass
+        action=next((w for w in descendants if w.window_text() in ("Next","Accept") and w.is_visible()),None)
+        if not action:raise RuntimeError("Hosted privacy prompt has no known continuation")
+        action.click_input();time.sleep(.65)
+    if shown():raise RuntimeError("Hosted onboarding still covers Explorer")
+
 def explorer_item(path):
     def selected():
         for window in desktop.windows(class_name='CabinetWClass'):
@@ -134,6 +163,7 @@ def stop_own():
             subprocess.run(['taskkill','/F','/PID',str(p['ProcessId'])],stdout=subprocess.DEVNULL)
 try:
     assert not command(archive_reg) and not command(folder_reg)
+    dismiss_runner_onboarding()
     os.startfile(root)
     # The off state must be checked against the same installed sparse package.
     for p,tag in [(archive,'file-off'),(folder,'folder-off')]:
