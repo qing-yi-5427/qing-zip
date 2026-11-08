@@ -11,6 +11,8 @@ use windows::{core::PCWSTR, Win32::{
 const PROGID: &str = "OpenArchive.Archive";
 const APP_NAME: &str = "qing-zip";
 const FOLDER_MENU: &str = r"Software\Classes\Directory\shell\qing-zip-compress";
+pub(crate) mod file_menu;
+pub(crate) use file_menu::file_compression_menu_enabled;
 
 fn executable_path() -> Result<String, String> {
     std::env::current_exe().map_err(|e| e.to_string())?
@@ -83,6 +85,9 @@ fn read_value(hive:HKEY,path:&str,name:&str)->Result<Option<RawValue>,String>{
     let status=unsafe{RegOpenKeyExW(hive,PCWSTR(path.as_ptr()),None,KEY_QUERY_VALUE,&mut key)};
     if status==ERROR_FILE_NOT_FOUND || status==ERROR_PATH_NOT_FOUND {return Ok(None);}
     status.ok().map_err(|e|e.to_string())?;let key=Key(key);
+    query_value(&key, &name)
+}
+fn query_value(key: &Key, name: &[u16]) -> Result<Option<RawValue>, String> {
     let mut kind=REG_VALUE_TYPE::default();let mut len=0u32;
     let status=unsafe{RegQueryValueExW(key.0,PCWSTR(name.as_ptr()),None,Some(&mut kind),None,Some(&mut len))};
     if status==ERROR_FILE_NOT_FOUND {return Ok(None);}
@@ -164,12 +169,15 @@ fn open_command(exe:&str)->Result<String,String>{
     handler_command(exe, "")
 }
 fn handler_command(exe:&str, arguments:&str)->Result<String,String>{
+    Ok(format!("{}{arguments} \"%1\"", quoted_executable(exe)?))
+}
+fn quoted_executable(exe: &str) -> Result<String, String> {
     let path=Path::new(exe);
     if exe.contains(['\0','\r','\n','"']) || !path.is_absolute()
         || !path.extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("exe")) {
         return Err("程序路径不能用于文件关联".into());
     }
-    Ok(format!("\"{exe}\"{arguments} \"%1\""))
+    Ok(format!("\"{exe}\""))
 }
 fn registration_edits(reg:&Registry,selected:&BTreeSet<String>,exe:&str)->Result<Vec<Edit>,String>{
     let command=open_command(exe)?;
@@ -291,6 +299,39 @@ mod tests {
         assert!(open_command("relative.exe").is_err());
         assert!(open_command("C:\\bad\"name.exe").is_err());
         assert_eq!(open_command("C:\\Program Files\\qing-zip\\qing-zip.exe").unwrap(),"\"C:\\Program Files\\qing-zip\\qing-zip.exe\" \"%1\"");
+    }
+    #[test]
+    fn file_compression_verb_moves_only_on_explicit_enable() {
+        let registry = TestRegistry::new();
+        let reg = &registry.0;
+        let installed = r"C:\Program Files\qing-zip.exe";
+        let portable = r"D:\便携\qing-zip.exe";
+        assert!(!file_menu::enabled_for(reg, installed).unwrap());
+        file_menu::update(reg, installed, true).unwrap();
+        assert!(file_menu::enabled_for(reg, installed).unwrap());
+        file_menu::update(reg, portable, true).unwrap();
+        file_menu::update(reg, installed, false).unwrap();
+        assert!(!file_menu::enabled_for(reg, installed).unwrap());
+        assert!(file_menu::enabled_for(reg, portable).unwrap());
+        file_menu::update(reg, portable, false).unwrap();
+        assert!(!file_menu::enabled_for(reg, portable).unwrap());
+        assert!(reg.read(r"Software\Classes\*\shell\qing-zip-compress-files\command", "DelegateExecute").unwrap().is_none());
+    }
+    #[test]
+    fn file_compression_registration_preserves_foreign_or_reassigned_verbs() {
+        let registry = TestRegistry::new();
+        let reg = &registry.0;
+        let exe = r"C:\qing-zip.exe";
+        let verb = r"Software\Classes\*\shell\qing-zip-compress-files";
+        reg.write(verb, "MUIVerb", Some(&string_value("Other"))).unwrap();
+        assert!(file_menu::update(reg, exe, true).is_err());
+        assert_eq!(string_data(reg.read(verb,"MUIVerb").unwrap()).as_deref(),Some("Other"));
+        let other = TestRegistry::new();
+        file_menu::update(&other.0, exe, true).unwrap();
+        let key = format!(r"{verb}\command");
+        other.0.write(&key, "DelegateExecute", Some(&string_value("Foreign"))).unwrap();
+        file_menu::update(&other.0, exe, false).unwrap();
+        assert_eq!(string_data(other.0.read(&key,"DelegateExecute").unwrap()).as_deref(),Some("Foreign"));
     }
     #[test]
     fn folder_menu_status_tracks_the_executable_registered_by_explorer() {
