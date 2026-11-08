@@ -250,7 +250,7 @@ fn native_drag(p: &Preparation) -> Result<bool, String> {
         let capability = completion::enable(&data);
         let hr = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
         p.complete_handoff(hr);
-        if hr == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY {
+        if hr == DRAGDROP_S_DROP {
             completion::after_copy(&p.directory, &data, capability.as_ref());
         }
         hr.ok().map_err(|e| e.to_string())?;
