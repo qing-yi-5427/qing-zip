@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         from pywinauto import keyboard
         keyboard.send_keys('{ESC}')
         time.sleep(.3);mouse.release(coords=drop)
-        wait(lambda:find(win,'??????','Text'),'cancelled drag acknowledgement',4)
+        wait(lambda:find(win,'已取消拖放。','Text'),'cancelled drag acknowledgement',4)
         assert manifest(dest)=={}
         report['escape_left_empty_destination']=True
         move_selection();save('dragging');mouse.release(coords=drop)
