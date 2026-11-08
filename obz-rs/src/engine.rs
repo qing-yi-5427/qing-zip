@@ -3902,9 +3902,14 @@ impl SourceValidationGuards {
     fn validate_child(&mut self, path: &Path) -> Result<(), String> {
         let mut leaves = Vec::new();
         self.collect_checked(path, &mut leaves)?;
-        Self::validate_leaves(&leaves)
+        self.validate_leaves(&leaves)
     }
-    fn validate_leaves(leaves: &[PathBuf]) -> Result<(), String> {
+    fn uses_relative_leaf_lookup(path: &Path) -> bool {
+        use std::path::{Component, Prefix};
+        path.as_os_str().len() < 247
+            && matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+    }
+    fn validate_leaves(&self, leaves: &[PathBuf]) -> Result<(), String> {
         // Directory pins remain owned by self until every scoped worker joins.
         // Enumeration only schedules work; each leaf receives a new OS query.
         let workers = if leaves.len() >= 512 {
@@ -3914,8 +3919,24 @@ impl SourceValidationGuards {
             let mut handles = Vec::new();
             for chunk in leaves.chunks(leaves.len().div_ceil(workers).max(1)) {
                 handles.push(scope.spawn(move || {
+                    let mut cached_parent = None;
+                    let mut leaf = Vec::new();
                     for path in chunk {
-                        match fresh_path_attributes(path) {
+                        let parent = path.parent();
+                        if parent != cached_parent.map(|(name, _)| name) {
+                            cached_parent = parent.and_then(|p| self.held.get(p).map(|h| (p, h)));
+                        }
+                        let relative = cached_parent.and_then(|(_, handle)| {
+                            use std::os::windows::ffi::OsStrExt;
+                            // Keep extended, overlong and ambiguous spellings on
+                            // the established path. OsStr byte length is an upper
+                            // bound for the UTF-16 length on Windows.
+                            if !Self::uses_relative_leaf_lookup(path) { return None; }
+                            leaf.clear();
+                            leaf.extend(path.file_name()?.encode_wide());
+                            crate::private_stage::query_pinned_source_leaf(handle, &mut leaf)
+                        });
+                        match relative.or_else(|| fresh_path_attributes(path)) {
                             Some(attrs) if attrs & 0x400 != 0 => return Err(format!("linked input path rejected: {}",path.display())),
                             Some(attrs) if attrs & 0x10 == 0 => (),
                             // A file may have become a directory since enumeration.
@@ -3965,7 +3986,7 @@ impl SourceValidationGuards {
                     leaves.push(entry.path());
                     // Bound retained paths even for very large source trees.
                     if leaves.len() == 4096 {
-                        Self::validate_leaves(leaves)?;
+                        self.validate_leaves(leaves)?;
                         leaves.clear();
                     }
                 }
@@ -5528,6 +5549,111 @@ mod staging_tests {
     }
     #[cfg(windows)]
     #[test]
+    fn source_lookup_checks_the_current_entry_relative_to_its_pinned_parent() {
+        use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("input");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let leaf = root.join("leaf");
+        fs::write(&leaf, b"file").unwrap();
+        let mut guards = SourceValidationGuards::new();
+        guards.validate(&root).unwrap();
+        let parent = guards.held.get(&root).unwrap();
+        let query = |name: &str| {
+            let mut wide: Vec<_> = OsStr::new(name).encode_wide().collect();
+            crate::private_stage::query_pinned_source_leaf(parent, &mut wide)
+        };
+        assert_eq!(query("leaf").unwrap() & 0x410, 0);
+        fs::remove_file(&leaf).unwrap();
+        assert!(query("leaf").is_none());
+        fs::create_dir(&leaf).unwrap();
+        assert_eq!(query("leaf").unwrap() & 0x410, 0x10);
+        fs::remove_dir(&leaf).unwrap();
+        assert!(Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&leaf).arg(&outside).output().unwrap().status.success());
+        assert_ne!(query("leaf").unwrap() & 0x400, 0);
+        fs::remove_dir(&outside).unwrap();
+        assert_ne!(query("leaf").unwrap() & 0x400, 0, "dangling junction must still be rejected");
+        for ambiguous in ["..", "item:stream", "con.txt", "file.", "a/b", "a\\b"] {
+            assert!(query(ambiguous).is_none(), "{ambiguous}");
+        }
+        fs::remove_dir(&leaf).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_verbatim_path_keeps_original_attribute_lookup() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let leaf = root.join("input.txt");
+        fs::write(&leaf, b"data").unwrap();
+        assert!(!SourceValidationGuards::uses_relative_leaf_lookup(&leaf));
+        assert!(SourceValidationGuards::uses_relative_leaf_lookup(Path::new(r"C:\x\input.txt")));
+        assert_eq!(fresh_path_attributes(&leaf).unwrap() & 0x410, 0);
+        let args = [root.to_str().unwrap().to_owned()];
+        assert_eq!(input_paths(&args).unwrap(), [root.clone()]);
+        let outside = tempfile::tempdir().unwrap();
+        let junction = root.join("redirect");
+        let result = Command::new("cmd").args(["/C", "mklink", "/J"])
+            .arg(temp.path().join("redirect")).arg(outside.path()).output().unwrap();
+        assert!(result.status.success());
+        assert!(input_paths(&args).unwrap_err().contains("linked"));
+        fs::remove_dir(junction).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires Windows permission to create file symbolic links"]
+    fn source_pinned_leaf_rejects_file_symlink_to_regular_file() {
+        use std::os::windows::fs::symlink_file;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("input");
+        let target = temp.path().join("outside.txt");
+        fs::create_dir(&root).unwrap();
+        fs::write(&target, b"outside").unwrap();
+        let leaf = root.join("file");
+        fs::write(&leaf, b"original").unwrap();
+        let mut guards = SourceValidationGuards::new();
+        guards.validate(&root).unwrap();
+        assert!(guards.held.contains_key(&root));
+        assert!(SourceValidationGuards::uses_relative_leaf_lookup(&leaf));
+        fs::remove_file(&leaf).unwrap();
+        symlink_file(&target, &leaf).unwrap();
+        assert!(guards.validate_leaves(std::slice::from_ref(&leaf)).unwrap_err().contains("linked"));
+        fs::remove_file(&target).unwrap();
+        assert!(guards.validate_leaves(&[leaf]).unwrap_err().contains("linked"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a Windows volume and permission supporting per-directory case sensitivity"]
+    fn source_pinned_leaf_distinguishes_entries_differing_only_in_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("input");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let result = Command::new("fsutil.exe")
+            .args(["file", "setCaseSensitiveInfo"]).arg(&root).arg("enable").output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let file = root.join("leaf");
+        fs::write(&file, b"original").unwrap();
+        let mut guards = SourceValidationGuards::new();
+        guards.validate(&root).unwrap();
+        assert!(guards.held.contains_key(&root));
+        assert!(SourceValidationGuards::uses_relative_leaf_lookup(&file));
+        let junction = root.join("LEAF");
+        let result = Command::new("cmd").args(["/C", "mklink", "/J"])
+            .arg(&junction).arg(&outside).output().unwrap();
+        assert!(result.status.success());
+        guards.validate_leaves(&[file]).unwrap();
+        assert!(guards.validate_leaves(std::slice::from_ref(&junction)).unwrap_err().contains("linked"));
+        fs::remove_dir(junction).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn source_leaf_batches_reject_replaced_links_and_validate_new_subtrees() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
@@ -5536,20 +5662,20 @@ mod staging_tests {
         let mut guards = SourceValidationGuards::new();guards.validate(&root).unwrap();
         let mut leaves = Vec::new();
         for i in 0..600 {let p=root.join(format!("file-{i}"));fs::write(&p,b"ok").unwrap();leaves.push(p);}
-        SourceValidationGuards::validate_leaves(&leaves).unwrap();
+        guards.validate_leaves(&leaves).unwrap();
         let gone = root.join("gone");
         fs::write(&gone,b"gone").unwrap();
         let mut missing_batch=leaves.clone();missing_batch.push(gone.clone());
         fs::remove_file(&gone).unwrap();
-        assert!(SourceValidationGuards::validate_leaves(&missing_batch).is_err());
+        assert!(guards.validate_leaves(&missing_batch).is_err());
         assert!(guards.validate_child(&gone).is_err());
         // Previously enumerated file becomes a directory containing a junction.
         fs::remove_file(&leaves[599]).unwrap();fs::create_dir(&leaves[599]).unwrap();
         let link = leaves[599].join("hidden-link");
         assert!(Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&outside).output().unwrap().status.success());
-        assert!(SourceValidationGuards::validate_leaves(&leaves).is_err());
+        assert!(guards.validate_leaves(&leaves).is_err());
         fs::remove_dir(&link).unwrap();
-        SourceValidationGuards::validate_leaves(&leaves).unwrap();
+        guards.validate_leaves(&leaves).unwrap();
         assert!(fs::rename(&root,temp.path().join("blocked")).is_err());
         drop(guards);fs::rename(&root,temp.path().join("released")).unwrap();
     }

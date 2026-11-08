@@ -349,6 +349,53 @@ fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, s
     }
     Err("could not reserve private stage directory".into())
 }
+/// Query one enumerated leaf through its still-pinned source directory. This
+/// issues a new kernel lookup after enumeration, without resolving the already
+/// checked ancestors again. Ambiguous names or unsupported filesystems retain
+/// the ordinary Win32-path validation in the caller.
+pub(crate) fn query_pinned_source_leaf(parent: &File, leaf: &mut [u16]) -> Option<u32> {
+    // Limit the optimization to literal names which both Win32 and NT spell
+    // identically. The original validation handles DOS normalization/device
+    // names, Unicode special cases and all errors.
+    if leaf.is_empty() || leaf.len() > 255
+        || leaf.iter().any(|&c| !(0x20..=0x7e).contains(&c) || matches!(c, 34 | 42 | 47 | 58 | 60 | 62 | 63 | 92 | 124))
+        || matches!(leaf.last(), Some(32 | 46)) { return None; }
+    let stem = leaf.split(|&c| c == 46).next()?;
+    if stem.last() == Some(&32) || matches!(stem.len(), 3..=7) && {
+        let mut bytes = [0; 7];
+        for (dest, c) in bytes.iter_mut().zip(stem) { *dest = (*c as u8).to_ascii_uppercase(); }
+        let name = &bytes[..stem.len()];
+        matches!(name, b"CON" | b"PRN" | b"AUX" | b"NUL" | b"CLOCK$" | b"CONIN$" | b"CONOUT$")
+            || (name.len() == 4 && name[3].is_ascii_digit() && matches!(&name[..3], b"COM" | b"LPT"))
+    } { return None; }
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicInformation {
+        times: [i64; 4],
+        attributes: u32,
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryAttributesFile(object: *const ObjectAttributes, info: *mut BasicInformation) -> i32;
+    }
+    let mut name = UnicodeString {
+        length: (leaf.len() * 2) as u16, maximum_length: (leaf.len() * 2) as u16,
+        buffer: leaf.as_mut_ptr(),
+    };
+    let object = ObjectAttributes {
+        length: std::mem::size_of::<ObjectAttributes>() as u32,
+        root: parent.as_raw_handle(), name: &mut name,
+        // OBJ_DONT_REPARSE; preserve the case spelling from actual enumeration.
+        attributes: 0x1000, descriptor: std::ptr::null_mut(), qos: std::ptr::null_mut(),
+    };
+    let mut info = BasicInformation::default();
+    match unsafe { NtQueryAttributesFile(&object, &mut info) } as u32 {
+        0 => Some(info.attributes),
+        0xc000050b => Some(0x400), // STATUS_REPARSE_POINT_ENCOUNTERED
+        _ => None,
+    }
+}
+
 /// Query one current leaf through a strongly pinned private directory. The
 /// caller owns that qualification; no ancestor path is resolved by this call.
 pub(crate) fn child_metadata(parent: &File, leaf: &OsStr) -> Result<std::fs::Metadata, String> {
