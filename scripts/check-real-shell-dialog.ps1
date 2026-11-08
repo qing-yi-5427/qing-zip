@@ -3,13 +3,17 @@ $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Hosted fixture required'}
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Drawing,WindowsBase
-Add-Type @"
+Add-Type -ReferencedAssemblies System.Drawing.Primitives @"
 using System;
 using System.Runtime.InteropServices;
 public class WindowFixture {
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int w,int hgt,uint flags);
+[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(System.Drawing.Point point);
+[DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint flags);
+[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr destination,uint flags);
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
 [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr i);
 }
@@ -76,7 +80,20 @@ try{
   $bounds=$script:root.Current.BoundingRectangle
   $bitmap=[Drawing.Bitmap]::new([int]$bounds.Width,[int]$bounds.Height)
   $g=[Drawing.Graphics]::FromImage($bitmap)
-  try{$g.CopyFromScreen([int]$bounds.X,[int]$bounds.Y,0,0,$bitmap.Size);$bitmap.Save($Screenshot,[Drawing.Imaging.ImageFormat]::Png)}finally{$g.Dispose();$bitmap.Dispose()}
+  try {
+    [void][WindowFixture]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x43)
+    [void][WindowFixture]::SetForegroundWindow($hwnd)
+    Start-Sleep -Milliseconds 500
+    $center=[Drawing.Point]::new([int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2))
+    $visible=[WindowFixture]::GetAncestor([WindowFixture]::WindowFromPoint($center),2)
+    if($visible -eq $hwnd){
+      $g.CopyFromScreen([int]$bounds.X,[int]$bounds.Y,0,0,$bitmap.Size)
+    }else{
+      $dc=$g.GetHdc()
+      try{if(![WindowFixture]::PrintWindow($hwnd,$dc,2)){throw 'Could not capture the target window'}}finally{$g.ReleaseHdc($dc)}
+    }
+    $bitmap.Save($Screenshot,[Drawing.Imaging.ImageFormat]::Png)
+  }finally{$g.Dispose();$bitmap.Dispose()}
   Click-Item (Wait-Value 'submit' {Find-Elem '创建压缩文件'})
   [void](Wait-Value 'post-create integrity result' {Find-Elem '完整性检查通过'})
   $close=Wait-Value 'close result' {Find-Elem '关闭'}
