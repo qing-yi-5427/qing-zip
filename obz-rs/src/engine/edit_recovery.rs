@@ -9,6 +9,7 @@ use std::{
 };
 
 const MARKER: &str = "edit-intent.dpapi";
+const MAX_RECORD: u64 = 1024 * 1024;
 const DOMAIN: &str = "qing-zip/archive-edit-v1";
 #[derive(Serialize, Deserialize)]
 struct Record {
@@ -44,6 +45,9 @@ impl Intent {
         };
         let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
         let sealed = crate::services::protect(&bytes, true)?;
+        if sealed.len() as u64 > MAX_RECORD {
+            return Err("Edit recovery record is too large".into());
+        }
         // An exclusive handle keeps other instances from recovering an active edit.
         let mut marker = File::options()
             .write(true)
@@ -75,12 +79,12 @@ fn match_stage(stage: &Path, parent: &FileId, name: &std::ffi::OsStr) -> Option<
     let stage_handle = pin_directory(stage).ok()?;
     let mut marker = leaf(&stage.join(MARKER), 0xc0000000, 0).ok()?;
     let len = marker.metadata().ok()?.len();
-    if !(1..=16384).contains(&len) {
+    if !(1..=MAX_RECORD).contains(&len) {
         return None;
     }
     let mut ciphertext = Vec::new();
     (&mut marker)
-        .take(16385)
+        .take(MAX_RECORD + 1)
         .read_to_end(&mut ciphertext)
         .ok()?;
     let record: Record =

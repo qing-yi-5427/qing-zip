@@ -32,7 +32,15 @@ pub fn vault_path() -> Result<PathBuf, String> {
 }
 
 pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
-    let policy = crate::machine_policy::scope();
+    let result=list_archive_once(path,opts);
+    #[cfg(windows)]
+    if result.is_err() && engine::recover_interrupted_edit(std::path::Path::new(path))? {
+        return list_archive_once(path,opts);
+    }
+    result
+}
+fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
+    let policy=crate::machine_policy::scope();
     if policy.restricted() { return engine::list(path, opts); }
     if crate::rare::supports(path){return crate::rare::list(path,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::list(path,opts);}
