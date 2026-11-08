@@ -25,6 +25,15 @@ fn run(cmd: &mut Command, password: &str) -> Output {
 
 #[test]
 fn encrypted_split_selection_checks_unselected_blocks_before_publication() {
+    verify_encrypted_split_method("LZMA2");
+}
+
+#[test]
+fn encrypted_lzma_split_checks_unselected_blocks_before_publication() {
+    verify_encrypted_split_method("LZMA");
+}
+
+fn verify_encrypted_split_method(method: &str) {
     let nana = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..").join(obz_core::engine::BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
     let tmp = tempfile::tempdir().unwrap();
@@ -59,12 +68,12 @@ fn encrypted_split_selection_checks_unselected_blocks_before_publication() {
                 .args([
                     "a",
                     "-t7z",
-                    "-m0=LZMA2",
                     "-ms=2f",
                     "-v8k",
                     "-sccUTF-8",
                     "-p",
                 ])
+                .arg(format!("-m0={method}"))
                 .arg(format!("-mhe={header}"))
                 .arg(&archive)
                 .args(&names),

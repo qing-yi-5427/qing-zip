@@ -1,4 +1,4 @@
-//! Selected extraction for split Copy or LZMA2 7z archives. A fresh
+//! Selected extraction for split Copy, LZMA or LZMA2 7z archives. A fresh
 //! child reads fixed source handles and writes parent-created private files.
 use super::*;
 use sha2::{Digest, Sha256};
@@ -153,10 +153,10 @@ fn manifest_fits(entries: &[Entry]) -> bool {
     true
 }
 
-// Match a single LZMA2 coder in the official technical listing. The worker
+// Match a single LZMA or LZMA2 coder in the official technical listing. The worker
 // independently checks the same-object manifest before granting output handles.
-fn single_lzma2(method: &str) -> bool {
-    let Some(dictionary) = method.strip_prefix("LZMA2:") else {
+fn single_lzma_coder(method: &str) -> bool {
+    let Some(dictionary) = method.strip_prefix("LZMA2:").or_else(|| method.strip_prefix("LZMA:")) else {
         return false;
     };
     let digits = dictionary.strip_suffix(['k', 'm']).unwrap_or(dictionary);
@@ -191,11 +191,11 @@ impl Drop for SecretFrame {
     }
 }
 
-fn encrypted_lzma2(method: &str) -> bool {
+fn encrypted_lzma_coder(method: &str) -> bool {
     let Some((coder, rounds)) = method.split_once(" 7zAES:") else {
         return false;
     };
-    single_lzma2(coder)
+    single_lzma_coder(coder)
         && !rounds.is_empty()
         && rounds.len() <= 2
         && rounds.bytes().all(|c| c.is_ascii_digit())
@@ -231,13 +231,13 @@ fn eligible(
                 return false;
             }
             if entry.encrypted {
-                return opts.password.is_some() && encrypted_lzma2(&entry.method);
+                return opts.password.is_some() && encrypted_lzma_coder(&entry.method);
             }
             if entry.is_dir || entry.size == 0 {
                 return true;
             }
             opts.password.is_none()
-                && (single_lzma2(&entry.method)
+                && (single_lzma_coder(&entry.method)
                     || (entry.method == "Copy" && entry.packed_size == entry.size))
         })
         || entries

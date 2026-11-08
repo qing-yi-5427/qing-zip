@@ -140,6 +140,17 @@ fn require_worker(result: &std::process::Output, success: bool, fields: &[&str])
 #[cfg(nana_selected_worker)]
 #[test]
 fn split_lzma2_verifies_all_blocks_and_rejects_unselected_crc() {
+    verify_split_lzma_method("LZMA2");
+}
+
+#[cfg(nana_selected_worker)]
+#[test]
+fn split_lzma_verifies_all_blocks_and_rejects_unselected_crc() {
+    verify_split_lzma_method("LZMA");
+}
+
+#[cfg(nana_selected_worker)]
+fn verify_split_lzma_method(method: &str) {
     let temp = tempfile::tempdir().unwrap();
     let input = temp.path().join("input");
     fs::create_dir_all(input.join("empty-dir")).unwrap();
@@ -169,7 +180,8 @@ fn split_lzma2_verifies_all_blocks_and_rejects_unselected_crc() {
         let archive = run.join("fixture.7z");
         let created = std::process::Command::new(engine::executable().unwrap())
             .current_dir(&input)
-            .args(["a", "-t7z", "-m0=LZMA2", "-mmt=1", "-mhc=off"])
+            .args(["a", "-t7z", "-mmt=1", "-mhc=off"])
+            .arg(format!("-m0={method}"))
             .arg(format!("-ms={solid}"))
             .arg(&archive)
             .arg(".")

@@ -520,13 +520,13 @@ void archive_health(IInArchive *arc) {
     if (!text(v.v, true).empty()) fail("archive reports diagnostic text");
   }
 }
-// The official 7z handler renders a single LZMA2 coder as LZMA2:19,
+// The official 7z handler renders a single LZMA-family coder as LZMA2:19,
 // LZMA2:768k, etc. A space separates coders in a filter/encryption chain.
 // The decoder itself owns dictionary properties and stream validation.
-bool single_lzma2(std::wstring_view method) {
-  constexpr std::wstring_view prefix = L"LZMA2:";
-  if (!method.starts_with(prefix)) return false;
-  method.remove_prefix(prefix.size());
+bool single_lzma_coder(std::wstring_view method) {
+  if (method.starts_with(L"LZMA2:")) method.remove_prefix(6);
+  else if (method.starts_with(L"LZMA:")) method.remove_prefix(5);
+  else return false;
   if (method.empty() || method.size() > 5) return false;
   if (method.back() == L'k' || method.back() == L'm') method.remove_suffix(1);
   return !method.empty() && std::all_of(method.begin(), method.end(),
@@ -538,7 +538,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
     if (number(v.v, true)) fail("embedded archive is outside supported method set"); }
   { Variant v; exact(arc->GetArchiveProperty(kpidPhySize, &v.v), "archive physical size");
     if (number(v.v) != source_size) fail("fixed volumes do not exactly contain archive"); }
-  bool solid = false, has_copy = false, has_lzma2 = false;
+  bool solid = false, has_copy = false, has_compressed = false;
   { Variant v; exact(arc->GetArchiveProperty(kpidSolid, &v.v), "archive solid flag");
     solid = boolean(v.v, false); }
   UInt32 n = 0; exact(arc->GetNumberOfItems(&n), "manifest item count");
@@ -573,11 +573,11 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
         auto rounds = pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
         if (state.operation->password.empty() || rounds.empty() || rounds.size() > 2 ||
             !std::all_of(rounds.begin(), rounds.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }) ||
-            !single_lzma2(std::wstring_view(method).substr(0, pos))) fail("unexpected encrypted item method");
-        has_lzma2 = true;
+            !single_lzma_coder(std::wstring_view(method).substr(0, pos))) fail("unexpected encrypted item method");
+        has_compressed = true;
       } else if (item.value.size && !state.operation->password.empty()) fail("mixed encrypted item layout");
       else if (method == L"Copy") has_copy = true;
-      else if (single_lzma2(method)) has_lzma2 = true;
+      else if (single_lzma_coder(method)) has_compressed = true;
       else if (item.value.size || !method.empty()) fail("unexpected 7z item method"); }
     { Variant v; exact(arc->GetProperty(i, kpidAttrib, &v.v), "item attributes");
       if (v.v.vt != VT_EMPTY) {
@@ -598,7 +598,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
   }
   // Only positive layout identifications may defer to the existing decoder.
   // Decide before the manifest ACK, granting output handles, or extracting.
-  if ((solid && !has_lzma2) || (has_copy && has_lzma2))
+  if ((solid && !has_compressed) || (has_copy && has_compressed))
     throw UnsupportedLayout{"unsupported 7z method combination"};
   state.total = total;
   state.gotten.resize(n); state.prepared.resize(n); state.done.resize(n); state.bytes.resize(n);
