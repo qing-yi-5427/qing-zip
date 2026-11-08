@@ -91,8 +91,11 @@ def real_dialog(exe, probe, dist):
         profile=scratch/'webview'
         env=dict(os.environ,WEBVIEW2_USER_DATA_FOLDER=str(profile),
                  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0 --remote-debugging-address=127.0.0.1')
+        env['LOCALAPPDATA']=str(scratch/'local')
+        (scratch/'local').mkdir()
+        startup=subprocess.STARTUPINFO();startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW;startup.wShowWindow=0
         screenshot=dist.resolve()/'shell-create-dialog.png'
-        app=subprocess.Popen([exe],env=env,cwd=exe.parent)
+        app=subprocess.Popen([exe],env=env,cwd=scratch,startupinfo=startup)
         try:
             deadline=time.monotonic()+45
             while time.monotonic()<deadline:
@@ -106,7 +109,9 @@ def real_dialog(exe, probe, dist):
                         break
                 time.sleep(.2)
             else:
-                names=[str(p.relative_to(profile)) for p in profile.glob('*')]
+                names=[str(p.relative_to(profile)) for p in list(profile.rglob('*'))[:35]]
+                command='''Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ForEach-Object { $parts=$_.CommandLine -split ' --'; $args=$parts|Where-Object {$_ -match '^(user-data-dir|webview-exe-name|remote-debugging|type=|embedded-browser)'}; Write-Host $_.ProcessId $_.ParentProcessId ($args -join ' | ') }; Get-ItemProperty -EA Ignore HKLM:\SOFTWARE\Policies\Microsoft\Edge,HKCU:\SOFTWARE\Policies\Microsoft\Edge,HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2,HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2 | Format-List *Remote*,*Debug*,*Developer*'''
+                subprocess.run(['pwsh','-NoProfile','-Command',command],timeout=20)
                 raise RuntimeError(f'Isolated WebView2 did not publish a port; private profile contains {names!r}')
             driver=Path(__file__).with_name('check-real-shell-dialog.mjs')
             command=['node',str(driver),str(exe),str(probe),str(port),str(app.pid),str(first),str(second),str(screenshot)]
