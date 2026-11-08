@@ -634,6 +634,7 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
     let temp=tempfile::tempdir().unwrap();
     let archive=temp.path().join("rollback.zip");
     let mut zip=zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for name in ["annotation/","attrs/"] { zip.add_directory(name,zip::write::SimpleFileOptions::default()).unwrap(); }
     for index in 0..2400 {
         zip.start_file(format!("data/file-{index:05}.txt"),zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)).unwrap();
@@ -655,6 +656,11 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
             thread::sleep(Duration::from_millis(1));
         }
         if foreign {
+            use std::{ffi::OsStr,os::windows::ffi::OsStrExt};
+            #[link(name="kernel32")] extern "system" { fn SetFileAttributesW(file:*const u16,attrs:u32)->i32; }
+            let name:Vec<u16>=OsStr::new(&dest.join("attrs")).encode_wide().chain(Some(0)).collect();
+            assert_ne!(unsafe{SetFileAttributesW(name.as_ptr(),0x0001|0x0002)},0);
+            fs::write(format!("{}:user-note",dest.join("annotation").display()),b"directory annotation").unwrap();
             fs::write(dest.join("external.txt"),b"outsider").unwrap();
             fs::write(format!("{}:foreign-note",leaf.display()),b"user annotation").unwrap();
         }
@@ -663,6 +669,9 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
         assert!(error.contains("cancel"),"{error}");
         if foreign {
             assert!(error.contains("partial destination retained"),"{error}");
+            use std::os::windows::fs::MetadataExt;
+            assert_eq!(fs::metadata(dest.join("attrs")).unwrap().file_attributes()&3,3);
+            assert_eq!(fs::read(format!("{}:user-note",dest.join("annotation").display())).unwrap(),b"directory annotation");
             assert_eq!(fs::read(dest.join("external.txt")).unwrap(),b"outsider");
             assert_eq!(fs::read(&leaf).unwrap(),b"owned contents");
             assert_eq!(fs::read(format!("{}:foreign-note",leaf.display())).unwrap(),b"user annotation");
