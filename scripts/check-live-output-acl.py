@@ -15,8 +15,15 @@ def apply_acl(path,allow):
   e=adv.SetNamedSecurityInfoW(str(path),1,0x80000004,None,None,acl,None);assert not e,(path,e)
  finally:k.LocalFree(sd)
 def grants_ls(path):
- args=['powershell','-NoProfile','-Command',"(Get-Acl -LiteralPath $env:QING_TEST_SDDL).Sddl"]
- sddl=subprocess.check_output(args,env={**os.environ,'QING_TEST_SDDL':str(path)},text=True)
+ sd=c.c_void_p();s=c.c_wchar_p()
+ adv.GetNamedSecurityInfoW.argtypes=[w.LPWSTR,w.DWORD,w.DWORD,c.c_void_p,c.c_void_p,c.c_void_p,c.c_void_p,c.POINTER(c.c_void_p)]
+ e=adv.GetNamedSecurityInfoW(str(path),1,4,None,None,None,None,c.byref(sd));assert not e,e
+ try:
+  assert adv.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd,1,4,c.byref(s),None)
+  sddl=s.value
+ finally:
+  if s:k.LocalFree(c.cast(s,c.c_void_p))
+  k.LocalFree(sd)
  return ';;;LS)' in sddl or ';;;S-1-5-19)' in sddl
 
 exe=Path(sys.argv[1]).resolve();result=Path(sys.argv[2]);result.mkdir(exist_ok=True)
