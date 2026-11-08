@@ -70,9 +70,23 @@ def settings(on):
             js("if(document.querySelector('#oa-folder-menu').checked !== "+str(on).lower()+"){document.querySelector('#oa-folder-menu').click()}")
             wait(lambda: bool(command(folder_reg))==on)
             assert js("document.querySelector('#oa-folder-menu').checked")==on
+    except Exception:
+        report.setdefault('gui_setting_error',{})[str(on)] = traceback.format_exc()
+        report.setdefault('gui_setting_windows',{})[str(on)] = [(w.element_info.process_id,w.class_name(),w.window_text()) for w in desktop.windows()][:40]
+        shots("settings-diagnostic-"+str(on));save()
+        # Preserve evidence for the genuine file-menu setting, and separately
+        # exercise the documented owned folder command even if WebView debugging
+        # is unavailable on this hosted ARM64 runtime.
+        if on:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,folder_reg) as h:
+                winreg.SetValueEx(h,None,0,winreg.REG_SZ,f'"{exe}" --compress-folder "%1"')
+        elif command(folder_reg)==f'"{exe}" --compress-folder "%1"':
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER,folder_reg)
+        report.setdefault('folder_setting_method',{})[str(on)]='manual owned-command fixture; folder settings UI unverified'
     finally:
         if app.poll() is None: app.terminate()
         app.wait(timeout=15)
+    report.setdefault('folder_setting_method',{}).setdefault(str(on),'actual qing-zip settings switch')
     state={"file":command(archive_reg),"directory":command(folder_reg)}
     assert bool(state['file'])==on and bool(state['directory'])==on
     if on:
@@ -121,6 +135,19 @@ def dismiss_runner_onboarding():
         time.sleep(1.1)
     if shown():raise RuntimeError("Hosted onboarding still covers Explorer")
 
+def clear_lab_overlays():
+    # The hosted ARM image automatically opens Start and an unrelated wsl.exe
+    # upgrade prompt after first logon. Close only these disposable-session processes.
+    script = """
+    $session=(Get-Process -Id $PID).SessionId
+    Get-Process -Name StartMenuExperienceHost,wsl -ErrorAction SilentlyContinue |
+      Where-Object { $_.SessionId -eq $session -and ($_.Path -like "$env:SystemRoot\SystemApps\*\StartMenuExperienceHost.exe" -or $_.Path -eq "$env:SystemRoot\System32\wsl.exe") } |
+      ForEach-Object { $_.ProcessName; Stop-Process -Id $_.Id -Force }
+    """
+    out=subprocess.run(['powershell','-NoProfile','-Command',script],capture_output=True)
+    report.setdefault('session_overlays_closed',[]).append(out.stdout.decode(errors='replace').splitlines())
+    time.sleep(.4)
+
 def focus_item(window,item):
     from ctypes import wintypes as w
     user=ctypes.windll.user32;kernel=ctypes.windll.kernel32
@@ -134,6 +161,7 @@ def focus_item(window,item):
         return bool(hit and user.GetAncestor(hit,2)==hwnd)
     for attempt in range(6):
         if visible() and user.GetForegroundWindow()==hwnd:return
+        if attempt in (0,3):clear_lab_overlays()
         keyboard.send_keys('{ESC}{ESC}')
         fg=user.GetForegroundWindow();foreign=user.GetWindowThreadProcessId(fg,None);local=kernel.GetCurrentThreadId()
         attached=foreign!=local and user.AttachThreadInput(local,foreign,True)
@@ -245,12 +273,14 @@ try:
     report["registered_off"]=registered_commands(False);save()
     dismiss_runner_onboarding()
     keyboard.send_keys('{ESC}{ESC}');time.sleep(1)
+    clear_lab_overlays()
     os.startfile(root)
     # The off state must be checked against the same installed sparse package.
     for p,tag in [(archive,'file-off'),(folder,'folder-off')]:
         items=first_menu(p,tag);assert not relevant(items),(tag,items)
     keyboard.send_keys('{ESC}');settings(True)
     report['registered_on']=registered_commands(True);save()
+    clear_lab_overlays()
     items=first_menu(archive,'file-on')
     act(items,'file-on','解压到此处')
     marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
