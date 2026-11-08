@@ -59,7 +59,7 @@ report=Path(sys.argv[1]);report.parent.mkdir(parents=True,exist_ok=True)
 def save():report.write_text(json.dumps({'system':platform.platform(),'rows':rows},indent=2))
 rows=[]
 for fresh in (True,False):
- for action in ('cancel','commit','revoke','viewer','existing-viewer'):
+ for action in ('cancel','commit','revoke','viewer','existing-viewer','revoke-with-parent-all','revoke-with-parent-read','revoke-with-parent-none'):
   if fresh and action=='existing-viewer':continue
   with tempfile.TemporaryDirectory() as tmp:
    parent=Path(tmp)/'parent';parent.mkdir();set_grant(parent,True)
@@ -77,7 +77,15 @@ for fresh in (True,False):
     reader=open_w(str(leaf),0x80000000,1,None,3,0,None)
     row['external_reader_open']=reader!=invalid;row['reader_error']=c.get_last_error() if reader==invalid else 0
     if row['external_reader_open']:row['reader_initial']=leaf.read_bytes().decode()
-    if action=='revoke':
+    held=None
+    if action.startswith('revoke-with-parent'):
+     share={'all':7,'read':1,'none':0}[action.rsplit('-',1)[1]]
+     held=create(str(parent),0x60180,share,None,3,0x02200000,None,tx,None,None)
+     row['transactional_parent_opened']=held!=invalid;row['parent_open_error']=0 if held!=invalid else c.get_last_error()
+     if held==invalid:
+      check(rollback(tx));rows.append(row);save();continue
+     row['last_precommit_parent_grant']=grant(parent)
+    if action.startswith('revoke'):
      run=subprocess.Popen([sys.executable,__file__,'revoke',parent],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
      try:
       _,err=run.communicate(timeout=5);row['permission_changed_before_commit']=run.returncode==0;row['acl_error']=err.decode(errors='replace')[-260:]
@@ -86,7 +94,8 @@ for fresh in (True,False):
     fun=rollback if action in ('viewer','cancel','existing-viewer') else commit
     ok=fun(tx);row['finished']=bool(ok);row['finish_error']=0 if ok else c.get_last_error()
     if reader!=invalid:close(reader)
-    if action=='revoke' and run.poll() is None:run.communicate(timeout=10)
+    if held:close(held)
+    if action.startswith('revoke') and run.poll() is None:run.communicate(timeout=10)
     row['leaf_exists_after']=leaf.exists();row['root_exists_after']=dest.exists()
     if leaf.exists():row['bytes']=leaf.read_bytes().decode();row['leaf_grant']=grant(leaf)
     witness=parent/'normal';witness.write_bytes(b'');row['ordinary_grant']=grant(witness)
@@ -95,7 +104,8 @@ for fresh in (True,False):
    finally:close(tx)
 
 for row in rows:
- assert row['finished'],row
+ if 'transactional_parent_opened' in row and not row['transactional_parent_opened']:continue
+ assert row['finished'] or row['action'].startswith('revoke-with-parent'),row
  if row['action']=='revoke':
   assert row['permission_changed_before_commit'] and not row['parent_grant_before_commit']
   assert not row['ordinary_grant'] and row['leaf_grant'] and row['bytes']=='verified'
