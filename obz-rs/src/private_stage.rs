@@ -380,6 +380,7 @@ pub(crate) fn open_output_directory(parent: &File, leaf: &OsStr) -> Result<File,
 }
 
 enum ChildAccess {
+    ArchiveReference,
     OpenDirectory,
     Metadata,
     CreateFile,
@@ -417,6 +418,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
     };
     let mut raw = std::ptr::null_mut();
     let (access, file_attributes, sharing, disposition, options, operation) = match mode {
+        ChildAccess::ArchiveReference => (0x130080,0x80,0,2,0x201060,"create ordinary ZIP ACL reference"),
         #[cfg(target_pointer_width = "64")]
         ChildAccess::Witness(is_dir) => (0x170081, if is_dir { 0x10 } else { 0x80 },
             0, 2, if is_dir { 0x201021 } else { 0x201060 }, "create inheritance witness"),

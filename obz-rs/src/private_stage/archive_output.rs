@@ -6,6 +6,7 @@ use super::*;
 pub(crate) struct ArchiveOutput {
     temp: Option<PrivateOutputFile>,
     root: Option<File>,
+    ordinary: Option<File>,
     parent: File,
     directory: PathBuf,
 }
@@ -27,10 +28,24 @@ impl ArchiveOutput {
         let mut output = Self {
             temp: None,
             root: Some(root),
+            ordinary: None,
             parent,
             directory,
         };
-        match create_output(&output.directory, output.root.as_ref().unwrap()) {
+        // FILE_CREATE and DELETE_ON_CLOSE; this empty file contains no
+        // archive data. Keep its native inherited ACL as the reference.
+        match open_private_child(
+            output.root.as_ref().unwrap(),
+            OsStr::new("permissions"),
+            ChildAccess::ArchiveReference,
+        ) {
+            Ok(reference) => output.ordinary = Some(reference),
+            Err(_) => {
+                output.cleanup()?;
+                return Ok(None);
+            }
+        }
+        match output::create_archive_file(&output.directory, output.root.as_ref().unwrap()) {
             Ok(file) => output.temp = Some(file),
             Err(reason) => {
                 return Err(match output.cleanup() {
@@ -44,16 +59,23 @@ impl ArchiveOutput {
     pub(crate) fn file(&self) -> &File {
         self.temp.as_ref().unwrap().as_file()
     }
-    pub(crate) fn publish(&mut self, name: &OsStr) -> Result<(), String> {
-        self.temp
-            .as_mut()
-            .unwrap()
-            .publish_archive(&self.parent, name)
+    pub(crate) fn publish(
+        &mut self,
+        name: &OsStr,
+        before_commit: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.temp.as_mut().unwrap().publish_archive(
+            &self.parent,
+            self.ordinary.as_ref().unwrap(),
+            name,
+            before_commit,
+        )
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), String> {
         if let Some(mut file) = self.temp.take() {
             file.abort()?;
         }
+        self.ordinary.take();
         if let Some(root) = self.root.take() {
             let mut io = IoStatus {
                 status: 0,

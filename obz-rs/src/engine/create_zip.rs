@@ -261,7 +261,11 @@ pub(in crate::engine) fn try_create(
         output.file().sync_all().map_err(|e| e.to_string())?;
         ctl.check()?;
         policy.unchanged()?;
-        output.publish(target.file_name().ok_or("missing output name")?)?;
+        output.publish(target.file_name().ok_or("missing output name")?, || {
+            guards.check_prepared(parent)?;
+            policy.unchanged()?;
+            ctl.check()
+        })?;
         Ok(true)
     });
     match (result, output.cleanup()) {
