@@ -8,6 +8,8 @@ mod bounded_archive_stage;
 mod zip_volume_view;
 #[cfg(windows)]
 pub(crate) mod edit_source;
+#[cfg(windows)]
+pub(crate) fn recover_interrupted_edit(path:&std::path::Path)->Result<bool,String>{ edit_source::recover_missing(path) }
 mod zip_preview;
 pub use zip_preview::ZipPreviewBatch;
 #[cfg(windows)]
@@ -4794,14 +4796,18 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
-    with_zip_source(path, opts, |path| {
+    let read = || with_zip_source(path, opts, |path| {
         if compound_tar(path) {
             let (_temp, inner) = unpack_tar(path, opts)?;
             list_raw(&inner, opts)
         } else {
             list_raw(path, opts)
         }
-    })
+    });
+    let result=read();
+    #[cfg(windows)]
+    if result.is_err() && edit_source::recover_missing(Path::new(path))? { return read(); }
+    result
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let _policy = crate::machine_policy::scope();

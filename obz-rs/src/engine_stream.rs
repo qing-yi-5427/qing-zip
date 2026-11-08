@@ -394,7 +394,13 @@ fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
 pub fn canonical_input_path(path: &Path, directory: bool) -> std::io::Result<std::path::PathBuf> {
     let path = std::path::absolute(path)?;
     let _parents = pin_parent_names(&path)?;
-    let _entry = open_name(&path, directory)?;
+    let _entry = match open_name(&path,directory) {
+        Err(error) if !directory && error.kind()==std::io::ErrorKind::NotFound => {
+            if !engine::recover_interrupted_edit(&path).map_err(std::io::Error::other)? {return Err(error);}
+            open_name(&path,directory)?
+        }
+        other=>other?,
+    };
     path.canonicalize()
 }
 
