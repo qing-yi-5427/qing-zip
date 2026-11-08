@@ -16,7 +16,7 @@ use std::{
 #[cfg(target_pointer_width = "64")]
 mod witnessed;
 #[cfg(target_pointer_width = "64")]
-pub(crate) use witnessed::WitnessedInheritance;
+pub(crate) use witnessed::qualifies_legacy_parent;
 mod output;
 mod output_receipt;
 pub(crate) use output_receipt::{directory_stamp,OutputReceipt};
@@ -104,6 +104,7 @@ extern "system" {
         mapping: *mut GenericMapping,
     ) -> i32;
     fn DestroyPrivateObjectSecurity(descriptor: *mut Handle) -> i32;
+    #[cfg(test)]
     fn SetSecurityInfo(
         handle: Handle,
         kind: u32,
@@ -221,6 +222,7 @@ impl PrivateStage {
     pub(crate) fn path(&self) -> &Path {
         self.path.as_deref().expect("owned private stage")
     }
+    #[cfg(test)]
     pub(crate) fn keep(mut self) -> PathBuf {
         self.path.take().expect("owned private stage")
     }
@@ -584,6 +586,7 @@ fn derive_with(parent: Handle, container: bool, token: &Token, flags: u32, inher
     }
     Ok(computed)
 }
+#[cfg(test)]
 fn apply(root: &File, computed: &PrivateDescriptor) -> Result<(), String> {
     let (mut present, mut defaulted, mut dacl) = (0, 0, std::ptr::null_mut());
     if unsafe { GetSecurityDescriptorDacl(computed.0, &mut present, &mut dacl, &mut defaulted) }
@@ -635,6 +638,7 @@ fn apply_native(root: &File, computed: &PrivateDescriptor) -> Result<(), String>
     }
     Ok(())
 }
+#[cfg(test)]
 fn apply_compatible(root: &File, computed: &PrivateDescriptor) -> Result<(), String> {
     match apply_native(root, computed) {
         Ok(()) => Ok(()),
@@ -643,14 +647,18 @@ fn apply_compatible(root: &File, computed: &PrivateDescriptor) -> Result<(), Str
         Err(native) => apply(root, computed).map_err(|fallback| format!("{native}; {fallback}")),
     }
 }
+#[cfg(test)]
 pub(crate) struct PermissionNode {
     pub(crate) file: File,
     pub(crate) parent_index: Option<usize>,
     pub(crate) is_dir: bool,
 }
+/// Historical comparator used only by fixture tests. A whole-tree replay can
+/// overwrite a concurrent revocation and must never be used by extraction.
 /// Nodes are parent-before-child, pinned READ_DATA|READ_CONTROL|WRITE_DAC with read-only
 /// sharing. Never depend on SetSecurityInfo's silent best-effort propagation:
 /// explicitly update every pinned object, using cached sibling descriptors.
+#[cfg(test)]
 pub(crate) fn inherit_tree(
     root: &File,
     parent: &File,
@@ -658,6 +666,7 @@ pub(crate) fn inherit_tree(
 ) -> Result<(), String> {
     inherit_tree_with(root, parent, nodes, apply_compatible)
 }
+#[cfg(test)]
 fn inherit_tree_with(
     root: &File,
     parent: &File,
@@ -671,10 +680,12 @@ fn inherit_tree_with(
     }
     Ok(())
 }
+#[cfg(test)]
 struct PreparedPermissions {
     root: std::rc::Rc<PrivateDescriptor>,
     nodes: Vec<std::rc::Rc<PrivateDescriptor>>,
 }
+#[cfg(test)]
 fn prepare_permissions(
     parent: &File,
     nodes: &[PermissionNode],
@@ -1121,7 +1132,7 @@ mod tests {
 }
 
 #[cfg(target_pointer_width = "64")]
-pub(crate) use file_publication::{publish_verified_file_journaled,publish_verified_file, supports_file_publication, FilePublication};
+pub(crate) use file_publication::{publish_verified_file_journaled, supports_file_publication, FilePublication};
 
 #[cfg(all(test, target_pointer_width = "64"))]
 pub(crate) fn ordinary_file_publication_test_parent(parent: &File) {
@@ -1331,6 +1342,7 @@ mod file_publication {
     /// shared ADS must never expose a precommit leaf under destination access.
     /// Postcommit permission failure is an error that retains the target; it
     /// must never trigger fallback, target deletion, or source archive recycling.
+    #[cfg(test)]
     pub(crate) fn publish_verified_file(
         source_parent: &File,
         source_leaf: &OsStr,
@@ -1542,27 +1554,7 @@ mod file_publication {
             let len = unsafe { GetSecurityDescriptorLength(owned.0) } as usize;
             unsafe { std::slice::from_raw_parts(owned.0.cast::<u8>(), len).to_vec() }
         }
-        fn expected_private_descriptor_after_rename(mut descriptor: Vec<u8>) -> Vec<u8> {
-            // The observed NTFS rename protects the retained DACL and materializes
-            // inherited ACEs. Permit these changes in this direction only: never
-            // losing protection or adding inherited permissions from the target.
-            // Owner/group, ACE order/type/SID/mask and every other flag stay exact.
-            let control = u16::from_le_bytes(descriptor[2..4].try_into().unwrap());
-            assert_ne!(control & 0x8000, 0, "self-relative descriptor expected");
-            descriptor[2..4].copy_from_slice(&(control | 0x1000).to_le_bytes());
-            let acl = u32::from_le_bytes(descriptor[16..20].try_into().unwrap()) as usize;
-            assert!(acl >= 20 && acl + 8 <= descriptor.len());
-            let count = u16::from_le_bytes(descriptor[acl + 4..acl + 6].try_into().unwrap());
-            let mut ace = acl + 8;
-            for _ in 0..count {
-                assert!(ace + 4 <= descriptor.len());
-                let size = u16::from_le_bytes(descriptor[ace + 2..ace + 4].try_into().unwrap()) as usize;
-                assert!(size >= 4 && ace + size <= descriptor.len());
-                descriptor[ace + 1] &= !0x10;
-                ace += size;
-            }
-            descriptor
-        }
+
         fn attrs(file: &File, value: u32) {
             let mut basic = [0i64; 5];
             basic[4] = value as i64;
@@ -1729,7 +1721,7 @@ mod file_publication {
         fn file_publication_retains_strong_pins_identity_acl_ads_and_exact_metadata() {
             for readonly in [false, true] {
                 let f = Fixture::new(readonly);
-                let super::super::FilePublication::Committed(file) = super::super::publish_verified_file(
+                let super::super::FilePublication::Committed(file) = super::publish_verified_file(
                     &f.pins[2], OsStr::new("source.bin"), &f.pins[4], OsStr::new("target.bin"),
                     14, f.modified, f.readonly, false, || Ok(())
                 ).unwrap()

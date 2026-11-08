@@ -1457,6 +1457,7 @@ fn verify_stage(
     let mut guards = CheckedDirectories::default();
     verify_stage_checked(root, expected, ctl, &mut guards)
 }
+#[cfg(test)]
 fn verify_stage_checked(
     root: &Path,
     expected: &BTreeMap<String, (bool, u64)>,
@@ -2473,7 +2474,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             selected_source = None;
         }
     }
-    let mut expected = expected_tree(&all_entries)?;
+    let expected = expected_tree(&all_entries)?;
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
         .iter()
@@ -2676,8 +2677,6 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 }
                 staged_expected.get_mut(&path_key(&relative)).ok_or("raw stream missing from manifest")?.1 = metadata.len();
             }
-            // Every later commit/pin branch must use the same resolved sizes.
-            expected = staged_expected.clone();
         }
         verify_stage_with_metadata(
             stage.path(),
@@ -2687,7 +2686,6 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             (transaction.is_some() || file_publication_stage).then_some(staged_entries),
             if transaction.is_some() || file_publication_stage { opts.zone_identifier.as_ref() } else { None },
         )?;
-        if verified_projection && transaction.is_some() { expected = staged_expected; }
     }
     let journal=transaction.as_ref().map(|_|PublicationJournal::default());
     let publication=(|| -> Result<usize,String> {
@@ -3051,6 +3049,7 @@ impl StagingDir {
             Self::Private(temp) => temp.path(),
         }
     }
+    #[cfg(test)]
     fn keep(self) -> PathBuf {
         match self {
             Self::Temporary(temp) => temp.keep(),
@@ -3453,12 +3452,9 @@ struct DirectoryTransaction {
     // removed, including when an archive fails qualification.
     root: File,
     parent: File,
-    restore_acl: bool,
-    #[cfg(all(windows, target_pointer_width = "64"))]
-    witnessed: Option<crate::private_stage::WitnessedInheritance>,
     stage: Option<StagingDir>,
 }
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 pub(crate) fn pin_committed_tree(
     root: &Path,
     expected: &BTreeMap<String, (bool, u64)>,
@@ -3523,8 +3519,7 @@ pub(crate) fn pin_committed_tree(
     }
     Ok(pins)
 }
-// Create privately on the destination volume. Normal inherited permissions are
-// restored only after verified content has been committed by its pinned handle.
+// Stage privately on the destination volume when its storage and permissions qualify.
 fn new_directory_stage(
     path: &str,
     dest: &Path,
@@ -3580,16 +3575,14 @@ fn new_directory_stage(
             }
         }
         let private_parent = private_stage_acl_handle(&parent_handle)?;
-        let witnessed = if (!private_parent || reserve) && !crate::private_stage::supports_inheritance(&parent_handle)? {
+        if (!private_parent || reserve) && !crate::private_stage::supports_inheritance(&parent_handle)? {
             if private_parent || !using_process_token() { return Ok(None); }
             let Some(required) = file_stage_reservation(entries) else { return Ok(None); };
             if !has_stage_space(parent, required) { return Ok(None); }
             // A missing capability (including witness creation/access) always
             // preserves the ordinary per-file publication route.
-            let Some(witness) = crate::private_stage::WitnessedInheritance::qualify(parent, &parent_handle)?
-                else { return Ok(None); };
-            Some(witness)
-        } else { None };
+            if !crate::private_stage::qualifies_legacy_parent(parent, &parent_handle)? { return Ok(None); }
+        }
         if private_parent {
             let temp = match tempfile::Builder::new()
                 .prefix(".open-archive-stage-")
@@ -3616,8 +3609,6 @@ fn new_directory_stage(
                 stage: Some(StagingDir::Temporary(temp)),
                 root,
                 parent: parent_handle,
-                restore_acl: false,
-                witnessed: None,
             }));
         }
         let temp = match crate::private_stage::create(parent, &parent_handle) {
@@ -3634,8 +3625,6 @@ fn new_directory_stage(
             stage: Some(StagingDir::Private(temp)),
             root,
             parent: parent_handle,
-            restore_acl: true,
-            witnessed,
         }))
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
@@ -3722,6 +3711,7 @@ fn normalize_staged_entry(
 fn rename_directory_noclobber(root: &File, target: &Path) -> Result<bool, String> {
     rename_directory_noclobber_in(root, target, None)
 }
+#[cfg(test)]
 fn rename_directory_noclobber_in(
     root: &File,
     target: &Path,

@@ -10,14 +10,6 @@ use std::os::windows::fs::MetadataExt;
 const ACCESS_POLICY_FIELDS: u32 = 0x1f7;
 const EXCEPT_DACL: u32 = ACCESS_POLICY_FIELDS & !4;
 
-pub(crate) struct WitnessedInheritance {
-    parent_sd: Vec<u8>,
-    file_sd: Vec<u8>,
-    owner_group: Vec<u8>,
-    directory: PrivateDescriptor,
-    file: PrivateDescriptor,
-}
-
 fn bytes(sd: &Allocation) -> Result<Vec<u8>, String> {
     let size = unsafe { GetSecurityDescriptorLength(sd.0) } as usize;
     if !(20..=1024 * 1024).contains(&size) {
@@ -148,141 +140,73 @@ fn pending_witness(file: &File, path: &Path) -> Result<(), ProbeError> {
     Err(ProbeError::Unavailable)
 }
 
-impl WitnessedInheritance {
-    pub(crate) fn qualify(parent_path: &Path, parent: &File) -> Result<Option<Self>, String> {
-        match Self::try_qualify(parent_path, parent) {
-            Ok(result) => Ok(result),
-            Err(ProbeError::Unavailable) => Ok(None),
-            Err(ProbeError::Occupied(path)) => Err(format!(
-                "another process added content to the inheritance witness; directory preserved: {}",
-                path.display()
-            )),
-        }
+pub(crate) fn qualifies_legacy_parent(parent_path: &Path, parent: &File) -> Result<bool, String> {
+    match try_qualify(parent_path, parent) {
+        Ok(result) => Ok(result),
+        Err(ProbeError::Unavailable) => Ok(false),
+        Err(ProbeError::Occupied(path)) => Err(format!(
+            "another process added content to the inheritance witness; directory preserved: {}",
+            path.display()
+        )),
     }
-    fn try_qualify(parent_path: &Path, parent: &File) -> Result<Option<Self>, ProbeError> {
-        let token = token()?;
-        let user = current_sid(&token)?;
-        let source = security_descriptor(parent, ACCESS_POLICY_FIELDS)?;
-        if !supports_file_publication(parent)?
-            || !ordinary_storage(parent, true)?
-            || !stable_policy(source.0, &user)?
-        {
-            return Ok(None);
-        }
-        let parent_sd = bytes(&source)?;
-        // Leave labeled/conditional policies on ordinary creation.
-        if snapshot(parent, 7)? != parent_sd {
-            return Ok(None);
-        }
-        let protected = protected_descriptor(&user)?;
-        let owner_group = snapshot(parent, EXCEPT_DACL)?;
+}
+fn try_qualify(parent_path: &Path, parent: &File) -> Result<bool, ProbeError> {
+    let token = token()?;
+    let user = current_sid(&token)?;
+    let source = security_descriptor(parent, ACCESS_POLICY_FIELDS)?;
+    if !supports_file_publication(parent)?
+        || !ordinary_storage(parent, true)?
+        || !stable_policy(source.0, &user)?
+    {
+        return Ok(false);
+    }
+    let parent_sd = bytes(&source)?;
+    // Leave labeled/conditional policies on ordinary creation.
+    if snapshot(parent, 7)? != parent_sd {
+        return Ok(false);
+    }
+    let protected = protected_descriptor(&user)?;
+    let owner_group = snapshot(parent, EXCEPT_DACL)?;
 
-        let probe = |directory| -> Result<Option<(PrivateDescriptor, Vec<u8>)>, ProbeError> {
-            let mut nonce = [0u8; 16];
-            if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
-                return Err(ProbeError::Unavailable);
-            }
-            let leaf = format!(".qing-zip-acl-{:032x}", u128::from_ne_bytes(nonce));
-            let witness =
-                open_private_child(parent, OsStr::new(&leaf), ChildAccess::Witness(directory))?;
-            pending_witness(&witness, &parent_path.join(leaf))?;
-            if !ordinary_storage(&witness, directory)?
-                || snapshot(&witness, EXCEPT_DACL)? != owner_group
-            {
-                return Ok(None);
-            }
-            let normal = snapshot(&witness, ACCESS_POLICY_FIELDS)?;
-            if directory && normal != parent_sd {
-                return Ok(None);
-            }
-            // Different volumes materialize effective ACEs with or without
-            // INHERITED_ACE. Prove an exact protected-to-ordinary transition
-            // on the empty witness. No sampled DACL is applied to archive data.
-            for mode in [1, 0] {
-                let computed = derive_with(source.0, directory, &token, mode, 0)?;
-                if unsafe {
-                    NtSetSecurityObject(witness.as_raw_handle(), 4 | 0x80000000, protected.0)
-                } < 0
-                {
-                    return Ok(None);
-                }
-                apply_native(&witness, &computed)?;
-                if snapshot(&witness, ACCESS_POLICY_FIELDS)? == normal {
-                    return Ok(Some((computed, normal)));
-                }
-            }
-            Ok(None)
-        };
-        let Some((directory, _)) = probe(true)? else {
-            return Ok(None);
-        };
-        let Some((file, file_sd)) = probe(false)? else {
-            return Ok(None);
-        };
-        let result = Self {
-            parent_sd,
-            file_sd,
-            owner_group,
-            directory,
-            file,
-        };
-        Ok(result.parent_matches(parent)?.then_some(result))
-    }
-    fn parent_matches(&self, parent: &File) -> Result<bool, String> {
-        Ok(ordinary_storage(parent, true)?
-            && snapshot(parent, ACCESS_POLICY_FIELDS)? == self.parent_sd)
-    }
-    pub(crate) fn compatible(
-        &self,
-        parent: &File,
-        root: &File,
-        nodes: &[PermissionNode],
-    ) -> Result<bool, String> {
-        if !self.parent_matches(parent)?
-            || !ordinary_storage(root, true)?
-            || snapshot(root, EXCEPT_DACL)? != self.owner_group
+    let probe = |directory| -> Result<bool, ProbeError> {
+        let mut nonce = [0u8; 16];
+        if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
+            return Err(ProbeError::Unavailable);
+        }
+        let leaf = format!(".qing-zip-acl-{:032x}", u128::from_ne_bytes(nonce));
+        let witness =
+            open_private_child(parent, OsStr::new(&leaf), ChildAccess::Witness(directory))?;
+        pending_witness(&witness, &parent_path.join(leaf))?;
+        if !ordinary_storage(&witness, directory)?
+            || snapshot(&witness, EXCEPT_DACL)? != owner_group
         {
             return Ok(false);
         }
-        for node in nodes {
-            if !ordinary_storage(&node.file, node.is_dir)?
-                || snapshot(&node.file, EXCEPT_DACL)? != self.owner_group
+        let normal = snapshot(&witness, ACCESS_POLICY_FIELDS)?;
+        if directory && normal != parent_sd {
+            return Ok(false);
+        }
+        // Different volumes materialize effective ACEs with or without
+        // INHERITED_ACE. Prove an exact protected-to-ordinary transition
+        // on the empty witness. No sampled DACL is applied to archive data.
+        for mode in [1, 0] {
+            let computed = derive_with(source.0, directory, &token, mode, 0)?;
+            if unsafe { NtSetSecurityObject(witness.as_raw_handle(), 4 | 0x80000000, protected.0) }
+                < 0
             {
                 return Ok(false);
             }
-        }
-        Ok(true)
-    }
-    pub(crate) fn restore(
-        &self,
-        parent: &File,
-        root: &File,
-        nodes: &[PermissionNode],
-    ) -> Result<(), String> {
-        if !self.compatible(parent, root, nodes)? {
-            return Err("legacy destination policy or staged identity changed".into());
-        }
-        let apply = |target: &File, is_dir| -> Result<(), String> {
-            let (computed, expected) = if is_dir {
-                (&self.directory, &self.parent_sd)
-            } else {
-                (&self.file, &self.file_sd)
-            };
-            apply_native(target, computed)?;
-            if snapshot(target, ACCESS_POLICY_FIELDS)? != *expected {
-                return Err("restored legacy permissions differ from normal creation".into());
+            apply_native(&witness, &computed)?;
+            if snapshot(&witness, ACCESS_POLICY_FIELDS)? == normal {
+                return Ok(true);
             }
-            Ok(())
-        };
-        // NTFS can protect a nonmatching child DACL when its parent's
-        // permissions still differ. All verified identities are pinned; restore
-        // in the same parent-before-child order as ordinary file creation.
-        apply(root, true)?;
-        for node in nodes {
-            apply(&node.file, node.is_dir)?;
         }
-        Ok(())
-    }
+        Ok(false)
+    };
+    Ok(probe(true)?
+        && probe(false)?
+        && ordinary_storage(parent, true)?
+        && snapshot(parent, ACCESS_POLICY_FIELDS)? == parent_sd)
 }
 
 #[cfg(test)]
@@ -324,7 +248,12 @@ mod tests {
             open_private_child(&parent, OsStr::new("witness"), ChildAccess::Witness(true)).unwrap();
         assert!(pending_witness(&witness, &path).is_ok());
         assert!(fs::write(path.join("foreign"), b"foreign").is_err());
-        assert!(open_private_child(&witness, OsStr::new("relative-foreign"), ChildAccess::CreateFile).is_err());
+        assert!(open_private_child(
+            &witness,
+            OsStr::new("relative-foreign"),
+            ChildAccess::CreateFile
+        )
+        .is_err());
         drop(witness);
         assert!(!path.exists());
 
@@ -341,7 +270,7 @@ mod tests {
     }
     const LEGACY: &str = "D:(A;ID;FA;;;BA)(A;OICIIOID;GA;;;BA)(A;ID;FA;;;SY)(A;OICIIOID;GA;;;SY)(A;ID;0x1301bf;;;AU)(A;OICIIOID;SDGXGWGR;;;AU)(A;ID;0x1200a9;;;BU)(A;OICIIOID;GXGR;;;BU)";
     #[test]
-    fn witnessed_tree_matches_normal_metadata_and_future_inheritance() {
+    fn legacy_parent_qualification_rejects_an_untrusted_policy() {
         // The hosted runner's user TEMP inherits SE_SACL_AUTO_INHERITED.
         // The runner's scratch volume supplies the ordinary NTFS parent this
         // positive fixture needs, without changing the host's audit policy.
@@ -358,70 +287,15 @@ mod tests {
         let parent = pin(&path);
         let legacy_sd = security_descriptor(&parent, ACCESS_POLICY_FIELDS).unwrap();
         let (mut control, mut revision) = (0, 0);
-        assert_ne!(unsafe { GetSecurityDescriptorControl(legacy_sd.0, &mut control, &mut revision) }, 0);
+        assert_ne!(
+            unsafe { GetSecurityDescriptorControl(legacy_sd.0, &mut control, &mut revision) },
+            0
+        );
         assert_eq!(control, 0x8004, "test needs an unprotected NTFS parent without automatic DACL or SACL inheritance; got {control:#06x}");
         assert!(!supports_inheritance(&parent).unwrap());
-        let w = WitnessedInheritance::qualify(&path, &parent)
-            .unwrap()
-            .expect("fixed-point legacy ACL");
+        assert!(qualifies_legacy_parent(&path, &parent).unwrap());
         assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
-        let normal = path.join("normal");
-        let stage = create(&path, &parent).unwrap();
-        for base in [&normal, stage.path()] {
-            fs::create_dir_all(base.join("a/b")).unwrap();
-            fs::write(base.join("a/b/file"), b"data").unwrap();
-        }
-        let leaf = pin(&stage.path().join("a/b/file"));
-        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        File::options()
-            .write(true)
-            .open(stage.path().join("a/b/file"))
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(fixed))
-            .unwrap();
-        drop(leaf);
-        let mut expected = std::collections::BTreeMap::new();
-        for (rel, dir, len) in [("a", true, 0), ("a/b", true, 0), ("a/b/file", false, 4)] {
-            expected.insert(rel.to_string(), (dir, len));
-        }
-        let nodes = crate::engine::pin_committed_tree(stage.path(), &expected).unwrap();
-        assert!(w.compatible(&parent, stage.root(), &nodes).unwrap());
-        w.restore(&parent, stage.root(), &nodes).unwrap();
-        drop(nodes);
-        for rel in ["a", "a/b", "a/b/file"] {
-            let staged = pin(&stage.path().join(rel));
-            let ordinary = pin(&normal.join(rel));
-            assert_eq!(
-                snapshot(&staged, 7).unwrap(),
-                snapshot(&ordinary, 7).unwrap(),
-                "{rel}"
-            );
-            assert_eq!(
-                staged.metadata().unwrap().file_attributes(),
-                ordinary.metadata().unwrap().file_attributes()
-            );
-        }
-        assert_eq!(
-            fs::metadata(stage.path().join("a/b/file"))
-                .unwrap()
-                .modified()
-                .unwrap(),
-            fixed
-        );
-        for base in [&normal, stage.path()] {
-            fs::create_dir(base.join("a/b/future")).unwrap();
-            fs::write(base.join("a/b/future/child"), b"").unwrap();
-        }
-        for rel in ["a/b/future", "a/b/future/child"] {
-            assert_eq!(
-                snapshot(&pin(&stage.path().join(rel)), 7).unwrap(),
-                snapshot(&pin(&normal.join(rel)), 7).unwrap()
-            );
-        }
         policy(&parent, "D:(A;ID;FA;;;WD)(A;OICIIOID;GA;;;WD)");
-        assert!(!w.parent_matches(&parent).unwrap());
-        assert!(WitnessedInheritance::qualify(&path, &parent)
-            .unwrap()
-            .is_none());
+        assert!(!qualifies_legacy_parent(&path, &parent).unwrap());
     }
 }
