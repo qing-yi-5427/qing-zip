@@ -605,36 +605,32 @@ fn append_listing_lines<'a>(
     result: &mut Vec<Entry>,
     seen: &mut HashSet<String>,
 ) -> Result<(), String> {
-    let mut props = HashMap::new();
+    let mut props = listing_properties::Properties::default();
     for line in lines {
         if let Some(line) = line {
             if let Some((k, v)) = line.split_once(" = ") {
-                if props.insert(k, v).is_some() {
+                if !props.insert(k, v) {
                     return Err("ambiguous archive entry metadata".into());
                 }
             } else if !line.trim().is_empty() {
                 return Err("unsupported archive filename or metadata".into());
             }
         } else {
-            if let Some(&name) = props.get("Path") {
+            if let Some(name) = props.get(Field::Path) {
                 if let Some(entry) = listing_entry(name, &props, seen)? {
                     result.push(entry);
                 }
             }
-            // An unusually wide metadata block must not make clearing every
-            // subsequent ordinary record proportional to the outlier's size.
-            if props.capacity() > 128 {
-                props = HashMap::new();
-            } else {
-                props.clear();
-            }
+            props.clear();
         }
     }
     Ok(())
 }
 
 mod directory_capture;
+mod listing_properties;
 use directory_capture::DirectoryCapture;
+use listing_properties::Field;
 
 // The technical listing is already in a private file. Parse complete records
 // in batches so its whole text never coexists in memory with the decoded tree.
@@ -683,20 +679,20 @@ fn large_directory(log: &mut File, ctl: &JobControl) -> Result<Option<Vec<Entry>
 
 fn listing_entry(
     name: &str,
-    props: &HashMap<&str, &str>,
+    props: &listing_properties::Properties,
     seen: &mut HashSet<String>,
 ) -> Result<Option<Entry>, String> {
-    if ["Symbolic Link", "Hard Link", "Alternate Stream"]
-        .iter()
-        .any(|k| props.get(k).is_some_and(|s| !s.is_empty() && *s != "-"))
+    if [Field::SymbolicLink, Field::HardLink, Field::AlternateStream]
+        .into_iter()
+        .any(|k| props.get(k).is_some_and(|s| !s.is_empty() && s != "-"))
     {
         return Err("archive links or alternate streams are unsupported".into());
     }
-    let attrs = props.get("Attributes").copied().unwrap_or("");
+    let attrs = props.get(Field::Attributes).unwrap_or("");
     if attrs.starts_with('l') || attrs.contains(" lrwx") {
         return Err("archive symbolic link unsupported".into());
     }
-    let is_dir = props.get("Folder") == Some(&"+")
+    let is_dir = props.get(Field::Folder) == Some("+")
         || attrs.starts_with('D')
         || attrs.starts_with('d')
         || name.ends_with('/');
@@ -709,7 +705,7 @@ fn listing_entry(
     if !seen.insert(path_key(&validate_name(name)?)) {
         return Err("duplicate or case-colliding archive names".into());
     }
-    let size = match props.get("Size").filter(|value| !value.is_empty()) {
+    let size = match props.get(Field::Size).filter(|value| !value.is_empty()) {
         Some(value) => Some(value.parse::<u64>().map_err(|_| "invalid archive entry size")?),
         None => None,
     };
@@ -718,15 +714,15 @@ fn listing_entry(
         name: name.into(),
         size: size.unwrap_or(0),
         packed_size: props
-            .get("Packed Size")
+            .get(Field::PackedSize)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0),
         is_dir,
-        crc: props.get("CRC").unwrap_or(&"").to_string(),
-        encrypted: props.get("Encrypted") == Some(&"+"),
-        modified: props.get("Modified").unwrap_or(&"").to_string(),
-        method: props.get("Method").unwrap_or(&"").to_string(),
-        comment: props.get("Comment").unwrap_or(&"").to_string(),
+        crc: props.get(Field::Crc).unwrap_or("").to_string(),
+        encrypted: props.get(Field::Encrypted) == Some("+"),
+        modified: props.get(Field::Modified).unwrap_or("").to_string(),
+        method: props.get(Field::Method).unwrap_or("").to_string(),
+        comment: props.get(Field::Comment).unwrap_or("").to_string(),
         attributes: attrs.to_string(),
     }))
 }
