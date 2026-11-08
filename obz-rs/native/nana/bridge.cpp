@@ -488,7 +488,7 @@ struct Runtime {
     }
     if (!copy || !lzma || !lzma2) fail("required Core built-in codec missing");
   }
-  void handler(const wchar_t *name, const char *policy_name, IInArchive **out) {
+  template<class T> void handler(const wchar_t *name, const char *policy_name, T **out, REFIID iid = IID_IInArchive) {
     if (!allowed_handler(policy_name)) fail("handler denied by official policy");
     UInt32 n = 0; exact(count(&n), "handler enumeration");
     if (n > 256) fail("handler enumeration limit");
@@ -498,7 +498,7 @@ struct Runtime {
       Variant cls; exact(property(i, NArchive::NHandlerPropID::kClassID, &cls.v), "handler class");
       if (cls.v.vt != VT_BSTR || SysStringByteLen(cls.v.bstrVal) != sizeof(GUID)) fail("invalid class GUID");
       GUID guid; std::memcpy(&guid, cls.v.bstrVal, sizeof(guid));
-      exact(create(&guid, &IID_IInArchive, reinterpret_cast<void **>(out)), "handler creation");
+      exact(create(&guid, &iid, reinterpret_cast<void **>(out)), "handler creation");
       if (!*out) fail("null handler"); return;
     }
     fail("required official handler unavailable");
@@ -707,3 +707,5 @@ extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedR
 extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *request, QzSelectedReceipt *receipt) {
   return qz_extract_selected_with_password(request, receipt, nullptr, 0);
 }
+
+#include "create_zip.inc"

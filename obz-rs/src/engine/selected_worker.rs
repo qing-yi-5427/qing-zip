@@ -55,6 +55,9 @@ extern "C" {
     ) -> u32;
 }
 
+#[path = "create_zip.rs"]
+pub mod create_zip;
+
 fn runtime_dir() -> Result<Option<PathBuf>, String> {
     let exe = executable()?;
     if exe.file_name().and_then(OsStr::to_str) != Some(PREFIX) {
@@ -360,7 +363,7 @@ impl<'a> Fields<'a> {
 }
 
 type Frame = Option<(u8, Vec<u8>)>;
-fn read_frame(stdout: &mut impl std::io::Read) -> Result<Frame, String> {
+fn read_frame(stdout: &mut impl std::io::Read, limit:usize) -> Result<Frame, String> {
     let mut kind = [0];
     let mut n = [0; 4];
     if stdout.read(&mut kind).map_err(|e| e.to_string())? == 0 {
@@ -368,7 +371,7 @@ fn read_frame(stdout: &mut impl std::io::Read) -> Result<Frame, String> {
     }
     stdout.read_exact(&mut n).map_err(|e| e.to_string())?;
     let length = u32::from_le_bytes(n) as usize;
-    if length > LIMIT {
+    if length > limit {
         return Err("selected worker frame exceeds size limit".into());
     }
     let mut body = vec![0; length];
@@ -382,7 +385,7 @@ struct Session {
     reader: Option<JoinHandle<()>>,
 }
 impl Session {
-    fn start(exe: &Path) -> Result<Self, String> {
+    fn start(exe: &Path, create_zip: bool) -> Result<Self, String> {
         let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
         let (mut process, mut input, mut output) = (
             std::ptr::null_mut(),
@@ -390,7 +393,7 @@ impl Session {
             std::ptr::null_mut(),
         );
         let error = unsafe {
-            qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output)
+            if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
         };
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
@@ -409,7 +412,7 @@ impl Session {
             std::thread::Builder::new()
                 .name("selected-worker-output".into())
                 .spawn(move || loop {
-                    let frame = read_frame(&mut stdout);
+                    let frame = read_frame(&mut stdout, if create_zip { 1024 } else { LIMIT });
                     let last = !matches!(&frame, Ok(Some(_)));
                     if tx.send(frame).is_err() || last {
                         break;
@@ -630,7 +633,7 @@ fn run(
     if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
         return Err("worker job identity generation failed".into());
     }
-    let mut session = Session::start(exe)?;
+    let mut session = Session::start(exe, false)?;
     let mut request = nonce.to_vec();
     wide(&mut request, runtime.as_os_str())?;
     request.extend_from_slice(

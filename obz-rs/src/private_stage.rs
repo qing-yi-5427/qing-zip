@@ -18,6 +18,8 @@ mod witnessed;
 #[cfg(target_pointer_width = "64")]
 pub(crate) use witnessed::WitnessedInheritance;
 mod output;
+mod archive_output;
+pub(crate) use archive_output::ArchiveOutput;
 pub(crate) use output::{create_output, PrivateOutputFile};
 type Handle = *mut c_void;
 #[repr(C)]
@@ -288,10 +290,13 @@ fn protected_descriptor(sid: &str) -> Result<Allocation, String> {
     Ok(Allocation(raw))
 }
 fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, share: u32) -> Result<(PathBuf, File, File), String> {
-    let parent_pin = parent_handle.try_clone().map_err(|e| e.to_string())?;
     let token = token()?;
-    let sid = current_sid(&token)?;
-    let memory = protected_descriptor(&sid)?;
+    let memory = protected_descriptor(&current_sid(&token)?)?;
+    create_root_with_descriptor(parent, parent_handle, prefix, access, share, memory.0)
+}
+fn create_root_with_descriptor(parent: &Path, parent_handle: &File, prefix: &str, access: u32,
+    share:u32, security:Handle) -> Result<(PathBuf,File,File),String> {
+    let parent_pin=parent_handle.try_clone().map_err(|e|e.to_string())?;
     for _ in 0..16 {
         let mut random = [0u8; 16];
         if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
@@ -314,7 +319,7 @@ fn create_root(parent: &Path, parent_handle: &File, prefix: &str, access: u32, s
             root: parent_handle.as_raw_handle(),
             name: &mut unicode,
             attributes: 0x40,
-            descriptor: memory.0,
+            descriptor: security,
             qos: std::ptr::null_mut(),
         };
         let mut status = IoStatus {

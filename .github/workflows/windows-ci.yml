@@ -45,6 +45,11 @@ jobs:
           $build = ./scripts/build-hardened.ps1
           python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
           exit $LASTEXITCODE
+      - name: Check native ZIP creation and real file symbolic links
+        shell: pwsh
+        run: |
+          python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
+          exit $LASTEXITCODE
       - name: Upload validated Windows x64 portable build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

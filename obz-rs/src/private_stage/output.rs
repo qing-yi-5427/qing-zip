@@ -233,6 +233,9 @@ struct RenameInformation {
     name: [u16; 1],
 }
 fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
+    name_by_handle(file,parent,name,replace,10)
+}
+fn name_by_handle(file: &File,parent: &File,name:&[u16],replace:bool,class:u32)->Result<(),String>{
     let offset = std::mem::offset_of!(RenameInformation, name);
     let length = offset + (name.len() + 1) * 2;
     let mut buffer = vec![0usize; length.div_ceil(std::mem::size_of::<usize>())];
@@ -249,7 +252,7 @@ fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(),
             status.as_mut_ptr(),
             raw.cast(),
             length as u32,
-            10,
+            class,
         )
     };
     if result < 0 {
@@ -342,6 +345,20 @@ impl PrivateOutputFile {
             })?;
         self.state = State::Finalized;
         Ok(self.file.take().expect("committed output handle"))
+    }
+    /// The console creates its archive one directory below the requested destination.
+    /// Link the protected, verified file without replacement, then restore permissions
+    /// against that same staging parent before removing its original link.
+    pub(super) fn publish_archive(&mut self,target_parent:&File,name:&OsStr)->Result<(),String>{
+        if self.state!=State::Private { return Err("invalid archive publication state".into()); }
+        let info=info(self.as_file())?;
+        if info[0]&0x410!=0 || info[10]!=1 {return Err("archive staging identity changed".into());}
+        name_by_handle(self.as_file(),target_parent,&leaf(name)?,false,11)?;
+        // abort() removes only the original staging link, including after a
+        // permissions error. Its handle has never named the public target.
+        let restored=self.permissions.as_ref().map_or(Ok(()),|p|apply_native(self.as_file(),p));
+        let removed=self.abort();
+        restored.and(removed).map_err(|e|format!("archive was committed but finalization failed: {e}"))
     }
     pub(crate) fn abort(&mut self) -> Result<(), String> {
         self.abort_with(&mut || Ok(()))
