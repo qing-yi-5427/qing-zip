@@ -24,7 +24,7 @@ USAGE:
   obz preview       <archive> <entry>       (image data URL as JSON)
   obz repair        <broken.zip> <new.zip>  (keeps original)
   obz recover       <archive> --candidates <file> --max-attempts 1000
-  obz checksum      <file> [--hash NAME]     (repeat --hash, or --hash '*')
+  obz checksum      <file...> [--hash NAME]     (repeat --hash, or --hash '*')
   obz checksum-algorithms                   (available hash algorithms)
   obz vault-list | vault-put <id> --label <label> --password-stdin | vault-delete <id>
   obz shell-enable|shell-disable <qing-zip.exe>
@@ -294,6 +294,7 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
         _=>r.path=pos.first().ok_or("archive path required")?.clone(),
     }
     match r.operation.as_str() {
+        "checksum" if pos.len() > 1 => { r.operation = "checksum-files".into(); r.inputs = pos; }
         "extract"|"repair"=>r.dest=pos.get(1).ok_or("destination required")?.clone(),
         "create"|"add"|"delete"|"rename"=>r.inputs=pos.into_iter().skip(1).collect(),
         "preview"=>{r.name=pos.get(1).ok_or("entry name required")?.clone();},

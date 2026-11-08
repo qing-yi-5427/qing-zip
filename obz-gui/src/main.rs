@@ -170,7 +170,7 @@ fn pick_copy_save(path: String) -> String {
 #[tauri::command]
 fn pick_files_for_zip() -> Vec<String> {
     rfd::FileDialog::new()
-        .set_title("选择要打包的文件")
+        .set_title("选择文件")
         .pick_files()
         .map(|v| v.iter().map(|p| p.to_string_lossy().into_owned()).collect())
         .unwrap_or_default()

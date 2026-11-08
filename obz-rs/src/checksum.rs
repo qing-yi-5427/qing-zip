@@ -3,7 +3,7 @@ use crate::engine::{EngineOptions, JobControl};
 use md5::{Digest, Md5};
 use sha1::Sha1;
 use sha2::Sha256;
-use std::{fs::File, io::Read};
+use std::io::Read;
 
 #[derive(Clone, serde::Serialize)]
 pub struct Algorithm {
@@ -39,25 +39,49 @@ pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> 
     if names.is_empty() { return checksum(path, opts); }
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
-    let path_buf = std::path::Path::new(path);
-    crate::engine::no_links(path_buf)?;
-    let absolute = std::fs::canonicalize(path_buf).map_err(|e| e.to_string())?;
-    if absolute.to_string_lossy().contains(['\r', '\n']) { return Err("invalid checksum file path".into()); }
-    let mut open = std::fs::OpenOptions::new();
-    open.read(true);
-    #[cfg(windows)] {
-        use std::os::windows::fs::OpenOptionsExt;
-        open.share_mode(1).custom_flags(0x00200000); // READ sharing; open reparse point itself.
+    let file = HashInput::open(path)?;
+    let chosen = choose_algorithms(names, opts)?;
+    ctl.set("checksum", Some(0), "Calculating file checksums");
+    let mut args = vec!["h".into(), "-sccUTF-8".into(), "-bsp2".into(), "-spd".into()];
+    for a in &chosen { args.push(format!("-scrc{}", a.name)); }
+    args.push("--".into());
+    args.push(file.absolute.clone());
+    let output = crate::engine::run_hash(&args, opts)?;
+    let text = std::str::from_utf8(&output).map_err(|_| "invalid engine checksum output")?;
+    let hashes = parse_hashes(text, &chosen)?;
+    file.verify()?;
+    ctl.check()?;
+    ctl.set("complete", Some(100), "File checksums ready");
+    Ok(serde_json::json!({"path":path,"size":file.before.len(),"hashes":hashes}))
+}
+
+struct HashInput {
+    absolute: String,
+    source: crate::engine_stream::PinnedSource,
+    before: std::fs::Metadata,
+}
+impl HashInput {
+    fn open(path: &str) -> Result<Self, String> {
+        if path.is_empty() || path.contains(['\r','\n','\0']) { return Err("invalid checksum file path".into()); }
+        let path = std::path::absolute(path).map_err(|e| e.to_string())?;
+        let source = crate::engine_stream::pin(&path)?;
+        let before = source.metadata().map_err(|e| e.to_string())?;
+        let absolute = std::fs::canonicalize(path).map_err(|e| e.to_string())?
+            .into_os_string().into_string().map_err(|_| "invalid checksum file path")?;
+        Ok(Self { absolute, source, before })
     }
-    let file = open.open(&absolute).map_err(|e| e.to_string())?;
-    let before = file.metadata().map_err(|e| e.to_string())?;
-    if !before.is_file() { return Err("checksums require a regular file".into()); }
-    #[cfg(windows)] {
-        use std::os::windows::fs::MetadataExt;
-        if before.file_attributes() & 0x400 != 0 { return Err("checksum source is a reparse point".into()); }
+    fn verify(&self) -> Result<(), String> {
+        let after = self.source.metadata().map_err(|e| e.to_string())?;
+        if self.before.len() != after.len() || self.before.modified().ok() != after.modified().ok() {
+            return Err("file changed while calculating checksums".into());
+        }
+        Ok(())
     }
+}
+
+fn choose_algorithms(names: &[String], opts: &EngineOptions) -> Result<Vec<Algorithm>, String> {
     let available = algorithms(opts)?;
-    let chosen = if names.len() == 1 && names[0] == "*" {
+    Ok(if names.len() == 1 && names[0] == "*" {
         available
     } else {
         if names.len() > 128 { return Err("too many checksum algorithms".into()); }
@@ -68,23 +92,11 @@ pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> 
             if !chosen.iter().any(|a| a.name == found.name) { chosen.push(found.clone()); }
         }
         chosen
-    };
-    ctl.set("checksum", Some(0), "Calculating file checksums");
-    let mut args = vec!["h".into(), "-sccUTF-8".into(), "-bsp2".into(), "-spd".into()];
-    for a in &chosen { args.push(format!("-scrc{}", a.name)); }
-    args.push("--".into());
-    args.push(absolute.to_string_lossy().into_owned());
-    let output = crate::engine::run_hash(&args, opts)?;
-    let text = std::str::from_utf8(&output).map_err(|_| "invalid engine checksum output")?;
-    let hashes = parse_hashes(text, &chosen)?;
-    let after = file.metadata().map_err(|e| e.to_string())?;
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err("file changed while calculating checksums".into());
-    }
-    ctl.check()?;
-    ctl.set("complete", Some(100), "File checksums ready");
-    Ok(serde_json::json!({"path":path,"size":before.len(),"hashes":hashes}))
+    })
 }
+
+mod batch;
+pub use batch::checksum_files;
 
 fn parse_hashes(text: &str, chosen: &[Algorithm]) -> Result<std::collections::BTreeMap<String, String>, String> {
     let mut hashes = std::collections::BTreeMap::new();
@@ -105,7 +117,14 @@ fn parse_hashes(text: &str, chosen: &[Algorithm]) -> Result<std::collections::BT
 pub fn checksum(path: &str, opts: &EngineOptions) -> Result<serde_json::Value, String> {
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Restoring the timestamp after a same-size write can defeat metadata checks.
+        open.share_mode(1);
+    }
+    let mut file = open.open(path).map_err(|e| e.to_string())?;
     let before = file.metadata().map_err(|e| e.to_string())?;
     if !before.is_file() {
         return Err("checksums require a regular file".into());
@@ -142,7 +161,7 @@ fn hash_reader(
         Sha256::new(),
         crc32fast::Hasher::new(),
     );
-    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut buffer = vec![0u8; total.clamp(1, 1024 * 1024) as usize];
     let mut size = 0u64;
     loop {
         ctl.check()?;

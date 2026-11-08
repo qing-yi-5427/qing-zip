@@ -184,6 +184,7 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             Ok(json!({"name":r.name,"mime":mime,"data_url": format!("data:{mime};base64,{}", base64(&bytes))}))
         },
         "repair" => Ok(json!(services::repair_zip_with_options(&r.path, &r.dest, r.max_bytes.unwrap_or(512 * 1024 * 1024), r.options.password.as_deref(), r.options.codepage)?)),
+        "checksum-files" => crate::checksum::checksum_files(&r.inputs, &r.hashes, &r.options),
         "checksum" => crate::checksum::checksum_selected(&r.path, &r.hashes, &r.options),
         "checksum-algorithms" => Ok(json!({"algorithms": crate::checksum::algorithms(&r.options)?})),
         "comment-get" => Ok(json!({"comment":crate::archive_comment::get(&r.path)?})),
