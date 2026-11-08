@@ -176,9 +176,17 @@ impl SharedParents {
 mod tests {
     use super::*;
     use std::fs;
+    fn eligible_tempdir() -> tempfile::TempDir {
+        // Hosted Windows uses a short name in TEMP. That input correctly takes
+        // the fallback. Exercise the optimized route in the checkout instead.
+        let workspace = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let plain = workspace.to_str().unwrap().strip_prefix(r"\\?\").unwrap();
+        tempfile::tempdir_in(plain).unwrap()
+    }
+
     #[test]
     fn cached_source_keeps_leaf_and_ancestors_pinned() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = eligible_tempdir();
         let dir = tmp.path().join("folder");
         fs::create_dir(&dir).unwrap();
         let leaf = dir.join("file.txt");
@@ -199,7 +207,7 @@ mod tests {
     }
     #[test]
     fn public_batch_rejects_nested_junction_after_a_cached_sibling() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = eligible_tempdir();
         let good = tmp.path().join("good");
         let outside = tmp.path().join("outside");
         fs::create_dir(&good).unwrap();
@@ -224,7 +232,7 @@ mod tests {
 
     #[test]
     fn public_batch_does_not_publish_partial_results_after_a_leaf_writer_or_cancel() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = eligible_tempdir();
         let file = tmp.path().join("payload");
         let blocked = tmp.path().join("blocked");
         fs::write(&file, vec![0u8; 4 * 1024 * 1024]).unwrap();
@@ -259,7 +267,7 @@ mod tests {
     }
     #[test]
     fn existing_directory_writer_uses_ordinary_pins() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = eligible_tempdir();
         let dir = tmp.path().join("writable");
         fs::create_dir(&dir).unwrap();
         let leaf = dir.join("file");
