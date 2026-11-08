@@ -44,7 +44,11 @@ jobs:
             $bins[$role]=@{cli=$cli[0].FullName;gui=$gui[0].FullName;cli_sha=$cliHash;gui_sha=$guiHash;source=$source;archive_sha=(Get-FileHash $archive).Hash.ToLowerInvariant()}
           }
           $old=Join-Path $env:RUNNER_TEMP 'old.zip'
-          Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.8/qing-zip-0.11.8-portable.zip' -OutFile $old
+          try {
+            Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.8/qing-zip-0.11.8-portable.zip' -MaximumRetryCount 2 -RetryIntervalSec 2 -OutFile $old
+          } catch {
+            Invoke-WebRequest ("https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/assets/723336739?qa="+[Guid]::NewGuid().ToString("N")) -Headers @{Authorization="Bearer $env:GH_TOKEN";Accept='application/octet-stream'} -MaximumRetryCount 3 -RetryIntervalSec 2 -OutFile $old
+          }
           if((Get-FileHash $old).Hash.ToLowerInvariant() -cne 'caca993662690d45cfbf679fff1f5bef50d6f3b21e686d80bfce12f5d7fdabb4'){throw 'Wrong baseline package'}
           Portable 'release' $old 'c17930677e2938f58bfd1bca7dd97313d774db51f6c7c2e926a6716835d9ead0' '319112564bbeb8fbb18f6a9a2f45576dd05d7e215ec4b458250b373f48884ac7' '55f874e52e04067752dc697eb46e0aa8af1a42da'
           if($env:SOURCE_RUN -or $env:SOURCE_SHA) {
@@ -54,7 +58,7 @@ jobs:
             $art=@((gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN/artifacts" | ConvertFrom-Json).artifacts | Where-Object {$_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired})
             if($art.Count -ne 1 -or $art[0].workflow_run.head_sha -cne $env:SOURCE_SHA){throw 'Unexpected official artifact'}
             $z=Join-Path $env:RUNNER_TEMP 'donor.zip'
-            Invoke-WebRequest $art[0].archive_download_url -Headers @{Authorization="Bearer $env:GH_TOKEN"} -OutFile $z
+            Invoke-WebRequest $art[0].archive_download_url -MaximumRetryCount 3 -RetryIntervalSec 2 -Headers @{Authorization="Bearer $env:GH_TOKEN"} -OutFile $z
             if(('sha256:'+(Get-FileHash $z).Hash.ToLowerInvariant()) -cne $art[0].digest){throw 'Artifact digest mismatch'}
             $dir=Join-Path $env:RUNNER_TEMP 'donor';Expand-Archive -LiteralPath $z -DestinationPath $dir
             $build=@(Get-ChildItem $dir -Recurse -Filter 'hardened-build.json')

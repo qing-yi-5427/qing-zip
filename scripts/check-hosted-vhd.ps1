@@ -19,7 +19,7 @@ function Verified-Disk([string]$Operation){
     $disk=$disk[0]
     $reverse=@(Get-DiskImage -DevicePath $image[0].DevicePath)
     if($reverse.Count -ne 1 -or [IO.Path]::GetFullPath($reverse[0].ImagePath) -ine $imageFile -or !$reverse[0].Attached){throw "Reverse backing mismatch before $Operation"}
-    if($disk.Number -in $existing -or $disk.IsBoot -or $disk.IsSystem -or $disk.IsClustered -or ($disk.Size -lt 260046848 -or $disk.Size -gt 268435456) -or $image[0].DevicePath -ine ("\\.\PhysicalDrive"+$disk.Number)){throw "Unsafe target before $Operation"}
+    if($disk.Number -in $existing -or $disk.IsBoot -or $disk.IsSystem -or $disk.IsClustered -or $disk.BusType.ToString() -ne "File Backed Virtual" -or ($disk.Size -lt 260046848 -or $disk.Size -gt 268435456) -or $image[0].DevicePath -ine ("\\.\PhysicalDrive"+$disk.Number)){throw "Unsafe target before $Operation"}
     $receipt.Add([pscustomobject]@{operation=$Operation;image=$imageFile;reverse=$reverse[0].ImagePath;disk=$disk.Number;device=$image[0].DevicePath;bus=$disk.BusType.ToString();size=$disk.Size;was_existing=$false;boot=$disk.IsBoot;system=$disk.IsSystem})
     return $disk
 }
@@ -44,16 +44,26 @@ try {
     Initialize-Disk -Number $disk.Number -PartitionStyle MBR | Out-Null
     $disk=Verified-Disk "partition"
     if($disk.PartitionStyle -ne "MBR" -or $disk.NumberOfPartitions -ne 0){throw "Disk already has a partition"}
-    $part=New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter
+    $occupied=@((Get-Volume).DriveLetter)+@((Get-PSDrive -PSProvider FileSystem).Name)
+    $letter=@([char[]]"RSTUVWXYZ" | Where-Object { $_ -notin $occupied })[0]
+    if(!$letter){throw "No unused drive letter on the isolated runner"}
+    $part=New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter $letter
     $script:partNumber=$part.PartitionNumber
     $script:partOffset=$part.Offset
     $script:partLength=$part.Size
     $part=Verified-Partition "format"
-    $label="QZ"+$nonce.Substring(0,6)
+    $label="QZ"+$nonce.Substring(0,6).ToUpperInvariant()
     Format-Volume -Partition $part -FileSystem $FileSystem -NewFileSystemLabel $label -Confirm:$false | Out-Null
     $part=Verified-Partition "test"
-    $vol=$part | Get-Volume
-    if(!$part.DriveLetter -or $vol.FileSystem -ine $FileSystem -or $vol.FileSystemLabel -cne $label){throw "Formatted volume did not match"}
+    for($i=0;$i -lt 12;$i++){
+        $vol=$part | Get-Volume
+        if($part.DriveLetter -eq $letter -and $vol.FileSystem -ieq $FileSystem -and $vol.FileSystemLabel -ceq $label){break}
+        Start-Sleep -Milliseconds 500
+        $part=Verified-Partition "await volume metadata"
+    }
+    if($part.DriveLetter -ne $letter -or $vol.FileSystem -ine $FileSystem -or $vol.FileSystemLabel -cne $label){
+        throw "Formatted scratch mismatch: drive=$($part.DriveLetter) expected=$letter fs=$($vol.FileSystem) label=$($vol.FileSystemLabel) expected=$label"
+    }
     $again=@(Get-Partition -DriveLetter $part.DriveLetter)
     if($again.Count -ne 1 -or $again[0].DiskNumber -ne $part.DiskNumber -or $again[0].PartitionNumber -ne $part.PartitionNumber){throw "Drive letter does not address the verified image"}
     $path=Join-Path ($part.DriveLetter+":\") ("case-"+$nonce)
@@ -64,6 +74,6 @@ try {
     python -X utf8 -u scripts/check-hosted-fat-archives.py
     if($LASTEXITCODE -ne 0){throw "Compatibility harness failed"}
 } finally {
-    if($mounted){Dismount-DiskImage -ImagePath $imageFile}
+    if($mounted){Dismount-DiskImage -ImagePath $imageFile | Out-Null}
     $receipt | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM (Join-Path 'fat-evidence' ("backing-"+$FileSystem+".json"))
 }
