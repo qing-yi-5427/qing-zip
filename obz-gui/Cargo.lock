@@ -2920,6 +2920,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "tempfile",
+ "webview2-com",
  "windows",
  "windows-core",
 ]

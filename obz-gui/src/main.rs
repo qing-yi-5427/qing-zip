@@ -181,6 +181,28 @@ async fn dropped(path: String) -> Result<ArchiveView, String> {
     open_archive(path).await
 }
 
+fn update_memory_target(window: &tauri::Window, last: &std::sync::atomic::AtomicBool) {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows_core::Interface;
+
+    let Ok(minimized) = window.is_minimized() else { return };
+    if last.swap(minimized, Ordering::Relaxed) == minimized { return; }
+    if let Some(view) = window.get_webview_window(window.label()) {
+        let _ = view.with_webview(move |webview| unsafe {
+            // Older runtimes keep their default memory policy.
+            if let Ok(core) = webview.controller().CoreWebView2().and_then(|core| core.cast::<ICoreWebView2_19>()) {
+                let target = if minimized { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+                let _ = core.SetMemoryUsageTargetLevel(target);
+            }
+        });
+    }
+}
+
 fn main() {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let early_action = if matches!(args.as_slice(), [arg] if arg == "--unregister-owned-associations") {
@@ -198,9 +220,13 @@ fn main() {
         return;
     }
     instance::queue_startup();
+    let main_minimized = std::sync::atomic::AtomicBool::new(false);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(instance::receive))
-        .on_window_event(|window,event|{
+        .on_window_event(move |window,event|{
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Resized(_)) {
+                update_memory_target(window, &main_minimized);
+            }
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
                 if window.label()=="main" && jobs::running(){
                     use tauri::Emitter;
