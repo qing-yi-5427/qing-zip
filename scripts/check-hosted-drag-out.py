@@ -19,7 +19,7 @@ from win32com.client import Dispatch
 
 result=Path('drag-evidence');result.mkdir()
 exe=next((Path(os.environ['RUNNER_TEMP'])/'qing-trial').rglob('qing-zip.exe'))
-assert hashlib.sha256(exe.read_bytes()).hexdigest()=='319112564bbeb8fbb18f6a9a2f45576dd05d7e215ec4b458250b373f48884ac7'
+assert hashlib.sha256(exe.read_bytes()).hexdigest()==os.environ['QING_FIXTURE_SHA256']
 report={'binary':hashlib.sha256(exe.read_bytes()).hexdigest()}
 def wait(fn,why,seconds=30):
     end=time.monotonic()+seconds
