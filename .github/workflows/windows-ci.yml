@@ -17,6 +17,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+      - name: Download the temporary read-only QA asset
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        env:
+          PORTABLE_URL: ${{ secrets.QING_FIXTURE_PORTABLE_42458558617 }}
+        run: |
+          New-Item dist -ItemType Directory -Force | Out-Null
+          curl.exe -fLsS -o dist/qing-zip-0.11.7-portable.zip $env:PORTABLE_URL
+          exit $LASTEXITCODE
       - shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -29,8 +38,6 @@ jobs:
           if('${{ matrix.arch }}' -eq 'x64'){
             $packageHash='c420e655f8436751f62e39a38e8e57979f00e080714baef5e16ec8dfab406cc7'
             $guiHash='a04fda1b8665339e93b4863614d64393c8cff21c6529987bc45cf7c0ffbfcb76'
-            New-Item dist -ItemType Directory -Force | Out-Null
-            curl.exe -fLsS -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/octet-stream" -o dist/qing-zip-0.11.7-portable.zip https://api.github.com/repos/qing-yi-5427/qing-zip/releases/assets/723225099
           }else{
             $packageHash='d525bc824db465f32684fc20ec3e36a47eedf65d98b70de8de45f55ac9d3efe8'
             $guiHash='11a948ed3ba4bc3a4dbadd8b9de44244b15a32fe08b826f63bcb14fc97029d33'
