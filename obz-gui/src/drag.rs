@@ -78,9 +78,16 @@ impl Preparation {
         {
             return Ok(false);
         }
-        // A shell extension may keep the data object even after DoDragDrop returns.
-        self.directory.retain_for_shell();
         Ok(true)
+    }
+
+    fn complete_handoff(&self, result: HRESULT) {
+        // The active preparation keeps the files alive throughout DoDragDrop.
+        // A cancelled drag has no recipient. Other outcomes can still have
+        // asynchronous readers and must retain the export for those readers.
+        if result != DRAGDROP_S_CANCEL {
+            self.directory.retain_for_shell();
+        }
     }
 }
 fn active(token: &str) -> Option<Arc<Preparation>> {
@@ -239,6 +246,7 @@ fn native_drag(p: &Preparation) -> Result<bool, String> {
             return Ok(false);
         }
         let hr = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+        p.complete_handoff(hr);
         hr.ok().map_err(|e| e.to_string())?;
         Ok(hr == DRAGDROP_S_DROP && effect.0 & DROPEFFECT_COPY.0 != 0)
     }
@@ -333,6 +341,7 @@ mod tests {
         assert_eq!(wait_job(second)["status"], "complete");
         let handed = PathBuf::from(&p.paths[0]);
         assert!(p.handoff(true).unwrap());
+        p.complete_handoff(DRAGDROP_S_DROP);
         cancel_drag_preparation(token.into());
         assert!(!p.control.cancelled.load(Ordering::Acquire));
         remove(token);
@@ -341,6 +350,21 @@ mod tests {
         fs::remove_file(&handed).unwrap();
         fs::remove_dir(handed.parent().unwrap()).unwrap();
         crate::jobs::forget_operation(second).unwrap();
+
+        let shell_cancel = start_with_input(token.into(), request(), || true).unwrap();
+        let p = active(token).unwrap();
+        assert_eq!(wait_job(shell_cancel)["status"], "complete");
+        let cancelled_directory = p.directory.path().to_owned();
+        assert!(p.handoff(true).unwrap());
+        p.complete_handoff(DRAGDROP_S_CANCEL);
+        remove(token);
+        drop(p);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while cancelled_directory.exists() {
+            assert!(std::time::Instant::now() < deadline, "cancelled OLE drag retained its files");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        crate::jobs::forget_operation(shell_cancel).unwrap();
 
         // Substitute only the physical input sample. The job registry,
         // actual archive engine, cancellation flag and cleanup all run normally.
