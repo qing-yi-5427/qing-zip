@@ -118,6 +118,11 @@ pub fn apply_to_file(file: &File, zone: Option<&ZoneIdentifier>) -> Result<(), S
 }
 
 #[cfg(windows)]
+pub(crate) fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
+    windows::read_zone(file).map(|value| value.map(|marker| marker.bytes))
+}
+
+#[cfg(windows)]
 mod windows {
     use super::*;
     use std::{
@@ -303,7 +308,7 @@ mod windows {
         zone._source = Some(Arc::new(file));
         Ok(zone)
     }
-    fn read_zone(file: &File) -> Result<Option<ZoneIdentifier>, String> {
+    pub(super) fn read_zone(file: &File) -> Result<Option<ZoneIdentifier>, String> {
         if !named_streams(&file)? {
             return Ok(None);
         }
