@@ -71,8 +71,42 @@ pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,
     if crate::korean::is_supported(path){crate::korean::preview(path,name,opts)}else if crate::legacy::is_supported(path){crate::legacy::preview(path,name,opts)}else{engine::preview(path,name,opts)}
 }
 
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum OperationResponse {
+    Listing {
+        #[serde(serialize_with = "serialize_listing_entries")]
+        entries: Vec<engine::Entry>,
+    },
+    Json(Value),
+}
+
+fn serialize_listing_entries<S: serde::Serializer>(entries: &[engine::Entry], serializer: S) -> Result<S::Ok, S::Error> {
+    // The public CLI and desktop wire format formerly serialized Value maps
+    // in lexical key order. Keep that order while borrowing each entry.
+    #[derive(Serialize)]
+    struct Row<'a> {
+        attributes: &'a str, comment: &'a str, crc: &'a str, encrypted: bool,
+        is_dir: bool, method: &'a str, modified: &'a str, name: &'a str,
+        packed_size: u64, size: u64, size_known: bool,
+    }
+    serializer.collect_seq(entries.iter().map(|entry| {
+        let engine::Entry { attributes, comment, crc, encrypted, is_dir, method, modified, name, packed_size, size, size_known } = entry;
+        Row { attributes, comment, crc, encrypted: *encrypted, is_dir: *is_dir, method,
+              modified, name, packed_size: *packed_size, size: *size, size_known: *size_known }
+    }))
+}
+
+/// Compatibility entry point for callers that inspect or mutate the JSON tree.
+pub fn execute(r: Request) -> Result<Value, String> {
+    match execute_request(r)? {
+        OperationResponse::Listing { entries } => Ok(json!({ "entries": entries })),
+        OperationResponse::Json(value) => Ok(value),
+    }
+}
+
 /// No shell commands or arbitrary application execution are accepted here.
-pub fn execute(mut r: Request) -> Result<Value, String> {
+pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     let archive_operation = matches!(r.operation.as_str(), "capabilities" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
@@ -80,6 +114,13 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
         if r.options.password.is_some() { return Err("choose password or password_id, not both".into()); }
         r.options.password = Some(services::Vault::open(vault_path()?)?.get(id)?);
     }
+    if r.operation == "list" {
+        return Ok(OperationResponse::Listing { entries: list_archive(&r.path, &r.options)? });
+    }
+    execute_json(r, restricted).map(OperationResponse::Json)
+}
+
+fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
     match r.operation.as_str() {
         "capabilities" => {
             if restricted {
@@ -102,7 +143,6 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
             caps.limitations.push("Not all historical format variants are covered; ZIP repair is bounded salvage, not guaranteed full recovery".into());
             Ok(json!({"engine":caps,"services":["zip_repair","password_vault","candidate_and_charset_recovery","image_preview","file_checksums","shell_menu"],"schema_version":1}))
         },
-        "list" => Ok(json!({"entries": list_archive(&r.path, &r.options)?})),
         "test" => { test_archive(&r.path, &r.options)?; Ok(json!({"valid":true})) },
         "extract" => {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
@@ -225,6 +265,20 @@ fn base64(data: &[u8]) -> String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]
+    fn listing_response_matches_legacy_json_including_key_order() {
+        let entry = engine::Entry {
+            name: "目录/file".into(), size: u64::MAX, size_known: false, packed_size: 11,
+            is_dir: false, crc: "ABCD".into(), encrypted: true, modified: "2026-01-01".into(),
+            method: "LZMA2".into(), comment: "quote \" slashes \\ line\n".into(), attributes: "R".into(),
+        };
+        for entries in [Vec::new(), vec![entry]] {
+            let legacy = json!({ "entries": &entries });
+            let response = OperationResponse::Listing { entries };
+            assert_eq!(serde_json::to_vec_pretty(&response).unwrap(), serde_json::to_vec_pretty(&legacy).unwrap());
+            assert_eq!(serde_json::to_vec(&response).unwrap(), serde_json::to_vec(&legacy).unwrap());
+        }
+    }
     #[test] fn base64_padding() { assert_eq!(base64(b"f"), "Zg=="); assert_eq!(base64(b"fo"), "Zm8="); assert_eq!(base64(b"foo"), "Zm9v"); }
     #[test] fn preview_rejects_active_content() { assert!(image_type(b"<svg onload=alert(1)>").is_none()); assert!(image_type(b"<html>").is_none()); }
 }

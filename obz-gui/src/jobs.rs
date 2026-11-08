@@ -1,13 +1,13 @@
-use obz_core::{engine::{JobControl, Progress}, operations::{self, Request}};
+use obz_core::{engine::{JobControl, Progress}, operations::{self, OperationResponse, Request}};
 use serde::Serialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}}};
 use std::{io::{Read, Seek, SeekFrom}, fs::File, process::{Command, Stdio}, time::{Duration, Instant}};
 
 struct Job { control: JobControl, state: Mutex<JobState>, finished: std::sync::Condvar }
-struct JobState { status: String, result: Option<Arc<Value>>, error: Option<String> }
+struct JobState { status: String, result: Option<Arc<OperationResponse>>, error: Option<String> }
 #[derive(Serialize)]
-pub struct Snapshot { id: u64, status: String, progress: Progress, result: Option<Arc<Value>>, error: Option<String> }
+pub struct Snapshot { id: u64, status: String, progress: Progress, result: Option<Arc<OperationResponse>>, error: Option<String> }
 static JOBS: OnceLock<Mutex<BTreeMap<u64, Arc<Job>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 fn registry() -> &'static Mutex<BTreeMap<u64, Arc<Job>>> { JOBS.get_or_init(Default::default) }
@@ -134,8 +134,8 @@ fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -
     }
     Ok(())
 }
-fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<Value,String> {
-    if !recycle_after {return operations::execute(request);}
+fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
+    if !recycle_after {return operations::execute_request(request);}
     validate_recycle_request(&request)?;check_cancel(control)?;
     if let Some(id)=request.password_id.take() {
         if request.options.password.is_some(){return Err("choose password or password_id, not both".into());}
@@ -153,7 +153,7 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
     })();
     result["recycled"]=Value::Bool(recycle.is_ok());
     if let Err(error)=recycle {result["recycle_error"]=Value::String(error);}
-    Ok(result)
+    Ok(OperationResponse::Json(result))
 }
 
 #[tauri::command]
@@ -231,13 +231,33 @@ pub fn forget_operation(id:u64)->Result<(),String>{
 #[cfg(test)] mod tests {
     use super::*;
     #[test]
+    fn real_listing_job_serializes_the_shared_entries_in_each_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("example.zip").display().to_string();
+        let input = root.path().join("note.txt");
+        std::fs::write(&input, b"contents").unwrap();
+        obz_core::engine::create(&archive, &[input.display().to_string()], "zip", &Default::default()).unwrap();
+        let request = || Request { operation: "list".into(), path: archive.clone(), ..Default::default() };
+        let expected = operations::execute(request()).unwrap();
+        let id = start_operation(request(), None).unwrap();
+        let job = registry().lock().unwrap().get(&id).cloned().unwrap();
+        let first = wait_snapshot(&job, id, Duration::from_secs(30)).unwrap();
+        assert_eq!(first.status, "complete", "{:?}", first.error);
+        assert!(matches!(first.result.as_deref(), Some(OperationResponse::Listing { entries }) if entries.len() == 1));
+        let second = operation_status(id).unwrap();
+        assert!(Arc::ptr_eq(first.result.as_ref().unwrap(), second.result.as_ref().unwrap()));
+        forget_operation(id).unwrap();
+        assert_eq!(serde_json::to_vec(&first.result).unwrap(), serde_json::to_vec(&expected).unwrap());
+        assert_eq!(serde_json::to_vec(&second.result).unwrap(), serde_json::to_vec(&expected).unwrap());
+    }
+    #[test]
     fn completion_wait_handles_finished_and_inflight_jobs_without_lost_wakeup() {
         let job=Arc::new(Job{control:JobControl::new(),state:Mutex::new(JobState{status:"running".into(),result:None,error:None}),finished:std::sync::Condvar::new()});
         assert_eq!(wait_snapshot(&job,1,Duration::from_millis(1)).unwrap().status,"running");
         let worker=job.clone();
         let thread=std::thread::spawn(move||{
             std::thread::sleep(Duration::from_millis(20));
-            let mut state=worker.state.lock().unwrap();state.status="complete".into();state.result=Some(Arc::new(serde_json::json!({"valid":true})));
+            let mut state=worker.state.lock().unwrap();state.status="complete".into();state.result=Some(Arc::new(OperationResponse::Json(serde_json::json!({"valid":true}))));
             worker.finished.notify_all();
         });
         let start=Instant::now();

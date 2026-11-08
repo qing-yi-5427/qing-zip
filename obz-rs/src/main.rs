@@ -231,9 +231,15 @@ fn cmd_json(args: &[String]) -> Result<(), String> {
     let text = if let Some(path) = args.first() { fs::read_to_string(path).map_err(|e|e.to_string())? }
         else { let mut s=String::new(); std::io::stdin().take(16*1024*1024).read_to_string(&mut s).map_err(|e|e.to_string())?; s };
     let request = serde_json::from_str(&text).map_err(|e|format!("invalid request: {e}"))?;
-    let result = operations::execute(request)?;
-    println!("{}", serde_json::to_string_pretty(&result).map_err(|e|e.to_string())?);
-    Ok(())
+    print_operation(request)
+}
+
+fn print_operation(request: operations::Request) -> Result<(), String> {
+    use std::io::{BufWriter, Write};
+    let response = operations::execute_request(request)?;
+    let mut out = BufWriter::with_capacity(64 * 1024, std::io::stdout().lock());
+    serde_json::to_writer_pretty(&mut out, &response).map_err(|e| e.to_string())?;
+    out.write_all(b"\n").and_then(|_| out.flush()).map_err(|e| e.to_string())
 }
 
 fn cmd_operation(args: &[String]) -> Result<(), String> {
@@ -289,7 +295,5 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
         "preview"=>{r.name=pos.get(1).ok_or("entry name required")?.clone();},
         _=>{},
     }
-    let result=operations::execute(r)?;
-    println!("{}",serde_json::to_string_pretty(&result).map_err(|e|e.to_string())?);
-    Ok(())
+    print_operation(r)
 }
