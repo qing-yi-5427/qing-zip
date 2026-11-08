@@ -54,10 +54,14 @@ try{
   if($LASTEXITCODE -ne 0 -or $evidence.real_primary_pid -ne $ApplicationPid -or $evidence.invoked_for_files -ne 2){throw 'Shell invocation failed'}
   $dialog=Wait-Value 'creation dialog' {Find-Elem '新建压缩文件'}
   $dialogName=$dialog.Current.Name
-  $dialogCondition=[System.Windows.Automation.PropertyCondition]::new($automation::ControlTypeProperty,[System.Windows.Automation.ControlType]::Window)
-  $dialogs=$script:root.FindAll($scope,$dialogCondition)
-  if($dialogs.Count -ne 1){throw "Expected one live modal dialog; got $($dialogs.Count)"}
-  $modal=$dialogs.Item(0)
+  $modal=Wait-Value 'named modal containing the selected items' {
+    $elements=$script:root.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+    $script:dialogs=@(foreach($e in $elements){
+      if($e.Current.ControlType.ProgrammaticName -eq 'ControlType.Window' -and $e.Current.Name -eq $dialogName){$e}
+    })
+    if($script:dialogs.Count -gt 1){throw "Multiple live creation dialogs"}
+    if($script:dialogs.Count -eq 1){$script:dialogs[0]}
+  }
   $count=Wait-Value '2 sources' { Find-Elem '2 个来源' }
   $rows=@(foreach($path in @($First,$Second)){
     $item=Wait-Value "source $path" {Find-Elem $path 'Name' $modal}
