@@ -36,8 +36,17 @@ extern "system" {
     ) -> i32;
 }
 
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
+fn wide_name(path: &Path) -> io::Result<Vec<u16>> {
+    // ReplaceFileW does not automatically extend long Win32 paths like std::fs.
+    // Resolve the pinned parent only; never follow a replaceable leaf link.
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("missing replacement parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("missing replacement filename"))?;
+    let absolute = parent.canonicalize()?.join(name);
+    Ok(absolute.as_os_str().encode_wide().chain(Some(0)).collect())
 }
 
 #[derive(PartialEq, Eq)]
@@ -101,7 +110,11 @@ fn pin_directory(path: &Path) -> Result<File, String> {
 }
 
 fn atomic_replace(target: &Path, replacement: &Path, backup: &Path) -> io::Result<()> {
-    let (target, replacement, backup) = (wide(target), wide(replacement), wide(backup));
+    let (target, replacement, backup) = (
+        wide_name(target)?,
+        wide_name(replacement)?,
+        wide_name(backup)?,
+    );
     if unsafe {
         ReplaceFileW(
             target.as_ptr(),
@@ -310,6 +323,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"proposal");
+    }
+
+    #[test]
+    fn cancelling_live_direct_edit_keeps_archive_and_alternate_streams() {
+        use std::{
+            io::Write,
+            time::{Duration, Instant},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cancel.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("keep.bin", options).unwrap();
+        let data = vec![b'x'; 1024 * 1024];
+        for _ in 0..64 {
+            writer.write_all(&data).unwrap();
+        }
+        writer.start_file("old.txt", options).unwrap();
+        writer.write_all(b"keep old spelling").unwrap();
+        drop(writer.finish().unwrap());
+        let mark = PathBuf::from(format!("{}:Zone.Identifier", path.display()));
+        fs::write(&mark, b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+        let original_id = id(&File::open(&path).unwrap()).unwrap();
+        let ctl = super::super::JobControl::new();
+        std::thread::scope(|scope| {
+            let job = scope.spawn(|| {
+                super::super::update_with_control(
+                    path.to_str().unwrap(),
+                    "rename",
+                    &["old.txt".into(), "new.txt".into()],
+                    &Default::default(),
+                    &ctl,
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while ctl.progress.lock().unwrap().phase != "updating" {
+                assert!(
+                    Instant::now() < deadline && !job.is_finished(),
+                    "did not observe an in-flight native edit"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ctl.cancel();
+            assert!(job.join().unwrap().is_err());
+        });
+        assert!(id(&File::open(&path).unwrap()).unwrap() == original_id);
+        let mut archive = zip::ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 2);
+        assert!(archive.by_name("old.txt").is_ok());
+        assert!(archive.by_name("new.txt").is_err());
+        assert_eq!(fs::read(mark).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]
