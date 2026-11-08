@@ -18,7 +18,7 @@ inline const wchar_t* argument(Action action) {
 inline bool archive_path(const std::wstring& value) {
     auto ext = std::filesystem::path(value).extension().wstring();
     for (auto& ch : ext) { ch = static_cast<wchar_t>(towlower(ch)); }
-    for (const auto* supported : {L".zip", L".7z", L".rar", L".zipx", L".tar", L".gz", L".bz2", L".xz", L".tgz", L".tbz", L".tbz2", L".txz", L".iso", L".cab", L".wim", L".lzh", L".lha", L".ace", L".egg", L".alz", L".zst", L".asar", L".br", L".lz4", L".aes", L".lz", L".uu", L".uue", L".xxe", L".pma", L".zpaq", L".daa", L".isz", L".001", L".gzip", L".bzip2"}) {
+    for (const auto* supported : {L".zip", L".7z", L".rar", L".zipx", L".tar", L".gz", L".bz2", L".xz", L".tgz", L".tbz", L".tbz2", L".txz", L".iso", L".cab", L".wim", L".lzh", L".lha", L".ace", L".egg", L".alz", L".zst", L".asar", L".br", L".brotli", L".lz4", L".lz5", L".liz", L".lizard", L".zstd", L".aes", L".lz", L".uu", L".uue", L".xxe", L".pma", L".zpaq", L".daa", L".isz", L".wasm", L".romfs", L".ufs", L".ufs2", L".zealfs", L".001", L".gzip", L".bzip2"}) {
         if (ext == supported) { return true; }
     }
     return false;

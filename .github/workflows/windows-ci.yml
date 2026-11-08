@@ -29,6 +29,9 @@ jobs:
           $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | ForEach-Object FullName)
           node --test @frontendTests
           exit $LASTEXITCODE
+      - name: Explorer argument, COM and filesystem selection tests
+        shell: pwsh
+        run: ./scripts/msix/Build-Component.ps1 -Architecture x64
       - name: Public core tests (no external proprietary reference executable)
         shell: pwsh
         run: |

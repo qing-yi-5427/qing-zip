@@ -23,6 +23,10 @@ int wmain(int argc, wchar_t** argv) {
         assert(!qing::supported_path(rejected));
     }
     assert(qing::archive_path(L"C:\\a.ZIP"));
+    for (const auto* ext : {L".brotli", L".lz5", L".liz", L".lizard", L".ZSTD",
+                            L".wasm", L".romfs", L".ufs", L".ufs2", L".zealfs"}) {
+        assert(qing::archive_path(std::wstring(L"C:\\sample") + ext));
+    }
     assert(qing::archive_path(L"C:\\archive.7z.001"));
     assert(!qing::archive_path(L"C:\\archive.7z.002"));
     assert(!qing::archive_path(L"C:\\image.png"));
