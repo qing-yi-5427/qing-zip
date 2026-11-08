@@ -123,6 +123,9 @@ pub(crate) fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(windows)]
+pub(crate) use windows::named_streams;
+
+#[cfg(windows)]
 mod windows {
     use super::*;
     use std::{
@@ -215,7 +218,7 @@ mod windows {
             io::Error::last_os_error()
         )
     }
-    fn named_streams(file: &File) -> Result<bool, String> {
+    pub(crate) fn named_streams(file: &File) -> Result<bool, String> {
         let mut flags = 0;
         if unsafe {
             GetVolumeInformationByHandleW(
