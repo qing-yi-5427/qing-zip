@@ -10,6 +10,18 @@ on:
         description: Successful official x64 build for candidate, empty for baseline-only
         required: false
         type: string
+      asset:
+        description: Exact x64 release draft asset ID, tested with read-only short-lived grant
+        type: string
+      package_sha:
+        description: SHA256 of the exact draft portable
+        type: string
+      cli_sha:
+        description: SHA256 of the installed CLI
+        type: string
+      gui_sha:
+        description: SHA256 of the installed GUI
+        type: string
 permissions:
   actions: read
   contents: read
@@ -31,6 +43,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           SOURCE_RUN: ${{ inputs.source_run }}
+          ASSET_ID: ${{ inputs.asset }}
+          PORTABLE_SHA: ${{ inputs.package_sha }}
+          CLI_SHA: ${{ inputs.cli_sha }}
+          GUI_SHA: ${{ inputs.gui_sha }}
+          QA_URL: ${{ inputs.asset != '' && secrets.QING_QA_0119_X64_PORTABLE_URL || '' }}
         run: |
           $ErrorActionPreference='Stop'
           New-Item -ItemType Directory fat-evidence | Out-Null
@@ -55,18 +72,29 @@ jobs:
             if($env:SOURCE_RUN -cnotmatch '^[0-9]+$' -or $env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$'){throw 'Invalid source binding'}
             $official=gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
             if($official.head_sha -cne $env:SOURCE_SHA -or $official.conclusion -ne 'success' -or $official.path -ne '.github/workflows/windows-ci.yml'){throw 'Unverified build'}
-            $art=@((gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN/artifacts" | ConvertFrom-Json).artifacts | Where-Object {$_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired})
-            if($art.Count -ne 1 -or $art[0].workflow_run.head_sha -cne $env:SOURCE_SHA){throw 'Unexpected official artifact'}
-            $z=Join-Path $env:RUNNER_TEMP 'donor.zip'
-            Invoke-WebRequest $art[0].archive_download_url -MaximumRetryCount 3 -RetryIntervalSec 2 -Headers @{Authorization="Bearer $env:GH_TOKEN"} -OutFile $z
-            if(('sha256:'+(Get-FileHash $z).Hash.ToLowerInvariant()) -cne $art[0].digest){throw 'Artifact digest mismatch'}
-            $dir=Join-Path $env:RUNNER_TEMP 'donor';Expand-Archive -LiteralPath $z -DestinationPath $dir
-            $build=@(Get-ChildItem $dir -Recurse -Filter 'hardened-build.json')
-            $portable=@(Get-ChildItem $dir -Recurse -File -Filter '*-portable.zip')
-            if($build.Count -ne 1 -or $portable.Count -ne 1){throw 'Unexpected artifact layout'}
-            $rec=Get-Content -Raw $build[0].FullName | ConvertFrom-Json
-            if($rec.target -cne 'x86_64-pc-windows-msvc'){throw 'Wrong target'}
-            Portable 'candidate' $portable[0].FullName ($rec.binaries|Where-Object name -eq 'obz.exe').sha256 ($rec.binaries|Where-Object name -eq 'obz-gui.exe').sha256 $env:SOURCE_SHA
+            if($env:ASSET_ID) {
+              if($env:ASSET_ID -cnotmatch '^[0-9]+$' -or $env:PORTABLE_SHA -cnotmatch '^[a-f0-9]{64}$' -or $env:GUI_SHA -cnotmatch '^[a-f0-9]{64}$' -or $env:CLI_SHA -cnotmatch '^[a-f0-9]{64}$'){throw 'Invalid draft digest'}
+              try {$url=[uri]$env:QA_URL} catch {throw 'Invalid temporary asset location'}
+              if($url.Scheme -cne 'https' -or $url.Host -notin 'release-assets.githubusercontent.com','objects.githubusercontent.com'){throw 'Invalid asset origin'}
+              $portable=Join-Path $env:RUNNER_TEMP 'actual-release.zip'
+              try {Invoke-WebRequest -Uri $url -OutFile $portable} catch {throw 'Could not download the granted release asset'}
+              if((Get-FileHash $portable).Hash.ToLowerInvariant() -cne $env:PORTABLE_SHA){throw 'Wrong release digest'}
+              Portable 'candidate' $portable $env:CLI_SHA $env:GUI_SHA $env:SOURCE_SHA
+              $bins['candidate']['asset_id']=$env:ASSET_ID
+            } else {
+              $art=@((gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN/artifacts" | ConvertFrom-Json).artifacts | Where-Object {$_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired})
+              if($art.Count -ne 1 -or $art[0].workflow_run.head_sha -cne $env:SOURCE_SHA){throw 'Unexpected official artifact'}
+              $z=Join-Path $env:RUNNER_TEMP 'donor.zip'
+              Invoke-WebRequest $art[0].archive_download_url -MaximumRetryCount 3 -RetryIntervalSec 2 -Headers @{Authorization="Bearer $env:GH_TOKEN"} -OutFile $z
+              if(('sha256:'+(Get-FileHash $z).Hash.ToLowerInvariant()) -cne $art[0].digest){throw 'Artifact digest mismatch'}
+              $dir=Join-Path $env:RUNNER_TEMP 'donor';Expand-Archive -LiteralPath $z -DestinationPath $dir
+              $build=@(Get-ChildItem $dir -Recurse -Filter 'hardened-build.json')
+              $portable=@(Get-ChildItem $dir -Recurse -File -Filter '*-portable.zip')
+              if($build.Count -ne 1 -or $portable.Count -ne 1){throw 'Unexpected artifact layout'}
+              $rec=Get-Content -Raw $build[0].FullName | ConvertFrom-Json
+              if($rec.target -cne 'x86_64-pc-windows-msvc'){throw 'Wrong target'}
+              Portable 'candidate' $portable[0].FullName ($rec.binaries|Where-Object name -eq 'obz.exe').sha256 ($rec.binaries|Where-Object name -eq 'obz-gui.exe').sha256 $env:SOURCE_SHA
+            }
           }
           $bins | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM fat-evidence/tools.json
           python -m pip install pywinauto==0.6.9

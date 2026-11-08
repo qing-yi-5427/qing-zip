@@ -19,7 +19,7 @@ function Verified-Disk([string]$Operation){
     $disk=$disk[0]
     $reverse=@(Get-DiskImage -DevicePath $image[0].DevicePath)
     if($reverse.Count -ne 1 -or [IO.Path]::GetFullPath($reverse[0].ImagePath) -ine $imageFile -or !$reverse[0].Attached){throw "Reverse backing mismatch before $Operation"}
-    if($disk.Number -in $existing -or $disk.IsBoot -or $disk.IsSystem -or $disk.IsClustered -or $disk.BusType.ToString() -ne "File Backed Virtual" -or ($disk.Size -lt 260046848 -or $disk.Size -gt 268435456) -or $image[0].DevicePath -ine ("\\.\PhysicalDrive"+$disk.Number)){throw "Unsafe target before $Operation"}
+    if($disk.Number -in $existing -or $disk.IsBoot -or $disk.IsSystem -or $disk.IsClustered -or $disk.BusType.ToString() -ne "File Backed Virtual" -or ($disk.Size -lt 2139095040 -or $disk.Size -gt 2147483648) -or $image[0].DevicePath -ine ("\\.\PhysicalDrive"+$disk.Number)){throw "Unsafe target before $Operation"}
     $receipt.Add([pscustomobject]@{operation=$Operation;image=$imageFile;reverse=$reverse[0].ImagePath;disk=$disk.Number;device=$image[0].DevicePath;bus=$disk.BusType.ToString();size=$disk.Size;was_existing=$false;boot=$disk.IsBoot;system=$disk.IsSystem})
     return $disk
 }
@@ -32,7 +32,7 @@ function Verified-Partition([string]$operation){
 # DiskPart receives only a CREATE VDISK instruction naming a new file. It never
 # receives a physical disk selector, partition, format, clean or remove command.
 $create=Join-Path $dir 'create.txt'
-[IO.File]::WriteAllText($create,("create vdisk file=`""+$imageFile+"`" maximum=256 type=expandable"+[Environment]::NewLine+"exit"+[Environment]::NewLine),[Text.Encoding]::ASCII)
+[IO.File]::WriteAllText($create,("create vdisk file=`""+$imageFile+"`" maximum=2048 type=expandable"+[Environment]::NewLine+"exit"+[Environment]::NewLine),[Text.Encoding]::ASCII)
 $mounted=$false
 try {
     & diskpart.exe /s $create
@@ -73,6 +73,11 @@ try {
     $env:QING_VHD_LABEL=$label
     python -X utf8 -u scripts/check-hosted-fat-archives.py
     if($LASTEXITCODE -ne 0){throw "Compatibility harness failed"}
+    $tools=Get-Content -Raw fat-evidence/tools.json | ConvertFrom-Json
+    if($tools.candidate.asset_id){
+        python -X utf8 -u scripts/check-archive-edit-contention.py $tools.candidate.cli --root $path --kill --output (Join-Path "fat-evidence" ("contention-"+$FileSystem+".json"))
+        if($LASTEXITCODE -ne 0){throw "Archive edit contention or forced termination failed"}
+    }
 } finally {
     if($mounted){Dismount-DiskImage -ImagePath $imageFile | Out-Null}
     $receipt | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM (Join-Path 'fat-evidence' ("backing-"+$FileSystem+".json"))
