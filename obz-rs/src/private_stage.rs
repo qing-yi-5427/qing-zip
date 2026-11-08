@@ -18,6 +18,9 @@ mod witnessed;
 #[cfg(target_pointer_width = "64")]
 pub(crate) use witnessed::WitnessedInheritance;
 mod output;
+mod output_receipt;
+pub(crate) use output_receipt::{directory_stamp,OutputReceipt};
+
 mod archive_output;
 pub(crate) use archive_output::ArchiveOutput;
 pub(crate) use output::{create_output, PrivateOutputFile};
@@ -367,6 +370,9 @@ pub(crate) fn create_child_file(parent: &File, leaf: &OsStr) -> Result<File, Str
 }
 
 /// FILE_CREATE yields an identity handle only for a directory created by this call.
+pub(crate) fn create_journal_directory(parent:&File,leaf:&OsStr)->Result<File,String>{
+    open_private_child(parent,leaf,ChildAccess::CreateJournalDirectory)
+}
 pub(crate) fn create_output_directory(parent: &File, leaf: &OsStr) -> Result<File, String> {
     open_private_child(parent, leaf, ChildAccess::CreateDirectory)
 }
@@ -385,6 +391,7 @@ enum ChildAccess {
     Metadata,
     CreateFile,
     CreateDirectory,
+    CreateJournalDirectory,
     #[cfg(target_pointer_width = "64")]
     Witness(bool),
 }
@@ -428,6 +435,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         // cannot be opened or truncated.
         ChildAccess::CreateFile => (0x100182, 0x80, 1, 2, 0x200060, "create private stage file"),
         ChildAccess::OpenDirectory => (0x100081, 0, 3, 1, 0x200021, "pin output directory"),
+        ChildAccess::CreateJournalDirectory => (0x120180, 0, 7, 2, 0x200021, "create journaled output directory"),
         ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),
     };
     let result = unsafe {
@@ -1113,7 +1121,7 @@ mod tests {
 }
 
 #[cfg(target_pointer_width = "64")]
-pub(crate) use file_publication::{publish_verified_file, supports_file_publication, FilePublication};
+pub(crate) use file_publication::{publish_verified_file_journaled,publish_verified_file, supports_file_publication, FilePublication};
 
 #[cfg(all(test, target_pointer_width = "64"))]
 pub(crate) fn ordinary_file_publication_test_parent(parent: &File) {
@@ -1216,6 +1224,10 @@ mod file_publication {
             && ntfs(parent))
     }
 
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileTime(file: Handle, created: *const u64, accessed: *const u64, modified: *const u64) -> i32;
+    }
     fn open_source(parent: &File, mut name: Vec<u16>) -> Result<File, String> {
         let mut unicode = UnicodeString {
             length: (name.len() * 2) as u16,
@@ -1245,7 +1257,7 @@ mod file_publication {
                 &mut status,
                 std::ptr::null(),
                 0,
-                1,
+                0,
                 1,
                 0x200060,
                 std::ptr::null_mut(),
@@ -1258,7 +1270,13 @@ mod file_publication {
                 io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) } as i32)
             ));
         }
-        Ok(unsafe { File::from_raw_handle(handle) })
+        let file = unsafe { File::from_raw_handle(handle) };
+        // BackupRead verifies Zone.Identifier. Keep NTFS from materializing
+        // that validation as a new last-access timestamp when this handle closes.
+        if unsafe { SetFileTime(handle, std::ptr::null(), &u64::MAX, std::ptr::null()) } == 0 {
+            return Err(error("retain verified file access time"));
+        }
+        Ok(file)
     }
 
     fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
@@ -1322,10 +1340,26 @@ mod file_publication {
         modified: SystemTime,
         readonly: bool,
         replace: bool,
+        check_cancel: impl FnMut() -> Result<(), String>,
+    ) -> Result<FilePublication, String> {
+        publish_verified_file_journaled(source_parent,source_leaf,target_parent,target_leaf,size,modified,readonly,replace,None,check_cancel)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_verified_file_journaled(
+        source_parent: &File,
+        source_leaf: &OsStr,
+        target_parent: &File,
+        target_leaf: &OsStr,
+        size: u64,
+        modified: SystemTime,
+        readonly: bool,
+        replace: bool,
+        journal: Option<&crate::engine::PublicationJournal>,
         mut check_cancel: impl FnMut() -> Result<(), String>,
     ) -> Result<FilePublication, String> {
         publish_with(source_parent, source_leaf, target_parent, target_leaf,
-            size, modified, readonly, replace, &mut check_cancel, &mut |_| Ok(()))
+            size, modified, readonly, replace, journal, &mut check_cancel, &mut |_| Ok(()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1338,6 +1372,7 @@ mod file_publication {
         modified: SystemTime,
         readonly: bool,
         replace: bool,
+        journal: Option<&crate::engine::PublicationJournal>,
         check_cancel: &mut dyn FnMut() -> Result<(), String>,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
     ) -> Result<FilePublication, String> {
@@ -1354,7 +1389,7 @@ mod file_publication {
         {
             return Ok(FilePublication::Unavailable);
         }
-        let file = match open_source(source_parent, source_name) {
+        let file = match open_source(source_parent, source_name.clone()) {
             Ok(file) => file,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
@@ -1382,20 +1417,92 @@ mod file_publication {
             Ok(value) => value,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
-        let committed_path = PathBuf::from(pinned_path(target_parent)?)
-            .join(target_leaf).display().to_string();
+        let path = PathBuf::from(pinned_path(target_parent)?).join(target_leaf);
+        // Eligibility only; the final handle-relative rename still enforces
+        // collision and replacement semantics against concurrent changes.
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if !replace || meta.is_dir() || meta.permissions().readonly()
+                || meta.file_type().is_symlink() => return Ok(FilePublication::Unavailable),
+            Err(e) if e.kind()!=io::ErrorKind::NotFound => return Ok(FilePublication::Unavailable),
+            _ => {}
+        }
+        let private = descriptor(&file)?;
+        let original_flags = if output::control(private.0)? & 0x1000 != 0 { 0x80000000 } else { 0x20000000 };
+        let marker = output::output_marker(&file)?;
+        let access_time = u64::from(source_info[3]) | (u64::from(source_info[4]) << 32);
+        let committed = output::metadata_handle(&file, 5)?;
+        let name = output::private_name()?;
+        let scratch = leaf(OsStr::new(&name))?;
         check_cancel()?;
-        // Permissions are unchanged on every precommit failure, including a
-        // collision or unsupported native rename. Copy fallback is safe here.
-        if step(Step::BeforeCommit).and_then(|_| rename(&file, target_parent, &target_name, replace)).is_err() {
+        if step(Step::BeforeCommit).is_err() { return Ok(FilePublication::Unavailable); }
+        // First cross directories with a protected private DACL. The final
+        // inheritance is applied only after the file is in its *actual*
+        // destination parent, so changes there can reach the prepared file
+        // even between the final validation and the no-replace rename.
+        let set_original = |flags: u32| -> Result<(),String> {
+            let status=unsafe { NtSetSecurityObject(file.as_raw_handle(),4 | flags,private.0) };
+            if status<0 {return Err("could not restore staged file permissions".into());}
+            Ok(())
+        };
+        set_original(0x80000000)?;
+        if rename(&file, target_parent, &scratch, false).is_err() {
+            set_original(original_flags)?;
             return Ok(FilePublication::Unavailable);
         }
-        // Commit has happened. Finish permissions even if cancellation arrives
-        // now; an error retains the committed target and MUST NOT be a fallback.
-        step(Step::AfterCommit).and_then(|_| step(Step::ApplyTarget))
-            .and_then(|_| apply_compatible(&file, &permissions))
-            .map_err(|error| format!("verified file was committed but permission restoration failed: {committed_path}: {error}"))?;
-        Ok(FilePublication::Committed(file))
+        let mut pending = None;
+        let transition = (|| -> Result<Result<(),String>,String> {
+            let current = descriptor(target_parent)?;
+            if !supports_descriptor(current.0)? || !output::same_file_permissions(permissions.0, derive(current.0, false, &token()?)?.0)? {
+                return Err("destination permissions changed; verified file was not published".into());
+            }
+            step(Step::ApplyTarget)?;
+            apply_native(&file, &permissions)?;
+            let fresh=descriptor(target_parent)?;
+            if !supports_descriptor(fresh.0)? || !output::same_file_permissions(permissions.0, derive(fresh.0, false, &token()?)?.0)? {
+                return Err("destination permissions changed; verified file was not published".into());
+            }
+            if info(&file)?[10] != 1 || output::output_marker(&file)? != marker {
+                return Err("verified file links or streams changed".into());
+            }
+            pending=journal.map(|_|OutputReceipt::capture(&path,&file)).transpose()?;
+            if unsafe { SetFileTime(file.as_raw_handle(), std::ptr::null(), &access_time, std::ptr::null()) } == 0 {
+                return Err(error("restore verified file access time"));
+            }
+            check_cancel()?;
+            Ok(rename(&file, target_parent, &target_name, replace))
+        })();
+        if !matches!(transition, Ok(Ok(()))) {
+            let reason = match &transition {Err(e)|Ok(Err(e))=>e.as_str(),_=>unreachable!()};
+            // No final name exists. Reprotect before moving back, restore the
+            // exact previous source policy in its own parent, and never replace
+            // an unexpected entry. Recovery failure is a hard error.
+            set_original(0x80000000)?;
+            if let Err(restore) = rename(&file, source_parent, &source_name, false) {
+                // The strongly pinned stage parent may reject a move back.
+                // Discard only our known private derivative by its handle.
+                // The archive and any competing destination remain untouched.
+                let scratch_path = path.with_file_name(&name);
+                output::discard_private_handle(&file,&scratch_path)?;
+                return Err(format!("verified file was not published: {reason}; private parked copy discarded: {restore}"));
+            }
+            set_original(original_flags)?;
+            if unsafe { SetFileTime(file.as_raw_handle(), std::ptr::null(), &access_time, std::ptr::null()) } == 0 {
+                return Err(error("restore staged file access time"));
+            }
+            if let Err(error)=transition {return Err(error);}
+            return Ok(FilePublication::Unavailable);
+        }
+        if let (Some(journal),Some(receipt))=(journal,pending) {
+            journal.record(receipt);
+            step(Step::AfterCommit).map_err(|e|format!("verified file was committed: {}: {e}",path.display()))?;
+            return Ok(FilePublication::Committed(committed));
+        }
+        drop(file);
+        step(Step::AfterCommit).map_err(|e|format!("verified file was committed: {}: {e}",path.display()))?;
+        // Reopen by the retained identity, never by the public name, to carry
+        // the original sharing contract until the caller releases its handle.
+        let final_pin=output::reopen(&committed,0x20081,1).map_err(|e|format!("verified file was committed: {}: {e}",path.display()))?;
+        Ok(FilePublication::Committed(final_pin))
     }
     #[cfg(test)]
     mod tests {
@@ -1573,6 +1680,7 @@ mod file_publication {
                     self.modified,
                     self.readonly,
                     replace,
+                    None,
                     cancel,
                     step,
                 )
@@ -1621,7 +1729,6 @@ mod file_publication {
         fn file_publication_retains_strong_pins_identity_acl_ads_and_exact_metadata() {
             for readonly in [false, true] {
                 let f = Fixture::new(readonly);
-                let reader = File::open(&f.source).unwrap();
                 let super::super::FilePublication::Committed(file) = super::super::publish_verified_file(
                     &f.pins[2], OsStr::new("source.bin"), &f.pins[4], OsStr::new("target.bin"),
                     14, f.modified, f.readonly, false, || Ok(())
@@ -1652,7 +1759,6 @@ mod file_publication {
                     .is_err());
                 f.archive_intact();
                 drop(file);
-                drop(reader);
             }
         }
 
@@ -1704,19 +1810,22 @@ mod file_publication {
                 let f = Fixture::new(readonly); let mut events = Vec::new();
                 let FilePublication::Committed(file) = f.run(false, &mut || Ok(()), &mut |step| {
                     events.push(step);
-                    let path = if step == Step::BeforeCommit { &f.source } else { &f.target };
-                    let actual = security(&open(path, 0x20080, 7));
-                    if step == Step::BeforeCommit {
-                        assert_eq!(actual, f.original_security, "precommit descriptor must remain byte-exact");
-                        assert!(!f.target.exists());
-                    } else {
-                        assert_eq!(actual, expected_private_descriptor_after_rename(f.original_security.clone()),
-                            "rename must retain private access, including all streams, until permission finalization");
-                        assert!(!f.source.exists());
+                    match step {
+                        Step::BeforeCommit => {
+                            assert_eq!(security(&open(&f.source,0x20080,7)),f.original_security);
+                            assert!(!f.target.exists());
+                        }
+                        Step::ApplyTarget => {
+                            assert!(!f.source.exists() && !f.target.exists());
+                            let scratch = fs::read_dir(f.target.parent().unwrap()).unwrap()
+                                .map(|e|e.unwrap().path()).find(|p|p.file_name().unwrap().to_string_lossy().starts_with(".qing-zip-output-")).unwrap();
+                            assert!(File::open(scratch).is_err());
+                        }
+                        Step::AfterCommit => assert_eq!(security(&open(&f.target,0x20080,7)),f.expected_security),
                     }
                     Ok(())
                 }).unwrap() else { panic!("must commit"); };
-                assert_eq!(events, [Step::BeforeCommit, Step::AfterCommit, Step::ApplyTarget]);
+                assert_eq!(events, [Step::BeforeCommit, Step::ApplyTarget, Step::AfterCommit]);
                 assert_eq!(security(&file), f.expected_security);
                 assert_eq!(file.metadata().unwrap().modified().unwrap(), f.modified);
                 assert_eq!(fs::read(format!("{}:Zone.Identifier", f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
@@ -1734,13 +1843,18 @@ mod file_publication {
                     if step == failure { Err("injected postcommit permission failure".into()) } else { Ok(()) }
                 });
                 let message = match result { Err(message) => message, _ => panic!("must report committed failure") };
-                assert!(message.contains("was committed but permission restoration failed"));
-                assert!(message.contains("target.bin"));
-                assert!(!f.source.exists()); assert!(f.target.exists());
-                assert_eq!(fs::read(&f.target).unwrap(), b"verified bytes");
-                assert_eq!(security(&open(&f.target, 0x20080, 7)), expected_private_descriptor_after_rename(f.original_security.clone()));
-                assert_eq!(fs::metadata(&f.target).unwrap().modified().unwrap(), f.modified);
-                assert_eq!(fs::read(format!("{}:Zone.Identifier", f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+                if failure==Step::AfterCommit {
+                    assert!(message.contains("was committed"));
+                    assert!(message.contains("target.bin"));
+                    assert!(!f.source.exists());
+                    assert_eq!(fs::read(&f.target).unwrap(), b"verified bytes");
+                    assert_eq!(security(&open(&f.target,0x20080,7)),f.expected_security);
+                    assert_eq!(fs::metadata(&f.target).unwrap().modified().unwrap(), f.modified);
+                    assert_eq!(fs::read(format!("{}:Zone.Identifier", f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+                } else if replace {
+                    assert_eq!(fs::read(&f.target).unwrap(), b"old output must not be restored after commit");
+                } else { assert!(!f.target.exists()); }
+                assert!(!fs::read_dir(f.target.parent().unwrap()).unwrap().any(|e|e.unwrap().file_name().to_string_lossy().starts_with(".qing-zip-output-")));
                 f.archive_intact();
               }
             }
