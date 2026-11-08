@@ -119,3 +119,13 @@ test('Backspace on an archive row returns to its parent and respects active dial
  f.context.overlay.hidden=false;f.state.folder='nested/';f.press(0,'Backspace');
  assert.deepEqual(f.calls,['up']);
 });
+
+test('name mask selection treats punctuation literally and matches the entire leaf name',()=>{
+ const {context}=fixture();
+ for(const [mask,name,want] of [
+  ['*','',true],['?','',false],['','a',false],['*.TXT','archive.txt',true],
+  ['*.txt','file.txt.bak',false],['*.*','README',false],['a?c','abc',true],
+  ['*ab?c*xy','00ab00ab1c2xy',true],['**a**?','a',false],['a[1].*','a[1].md',true],
+  ['a[1].*','a1.md',false],['*.zip','archive.ZIP',true],['*ss','x\u00df',false]
+ ])assert.equal(context.nameMask(mask)(name),want,JSON.stringify([mask,name]));
+});
