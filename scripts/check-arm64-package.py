@@ -315,8 +315,11 @@ def main():
         assert inst.is_dir() and Path(key(arp,'InstallLocation')).resolve()==inst.resolve()
         uninstall=inst/'Uninstall.exe'
         assert machine(uninstall)==0x14c and (shortcuts/'qing-zip.lnk').is_file()
-        assert shortcut_target(shortcuts/'qing-zip.lnk').samefile(inst/'qing-zip.exe')
-        assert shortcut_target(shortcuts/'卸载.lnk').samefile(uninstall)
+        for name, expected in [('qing-zip.lnk', inst/'qing-zip.exe'), ('卸载.lnk', uninstall)]:
+            link = shortcuts/name
+            assert link.is_file(), (name, sorted(x.name for x in shortcuts.iterdir()), str(inst))
+            actual = shortcut_target(link)
+            assert actual.is_file() and actual.samefile(expected), (name, str(actual), str(expected), link.stat().st_size)
         installed=files(inst);del installed['Uninstall.exe'];assert installed==exported
         report['installed']=exercise(inst,tmp/'installed-test')
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
