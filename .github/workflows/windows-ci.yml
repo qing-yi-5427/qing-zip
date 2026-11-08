@@ -1,62 +1,56 @@
-name: Windows regression
-on:
-  push:
-    branches: [main, codex/nanazip-parity]
-  pull_request:
-  workflow_dispatch:
+﻿name: Hosted x64 desktop comparison
+on: workflow_dispatch
 permissions:
   contents: read
+  actions: read
 jobs:
-  public-regressions:
-    runs-on: windows-latest
-    timeout-minutes: 35
+  desktop:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Obtain exact hardened qing-zip 0.11.6 build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $run = 42451348904
+          gh run watch $run --exit-status --interval 30
+          if ($LASTEXITCODE) { throw 'Integration build failed' }
+          $ci = gh run view $run --json headSha,conclusion,url | ConvertFrom-Json
+          if ($ci.headSha -ne '50b97362b800ef8e69a9c082a3d4bd87ff3e036f') { throw 'Wrong integration source' }
+          gh run download $run --name qing-zip-windows-x64-trial --dir incoming
+          if ($LASTEXITCODE) { throw 'Missing packaged application' }
+          $portable = @(Get-ChildItem incoming -Recurse -Filter '*0.11.6*portable.zip')
+          if ($portable.Count -ne 1) { throw 'Expected one 0.11.6 portable distribution' }
+          Expand-Archive -LiteralPath $portable[0].FullName -DestinationPath qing
+          New-Item -ItemType Directory results
+          $ci | ConvertTo-Json | Set-Content results/qing-source.json
+      - name: Register official NanaZip stable MSIX and open both file managers
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = "$env:RUNNER_TEMP\NanaZip_7.0.1882.0.msixbundle"
+          gh release download 7.0.1882.0 --repo M2Team/NanaZip --pattern 'NanaZip_7.0.1882.0.msixbundle' --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -or (Get-FileHash $pkg).Hash -ne 'c32c33e5a59a0d02db89f1e85889f942cd7b22ad81110289214187c20e2b6168') { throw 'Wrong official MSIX' }
+          Get-AuthenticodeSignature $pkg | Format-List Status,StatusMessage | Out-File results/package-signature.txt
+          Get-Process -Id $PID | Format-List SessionId,Path | Out-File results/desktop-session.txt
+          qwinsta | Out-File results/desktop-session.txt -Append
+          Add-AppxPackage -Path $pkg
+          $installed = @(Get-AppxPackage | Where-Object { $_.Name -like '*NanaZip*' -and $_.Version -eq '7.0.1882.0' })
+          if ($installed.Count -ne 1) { throw 'Wrong registered package' }
+          $installed[0] | Select-Object Name,Version,Architecture,PackageFullName,SignatureKind | ConvertTo-Json | Set-Content results/nana-source.json
+          $nana = Join-Path $installed[0].InstallLocation 'NanaZip.Modern.FileManager.exe'
+          $qing = @(Get-ChildItem qing -Filter qing-zip.exe -File -Recurse)
+          python -m pip install psutil==6.1.1 pywinauto==0.6.9 Pillow==11.3.0
+          if ($LASTEXITCODE) { throw 'Desktop probes unavailable' }
+          python scripts/compare-hosted-desktops.py $qing[0].FullName $nana results
+          exit $LASTEXITCODE
+      - name: Save observed desktop evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          python-version: '3.12'
-      - name: Runtime provenance and frontend syntax
-        shell: pwsh
-        run: |
-          python scripts/verify-runtime.py
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/app.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/tools.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/compression-options.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | ForEach-Object FullName)
-          node --test @frontendTests
-          exit $LASTEXITCODE
-      - name: Explorer argument, COM and filesystem selection tests
-        shell: pwsh
-        run: ./scripts/msix/Build-Component.ps1 -Architecture x64
-      - name: Public core tests (no external proprietary reference executable)
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams --test verified_zip_create
-          exit $LASTEXITCODE
-      - name: Desktop regression and embedded frontend build
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path obz-gui/Cargo.toml
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $build = ./scripts/build-hardened.ps1
-          python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
-          exit $LASTEXITCODE
-      - name: Check native ZIP creation and real file symbolic links
-        shell: pwsh
-        run: |
-          python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
-          exit $LASTEXITCODE
-      - name: Upload validated Windows x64 portable build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: qing-zip-windows-x64-trial
-          if-no-files-found: error
-          retention-days: 21
-          path: |
-            dist/x64/*-portable.zip
-            target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
-            target/hardened/x86_64-pc-windows-msvc/release/pe-security.json
+          name: hosted-file-manager-comparison
+          path: results
+          if-no-files-found: warn
