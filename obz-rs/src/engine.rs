@@ -3093,6 +3093,9 @@ impl ShellDragDirectory {
     pub fn retain_for_shell(&self) {
         self.retained.store(true, Ordering::Release);
     }
+    pub fn shell_read_finished(&self) {
+        self.retained.store(false, Ordering::Release);
+    }
     pub fn pin_for_read(&self) -> Result<File, String> {
         use std::os::windows::fs::OpenOptionsExt;
         let pin = File::options().access_mode(0x81).share_mode(1)
