@@ -72,7 +72,8 @@ for role,tool in tools.items():
             with zipfile.ZipFile(arc,"w",compression=zipfile.ZIP_DEFLATED) as zipped:
                 for n,v in data.items():zipped.writestr(n,v)
         before=digest(arc.read_bytes()) if arc.exists() else None
-        row={"role":role,"op":op,"filesystem":fs}
+        row={"role":role,"op":op,"filesystem":fs,"before_sha":before,
+             "before_ino":arc.stat().st_ino if arc.exists() else None}
         try:
             expected=dict(data)
             if op in ("add","create"):
@@ -105,7 +106,21 @@ for role,tool in tools.items():
                     if op=="comment-set" and row["ok"]:
                         c=request("comment-get",arc)
                         row["ok"]=c.returncode==0 and json.loads(c.stdout)["comment"]=="comment on "+fs
-            row["source_unchanged"]=before==digest(arc.read_bytes()) if before and arc.exists() else None
+            row["after_sha"]=digest(arc.read_bytes()) if arc.exists() else None
+            row["after_ino"]=arc.stat().st_ino if arc.exists() else None
+            row["source_unchanged"]=before==row["after_sha"] if before else None
+            if op in ("add","delete","rename","comment-set") and arc.is_file():
+                row["requested_members_present"]=members(arc)==expected
+                with zipfile.ZipFile(arc) as check:
+                    row["requested_comment_present"]=(check.comment.decode("utf8","replace")=="comment on "+fs) if op=="comment-set" else None
+                backups=[]
+                for file in work.rglob("*"):
+                    if file.is_file() and any(parent.name.startswith(".qing-zip-stage-") for parent in file.parents):
+                        blob=file.read_bytes()
+                        backups.append({"path":file.relative_to(work).as_posix(),"sha":digest(blob),
+                                        "equals_original":digest(blob)==before,"equals_destination":digest(blob)==row["after_sha"],
+                                        "length":len(blob),"file_ino":file.stat().st_ino})
+                row["recovery_files"]=backups
             if (not row["ok"] or op.startswith("extract") or op.startswith("save-as")) and before:assert row["source_unchanged"],"Unexpected source mutation"
         except Exception as e: row.update(ok=False,probe_error=repr(e))
         all_rows.append(row)
