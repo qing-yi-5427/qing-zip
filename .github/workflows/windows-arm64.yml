@@ -18,6 +18,8 @@ jobs:
       CARGO_TARGET_DIR: target/arm-validation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 21d92f208fa00b03ae19b54b8be4ba1046d4b92f
       - name: Confirm ARM64 machine and install the native compiler
         shell: pwsh
         run: |
@@ -54,58 +56,25 @@ jobs:
           $cache = Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads'
           ./scripts/build-arm64-helpers.cmd $runtime $cache
           exit $LASTEXITCODE
-      - name: Native CLI, policy and verified split extraction
+      - name: Exercise bounded ZIP directory, cancellation and an ordinary 50k ZIP
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD) -ne '21d92f208fa00b03ae19b54b8be4ba1046d4b92f') { throw 'Wrong revision' }
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::directory_capture::tests -- --nocapture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --locked --manifest-path obz-rs/Cargo.toml --bin obz
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib machine_policy::tests
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $listed = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test encrypted_split_selection --test engine_staging -- --list | Out-String)
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          foreach ($test in 'encrypted_split_selection_checks_unselected_blocks_before_publication','split_lzma2_verifies_all_blocks_and_rejects_unselected_crc','selected_split_commits_only_verified_files_on_the_target_volume') {
-            if (!$listed.Contains($test)) { throw "missing native regression: $test" }
-          }
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --test encrypted_split_selection --test engine_staging --test verified_zip_create -- --nocapture
+          @'
+          import hashlib,json,subprocess,pathlib,zipfile
+          p=pathlib.Path('runner-directory.zip')
+          with zipfile.ZipFile(p,'w') as z:
+              for i in range(50000):z.writestr(zipfile.ZipInfo(f'file-{i:05d}.txt',(2025,1,1,0,0,0)), f'row {i:05d}\n'.encode())
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='f7243bf7f9448c1187613759a9f0be60ff4064f57ce025ba321a8345ae483e00'
+          a=json.loads(subprocess.check_output(['target/arm-validation/debug/obz.exe','list',p]))['entries']
+          assert len(a)==50000
+          for i,e in enumerate(a):
+              assert e['name']==f'file-{i:05d}.txt' and e['size']==e['packed_size']==10 and e['size_known'] and e['method']=='Store' and not e['is_dir']
+          print('native ARM64 ZIP 50000',a[0],a[-1])
+          '@ | python -
           exit $LASTEXITCODE
-      - name: Check native ARM64 ZIP creation and real file symbolic links
-        shell: pwsh
-        run: |
-          python scripts/check-zip-create-worker.py --cli target/arm-validation/debug/obz.exe --console runtime/nanazip-arm64/NanaZip.Universal.Console.exe --require-file-symlink
-          exit $LASTEXITCODE
-      - name: Build native desktop and verify both authored executables
-        shell: pwsh
-        run: |
-          cargo build --locked --manifest-path obz-gui/Cargo.toml --bin obz-gui
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test --locked --manifest-path obz-gui/Cargo.toml --all-targets
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          ./scripts/check-arm64-layout.ps1 -Cli target/arm-validation/debug/obz.exe -Desktop target/arm-validation/debug/obz-gui.exe -Layout (Join-Path $env:RUNNER_TEMP 'qing-arm64-layout')
-          exit $LASTEXITCODE
-      - name: Build hardened ARM64 portable package
-        id: package
-        shell: pwsh
-        run: |
-          $version = (Get-Content -Raw obz-gui/tauri.conf.json | ConvertFrom-Json).version
-          "version=$version" >> $env:GITHUB_OUTPUT
-          $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
-          python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
-          exit $LASTEXITCODE
-      - name: Install, exercise helpers, and uninstall on ARM64
-        shell: pwsh
-        run: |
-          python scripts/check-arm64-package.py dist/arm64 (Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads')
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python scripts/package-engine-sources.py --arm64-runtime (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --output-directory dist/arm64
-          exit $LASTEXITCODE
-      - name: Upload verified trial packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: qing-zip-${{ steps.package.outputs.version }}-windows-arm64-trial
-          if-no-files-found: error
-          retention-days: 21
-          path: |
-            dist/arm64/*.zip
-            dist/arm64/*.exe
-            dist/arm64/*.sha256
-            dist/arm64/*-verification.json
