@@ -75,8 +75,10 @@ try {
     if($LASTEXITCODE -ne 0){throw "Compatibility harness failed"}
     $tools=Get-Content -Raw fat-evidence/tools.json | ConvertFrom-Json
     if($tools.candidate.asset_id -or ($tools.candidate -and $env:QING_FAT_CONTENTION -eq 'true')){
+        python -X utf8 -u scripts/check-hosted-fat-cancel.py
+        $cancelResult=$LASTEXITCODE
         python -X utf8 -u scripts/check-archive-edit-contention.py $tools.candidate.cli --root $path --kill --output (Join-Path "fat-evidence" ("contention-"+$FileSystem+".json"))
-        if($LASTEXITCODE -ne 0){throw "Archive edit contention or forced termination failed"}
+        if($LASTEXITCODE -ne 0 -or $cancelResult -ne 0){throw "Cancellation, archive contention or forced termination failed"}
     }
 } finally {
     if($mounted){Dismount-DiskImage -ImagePath $imageFile | Out-Null}

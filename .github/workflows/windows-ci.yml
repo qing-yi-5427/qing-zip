@@ -101,7 +101,7 @@ jobs:
             }
           }
           $bins | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM fat-evidence/tools.json
-          python -m pip install pywinauto==0.6.9
+          python -m pip install pywinauto==0.6.9 websockets==15.0.1
       - name: Create uniquely backed image, revalidate device and exercise real archive operations
         shell: pwsh
         env:
