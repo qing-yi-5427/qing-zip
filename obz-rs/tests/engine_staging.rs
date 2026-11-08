@@ -641,8 +641,15 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
         zip.write_all(b"owned contents").unwrap();
     }
     drop(zip.finish().unwrap());
+    // TAR never qualifies for native ZIP/7z same-volume staging.
+    let fallback=temp.path().join("fallback.tar");
+    let fixture=temp.path().join("tar-input");
+    zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap().extract(&fixture).unwrap();
+    let inputs=["annotation", "attrs", "data"].map(|name|p(&fixture.join(name)));
+    engine::create(&p(&fallback),&inputs,"tar",&EngineOptions::default()).unwrap();
+    for (route,archive) in [("ordinary",&archive),("fallback",&fallback)] {
     for foreign in [false,true] {
-        let dest=temp.path().join(if foreign {"with-added-data"} else {"clean"});
+        let dest=temp.path().join(format!("{route}-{foreign}"));
         let ctl=engine::JobControl::new();
         let worker=ctl.clone();
         let a=archive.clone();let target=dest.clone();
@@ -677,5 +684,6 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
             assert_eq!(fs::read(format!("{}:foreign-note",leaf.display())).unwrap(),b"user annotation");
             assert_eq!(fs::read_dir(dest.join("data")).unwrap().count(),1);
         } else {assert!(!dest.exists(),"{error}");}
+    }
     }
 }
