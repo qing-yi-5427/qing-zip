@@ -78,6 +78,41 @@ def check_runner_associations(fixture):
         winreg.DeleteValue(h,name)
     return {'owned_values_removed':len(entries),'other_candidate_preserved':True}
 
+def shortcut_target(link):
+    env=dict(os.environ,QING_CI_SHORTCUT=str(link))
+    command="[Console]::OutputEncoding=[Text.Encoding]::UTF8; (New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT).TargetPath"
+    return Path(subprocess.check_output(['powershell','-NoProfile','-Command',command],env=env).decode('utf8').strip())
+
+def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp):
+    # Only the disposable native runner may create test shortcuts on its Desktop.
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+        return None
+    desktop = Path(run(['powershell','-NoProfile','-Command',
+                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;[Environment]::GetFolderPath('DesktopDirectory')"]).stdout.decode('utf8').strip())
+    desktop_link = desktop/'qing-zip-arm64.lnk'
+    start = shortcuts/'qing-zip.lnk'
+    uninstall_link = shortcuts/'卸载.lnk'
+    assert desktop.is_dir() and not shortcuts.exists() and not desktop_link.exists()
+    shortcuts.mkdir()
+    def create_link(path, arguments):
+        env=dict(os.environ,QING_CI_SHORTCUT=str(path),QING_CI_TARGET=str(portable),QING_CI_ARGUMENTS=arguments)
+        command="$link=(New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT);$link.TargetPath=$env:QING_CI_TARGET;$link.Arguments=$env:QING_CI_ARGUMENTS;$link.Save()"
+        subprocess.run(['powershell','-NoProfile','-Command',command],check=True,env=env)
+        return sha(path)
+    before = {start:create_link(start,'--user-start'), desktop_link:create_link(desktop_link,'--user-desktop')}
+    run([setup,'/S'])
+    assert all(sha(path)==digest for path,digest in before.items()) and uninstall_link.is_file()
+    before[uninstall_link]=create_link(uninstall_link,'--portable-takeover')
+    run([installed/'Uninstall.exe','/S'])
+    until=time.monotonic()+90
+    while time.monotonic()<until and key(arp,'InstallLocation') is not None:time.sleep(.2)
+    assert key(arp,'InstallLocation') is None
+    for path,digest in before.items():
+        assert sha(path)==digest, f'Uninstall altered user shortcut {path.name}'
+        path.unlink()
+    shortcuts.rmdir()
+    return {'preexisting_start_preserved':True,'unselected_desktop_preserved':True,'reassigned_uninstall_preserved':True}
+
 def smoke_desktop(application, archive, scratch):
     """Observe the trial app starting its own WebView2 process. No UI injection."""
     from ctypes import wintypes as w
@@ -217,6 +252,8 @@ def main():
         assert inst.is_dir() and Path(key(arp,'InstallLocation')).resolve()==inst.resolve()
         uninstall=inst/'Uninstall.exe'
         assert machine(uninstall)==0x14c and (shortcuts/'qing-zip.lnk').is_file()
+        assert shortcut_target(shortcuts/'qing-zip.lnk').samefile(inst/'qing-zip.exe')
+        assert shortcut_target(shortcuts/'卸载.lnk').samefile(uninstall)
         installed=files(inst);del installed['Uninstall.exe'];assert installed==exported
         report['installed']=exercise(inst,tmp/'installed-test')
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
@@ -233,6 +270,7 @@ def main():
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
         if assoc_fixture:
             report['uninstall']['file_associations']=check_runner_associations(assoc_fixture)
+            report['uninstall']['foreign_shortcuts']=verify_foreign_shortcuts(setup,inst,shortcuts,tmp/'portable/qing-zip.exe',arp)
     report['assets']={}
     for p in [setup,portable]:
         digest=sha(p)

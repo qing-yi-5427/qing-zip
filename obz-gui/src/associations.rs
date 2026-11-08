@@ -1,5 +1,6 @@
 //! Per-user candidate registration. Windows owns the final default selection.
 //! Never writes Explorer FileExts/UserChoice or any extension's default value.
+pub(crate) mod shortcuts;
 use serde::Serialize;
 use std::{collections::BTreeSet, path::Path, sync::Mutex};
 use windows::{core::PCWSTR, Win32::{
@@ -343,9 +344,9 @@ pub fn open_default_apps()->Result<(),String>{
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64,Ordering};
-    struct TestRegistry(Registry);
+    pub(super) struct TestRegistry(pub(super) Registry);
     impl TestRegistry {
-        fn new()->Self{static NEXT:AtomicU64=AtomicU64::new(0);Self(Registry{prefix:format!(r"Software\OpenArchiveTests\Associations-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed))})}
+        pub(super) fn new()->Self{static NEXT:AtomicU64=AtomicU64::new(0);Self(Registry{prefix:format!(r"Software\OpenArchiveTests\Associations-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed))})}
     }
     impl Drop for TestRegistry{fn drop(&mut self){let key=wide(&self.0.prefix).unwrap();unsafe{let _=RegDeleteTreeW(HKEY_CURRENT_USER,PCWSTR(key.as_ptr()));}}}
     #[test]fn invalid_extensions_and_unquoted_paths_are_rejected(){

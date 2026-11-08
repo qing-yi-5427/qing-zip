@@ -68,14 +68,23 @@ Function un.onInit
  SetShellVarContext current
  SetRegView 64
 FunctionEnd
+!macro InstallShortcut SLOT TARGET
+ InitPluginsDir
+ CreateShortCut "$PLUGINSDIR\${SLOT}.lnk" "${TARGET}"
+ ExecWait '$\"$INSTDIR\qing-zip.exe$\" --install-owned-shortcut ${SLOT} $\"$PLUGINSDIR\${SLOT}.lnk$\"' $0
+ ${If} ${Errors}
+ ${OrIf} $0 != 0
+  DetailPrint "无法创建快捷方式：${SLOT}"
+ ${EndIf}
+!macroend
 Section "qing-zip（必需）" Main
  SectionIn RO
  SetOutPath "$INSTDIR"
  File /r "${STAGING}\*"
  WriteUninstaller "$INSTDIR\Uninstall.exe"
  CreateDirectory "$SMPROGRAMS\${PRODUCT_KEY}"
- CreateShortcut "$SMPROGRAMS\${PRODUCT_KEY}\qing-zip.lnk" "$INSTDIR\qing-zip.exe"
- CreateShortcut "$SMPROGRAMS\${PRODUCT_KEY}\卸载.lnk" "$INSTDIR\Uninstall.exe"
+ !insertmacro InstallShortcut start "$INSTDIR\qing-zip.exe"
+ !insertmacro InstallShortcut uninstall "$INSTDIR\Uninstall.exe"
  WriteRegStr HKCU "Software\${PRODUCT_KEY}\Installer" "InstallDir" "$INSTDIR"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayName" "${PRODUCT_LABEL}"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayVersion" "${VERSION}"
@@ -88,7 +97,7 @@ Section "qing-zip（必需）" Main
  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "NoRepair" 1
 SectionEnd
 Section /o "桌面快捷方式" Desktop
- CreateShortcut "$DESKTOP\${PRODUCT_KEY}.lnk" "$INSTDIR\qing-zip.exe"
+ !insertmacro InstallShortcut desktop "$INSTDIR\qing-zip.exe"
 SectionEnd
 Section /o "资源管理器右键入口" Shell
  nsExec::ExecToLog '$\"$INSTDIR\obz.exe$\" shell-enable $\"$INSTDIR\qing-zip.exe$\"'
@@ -121,14 +130,28 @@ Section "Uninstall"
  ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" --compress-folder $\"%1$\"'
   DeleteRegKey HKCU "Software\Classes\Directory\shell\qing-zip-compress"
  ${EndIf}
+ IfFileExists "$INSTDIR\qing-zip.exe" 0 shortcuts_done
+ ClearErrors
+ ExecWait '$\"$INSTDIR\qing-zip.exe$\" --uninstall-owned-shortcuts' $0
+ ${If} ${Errors}
+ ${OrIf} $0 != 0
+  SetErrorLevel 1
+  IfSilent +2
+  MessageBox MB_ICONSTOP "无法核对快捷方式。请关闭占用它的程序后重试。"
+  Abort
+ ${EndIf}
+ shortcuts_done:
  ; Delete only shipped files. Archives or other files the user placed here survive.
  !include "uninstall-files.nsh"
  Delete "$INSTDIR\Uninstall.exe"
  RMDir "$INSTDIR"
- Delete "$SMPROGRAMS\${PRODUCT_KEY}\qing-zip.lnk"
- Delete "$SMPROGRAMS\${PRODUCT_KEY}\卸载.lnk"
  RMDir "$SMPROGRAMS\${PRODUCT_KEY}"
- Delete "$DESKTOP\${PRODUCT_KEY}.lnk"
- DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}"
- DeleteRegKey HKCU "Software\${PRODUCT_KEY}\Installer"
+ ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "InstallLocation"
+ ${If} $0 == "$INSTDIR"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}"
+ ${EndIf}
+ ReadRegStr $0 HKCU "Software\${PRODUCT_KEY}\Installer" "InstallDir"
+ ${If} $0 == "$INSTDIR"
+  DeleteRegKey HKCU "Software\${PRODUCT_KEY}\Installer"
+ ${EndIf}
 SectionEnd
