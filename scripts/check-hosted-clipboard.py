@@ -152,8 +152,14 @@ def exercise_paste(base):
     try:
         win=desktop.window(handle=int(explorer.HWND)).wrapper_object()
         win.set_focus()
-        view=wait(lambda:next((ctrl for ctrl in win.descendants() if ctrl.element_info.class_name=="UIItemsView" and ctrl.is_visible()),None),"Explorer item view")
-        click(view)
+        view=next((ctrl for ctrl in win.descendants() if ctrl.element_info.class_name=="UIItemsView" and ctrl.is_visible()),None)
+        if view is not None:
+            click(view)
+        else:
+            # The folder is empty. Focus its content pane, below the address bar
+            # and to the right of Explorer navigation, on either Explorer layout.
+            rect=win.rectangle()
+            mouse.click(coords=(int(rect.left+rect.width()*.72),int(rect.top+rect.height()*.66)))
         keyboard.send_keys("^v")
         wait(lambda:manifest(dest)==expected,"post-exit Explorer paste",30)
         ImageGrab.grab().save(evidence/"pasted.png")
