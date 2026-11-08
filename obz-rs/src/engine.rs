@@ -2381,18 +2381,37 @@ enum StagedContents<'a> {
     Memory(&'a MemoryFiles),
 }
 impl StagedContents<'_> {
-    fn reader(&self, relative: &Path) -> Result<Box<dyn Read + '_>, String> {
+    fn write_to(
+        self,
+        relative: &Path,
+        output: &mut File,
+        buffer: &mut Vec<u8>,
+        size_hint: Option<u64>,
+        running: impl Fn() -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        use std::io::Write;
+        const MAX_CHUNK: usize = 1024 * 1024;
         match self {
-            Self::Disk(root) => Ok(Box::new(
-                File::open(root.join(relative)).map_err(|e| e.to_string())?,
-            )),
-            Self::Memory(files) => Ok(Box::new(std::io::Cursor::new(
-                files
-                    .get(&path_key(relative))
-                    .ok_or("verified memory entry missing")?
-                    .as_slice(),
-            ))),
+            Self::Memory(files) => {
+                let content = files.get(&path_key(relative)).ok_or("verified memory entry missing")?;
+                for chunk in content.as_slice().chunks(MAX_CHUNK) {
+                    if !running()? { return Ok(false); }
+                    output.write_all(chunk).map_err(|err| err.to_string())?;
+                }
+            }
+            Self::Disk(root) => {
+                let mut source = File::open(root.join(relative)).map_err(|err| err.to_string())?;
+                let chunk = size_hint.unwrap_or(MAX_CHUNK as u64).clamp(4096, MAX_CHUNK as u64) as usize;
+                if buffer.len() < chunk { buffer.resize(chunk, 0); }
+                loop {
+                    if !running()? { return Ok(false); }
+                    let n = source.read(&mut buffer[..chunk]).map_err(|err| err.to_string())?;
+                    if n == 0 { break; }
+                    output.write_all(&buffer[..n]).map_err(|err| err.to_string())?;
+                }
+            }
         }
+        Ok(true)
     }
 }
 
@@ -2768,7 +2787,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     let conflict_policy=if journal.is_some() {"error"} else {opts.overwrite.as_str()};
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
-    let count = if conflict_policy == "error" && !file_publication_stage
+    let count = if matches!(conflict_policy, "error" | "skip" | "overwrite") && !file_publication_stage
         && (opts.selected.is_empty() || memory_selection)
         && file_count >= 128
         && entries
@@ -2781,10 +2800,11 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             staged,
             &ctl,
             &mut output_guards,
-            opts.zone_identifier.as_ref(),journal.as_ref(),
+            opts.zone_identifier.as_ref(), journal.as_ref(), conflict_policy,
         )?
     } else {
         let mut count = 0;
+        let mut buffer = Vec::new();
         for (i, e) in entries.iter().enumerate() {
             ctl.check()?;
             ctl.set(
@@ -2822,15 +2842,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             }
             output_guards.allow_publication(parent)?;
             with_output_temp(parent, &output_guards, |tmp| {
-                let mut source = staged.reader(&rel)?;
-                let mut buf = vec![0; 1024 * 1024];
-                loop {
+                staged.write_to(&rel, tmp.as_file_mut(), &mut buffer, e.size_known.then_some(e.size), || {
                     ctl.check()?;
-                    let n = source.read(&mut buf).map_err(|e| e.to_string())?;
-                    if n == 0 { break; }
-                    use std::io::Write;
-                    tmp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-                }
+                    Ok(true)
+                })?;
                 crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
                 restore_open_file_metadata(tmp.as_file(), e).map_err(|e| format!("file metadata: {e}"))?;
                 ctl.check()?;
@@ -3926,7 +3941,7 @@ fn publish_small_files_parallel(
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
 ) -> Result<usize, String> {
-    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None,None)
+    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None, None, "error")
 }
 fn publish_staged_files_parallel(
     entries: &[&Entry],
@@ -3934,7 +3949,7 @@ fn publish_staged_files_parallel(
     stage: StagedContents<'_>,
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
-    zone: Option<&crate::motw::ZoneIdentifier>,journal:Option<&PublicationJournal>,
+    zone: Option<&crate::motw::ZoneIdentifier>,journal:Option<&PublicationJournal>, policy: &str,
 ) -> Result<usize, String> {
     use std::sync::atomic::AtomicUsize;
     for e in entries.iter().filter(|e| e.is_dir) {
@@ -3964,6 +3979,11 @@ fn publish_staged_files_parallel(
     let prepared_guards: &CheckedDirectories = guards;
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
+    let skipped = AtomicUsize::new(0);
+    let progress = |name: &str| {
+        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+        ctl.set("extracting", Some((count * 100 / files.len().max(1)) as u8), name);
+    };
     let stopped = AtomicBool::new(false);
     let first_error = Mutex::new(None::<String>);
     let workers = std::thread::available_parallelism()
@@ -3975,13 +3995,14 @@ fn publish_staged_files_parallel(
         for _ in 0..workers {
             let files = &files;
             let next = &next;
-            let completed = &completed;
+            let skipped = &skipped;
+            let progress = &progress;
             let stopped = &stopped;
             let first_error = &first_error;
             handles.push(scope.spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
-                        let mut buffer = vec![0u8; 1024 * 1024];
+                        let mut buffer = Vec::new();
                         while !stopped.load(Ordering::Acquire) {
                             ctl.check()?;
                             let index = next.fetch_add(1, Ordering::Relaxed);
@@ -3990,34 +4011,29 @@ fn publish_staged_files_parallel(
                             let target = dest.join(&relative);
                             let parent = target.parent().ok_or("missing output directory")?;
                             // Retain early collision detection plus atomic noclobber.
-                            choose_target_checked(target.clone(), "error", &mut |p| {
+                            if choose_target_checked(target.clone(), policy, &mut |p| {
                                 prepared_guards.check_prepared(p)
-                            })?;
+                            })?.is_none() {
+                                skipped.fetch_add(1, Ordering::Relaxed);
+                                progress(&entry.name);
+                                continue;
+                            }
                             prepared_guards.check_prepared(parent)?;
                             let committed = with_output_temp(parent, prepared_guards, |temp| {
-                                let mut source = stage.reader(&relative)?;
-                                loop {
+                                if !stage.write_to(&relative, temp.as_file_mut(), &mut buffer, entry.size_known.then_some(entry.size), || {
                                     ctl.check()?;
-                                    if stopped.load(Ordering::Acquire) { return Ok(false); }
-                                    let n = source.read(&mut buffer).map_err(|e| e.to_string())?;
-                                    if n == 0 { break; }
-                                    std::io::Write::write_all(temp, &buffer[..n]).map_err(|e| e.to_string())?;
-                                }
+                                    Ok(!stopped.load(Ordering::Acquire))
+                                })? { return Ok(false); }
                                 crate::motw::apply_to_file(temp.as_file(), zone)?;
                                 restore_open_file_metadata(temp.as_file(), entry)?;
                                 ctl.check()?;
                                 if stopped.load(Ordering::Acquire) { return Ok(false); }
                                 prepared_guards.check_prepared(&target)?;
-                                drop(publish_output_recorded(temp, &target, false,journal)?);
+                                drop(publish_output_recorded(temp, &target, policy == "overwrite",journal)?);
                                 Ok(true)
                             })?;
                             if !committed { return Ok(()); }
-                            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                            ctl.set(
-                                "extracting",
-                                Some((count * 100 / files.len().max(1)) as u8),
-                                &entry.name,
-                            );
+                            progress(&entry.name);
                         }
                         Ok(())
                     },
@@ -4045,7 +4061,7 @@ fn publish_staged_files_parallel(
         return Err(error);
     }
     ctl.check()?;
-    Ok(completed.load(Ordering::Relaxed))
+    Ok(completed.load(Ordering::Relaxed) - skipped.load(Ordering::Relaxed))
 }
 
 pub fn extract_with_control(
@@ -5219,6 +5235,30 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn parallel_publication_counts_only_written_files_and_preserves_skipped_contents() {
+        let (_temp, archive, _entries) = memory_zip_fixture();
+        for policy in ["skip", "overwrite"] {
+            let output = tempfile::tempdir().unwrap();
+            let dir = output.path().join("folder");
+            fs::create_dir(&dir).unwrap();
+            let first = dir.join("file-000.txt");
+            let last = dir.join("file-159.txt");
+            fs::write(&first, b"existing").unwrap();
+            fs::write(&last, b"existing").unwrap();
+            let count = extract(archive.to_str().unwrap(), output.path().to_str().unwrap(),
+                &EngineOptions { overwrite: policy.to_owned(), ..Default::default() }).unwrap();
+            if policy == "skip" {
+                assert_eq!(count, 158);
+                assert_eq!(fs::read(first).unwrap(), b"existing");
+                assert_eq!(fs::read(last).unwrap(), b"existing");
+            } else {
+                assert_eq!(count, 160);
+                assert!(fs::read(first).unwrap().is_empty());
+                assert_eq!(fs::read(last).unwrap(), vec![159; 3073]);
+            }
+        }
+    }
     #[test]
     fn indexed_update_sources_and_destinations_keep_their_original_matching_rules() {
         let check = |inputs: &[&str], rename| {
@@ -6915,7 +6955,7 @@ mod staging_tests {
                 StagedContents::Memory(&contents),
                 &JobControl::new(),
                 &mut guard,
-                None,None
+                None, None, "error"
             )
             .unwrap(),
             160
