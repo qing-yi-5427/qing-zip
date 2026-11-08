@@ -10,18 +10,68 @@ on:
         description: Exact x64 build source commit
         required: true
         type: string
+      architecture:
+        description: Architecture of the actual portable package
+        type: choice
+        options: [x64, arm64]
+        default: x64
+      asset:
+        description: Optional release asset ID, downloaded with a temporary read-only URL
+        type: string
+      package_sha:
+        description: SHA256 of the verified release portable ZIP
+        type: string
+      gui_sha:
+        description: SHA256 of the verified release GUI
+        type: string
 permissions:
   contents: read
   actions: read
 jobs:
   drag:
-    runs-on: windows-latest
+    runs-on: ${{ inputs.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Fetch the exact release portable with no write credential
+        if: inputs.asset != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          ASSET_ID: ${{ inputs.asset }}
+          PORTABLE_SHA: ${{ inputs.package_sha }}
+          GUI_SHA: ${{ inputs.gui_sha }}
+          PLATFORM: ${{ inputs.architecture }}
+          QA_URL: ${{ inputs.architecture == 'arm64' && secrets.QING_QA_0119_ARM64_PORTABLE_URL || secrets.QING_QA_0119_X64_PORTABLE_URL }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:SOURCE_RUN -cnotmatch '^[0-9]+$' -or $env:ASSET_ID -cnotmatch '^[0-9]+$' -or $env:SOURCE_SHA -cnotmatch '^[a-f0-9]{40}$' -or $env:GUI_SHA -cnotmatch '^[a-f0-9]{64}$' -or $env:PORTABLE_SHA -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid release verification inputs' }
+          $src=gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+          $workflow=if($env:PLATFORM -eq 'arm64'){'.github/workflows/windows-arm64.yml'} else {'.github/workflows/windows-ci.yml'}
+          if($src.head_sha -cne $env:SOURCE_SHA -or $src.conclusion -ne 'success' -or $src.path -cne $workflow) { throw 'Wrong source validation' }
+          try { $url=[uri]$env:QA_URL } catch { throw 'Invalid temporary package location' }
+          if($url.Scheme -cne 'https' -or $url.Host -notin 'release-assets.githubusercontent.com','objects.githubusercontent.com') { throw 'Unrecognized release asset origin' }
+          $out=Join-Path $env:RUNNER_TEMP 'exact-portable.zip'
+          try { Invoke-WebRequest -Uri $url -OutFile $out } catch { throw 'Temporary asset download failed' }
+          if ((Get-FileHash $out).Hash.ToLowerInvariant() -cne $env:PORTABLE_SHA){ throw 'Wrong release portable digest' }
+          $root=Join-Path $env:RUNNER_TEMP 'qing-trial'
+          Expand-Archive -LiteralPath $out -DestinationPath $root
+          $gui=@(Get-ChildItem $root -Recurse -File -Filter 'qing-zip.exe')
+          if($gui.Count -ne 1 -or (Get-FileHash $gui[0].FullName).Hash.ToLowerInvariant() -cne $env:GUI_SHA) { throw 'Wrong actual GUI digest' }
+          foreach ($suite in 'CLIP','DRAG') {
+            "QING_${suite}_GUI_SHA=$env:GUI_SHA" >> $env:GITHUB_ENV
+            "QING_${suite}_SOURCE_RUN=$env:SOURCE_RUN" >> $env:GITHUB_ENV
+            "QING_${suite}_SOURCE_SHA=$env:SOURCE_SHA" >> $env:GITHUB_ENV
+            "QING_${suite}_ARTIFACT_DIGEST=sha256:$env:PORTABLE_SHA" >> $env:GITHUB_ENV
+          }
+          "QING_QA_ASSET_ID=$env:ASSET_ID" >> $env:GITHUB_ENV
+          "QING_QA_ARCH=$env:PLATFORM" >> $env:GITHUB_ENV
       - name: Fetch the exact verified Windows x64 build
+        if: inputs.asset == '' && inputs.architecture == 'x64'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,7 +106,8 @@ jobs:
           "QING_CLIP_SOURCE_RUN=$sourceId" >> $env:GITHUB_ENV
           "QING_CLIP_SOURCE_SHA=$sourceSha" >> $env:GITHUB_ENV
           "QING_CLIP_ARTIFACT_DIGEST=$($artifact.digest)" >> $env:GITHUB_ENV
-          python -m pip install pywinauto==0.6.9 pillow==11.3.0
+      - name: Install GUI automation helpers
+        run: python -m pip install pywinauto==0.6.9 pillow==11.3.0
       - name: Copy, cancel, reject corrupt data and paste after exit into Explorer
         run: python -u scripts/check-hosted-clipboard.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -64,3 +115,12 @@ jobs:
         with:
           name: clipboard-desktop
           path: clipboard-evidence
+
+      - name: Drag, cancel and retry from the exact release into Explorer
+        if: inputs.asset != '' && inputs.architecture == 'x64'
+        run: python -u scripts/check-hosted-drag-out.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && inputs.asset != '' && inputs.architecture == 'x64'
+        with:
+          name: drag-out-desktop
+          path: drag-evidence

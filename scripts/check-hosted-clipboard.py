@@ -18,6 +18,8 @@ digest = lambda b:hashlib.sha256(b).hexdigest()
 assert digest(exe.read_bytes()) == os.environ["QING_CLIP_GUI_SHA"]
 report = {"binary":digest(exe.read_bytes()), "tested_source":os.environ["QING_CLIP_SOURCE_SHA"],
           "source_run":os.environ["QING_CLIP_SOURCE_RUN"],"source_artifact":os.environ["QING_CLIP_ARTIFACT_DIGEST"]}
+if "QING_QA_ASSET_ID" in os.environ:
+    report.update(actual_release_asset=os.environ["QING_QA_ASSET_ID"],architecture=os.environ["QING_QA_ARCH"])
 desktop = Desktop(backend="uia")
 def wait(fn, description, seconds=40):
     deadline=time.monotonic()+seconds
@@ -57,6 +59,14 @@ def application(root, archive):
          "WEBVIEW2_USER_DATA_FOLDER":str(profile)}
     process=subprocess.Popen([str(exe),str(archive)],env=env)
     try:
+        if "QING_QA_ARCH" in os.environ:
+            from ctypes import wintypes as wt
+            k=ctypes.WinDLL("kernel32",use_last_error=True)
+            k.IsWow64Process2.argtypes=[wt.HANDLE,ctypes.POINTER(wt.WORD),ctypes.POINTER(wt.WORD)]
+            process_machine,native_machine=wt.WORD(),wt.WORD()
+            assert k.IsWow64Process2(wt.HANDLE(process._handle),ctypes.byref(process_machine),ctypes.byref(native_machine))
+            assert process_machine.value==0 and native_machine.value=={"x64":0x8664,"arm64":0xaa64}[os.environ["QING_QA_ARCH"]]
+            report["native_machine"]=hex(native_machine.value)
         win=wait(lambda:next((w for w in desktop.windows(process=process.pid) if w.is_visible() and w.window_text()=="qing-zip"),None),"visible main qing-zip window")
         win.set_focus()
         yield process,win,tmp
