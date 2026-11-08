@@ -36,7 +36,14 @@ fn disk_part(extension: &str) -> bool {
 
 // For an ordinary ZIP the end record bounds the disk set. Treat an ambiguous
 // end record as unknown rather than letting a second engine discover siblings.
-fn single_disk(file: &mut File) -> Result<bool, String> {
+pub(super) struct SingleDisk {
+    pub(super) entries: u16,
+    pub(super) directory: u32,
+    pub(super) directory_size: u32,
+    pub(super) end_record: u64,
+    pub(super) zip64: bool,
+}
+pub(super) fn single_disk_record(file: &mut File) -> Result<Option<SingleDisk>, String> {
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let tail_len = length.min(22 + 65535 + 20) as usize;
     file.seek(SeekFrom::End(-(tail_len as i64)))
@@ -44,7 +51,7 @@ fn single_disk(file: &mut File) -> Result<bool, String> {
     let mut tail = vec![0; tail_len];
     file.read_exact(&mut tail).map_err(|e| e.to_string())?;
     file.rewind().map_err(|e| e.to_string())?;
-    let mut found = false;
+    let mut found = None;
     for (i, record) in tail.windows(22).enumerate().rev() {
         if &record[..4] != b"PK\x05\x06" {
             continue;
@@ -53,20 +60,31 @@ fn single_disk(file: &mut File) -> Result<bool, String> {
         if i + 22 + comment != tail.len() {
             continue;
         }
-        if found {
-            return Ok(false);
+        if found.is_some() {
+            return Ok(None);
         }
-        found = true;
+        let zip64 = i >= 20 && &tail[i - 20..i - 16] == b"PK\x06\x07";
+        found = Some(SingleDisk {
+            entries: zip_u16(record, 10),
+            directory: zip_u32(record, 16),
+            directory_size: zip_u32(record, 12),
+            end_record: length - tail_len as u64 + i as u64,
+            zip64,
+        });
         if record[4..8] != [0; 4] || record[8..10] != record[10..12] {
-            return Ok(false);
+            return Ok(None);
         }
-        if i >= 20 && &tail[i - 20..i - 16] == b"PK\x06\x07" {
+        if zip64 {
             if tail[i - 16..i - 12] != [0; 4] || tail[i - 4..i] != [1, 0, 0, 0] {
-                return Ok(false);
+                return Ok(None);
             }
         }
     }
     Ok(found)
+}
+
+fn single_disk(file: &mut File) -> Result<bool, String> {
+    Ok(single_disk_record(file)?.is_some())
 }
 
 pub(super) fn require_editable(path: &Path) -> Result<(), String> {

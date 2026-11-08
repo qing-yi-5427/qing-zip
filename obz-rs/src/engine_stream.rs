@@ -16,7 +16,7 @@ pub(crate) fn preview(
     opts: &EngineOptions,
     limit: u64,
 ) -> Result<Vec<u8>, String> {
-    let policy = crate::machine_policy::scope();
+    let _policy = crate::machine_policy::scope();
     let control = opts.control.clone().unwrap_or_default();
     control.check()?;
     let mut bytes = Vec::new();
@@ -30,6 +30,17 @@ pub(crate) fn preview(
         return Ok(bytes);
     }
     validate_frame_bounds(path, format, opts)?;
+    bounded_engine_preview(path, format, None, opts, limit)
+}
+
+// Callers have validated the format and exact optional member name under a
+// pinned source. Capture at most limit+1 bytes even if a header lies.
+pub(super) fn bounded_engine_preview(
+    path: &Path, format: &str, member: Option<&str>, opts: &EngineOptions, limit: u64,
+) -> Result<Vec<u8>, String> {
+    let policy = crate::machine_policy::scope();
+    let control = opts.control.clone().unwrap_or_default();
+    control.check()?;
     let errors = tempfile::tempfile().map_err(|error| error.to_string())?;
     let mut command = Command::new(engine::executable()?);
     command
@@ -38,9 +49,9 @@ pub(crate) fn preview(
     if let Some(threads) = opts.threads {
         command.arg(format!("-mmt={threads}"));
     }
+    command.arg("--").arg(path);
+    if let Some(name) = member { command.arg(name); }
     command
-        .arg("--")
-        .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(errors.try_clone().map_err(|error| error.to_string())?);
