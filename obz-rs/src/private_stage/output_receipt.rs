@@ -342,6 +342,23 @@ mod tests {
         assert!(!path.exists());
     }
     #[test]
+    fn compacted_file_open_in_a_readonly_viewer_can_block_clean_rollback() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("text.txt");
+        fs::write(&path,b"original").unwrap();
+        let file=File::options().access_mode(0x17019f).share_mode(0).open(&path).unwrap();
+        let receipt=OutputReceipt::capture(&path,&file).unwrap().compact(&std::sync::OnceLock::new());
+        assert!(matches!(receipt.identity,OutputIdentity::Revision {..}));
+        drop(file);
+        // A normal viewer can deny delete-sharing without writing a byte.
+        let reader=File::options().read(true).share_mode(1).open(&path).unwrap();
+        let result=receipt.remove();
+        assert!(result.is_err() && path.exists(),"{result:?}");
+        let mut bytes=[0;8];
+        std::io::Read::read_exact(&mut &reader,&mut bytes).unwrap();
+        assert_eq!(&bytes,b"original");
+    }
+    #[test]
     fn compact_receipt_retains_replacements_rewrites_and_stream_changes() {
         let temp = tempfile::tempdir().unwrap();
         for mode in ["clean", "replacement", "changed", "stream", "written-back"] {
