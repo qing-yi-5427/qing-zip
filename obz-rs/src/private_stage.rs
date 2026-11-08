@@ -379,7 +379,14 @@ pub(crate) fn open_output_directory(parent: &File, leaf: &OsStr) -> Result<File,
     Ok(file)
 }
 
+pub(crate) fn open_checksum_child(parent: &File, leaf: &OsStr, directory: bool) -> Result<File, String> {
+    let mode = if directory { ChildAccess::ChecksumDirectory } else { ChildAccess::ChecksumFile };
+    open_private_child(parent, leaf, mode)
+}
+
 enum ChildAccess {
+    ChecksumDirectory,
+    ChecksumFile,
     ArchiveReference,
     OpenDirectory,
     Metadata,
@@ -408,7 +415,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         length: std::mem::size_of::<ObjectAttributes>() as u32,
         root: parent.as_raw_handle(),
         name: &mut unicode,
-        attributes: 0x40,
+        attributes: if matches!(mode, ChildAccess::ChecksumDirectory | ChildAccess::ChecksumFile) { 0x1040 } else { 0x40 },
         descriptor: std::ptr::null_mut(),
         qos: std::ptr::null_mut(),
     };
@@ -418,6 +425,10 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
     };
     let mut raw = std::ptr::null_mut();
     let (access, file_attributes, sharing, disposition, options, operation) = match mode {
+        // Never follow reparse leafs or admit writers/renames. For files ask
+        // for GENERIC_READ, just as File::options().read(true) does.
+        ChildAccess::ChecksumDirectory => (0x100081, 0, 1, 1, 0x200021, "pin checksum directory"),
+        ChildAccess::ChecksumFile => (0x80100000, 0, 1, 1, 0x200060, "open checksum file"),
         ChildAccess::ArchiveReference => (0x130080,0x80,0,2,0x201060,"create ordinary ZIP ACL reference"),
         #[cfg(target_pointer_width = "64")]
         ChildAccess::Witness(is_dir) => (0x170081, if is_dir { 0x10 } else { 0x80 },

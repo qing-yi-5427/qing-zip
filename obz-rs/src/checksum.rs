@@ -41,13 +41,7 @@ pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> 
     ctl.check()?;
     let mut file = HashInput::open(path)?;
     if let Some(selection) = CommonSelection::from_names(names) {
-        ctl.set("checksum", Some(0), "Calculating file checksums");
-        let (size, hashes) = hash_reader(&mut *file.source, file.before.len(), &ctl, selection)?;
-        file.verify()?;
-        if size != file.before.len() { return Err("file changed while calculating checksums".into()); }
-        ctl.check()?;
-        ctl.set("complete", Some(100), "File checksums ready");
-        return Ok(serde_json::json!({"path":path, "size":size, "hashes":hashes}));
+        return hash_common(path, &mut file.source, &file.before, selection, &ctl);
     }
     let chosen = choose_algorithms(names, opts)?;
     ctl.set("checksum", Some(0), "Calculating file checksums");
@@ -62,6 +56,18 @@ pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> 
     ctl.check()?;
     ctl.set("complete", Some(100), "File checksums ready");
     Ok(serde_json::json!({"path":path,"size":file.before.len(),"hashes":hashes}))
+}
+
+fn hash_common(path: &str, file: &mut std::fs::File, before: &std::fs::Metadata, selection: CommonSelection, ctl: &JobControl) -> Result<serde_json::Value, String> {
+    ctl.set("checksum", Some(0), "Calculating file checksums");
+    let (size, hashes) = hash_reader(file, before.len(), ctl, selection)?;
+    verify_hash_input(file, before)?;
+    if size != before.len() {
+        return Err("file changed while calculating checksums".into());
+    }
+    ctl.check()?;
+    ctl.set("complete", Some(100), "File checksums ready");
+    Ok(serde_json::json!({"path":path, "size":size, "hashes":hashes}))
 }
 
 struct HashInput {
@@ -80,12 +86,16 @@ impl HashInput {
         Ok(Self { absolute, source, before })
     }
     fn verify(&self) -> Result<(), String> {
-        let after = self.source.metadata().map_err(|e| e.to_string())?;
-        if self.before.len() != after.len() || self.before.modified().ok() != after.modified().ok() {
-            return Err("file changed while calculating checksums".into());
-        }
-        Ok(())
+        verify_hash_input(&self.source, &self.before)
     }
+}
+
+fn verify_hash_input(file: &std::fs::File, before: &std::fs::Metadata) -> Result<(), String> {
+    let after = file.metadata().map_err(|e| e.to_string())?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err("file changed while calculating checksums".into());
+    }
+    Ok(())
 }
 
 fn choose_algorithms(names: &[String], opts: &EngineOptions) -> Result<Vec<Algorithm>, String> {
@@ -105,6 +115,8 @@ fn choose_algorithms(names: &[String], opts: &EngineOptions) -> Result<Vec<Algor
 }
 
 mod batch;
+#[cfg(windows)]
+mod pin_batch;
 pub use batch::checksum_files;
 
 fn parse_hashes(text: &str, chosen: &[Algorithm]) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -165,7 +177,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     output
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct CommonSelection {
     md5: bool,
     sha1: bool,

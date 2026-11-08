@@ -927,7 +927,7 @@ mod selection;
 // Attribute queries avoid opening and closing a handle for every ancestor. Keep
 // ambiguous namespaces and DOS normalization cases on std's metadata path.
 #[cfg(windows)]
-fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
+pub(crate) fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Component, Prefix};
     let verbatim = match path.components().next()? {
@@ -1035,7 +1035,7 @@ fn directory_identity(file: &File) -> Result<(u32, u64), String> {
     Ok((info[7], ((info[11] as u64) << 32) | info[12] as u64))
 }
 #[cfg(windows)]
-fn directory_attributes(file: &File) -> Result<u32, String> {
+pub(crate) fn directory_attributes(file: &File) -> Result<u32, String> {
     use std::os::windows::{fs::MetadataExt, io::AsRawHandle};
     #[link(name = "Kernel32")]
     extern "system" {

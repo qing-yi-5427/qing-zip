@@ -32,10 +32,30 @@ pub fn checksum_files(
         )
     };
     let mut results = Vec::with_capacity(paths.len());
-    if super::CommonSelection::from_names(names).is_some() {
+    if let Some(selection) = super::CommonSelection::from_names(names) {
+        #[cfg(not(windows))]
+        let _ = selection;
+        #[cfg(windows)]
+        let mut pins = super::pin_batch::SharedParents::default();
+        #[cfg(windows)]
+        let mut reused = 0;
         for path in paths {
+            control.check()?;
+            #[cfg(windows)]
+            if paths.len() >= 8 && !names.is_empty() {
+                if let Some((mut file, before)) = pins.open(path)? {
+                    results.push(super::hash_common(path, &mut file, &before, selection, child_options.control.as_ref().unwrap())?);
+                    reused += 1;
+                    progress(results.len());
+                    continue;
+                }
+            }
             results.push(super::checksum_selected(path, names, &child_options)?);
             progress(results.len());
+        }
+        #[cfg(windows)]
+        if std::env::var_os("OPEN_ARCHIVE_PROFILE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            eprintln!("OA_CHECKSUM bounded_paths={reused}");
         }
     } else {
         let chosen = choose_algorithms(names, &child_options)?;
