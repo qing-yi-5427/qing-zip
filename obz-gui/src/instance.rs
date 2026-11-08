@@ -39,7 +39,12 @@ pub fn canonical_archive_path(path: String) -> Result<String, String> {
 
 // Preserve the filesystem spelling of distinct names in case-sensitive directories.
 fn canonical_spelling(path: &Path, directory: bool) -> Result<String, String> {
-    let path = obz_core::engine::canonical_input_path(path, directory)?
+    let path = obz_core::engine::canonical_input_path(path, directory).map_err(|error| match error.kind() {
+        std::io::ErrorKind::InvalidData => "路径不能包含链接或重解析点".to_string(),
+        std::io::ErrorKind::InvalidInput if directory => "请选择普通文件夹".to_string(),
+        std::io::ErrorKind::InvalidInput => "请选择普通压缩文件".to_string(),
+        _ => error.to_string(),
+    })?
         .to_string_lossy()
         .into_owned();
     if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {

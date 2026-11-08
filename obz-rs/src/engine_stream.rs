@@ -356,7 +356,7 @@ impl std::ops::DerefMut for PinnedSource {
 pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
     engine::no_links(path)?;
     #[cfg(windows)]
-    let parents = pin_parent_names(path)?;
+    let parents = pin_parent_names(path).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
     let parents = Vec::new();
     let file = open_source_leaf(path).map_err(|error| error.to_string())?;
@@ -367,20 +367,20 @@ pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
 }
 
 #[cfg(windows)]
-fn open_name(path: &Path, directory: bool) -> Result<File, String> {
+fn open_name(path: &Path, directory: bool) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     let handle = File::options().access_mode(0x80).share_mode(3)
-        .custom_flags(0x02200000).open(path).map_err(|e| e.to_string())?;
-    let meta = handle.metadata().map_err(|e| e.to_string())?;
-    if meta.file_attributes() & 0x400 != 0 { return Err("source links are unsupported".into()); }
+        .custom_flags(0x02200000).open(path)?;
+    let meta = handle.metadata()?;
+    if meta.file_attributes() & 0x400 != 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "source links are unsupported")); }
     if (directory && !meta.is_dir()) || (!directory && !meta.is_file()) {
-        return Err("unexpected source file type".into());
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "unexpected source file type"));
     }
     Ok(handle)
 }
 
 #[cfg(windows)]
-fn pin_parent_names(path: &Path) -> Result<Vec<File>, String> {
+fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
     let mut parents = Vec::new();
     for ancestor in path.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
         parents.push(open_name(ancestor, true)?);
@@ -391,11 +391,11 @@ fn pin_parent_names(path: &Path) -> Result<Vec<File>, String> {
 /// Resolve filesystem spelling for shell queues without following a reparse
 /// point or allowing any validated component to be renamed during resolution.
 #[cfg(windows)]
-pub fn canonical_input_path(path: &Path, directory: bool) -> Result<std::path::PathBuf, String> {
-    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
+pub fn canonical_input_path(path: &Path, directory: bool) -> std::io::Result<std::path::PathBuf> {
+    let path = std::path::absolute(path)?;
     let _parents = pin_parent_names(&path)?;
     let _entry = open_name(&path, directory)?;
-    path.canonicalize().map_err(|e| e.to_string())
+    path.canonicalize()
 }
 
 pub(crate) fn open_source_leaf(path: &Path) -> std::io::Result<File> {
