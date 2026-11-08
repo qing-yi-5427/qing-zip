@@ -9,6 +9,7 @@ use std::{ffi::c_void, os::windows::io::AsRawHandle};
 
 pub(super) enum Identity {
     Handle(File),
+    Owned(File, [u8;32]),
     Journal(Stamp),
 }
 
@@ -127,11 +128,28 @@ impl Stamp {
     }
 }
 impl Identity {
+    pub(super) fn owned(file: &File)->Result<Self,String>{
+        let handle=file.try_clone().map_err(|e|e.to_string())?;
+        let stamp=crate::private_stage::directory_stamp(&handle)?;
+        Ok(Self::Owned(handle,stamp))
+    }
+    pub(super) fn restore_owned_metadata(&mut self,entry:&super::Entry)->Result<(),String>{
+        let Self::Owned(file,stamp)=self else {return Err("missing owned directory receipt".into());};
+        if crate::private_stage::directory_stamp(file)?!=*stamp {
+            return Err("directory was changed externally; metadata preserved".into());
+        }
+        super::restore_open_file_metadata(file,entry)?;
+        *stamp=crate::private_stage::directory_stamp(file)?;
+        Ok(())
+    }
     pub(super) fn matches(&self, current: &File) -> bool {
         match self {
             Self::Handle(original) => directory_identity(original)
                 .ok()
                 .is_some_and(|id| directory_identity(current).ok() == Some(id)),
+            Self::Owned(original,stamp) => directory_identity(original).ok()
+                .is_some_and(|id|directory_identity(current).ok()==Some(id))
+                && crate::private_stage::directory_stamp(original).ok()==Some(*stamp),
             Self::Journal(stamp) => stamp.matches(current),
         }
     }

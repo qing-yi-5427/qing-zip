@@ -279,7 +279,7 @@ pub fn capabilities() -> Capabilities {
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),
-      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 or ARM64 with the matching NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy, or single-coder LZMA and LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction and eligible selected split 7z extraction may commit verified same-volume staging for new directories or move verified files into existing directories. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
+      limitations:["RAR/LZH creation and arbitrary ZIPX codecs are unsupported by this engine; separate adapters handle some legacy formats","Selected extraction verifies all entries. Eligible ZIPs discard unselected data after verification. On Windows x64 or ARM64 with the matching NanaZip runtime, eligible split 7z archives also stage only selected files for unencrypted non-solid Copy, or single-coder LZMA and LZMA2 (solid or non-solid, optionally with 7z AES). Other layouts may require full temporary staging","Full ZIP/7z extraction and eligible selected split 7z extraction can claim a new directory after verification and publish verified files individually in their actual destination parents. Existing-directory moves require known sizes, serial publication, sufficient fallback space, ordinary NTFS storage/ACLs and exact metadata; unsupported cases retain copy publication","Archive symbolic links, hard links and alternate streams are rejected","NanaZip extended codecs require the bundled NanaZip runtime; official 7-Zip fallback and SFX support a smaller method set. Codec discovery does not imply every archive variant or encryption write method is supported","WASM, ROMFS, UFS and .NET bundle support requires bundled NanaZip. Verified .NET single-file bundle format v6: uncompressed entries can be extracted; compressed bundles are listing-only; standalone integrity test is unsupported for both","Passwords reach the main archive engine through an anonymous input pipe, not command arguments"].iter().map(|s|s.to_string()).collect() }
 }
 fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
@@ -1076,6 +1076,8 @@ struct CheckedDirectories {
     #[cfg(windows)]
     selected_output_root: Option<PathBuf>,
     #[cfg(windows)]
+    exclusive_claim: bool,
+    #[cfg(windows)]
     created_output_dirs: Vec<(PathBuf, created_directories::Identity)>,
     // Only validated private stages qualify. Ordinary owned TempDirs may
     // inherit shared permissions and must keep full path checks.
@@ -1123,10 +1125,11 @@ impl CheckedDirectories {
     }
     #[cfg(windows)]
     fn create_owned_output_dir(&self, path: &Path) -> Option<Result<File, String>> {
+        let create=if self.exclusive_claim {crate::private_stage::create_journal_directory} else {crate::private_stage::create_output_directory};
         let parent = path.parent()?;
         let leaf = path.file_name()?;
         if let Some((pinned, _)) = self.held.get(parent) {
-            return Some(crate::private_stage::create_output_directory(pinned, leaf));
+            return Some(create(pinned, leaf));
         }
         // Beyond the directory-pin cache, open each missing ancestor relative
         // to the nearest retained one. Keep the whole short chain through CREATE.
@@ -1140,12 +1143,16 @@ impl CheckedDirectories {
                 Err(error) => return Some(Err(error)),
             }
         }
-        Some(crate::private_stage::create_output_directory(transient.last().unwrap_or(anchor), leaf))
+        Some(create(transient.last().unwrap_or(anchor), leaf))
     }
     fn create_dirs(&mut self, path: &Path) -> Result<(), String> {
         for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
             self.check(component)?;
             if self.pinned(component) {
+                #[cfg(windows)]
+                if self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|r|component.starts_with(r)) && !self.owned_dirs.contains(component) {
+                    return Err(format!("foreign directory appeared in new destination: {}",component.display()));
+                }
                 continue;
             }
             #[cfg(windows)]
@@ -1153,7 +1160,12 @@ impl CheckedDirectories {
                 if let Some(result) = self.create_owned_output_dir(component) {
                     match result {
                         Ok(created) => {
-                            let proof = if self.created_output_dirs.len() < 4096 {
+                            let proof = if self.exclusive_claim {
+                                match created_directories::Identity::owned(&created) {
+                                    Ok(proof)=>Some(proof),
+                                    Err(error)=>{self.created_output_dirs.push((component.to_owned(),created_directories::Identity::Handle(created)));return Err(error);}
+                                }
+                            } else if self.created_output_dirs.len() < 4096 {
                                 Some(created_directories::Identity::Handle(created))
                             } else {
                                 created_directories::Stamp::capture(&created)
@@ -1166,7 +1178,7 @@ impl CheckedDirectories {
                             self.check(component)?;
                             continue;
                         }
-                        Err(_) if component.is_dir() => { self.check(component)?; continue; }
+                        Err(_) if !self.exclusive_claim && component.is_dir() => { self.check(component)?; continue; }
                         Err(error) => return Err(error),
                     }
                 }
@@ -1325,7 +1337,11 @@ impl CheckedDirectories {
                                     part.display()
                                 ));
                             }
-                            if meta.is_dir() && self.held.len() < 4096 {
+                            let in_claim = self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|root| part.starts_with(root));
+                            if meta.is_dir() && in_claim && !self.owned_dirs.contains(part) {
+                                return Err(format!("foreign directory appeared in new destination: {}",part.display()));
+                            }
+                            if meta.is_dir() && (self.held.len() < 4096 || in_claim) {
                                 let owned = self.owned_dirs.contains(part)
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories
@@ -2398,6 +2414,26 @@ fn preflight_output_targets(
     }
     Ok(())
 }
+#[derive(Default)]
+pub(crate) struct PublicationJournal {
+    #[cfg(windows)]
+    files: Mutex<Vec<crate::private_stage::OutputReceipt>>,
+}
+impl PublicationJournal {
+    #[cfg(windows)]
+    pub(crate) fn record(&self,receipt:crate::private_stage::OutputReceipt){
+        self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
+    }
+    fn rollback(&self)->Vec<String>{
+        let mut errors=Vec::new();
+        #[cfg(windows)]
+        for file in self.files.lock().unwrap_or_else(|p|p.into_inner()).drain(..).rev(){
+            if let Err(error)=file.remove(){errors.push(error);}
+        }
+        errors
+    }
+}
+
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let policy = crate::machine_policy::scope();
     let ctl = control(opts);
@@ -2659,6 +2695,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         )?;
         if verified_projection && transaction.is_some() { expected = staged_expected; }
     }
+    let journal=transaction.as_ref().map(|_|PublicationJournal::default());
+    let publication=(|| -> Result<usize,String> {
     policy.validate_output()?;
     if let Some(transaction) = transaction.as_ref() {
         let root = &transaction.root;
@@ -2668,95 +2706,37 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         output_guards.allow_publication(dest.parent().ok_or("missing output parent")?)?;
         output_guards.check(&dest)?;
         validate_transaction_root(root, temp.path())?;
-        // Child handles deny directory renames. Root stays pinned through the
-        // single handle-based no-replace commit; parent handles remain held.
-        drop(stage_guards.take());
-        ctl.set(
-            "extracting",
-            Some(99),
-            "Committing verified archive directory",
-        );
-        ctl.check()?;
-        #[cfg(all(windows, target_pointer_width = "64"))]
-        let compatible = if let Some(witness) = &transaction.witnessed {
-            let pins = pin_committed_tree(temp.path(), &expected)?;
-            let matches = using_process_token() && witness.compatible(&transaction.parent, root, &pins)?;
-            if !matches && PhaseTimer::enabled() {
-                eprintln!("OA_PUBLICATION witnessed_directory_fallback=1");
-            }
-            matches
-        } else { true };
-        #[cfg(not(all(windows, target_pointer_width = "64")))]
-        let compatible = true;
+        // A directory pin can suppress NTFS propagation to its descendants.
+        // Publishing the entire staged tree could expose stale inherited grants
+        // even when the staging root happens to have only trusted principals.
+        // Claim only the final root atomically after *all* contents are verified.
+        // Each output is subsequently finalized within its actual parent.
         ctl.check()?;
         policy.validate_output()?;
-        if compatible && rename_directory_noclobber_in(root, &dest, Some(&transaction.parent))? {
-            let _published_path = stage.take().unwrap().keep();
-            #[cfg(windows)]
-            if transaction.restore_acl {
-                // Still private here. Hold every object against replacement and
-                // reparse conversion while recursive inheritance opens access.
-                let publication_pins = pin_committed_tree(&dest, &expected)
-                    .map_err(|e| format!("verified output was committed but remains private: {e}"))?;
-                #[cfg(target_pointer_width = "64")]
-                let restored = match &transaction.witnessed {
-                    Some(witness) => witness.restore(&transaction.parent, root, &publication_pins),
-                    None => crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins),
-                };
-                #[cfg(not(target_pointer_width = "64"))]
-                let restored = crate::private_stage::inherit_tree(root, &transaction.parent, &publication_pins);
-                restored.map_err(|e| format!("verified output was committed but permissions could not be restored: {e}"))?;
-                drop(publication_pins);
-            }
-            ctl.set("complete", Some(100), "Extraction complete");
-            #[cfg(all(windows, target_pointer_width = "64"))]
-            if transaction.witnessed.is_some() && PhaseTimer::enabled() {
-                eprintln!("OA_PUBLICATION witnessed_directory_commit=1");
-            }
-            if verified_projection && PhaseTimer::enabled() {
-                eprintln!("OA_PUBLICATION selected_directory_commit=1");
-            }
-            return Ok(entries.iter().filter(|e| !e.is_dir).count());
-        }
-        if dest.try_exists().map_err(|e| e.to_string())? {
+        if dest.try_exists().map_err(|e|e.to_string())? {
             return Err("destination appeared during directory commit".into());
         }
-        // Re-establish every descendant guard before old per-file publication.
-        // Keep the dedicated root pin continuously across this transition.
-        let mut guards = CheckedDirectories::owned_root(temp.path());
+        let leaf = dest.file_name().ok_or("missing destination leaf")?;
         #[cfg(windows)]
-        guards.held.insert(
-            temp.path().to_path_buf(),
-            (root.try_clone().map_err(|e| e.to_string())?, false),
-        );
-        #[cfg(windows)]
-        guards.private_stages.insert(temp.path().to_path_buf());
-        verify_stage_checked(temp.path(), &expected, &ctl, &mut guards)?;
-        // An unsupported whole-directory rename may use old publication only
-        // after atomically claiming the still-absent destination ourselves.
-        // Never merge into a competitor created during fallback verification.
-        ctl.check()?;
-        output_guards.check(&dest)?;
-        #[cfg(windows)]
-        if verified_projection {
-            // Claim a fresh directory without following or merging a competing
-            // creation. Keep its identity for rollback if copying is cancelled.
-            let leaf = dest.file_name().ok_or("missing fallback destination leaf")?;
-            let created = crate::private_stage::create_output_directory(&transaction.parent, leaf)?;
-            output_guards.created_output_dirs.push((
-                dest.clone(),
-                created_directories::Identity::Handle(created),
-            ));
+        {
+            let created = crate::private_stage::create_journal_directory(&transaction.parent, leaf)?;
+            output_guards.exclusive_claim = true;
+            let proof=match created_directories::Identity::owned(&created) {
+                Ok(proof)=>proof,
+                Err(error)=>{output_guards.created_output_dirs.push((dest.clone(),created_directories::Identity::Handle(created)));return Err(error);}
+            };
+            output_guards.created_output_dirs.push((dest.clone(),proof));
             output_guards.selected_output_root = Some(dest.clone());
-        } else {
-            fs::create_dir(&dest).map_err(|e| format!("claim fallback destination: {e}"))?;
+            output_guards.owned_dirs.insert(dest.clone());
         }
         #[cfg(not(windows))]
-        fs::create_dir(&dest).map_err(|e| format!("claim fallback destination: {e}"))?;
-        #[cfg(windows)]
-        output_guards.owned_dirs.insert(dest.clone());
+        fs::create_dir(&dest).map_err(|e|e.to_string())?;
         output_guards.check(&dest)?;
-        stage_guards = Some(guards);
+        if memory.is_none() && serial_publication && stage.as_ref().is_some_and(StagingDir::protected_stage) {
+            file_publication_stage = true;
+            publication_receipt = PhaseTimer::enabled().then_some([0usize;2]);
+        }
+        if PhaseTimer::enabled() { eprintln!("OA_PUBLICATION native_directory_claim=1"); }
     }
     drop(transaction.take());
     if memory.is_some() && stage.is_some() {
@@ -2775,8 +2755,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     if !opts.selected.is_empty() {
         output_guards.selected_output_root = Some(dest.clone());
     }
+    let conflict_policy=if journal.is_some() {"error"} else {opts.overwrite.as_str()};
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
-    let count = if opts.overwrite == "error"
+    let count = if conflict_policy == "error" && !file_publication_stage
         && (opts.selected.is_empty() || memory_selection)
         && file_count >= 128
         && entries
@@ -2789,7 +2770,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             staged,
             &ctl,
             &mut output_guards,
-            opts.zone_identifier.as_ref(),
+            opts.zone_identifier.as_ref(),journal.as_ref(),
         )?
     } else {
         let mut count = 0;
@@ -2808,7 +2789,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 continue;
             }
             let Some(target) =
-                choose_target_checked(target, &opts.overwrite, &mut |p| output_guards.check(p))?
+                choose_target_checked(target, conflict_policy, &mut |p| output_guards.check(p))?
             else {
                 continue;
             };
@@ -2818,8 +2799,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             }
             output_guards.check(parent)?;
             if file_publication_stage && try_publish_staged_file(
-                staged, &rel, e, &target, opts.overwrite == "overwrite", &ctl,
-                stage_guards.as_mut().ok_or("missing private stage guards")?, &mut output_guards,
+                staged, &rel, e, &target, conflict_policy == "overwrite", &ctl,
+                stage_guards.as_mut().ok_or("missing private stage guards")?, &mut output_guards,journal.as_ref(),
             )? {
                 // Content, ADS and exact times preceded the atomic commit;
                 // the helper also finalized permissions before returning success.
@@ -2843,7 +2824,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 restore_open_file_metadata(tmp.as_file(), e).map_err(|e| format!("file metadata: {e}"))?;
                 ctl.check()?;
                 output_guards.check_prepared(&target)?;
-                drop(publish_output(tmp, &target, opts.overwrite == "overwrite")?);
+                drop(publish_output_recorded(tmp, &target, conflict_policy == "overwrite",journal.as_ref())?);
                 Ok(())
             })?;
             if let Some(receipt) = publication_receipt.as_mut() { receipt[1] += 1; }
@@ -2851,9 +2832,20 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         }
         count
     };
+    #[cfg(windows)]
+    let directory_receipts: HashMap<PathBuf,usize> = if output_guards.exclusive_claim {
+        output_guards.created_output_dirs.iter().enumerate().map(|(i,(path,_))|(path.clone(),i)).collect()
+    } else { HashMap::new() };
     for e in entries.iter().rev().filter(|e| e.is_dir) {
-        restore_metadata(&dest.join(validate_name(&e.name)?), e)
-            .map_err(|e| format!("directory metadata: {e}"))?;
+        ctl.check()?;
+        let path=dest.join(validate_name(&e.name)?);
+        #[cfg(windows)]
+        if output_guards.exclusive_claim {
+            let i=*directory_receipts.get(&path).ok_or("missing claimed output directory receipt")?;
+            output_guards.created_output_dirs[i].1.restore_owned_metadata(e)?;
+            continue;
+        }
+        restore_metadata(&path,e).map_err(|e|format!("directory metadata: {e}"))?;
     }
     #[cfg(windows)]
     output_guards.created_output_dirs.clear();
@@ -2863,6 +2855,18 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     ctl.set("complete", Some(100), "Extraction complete");
     Ok(count)
+    })();
+    if let (Err(reason),Some(journal))=(&publication,&journal) {
+        #[cfg(windows)]
+        if !output_guards.exclusive_claim {return publication;}
+        let errors=journal.rollback();
+        drop(output_guards);
+        if !errors.is_empty() || dest.try_exists().unwrap_or(true) {
+            let examples=errors.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("; ");
+            return Err(format!("{reason}; partial destination retained (foreign, changed, or unremovable entries): {} {examples}",dest.display()));
+        }
+    }
+    publication
 }
 
 // Verify that the stage's owner and every allowed SID are trusted. A broad
@@ -3022,6 +3026,13 @@ enum StagingDir {
     Private(crate::private_stage::PrivateStage),
 }
 impl StagingDir {
+    fn protected_stage(&self) -> bool {
+        #[cfg(windows)]
+        { matches!(self, Self::Private(_)) }
+        #[cfg(not(windows))]
+        { false }
+    }
+
     fn guards(&self, transaction_root: Option<&File>) -> Result<CheckedDirectories, String> {
         let mut guards = CheckedDirectories::owned_root(self.path());
         #[cfg(windows)]
@@ -3410,7 +3421,7 @@ fn new_file_publication_stage(
 fn try_publish_staged_file(
     staged: StagedContents<'_>, relative: &Path, entry: &Entry, target: &Path,
     replace: bool, ctl: &JobControl, stage_guards: &mut CheckedDirectories,
-    output_guards: &mut CheckedDirectories,
+    output_guards: &mut CheckedDirectories, journal:Option<&PublicationJournal>,
 ) -> Result<bool, String> {
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
@@ -3433,10 +3444,10 @@ fn try_publish_staged_file(
             || directory_attributes(&parent_pin)? & 0x410 != 0x10 {
             return Err("publication parent identity changed".into());
         }
-        match crate::private_stage::publish_verified_file(
+        match crate::private_stage::publish_verified_file_journaled(
             source_pin, source.file_name().ok_or("missing source leaf")?, &parent_pin,
             target.file_name().ok_or("missing destination leaf")?, entry.size, modified,
-            entry.attributes.contains('R'), replace,
+            entry.attributes.contains('R'), replace, journal,
             || { ctl.check()?; output_guards.check(target) },
         )? {
             crate::private_stage::FilePublication::Unavailable => Ok(false),
@@ -3884,6 +3895,11 @@ fn with_output_temp<T>(parent: &Path, guards: &CheckedDirectories,
         (Err(reason), Err(cleanup)) => Err(format!("{reason}; {cleanup}")),
     }
 }
+fn publish_output_recorded(temp:&mut OutputTemp,target:&Path,replace:bool,journal:Option<&PublicationJournal>)->Result<File,String>{
+    #[cfg(windows)]
+    if let Some(journal)=journal { return temp.inner.commit_owned(target,journal); }
+    publish_output(temp,target,replace)
+}
 fn publish_output(temp: &mut OutputTemp, target: &Path, overwrite: bool) -> Result<File, String> {
     #[cfg(windows)] { temp.inner.commit(target, overwrite) }
     #[cfg(not(windows))] {
@@ -3907,7 +3923,7 @@ fn publish_small_files_parallel(
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
 ) -> Result<usize, String> {
-    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None)
+    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None,None)
 }
 fn publish_staged_files_parallel(
     entries: &[&Entry],
@@ -3915,7 +3931,7 @@ fn publish_staged_files_parallel(
     stage: StagedContents<'_>,
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
-    zone: Option<&crate::motw::ZoneIdentifier>,
+    zone: Option<&crate::motw::ZoneIdentifier>,journal:Option<&PublicationJournal>,
 ) -> Result<usize, String> {
     use std::sync::atomic::AtomicUsize;
     for e in entries.iter().filter(|e| e.is_dir) {
@@ -3989,7 +4005,7 @@ fn publish_staged_files_parallel(
                                 ctl.check()?;
                                 if stopped.load(Ordering::Acquire) { return Ok(false); }
                                 prepared_guards.check_prepared(&target)?;
-                                drop(publish_output(temp, &target, false)?);
+                                drop(publish_output_recorded(temp, &target, false,journal)?);
                                 Ok(true)
                             })?;
                             if !committed { return Ok(()); }
@@ -5379,7 +5395,7 @@ mod staging_tests {
             drop(target_parent);
             if cancel { ctl.cancel(); }
             let result = try_publish_staged_file(StagedContents::Disk(stage.path()), Path::new("nested/file.txt"),
-                &entries[0], &target, false, &ctl, &mut stage_guards, &mut output_guards);
+                &entries[0], &target, false, &ctl, &mut stage_guards, &mut output_guards,None);
             if cancel {
                 assert!(matches!(result, Err(message) if message == "operation cancelled"));
                 assert!(source.exists()); assert!(!target.exists());
@@ -6892,7 +6908,7 @@ mod staging_tests {
                 StagedContents::Memory(&contents),
                 &JobControl::new(),
                 &mut guard,
-                None
+                None,None
             )
             .unwrap(),
             160

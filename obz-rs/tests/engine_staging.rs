@@ -370,7 +370,7 @@ fn selected_split_commits_only_verified_files_on_the_target_volume() {
             log.contains(if existing {
                 "moved=1 copied=0"
             } else {
-                "selected_directory_commit=1"
+                "native_directory_claim=1"
             }),
             "{log}"
         );
@@ -624,4 +624,49 @@ fn bounded_solid_7z_checks_the_whole_folder_before_publishing() {
             && String::from_utf8_lossy(&failure.stderr).contains("bounded-7z-private-stage")
     );
     assert!(!bad.exists() && fs::read_dir(&parent).unwrap().count() == 1);
+}
+
+
+#[cfg(windows)]
+#[test]
+fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel() {
+    use std::{io::Write,thread,time::{Instant,Duration}};
+    let temp=tempfile::tempdir().unwrap();
+    let archive=temp.path().join("rollback.zip");
+    let mut zip=zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for index in 0..2400 {
+        zip.start_file(format!("data/file-{index:05}.txt"),zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)).unwrap();
+        zip.write_all(b"owned contents").unwrap();
+    }
+    drop(zip.finish().unwrap());
+    for foreign in [false,true] {
+        let dest=temp.path().join(if foreign {"with-added-data"} else {"clean"});
+        let ctl=engine::JobControl::new();
+        let worker=ctl.clone();
+        let a=archive.clone();let target=dest.clone();
+        let thread=thread::spawn(move || engine::extract(a.to_str().unwrap(),target.to_str().unwrap(),
+            &EngineOptions{control:Some(worker),..EngineOptions::default()}));
+        let leaf=dest.join("data/file-00000.txt");
+        let deadline=Instant::now()+Duration::from_secs(15);
+        while !leaf.is_file(){
+            if thread.is_finished(){panic!("extraction ended before file publication: {:?}", thread.join());}
+            assert!(Instant::now()<deadline, "file publication did not start");
+            thread::sleep(Duration::from_millis(1));
+        }
+        if foreign {
+            fs::write(dest.join("external.txt"),b"outsider").unwrap();
+            fs::write(format!("{}:foreign-note",leaf.display()),b"user annotation").unwrap();
+        }
+        ctl.cancel();
+        let error=thread.join().unwrap().unwrap_err();
+        assert!(error.contains("cancel"),"{error}");
+        if foreign {
+            assert!(error.contains("partial destination retained"),"{error}");
+            assert_eq!(fs::read(dest.join("external.txt")).unwrap(),b"outsider");
+            assert_eq!(fs::read(&leaf).unwrap(),b"owned contents");
+            assert_eq!(fs::read(format!("{}:foreign-note",leaf.display())).unwrap(),b"user annotation");
+            assert_eq!(fs::read_dir(dest.join("data")).unwrap().count(),1);
+        } else {assert!(!dest.exists(),"{error}");}
+    }
 }

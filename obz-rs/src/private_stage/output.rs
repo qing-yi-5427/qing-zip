@@ -72,7 +72,7 @@ fn effective_token() -> Result<Token, String> {
         Err(error("query output token"))
     }
 }
-fn control(sd: Handle) -> Result<u16, String> {
+pub(super) fn control(sd: Handle) -> Result<u16, String> {
     let (mut bits, mut revision) = (0, 0);
     if unsafe { GetSecurityDescriptorControl(sd, &mut bits, &mut revision) } == 0 {
         return Err(error("query output permission control"));
@@ -203,7 +203,7 @@ fn acl_entries(bytes: &[u8]) -> Result<&[u8], String> {
     }
     Ok(&bytes[8..end])
 }
-fn same_file_permissions(a: Handle, b: Handle) -> Result<bool, String> {
+pub(super) fn same_file_permissions(a: Handle, b: Handle) -> Result<bool, String> {
     // Allocation slack after the last ACE has no access semantics. Keep every
     // ACE byte, their order, and all protection/inheritance control flags.
     Ok((control(a)? ^ control(b)?) & 0x1400 == 0
@@ -280,7 +280,7 @@ fn ordinary_streams(file: &File) -> Result<Option<bool>, String> {
 fn only_default_stream(file: &File) -> Result<bool, String> {
     Ok(ordinary_streams(file)? == Some(false))
 }
-fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
     match ordinary_streams(file)? {
         Some(false) => Ok(None),
         Some(true) => crate::motw::output_marker(file)?
@@ -289,11 +289,14 @@ fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
         None => Err("unexpected private output stream".into()),
     }
 }
-fn metadata_handle(file: &File) -> Result<File, String> {
+pub(super) fn metadata_handle(file: &File, share: u32) -> Result<File, String> {
+    reopen(file, 0x20180, share)
+}
+pub(super) fn reopen(file: &File, access: u32, share: u32) -> Result<File, String> {
     // Metadata access is independent of default-stream read/write sharing.
     // Keep this precise identity available for metadata after closing the
     // exclusive writer. The ordinary publisher's callers never read its data.
-    let raw = unsafe { ReOpenFile(file.as_raw_handle(), 0x20180, 7, 0x00200000) };
+    let raw = unsafe { ReOpenFile(file.as_raw_handle(), access, share, 0x02200000) };
     if raw as isize == -1 {
         return Err(error("retain output metadata handle"));
     }
@@ -319,7 +322,7 @@ fn private_permissions(sid: &str) -> Result<Allocation, String> {
     }
     Ok(Allocation(raw))
 }
-fn info(file: &File) -> Result<[u32; 13], String> {
+pub(super) fn info(file: &File) -> Result<[u32; 13], String> {
     let mut value = [0; 13];
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), value.as_mut_ptr()) } == 0 {
         return Err(error("query private output identity"));
@@ -418,6 +421,23 @@ impl PrivateOutputFile {
         replace: bool,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
     ) -> Result<File, String> {
+        self.commit_journaled(target, replace, None, step)
+    }
+    pub(crate) fn commit_owned(
+        &mut self,
+        target: &Path,
+        journal: &crate::engine::PublicationJournal,
+    ) -> Result<File, String> {
+        self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()))
+    }
+    fn commit_journaled(
+        &mut self,
+        target: &Path,
+        replace: bool,
+        journal: Option<&crate::engine::PublicationJournal>,
+        step: &mut dyn FnMut(Step) -> Result<(), String>,
+    ) -> Result<File, String> {
+        let mut pending = None;
         if self.state != State::Private {
             return Err("output is no longer private".into());
         }
@@ -439,7 +459,7 @@ impl PrivateOutputFile {
             if !same_file_permissions(expected.0, live.0)? {
                 return Err("destination permissions changed; output was not published".into());
             }
-            let committed_handle = metadata_handle(self.as_file())?;
+            let committed_handle = metadata_handle(self.as_file(), 7)?;
             let marker = output_marker(self.as_file())?;
             let private = descriptor(self.as_file())?;
             step(Step::ApplyPermissions)?;
@@ -452,6 +472,9 @@ impl PrivateOutputFile {
                 if info(self.as_file())?[10] != 1 || output_marker(self.as_file())? != marker {
                     return Err("private output links or streams changed".into());
                 }
+                pending = journal
+                    .map(|_| OutputReceipt::capture(target, self.as_file()))
+                    .transpose()?;
                 rename(self.as_file(), &self.parent, &name, replace)
             })();
             if let Err(reason) = transition {
@@ -474,9 +497,15 @@ impl PrivateOutputFile {
         } else {
             // Single-stream media have no persistent DACL to restore.
             step(Step::ApplyPermissions)?;
+            pending = journal
+                .map(|_| OutputReceipt::capture(target, self.as_file()))
+                .transpose()?;
             rename(self.as_file(), &self.parent, &name, replace)?;
             self.state = State::Committed;
             self.path = target.to_owned();
+        }
+        if let (Some(journal), Some(receipt)) = (journal, pending) {
+            journal.record(receipt);
         }
         // No policy snapshot is applied after the public name exists.
         step(Step::AfterCommit)
@@ -547,53 +576,55 @@ impl PrivateOutputFile {
                 self.path.display()
             )
         })?;
-        let file = self.as_file();
-        let attrs = file
-            .metadata()
-            .map_err(|e| {
-                format!(
-                    "cleanup private output failed: {}: query attributes: {e}",
-                    self.path.display()
-                )
-            })?
-            .file_attributes();
-        if attrs & 1 != 0 {
-            let mut basic = [0u64; 5];
-            // Preserve inherited storage flags; clear only readonly.
-            basic[4] = u64::from(if attrs & !1 == 0 { 0x80 } else { attrs & !1 });
-            if unsafe {
-                SetFileInformationByHandle(file.as_raw_handle(), 0, basic.as_ptr().cast(), 40)
-            } == 0
-            {
-                return Err(format!(
-                    "cleanup private output failed: {}: {}",
-                    self.path.display(),
-                    error("clear readonly")
-                ));
-            }
-        }
-        let mut status = [0usize; 2];
-        let delete = 1u8;
-        let result = unsafe {
-            NtSetInformationFile(
-                file.as_raw_handle(),
-                status.as_mut_ptr(),
-                (&delete as *const u8).cast(),
-                1,
-                13,
-            )
-        };
-        if result < 0 {
-            return Err(format!(
-                "cleanup private output failed: {}: {}",
-                self.path.display(),
-                nt_error("delete owned output", result)
-            ));
-        }
+        discard_private_handle(self.as_file(), &self.path)?;
         self.state = State::Aborted;
         self.file.take();
         Ok(())
     }
+}
+pub(super) fn discard_private_handle(file: &File, path: &Path) -> Result<(), String> {
+    let attrs = file
+        .metadata()
+        .map_err(|e| {
+            format!(
+                "cleanup private output failed: {}: query attributes: {e}",
+                path.display()
+            )
+        })?
+        .file_attributes();
+    if attrs & 1 != 0 {
+        let mut basic = [0u64; 5];
+        // Preserve inherited storage flags; clear only readonly.
+        basic[4] = u64::from(if attrs & !1 == 0 { 0x80 } else { attrs & !1 });
+        if unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, basic.as_ptr().cast(), 40) }
+            == 0
+        {
+            return Err(format!(
+                "cleanup private output failed: {}: {}",
+                path.display(),
+                error("clear readonly")
+            ));
+        }
+    }
+    let mut status = [0usize; 2];
+    let delete = 1u8;
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            status.as_mut_ptr(),
+            (&delete as *const u8).cast(),
+            1,
+            13,
+        )
+    };
+    if result < 0 {
+        return Err(format!(
+            "cleanup private output failed: {}: {}",
+            path.display(),
+            nt_error("delete owned output", result)
+        ));
+    }
+    Ok(())
 }
 impl Drop for PrivateOutputFile {
     fn drop(&mut self) {
@@ -614,6 +645,17 @@ pub(super) fn create_archive_file(
     parent: &File,
 ) -> Result<PrivateOutputFile, String> {
     create_exclusive(parent_path, parent)
+}
+pub(super) fn private_name() -> Result<String, String> {
+    let mut random = [0u8; 16];
+    if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
+        return Err("cannot generate private output name".into());
+    }
+    let suffix = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok(format!(".qing-zip-output-{suffix}"))
 }
 fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFile, String> {
     if info(parent)?[0] & 0x410 != 0x10 {
@@ -636,15 +678,7 @@ fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFi
     };
     let parent_pin = parent.try_clone().map_err(|e| e.to_string())?;
     for _ in 0..16 {
-        let mut random = [0u8; 16];
-        if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
-            return Err("cannot generate private output name".into());
-        }
-        let suffix = random
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let name = format!(".qing-zip-output-{suffix}");
+        let name = private_name()?;
         let mut wide: Vec<u16> = name.encode_utf16().collect();
         let mut unicode = UnicodeString {
             length: (wide.len() * 2) as u16,
