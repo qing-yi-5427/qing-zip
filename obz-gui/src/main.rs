@@ -8,6 +8,7 @@ use obz_core::engine::{self, EngineOptions};
 mod jobs;
 mod desktop;
 mod drag;
+mod shell_compress;
 mod associations;
 mod preview;
 mod instance;
@@ -181,6 +182,13 @@ async fn dropped(path: String) -> Result<ArchiveView, String> {
 }
 
 fn main() {
+    if let Some(result) = shell_compress::startup() {
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     instance::queue_startup();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(instance::receive))
