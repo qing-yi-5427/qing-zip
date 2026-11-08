@@ -54,9 +54,13 @@ try{
   if($LASTEXITCODE -ne 0 -or $evidence.real_primary_pid -ne $ApplicationPid -or $evidence.invoked_for_files -ne 2){throw 'Shell invocation failed'}
   $dialog=Wait-Value 'creation dialog' {Find-Elem '新建压缩文件'}
   $dialogName=$dialog.Current.Name
+  $dialogCondition=[System.Windows.Automation.PropertyCondition]::new($automation::AriaRoleProperty,'dialog')
+  $dialogs=$script:root.FindAll($scope,$dialogCondition)
+  if($dialogs.Count -ne 1){throw "Expected one live modal dialog; got $($dialogs.Count)"}
+  $modal=$dialogs.Item(0)
   $count=Wait-Value '2 sources' { Find-Elem '2 个来源' }
   $rows=@(foreach($path in @($First,$Second)){
-    $item=Wait-Value "source $path" {Find-Elem $path}
+    $item=Wait-Value "source $path" {Find-Elem $path 'Name' $modal}
     if($item.Current.IsOffscreen){throw "Source offscreen: $path"}
     $item.Current.Name
   })
@@ -75,7 +79,7 @@ try{
   Click-Item $close
   Start-Sleep -Milliseconds 900
   if(Find-Elem 'oa-source-count' 'ID'){throw 'Another creation dialog opened'}
-  [ordered]@{primary_pid=$ApplicationPid;dialog_count=1;title=$dialogName;sources=$rows;output=$output;format='zip';created_with_integrity_check=$true} | ConvertTo-Json -Compress
+  [ordered]@{primary_pid=$ApplicationPid;dialog_count=$dialogs.Count;title=$dialogName;sources=$rows;output=$output;format='zip';created_with_integrity_check=$true} | ConvertTo-Json -Compress
 }catch{
   if($script:root){
     $list=$script:root.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)

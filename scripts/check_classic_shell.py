@@ -106,7 +106,8 @@ def real_dialog(exe, probe, dist):
             actual={f.relative_to(unpacked).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in unpacked.rglob('*') if f.is_file()}
             expected={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in [first,second]}
             assert actual==expected, (actual,expected)
-            result.update(source_commit=os.environ['GITHUB_SHA'],nana_sha256=hashlib.sha256(console[0].read_bytes()).hexdigest(),
+            result.update(source_commit=os.getenv('PACKAGE_SOURCE_COMMIT',os.environ['GITHUB_SHA']),test_commit=os.environ['GITHUB_SHA'],
+                          desktop_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),nana_sha256=hashlib.sha256(console[0].read_bytes()).hexdigest(),
                           extracted_files=actual,screenshot_sha256=hashlib.sha256(screenshot.read_bytes()).hexdigest())
             (dist/'shell-create-dialog.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf8')
             print(json.dumps(result),flush=True)
