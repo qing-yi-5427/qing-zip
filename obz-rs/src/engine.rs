@@ -343,12 +343,12 @@ fn run_program(
     let ctl = control(opts);
     ctl.check()?;
     if let Some(password) = &opts.password { crate::engine_password::validate(password)?; }
-    let logs = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    let errors = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
+    let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
     let capture = output.is_none();
     let stdout = match output {
         Some(f) => f,
-        None => logs.reopen().map_err(|e| e.to_string())?,
+        None => logs.try_clone().map_err(|e| e.to_string())?,
     };
     let mut guarded_args = args.to_vec();
     if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
@@ -359,7 +359,7 @@ fn run_program(
     cmd.args(&guarded_args)
         .stdin(if opts.password.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(errors.reopen().map_err(|e| e.to_string())?));
+        .stderr(Stdio::from(errors.as_file().try_clone().map_err(|e| e.to_string())?));
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -437,7 +437,8 @@ fn run_program(
     };
     let password_result = password_input.map(|input| input.finish()).unwrap_or(Ok(()));
     use std::io::{Seek, SeekFrom};
-    let mut logs = logs.reopen().map_err(|e| e.to_string())?;
+    // Child writers share these file positions. Rewind only after the child
+    // exits; the live progress reader above has an independent position.
     logs.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     logs.take(64 * 1024 * 1024 + 1)
@@ -447,7 +448,7 @@ fn run_program(
         return Err("engine listing exceeds supported limit".into());
     }
     if !status.success() {
-        let mut errors = errors.reopen().map_err(|e| e.to_string())?;
+        let errors = errors.as_file_mut();
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut err = String::new();
         errors.take(8192).read_to_string(&mut err).ok();
