@@ -8,6 +8,8 @@ mod bounded_archive_stage;
 mod zip_volume_view;
 mod zip_preview;
 pub use zip_preview::ZipPreviewBatch;
+#[cfg(windows)]
+pub use crate::engine_stream::canonical_input_path;
 pub(crate) use zip_volume_view::with_source as with_zip_source;
 use serde::{Deserialize, Serialize};
 use std::{

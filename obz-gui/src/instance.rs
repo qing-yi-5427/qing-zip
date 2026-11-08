@@ -34,20 +34,12 @@ pub fn canonical_archive_path(path: String) -> Result<String, String> {
     {
         return Err("无效的归档路径".into());
     }
-    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
-    use std::os::windows::fs::MetadataExt;
-    for parent in path.ancestors() {
-        let meta = std::fs::symlink_metadata(parent).map_err(|e| e.to_string())?;
-        if meta.file_attributes() & 0x400 != 0 {
-            return Err("归档路径不能包含链接或重解析点".into());
-        }
-    }
-    if !path.is_file() {
-        return Err("请选择普通压缩文件".into());
-    }
-    let path = path
-        .canonicalize()
-        .map_err(|e| e.to_string())?
+    canonical_spelling(Path::new(&path), false)
+}
+
+// Preserve the filesystem spelling of distinct names in case-sensitive directories.
+fn canonical_spelling(path: &Path, directory: bool) -> Result<String, String> {
+    let path = obz_core::engine::canonical_input_path(path, directory)?
         .to_string_lossy()
         .into_owned();
     if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
@@ -74,22 +66,9 @@ fn paths(args: impl IntoIterator<Item = String>, cwd: &Path, folders: bool) -> V
         } else {
             cwd.join(path)
         };
-        let Ok(path) = std::path::absolute(path) else {
-            continue;
-        };
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        use std::os::windows::fs::MetadataExt;
-        if (if folders {!meta.is_dir() || path.file_name().is_none()} else {!meta.is_file()}) || meta.file_attributes() & 0x400 != 0 {
-            continue;
-        }
-        if folders && path.ancestors().any(|p|std::fs::symlink_metadata(p).map(|m|m.file_attributes() & 0x400 != 0).unwrap_or(true)){continue;}
-        let path = path.to_string_lossy().into_owned();
-        if !result
-            .iter()
-            .any(|p: &String| p.eq_ignore_ascii_case(&path))
-        {
+        if folders && path.file_name().is_none() { continue; }
+        let Ok(path) = canonical_spelling(&path, folders) else { continue };
+        if !result.contains(&path) {
             result.push(path);
         }
     }
@@ -105,7 +84,7 @@ pub fn startup_paths() -> Vec<String> {
 fn enqueue(paths: &[String]) {
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     for path in paths {
-        if !pending.iter().any(|p| p.eq_ignore_ascii_case(path)) {
+        if !pending.contains(path) {
             pending.push(path.clone());
         }
     }
@@ -150,7 +129,7 @@ fn queue_arguments(args: Vec<String>, cwd: &Path) {
             let paths = paths(args, cwd, false);
             let mut pending = PENDING_EXTRACTIONS.lock().unwrap_or_else(|e| e.into_inner());
             for request in extraction_requests(paths, mode == StartupMode::SmartExtract) {
-                if pending.len() < 128 && !pending.iter().any(|p| p.smart == request.smart && p.path.eq_ignore_ascii_case(&request.path)) {
+                if pending.len() < 128 && !pending.iter().any(|p| p.smart == request.smart && p.path == request.path) {
                     pending.push(request);
                 }
             }
@@ -186,7 +165,7 @@ pub fn take_pending_archives() -> Vec<String> {
 }
 fn queue_folders(paths:Vec<String>){
     let mut pending=PENDING_FOLDERS.lock().unwrap_or_else(|e|e.into_inner());
-    for path in paths {if pending.len()<128 && !pending.iter().any(|p|p.eq_ignore_ascii_case(&path)){pending.push(path);}}
+    for path in paths {if pending.len()<128 && !pending.contains(&path){pending.push(path);}}
 }
 #[tauri::command]
 pub fn take_pending_folders()->Vec<String>{std::mem::take(&mut *PENDING_FOLDERS.lock().unwrap_or_else(|e|e.into_inner()))}
@@ -274,10 +253,39 @@ mod tests {
         assert!(result[0].ends_with("a.zip"));
     }
     #[test]
+    fn shell_paths_do_not_resolve_through_a_junction() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("real");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("sample.zip"), b"x").unwrap();
+        let link = root.path().join("link");
+        let made = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
+            .arg(&link).arg(&target).output().unwrap();
+        assert!(made.status.success());
+        assert!(canonical_spelling(&link, true).is_err());
+        assert!(canonical_archive_path(link.join("sample.zip").display().to_string()).is_err());
+        assert!(paths(["app", "link/sample.zip"].map(str::to_owned), root.path(), false).is_empty());
+    }
+    #[test]
+    fn separate_case_sensitive_archives_survive_argument_collection() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path();
+        let enabled = std::process::Command::new("fsutil").args(["file", "setCaseSensitiveInfo"])
+            .arg(path).arg("enable").output().unwrap();
+        if !enabled.status.success() { return; } // Host volume does not support per-directory case sensitivity.
+        std::fs::write(path.join("Pack.zip"), b"upper").unwrap();
+        std::fs::File::create_new(path.join("pack.zip")).unwrap();
+        let found = paths(["app", "Pack.zip", "pack.zip", "Pack.zip"].map(str::to_owned), path, false);
+        assert_eq!(found.len(), 2);
+        let requests = extraction_requests(found, false);
+        assert_eq!(requests.len(), 2);
+        assert_ne!(requests[0].path, requests[1].path);
+    }
+    #[test]
     fn pending_arguments_survive_until_drained_once() {
         let _ = take_pending_archives();
         enqueue(&["C:\\one.zip".into()]);
-        enqueue(&["C:\\ONE.zip".into(), "C:\\two.7z".into()]);
+        enqueue(&["C:\\one.zip".into(), "C:\\two.7z".into()]);
         assert_eq!(take_pending_archives().len(), 2);
         assert!(take_pending_archives().is_empty());
     }

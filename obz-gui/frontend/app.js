@@ -582,7 +582,7 @@ root.addEventListener('wheel',e=>{if(!e.ctrlKey||s.page!=='files'||!s.archive||!
 
 
 const TAB_FIELDS=['archive','entries','password','codepage','folder','search','sort','reverse','selected','collapsed','anchor','cursor','focusFile','listStyle','iconSize','lastDest'];
-function archiveKey(path){return String(path).replaceAll('/','\\').replace(/^\\\\\?\\/,'').toLocaleLowerCase();}
+function archiveKey(path){return String(path).replaceAll('/','\\').replace(/^\\\\\?\\/,'').replace(/^[a-z]:/, drive=>drive.toUpperCase());}
 let recentContextPath='',recentContextRow=null;
 function showRecentDialog(){dialog('最近的文件',s.recent.map((p,i)=>`<button class="qa-recent-row" data-recent="${i}">${esc(p)}</button>`).join('')||'<p>没有最近记录</p>',btn('清空记录','clear-recent')+btn('关闭','close'));overlay.dataset.page='recent';}
 function updateRecent(paths){const inDialog=overlay.dataset.page==='recent';s.recent=paths;localStorage.setItem('qing-recent',JSON.stringify(s.recent));$('oa-menu').hidden=true;render();if(inDialog)showRecentDialog();}

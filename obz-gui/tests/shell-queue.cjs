@@ -1,7 +1,7 @@
 // Pure queue model tests. These do not claim Explorer or desktop GUI clicks.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
-const names=['canRecycleArchive','finishExtraction','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
+const names=['archiveKey','canRecycleArchive','finishExtraction','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
 function fixture(options={}){
@@ -11,7 +11,7 @@ function fixture(options={}){
   s:{archive:'',password:'',codepage:null,overwrite:'error',recycleAfter:false,openAfter:false,closeAfter:false,jobs:[],recent:[],view:'jobs',...options},
   pendingShellExtractions:[],pendingFolders:[],pendingFileGroups:[],pendingArchivePaths:[],archiveTabs:[],
   shellQueueRunning:false,shellQueuePaused:false,shellQueueInterrupted:false,shellActiveRequest:null,shellPasswordRequest:null,openQueueRunning:false,drainingNativeQueue:false,nativeDrainAgain:false,
-  overlay:{hidden:true,dataset:{}},archiveKey:p=>(p||'').replaceAll('/','\\').toLowerCase(),filename:p=>p.split(/[\\/]/).at(-1),
+  overlay:{hidden:true,dataset:{}},filename:p=>p.split(/[\\/]/).at(-1),
   esc:x=>String(x),btn:(label,action)=>`<button data-action="${action}">${label}</button>`,
   renderProgress:()=>{},render:()=>{},renderArchiveTabs:()=>{},toast:x=>calls.push(['toast',x]),error:e=>errors.push(String(e)),
   localStorage:{setItem:(key,value)=>calls.push(['storage',key,value])},discardArchiveTab:(path)=>calls.push(['discard',path]),
@@ -117,9 +117,11 @@ test('pending native opens or compression requests prevent automatic window clos
   await f.context.pumpShellExtractions();assert.equal(f.calls.some(c=>c[0]==='window_action'),false);
  }
 });
-test('case-insensitive duplicate suppression retains different extraction modes',()=>{
- const f=fixture();f.queue('C:\\archives\\one.zip');f.queue('c:\\ARCHIVES\\ONE.zip');f.queue('C:\\archives\\one.zip',false);
- assert.equal(f.context.pendingShellExtractions.length,2);
+test('canonical duplicate requests collapse while distinct case and extraction modes survive',()=>{
+ const f=fixture();
+ f.queue('C:\\archives\\one.zip');f.queue('c:/archives/one.zip');
+ f.queue('C:\\archives\\ONE.zip');f.queue('C:\\archives\\one.zip',false);
+ assert.equal(f.context.pendingShellExtractions.length,3);
 });
 test('recycle failure prevents auto-close and pauses subsequent tasks',async()=>{
  const f=fixture({recycleAfter:true,closeAfter:true});f.queue('C:\\archives\\one.zip');f.queue('C:\\archives\\two.zip');
