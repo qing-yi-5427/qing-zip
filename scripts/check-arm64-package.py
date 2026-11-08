@@ -81,7 +81,14 @@ def check_runner_associations(fixture):
 
 def shortcut_target(link):
     env=dict(os.environ,QING_CI_SHORTCUT=str(link))
-    command="[Console]::OutputEncoding=[Text.Encoding]::UTF8; (New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT).TargetPath"
+    # WScript.Shell silently returns an empty target for shortcut names outside
+    # the system ANSI code page. Inspect the existing Unicode shell item.
+    command="""[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$path=$env:QING_CI_SHORTCUT
+$folder=(New-Object -ComObject Shell.Application).NameSpace([IO.Path]::GetDirectoryName($path))
+$item=$folder.ParseName([IO.Path]::GetFileName($path))
+if (-not $item.IsLink) { throw 'Expected an existing shell link' }
+$item.GetLink.Path"""
     return Path(subprocess.check_output(['powershell','-NoProfile','-Command',command],env=env).decode('utf8').strip())
 
 @contextmanager
@@ -158,9 +165,13 @@ def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp, scratch
     assert desktop.is_dir() and not shortcuts.exists() and not desktop_link.exists()
     shortcuts.mkdir()
     def create_link(path, arguments):
-        env=dict(os.environ,QING_CI_SHORTCUT=str(path),QING_CI_TARGET=str(portable),QING_CI_ARGUMENTS=arguments)
-        command="$link=(New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT);$link.TargetPath=$env:QING_CI_TARGET;$link.Arguments=$env:QING_CI_ARGUMENTS;$link.Save()"
-        subprocess.run(['powershell','-NoProfile','-Command',command],check=True,env=env)
+        with tempfile.TemporaryDirectory(dir=scratch) as temp:
+            staged=Path(temp)/'portable.lnk'
+            env=dict(os.environ,QING_CI_SHORTCUT=str(staged),QING_CI_TARGET=str(portable),QING_CI_ARGUMENTS=arguments)
+            command="$link=(New-Object -ComObject WScript.Shell).CreateShortcut($env:QING_CI_SHORTCUT);$link.TargetPath=$env:QING_CI_TARGET;$link.Arguments=$env:QING_CI_ARGUMENTS;$link.Save()"
+            subprocess.run(['powershell','-NoProfile','-Command',command],check=True,env=env)
+            shutil.copyfile(staged,path)
+        assert shortcut_target(path).samefile(portable)
         return sha(path)
     before = {start:create_link(start,'--user-start'), desktop_link:create_link(desktop_link,'--user-desktop')}
     run([setup,'/S'])
