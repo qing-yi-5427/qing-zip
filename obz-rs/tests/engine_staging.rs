@@ -687,3 +687,60 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
     }
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn cancelled_bulk_publication_with_reopened_receipts_preserves_only_foreign_changes() {
+    use std::{io::Write,thread,time::{Duration,Instant}};
+    let temp=tempfile::tempdir().unwrap();
+    let archive=temp.path().join("cancel.zip");
+    let mut zip=zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for index in 0..3200 {
+        zip.start_file(format!("files/{index:04}.txt"),zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)).unwrap();
+        zip.write_all(b"original").unwrap();
+    }
+    drop(zip.finish().unwrap());
+    for changes in [false,true] {
+        let output=temp.path().join(format!("fresh-{changes}"));
+        let control=engine::JobControl::new();
+        let ctl=control.clone();let source=archive.clone();let target=output.clone();
+        let job=thread::spawn(move ||engine::extract(&p(&source),&p(&target),
+            &EngineOptions{control:Some(ctl),..EngineOptions::default()}));
+        let deadline=Instant::now()+Duration::from_secs(45);
+        let dir=output.join("files");
+        let mut paths=Vec::new();
+        while paths.len()<4 {
+            if job.is_finished(){panic!("worker ended before spill: {:?}",job.join());}
+            assert!(Instant::now()<deadline,"no compact receipts");
+            if dir.join("0500.txt").exists() {
+                paths=(200..500).map(|i|dir.join(format!("{i:04}.txt")))
+                    .filter(|p|fs::OpenOptions::new().read(true).write(true).open(p).is_ok()).take(4).collect();
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        if changes {
+            let t=fs::metadata(&paths[0]).unwrap().modified().unwrap();
+            fs::write(&paths[0],b"changed!").unwrap();
+            fs::File::options().write(true).open(&paths[0]).unwrap().set_modified(t).unwrap();
+            fs::remove_file(&paths[1]).unwrap();
+            fs::write(&paths[1],b"original").unwrap();
+            fs::write(format!("{}:notes",paths[2].display()),b"my notes").unwrap();
+            fs::write(&paths[3],b"changed!").unwrap();fs::write(&paths[3],b"original").unwrap();
+            fs::write(output.join("extra"),b"foreign").unwrap();
+        }
+        control.cancel();
+        let err=job.join().unwrap().unwrap_err();
+        assert!(err.contains("cancel"),"{err}");
+        if changes {
+            assert!(err.contains("partial destination retained"),"{err}");
+            assert_eq!(fs::read_dir(&dir).unwrap().count(),4,"{err}");
+            for f in &paths {assert!(f.is_file());}
+            assert_eq!(fs::read(&paths[0]).unwrap(),b"changed!");
+            assert_eq!(fs::read(format!("{}:notes",paths[2].display())).unwrap(),b"my notes");
+            assert_eq!(fs::read(output.join("extra")).unwrap(),b"foreign");
+        } else {
+            assert!(!output.exists(),"{err}");
+        }
+    }
+}
