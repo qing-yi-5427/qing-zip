@@ -753,7 +753,7 @@ fn unsupported_utc_listing_switch(error: &str) -> bool {
 fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     control(opts).check()?;
     let mut source = crate::engine_stream::pin(&absolute(path)?)?;
-    list_raw_with_source(path, opts, &mut source).map(|(entries, _)| entries)
+    read_directory(path, opts, &mut source, true).map(|(entries, _)| entries)
 }
 enum PayloadSource {
     Engine,
@@ -761,6 +761,12 @@ enum PayloadSource {
     VerifiedZeal(MemoryFiles),
 }
 fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, PayloadSource), String> {
+    read_directory(path, opts, source, false)
+}
+
+fn read_directory(
+    path: &str, opts: &EngineOptions, source: &mut File, overlap_allowed: bool,
+) -> Result<(Vec<Entry>, PayloadSource), String> {
     let _timer = PhaseTimer::new("list-total");
     let ctl = control(opts);
     ctl.set("listing", None, "Reading archive directory");
@@ -781,7 +787,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         absolute(path)?.display().to_string(),
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
-    let overlap = !candidate && opts.password.is_none() && cfg!(windows)
+    let overlap = overlap_allowed && !candidate && opts.password.is_none() && cfg!(windows)
         && Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
         && directory_capture::large_zip_hint(source);
     let (mut log, live_entries) = run_technical_listing_with_directory(&mut args, opts, candidate, overlap)?;
