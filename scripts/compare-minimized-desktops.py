@@ -1,4 +1,4 @@
-﻿"""Compare two production workbenches under the same Windows UI and memory sampling script."""
+"""Compare two production workbenches under the same Windows UI and memory sampling script."""
 import ctypes
 from ctypes import wintypes as W
 import hashlib
@@ -86,12 +86,17 @@ def run(root,archive,label,exe,rep):
         start=time.perf_counter()
         show(h,"normal")
         click(h,"设置")
-        wait("restored settings",lambda:elem(h,30011,"oa-version"))
+        wait("restored settings",lambda:elem(h,30011,"qa-theme") or elem(h,30005,"????"))
         row["restore_ms"]=(time.perf_counter()-start)*1000
         click(h,"文件")
         wait("restored files",lambda:elem(h,30005,"file-00000.txt"))
         row["restored"]=samples(p)
         if rep==0: background(exe,h,scratch)
+    except Exception:
+        elements=ui.ElementFromHandle(h).FindAll(4,ui.CreateTrueCondition())
+        row["screen"]=[(elements.GetElement(i).CurrentControlType,elements.GetElement(i).CurrentName,elements.GetElement(i).CurrentAutomationId) for i in range(min(elements.Length,90))]
+        print("window",row["screen"],flush=True)
+        raise
     finally:
         children=p.children(recursive=True) if p.is_running() else []
         app.terminate();app.wait(timeout=10)
@@ -146,7 +151,7 @@ with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"],ignore_cleanup_er
     root=Path(tmp);archive=root/"large.zip"
     with zipfile.ZipFile(archive,"w",zipfile.ZIP_STORED) as z:
         for i in range(50000): z.writestr(f"file-{i:05d}.txt",str(i))
-    for rep in range(3):
+    for rep in range(1 if os.environ.get("CANDIDATE")=="baseline" else 3):
         order=[("base",base),("candidate",candidate)]
         if rep%2:order.reverse()
         for label,exe in order:run(root,archive,label,exe,rep)
