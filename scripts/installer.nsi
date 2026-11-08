@@ -98,6 +98,15 @@ Section /o "资源管理器右键入口" Shell
  ${EndIf}
 SectionEnd
 Section "Uninstall"
+ ReadRegStr $0 HKCU "Software\Classes\CLSID\{B1031E9C-F2AA-4658-8932-E2596415A942}\LocalServer32" ""
+ ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" --shell-compress-server'
+  ClearErrors
+  ExecWait '$\"$INSTDIR\qing-zip.exe$\" --unregister-compress-menu' $0
+  ${If} ${Errors}
+  ${OrIf} $0 != 0
+   DetailPrint "无法清理文件压缩右键入口，继续卸载程序。"
+  ${EndIf}
+ ${EndIf}
  ReadRegStr $0 HKCU "Software\Classes\*\shell\qing-zip\command" ""
  ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" $\"%1$\"'
   DeleteRegKey HKCU "Software\Classes\*\shell\qing-zip"
