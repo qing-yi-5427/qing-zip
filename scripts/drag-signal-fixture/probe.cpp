@@ -4,6 +4,7 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 #include <cstdio>
+#include <initializer_list>
 using Microsoft::WRL::ComPtr;
 static PCWSTR source;
 static void sample(IDataObject* data,IDataObjectAsyncCapability* async) {
@@ -44,3 +45,4 @@ int wmain(int argc,wchar_t** argv){
  HWND h=CreateWindowExW(WS_EX_TOPMOST,wc.lpszClassName,L"Qing signal fixture",WS_OVERLAPPEDWINDOW|WS_VISIBLE,0,0,260,240,nullptr,nullptr,wc.hInstance,nullptr);
  if(!h)return 4;MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}DestroyWindow(h);OleUninitialize();return (int)msg.wParam;
 }
+
