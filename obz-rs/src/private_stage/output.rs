@@ -17,6 +17,7 @@ extern "system" {
         filesystem_size: u32,
     ) -> i32;
     fn GetFileInformationByHandle(file: Handle, information: *mut u32) -> i32;
+    fn ReOpenFile(file: Handle, access: u32, share: u32, flags: u32) -> Handle;
     fn SetFileInformationByHandle(file: Handle, class: i32, info: *const c_void, size: u32) -> i32;
 }
 #[link(name = "Advapi32")]
@@ -208,7 +209,7 @@ fn same_file_permissions(a: Handle, b: Handle) -> Result<bool, String> {
     Ok((control(a)? ^ control(b)?) & 0x1400 == 0
         && acl_entries(&acl_bytes(a)?)? == acl_entries(&acl_bytes(b)?)?)
 }
-fn only_default_stream(file: &File) -> Result<bool, String> {
+fn ordinary_streams(file: &File) -> Result<Option<bool>, String> {
     #[link(name = "Kernel32")]
     extern "system" {
         fn GetFileInformationByHandleEx(file: Handle, class: i32, data: *mut u32, size: u32)
@@ -227,7 +228,7 @@ fn only_default_stream(file: &File) -> Result<bool, String> {
     {
         let e = io::Error::last_os_error();
         return if matches!(e.raw_os_error(), Some(38 | 122 | 234)) {
-            Ok(false)
+            Ok(None)
         } else {
             Err(format!("query archive streams: {e}"))
         };
@@ -238,13 +239,65 @@ fn only_default_stream(file: &File) -> Result<bool, String> {
             std::mem::size_of_val(&aligned),
         )
     };
-    let name = "::$DATA"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    Ok(bytes[..4] == [0; 4]
-        && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize == name.len()
-        && bytes[24..24 + name.len()] == name)
+    let mut offset = 0;
+    let mut data = false;
+    let mut zone = false;
+    loop {
+        let record = bytes
+            .get(offset..)
+            .filter(|r| r.len() >= 24)
+            .ok_or("invalid file stream record")?;
+        let next = u32::from_le_bytes(record[..4].try_into().unwrap()) as usize;
+        let length = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
+        let name = record
+            .get(24..)
+            .and_then(|v| v.get(..length))
+            .ok_or("invalid file stream name")?;
+        let matches = |s: &str| {
+            name.iter()
+                .copied()
+                .eq(s.encode_utf16().flat_map(u16::to_le_bytes))
+        };
+        if !data && matches("::$DATA") {
+            data = true;
+        } else if !zone && matches(":Zone.Identifier:$DATA") {
+            zone = true;
+        } else {
+            return Ok(None);
+        }
+        if next == 0 {
+            break;
+        }
+        if next % 8 != 0 || next < 24 + length {
+            return Err("invalid file stream offset".into());
+        }
+        offset = offset
+            .checked_add(next)
+            .ok_or("invalid file stream offset")?;
+    }
+    Ok(data.then_some(zone))
+}
+fn only_default_stream(file: &File) -> Result<bool, String> {
+    Ok(ordinary_streams(file)? == Some(false))
+}
+fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
+    match ordinary_streams(file)? {
+        Some(false) => Ok(None),
+        Some(true) => crate::motw::output_marker(file)?
+            .map(Some)
+            .ok_or("output zone stream disappeared".into()),
+        None => Err("unexpected private output stream".into()),
+    }
+}
+fn metadata_handle(file: &File) -> Result<File, String> {
+    // Metadata access is independent of default-stream read/write sharing.
+    // Keep this precise identity available for metadata after closing the
+    // exclusive writer. The ordinary publisher's callers never read its data.
+    let raw = unsafe { ReOpenFile(file.as_raw_handle(), 0x20180, 7, 0x00200000) };
+    if raw as isize == -1 {
+        return Err(error("retain output metadata handle"));
+    }
+    Ok(unsafe { File::from_raw_handle(raw) })
 }
 
 fn private_permissions(sid: &str) -> Result<Allocation, String> {
@@ -380,26 +433,54 @@ impl PrivateOutputFile {
             return Err("output parent changed".into());
         }
         step(Step::BeforeCommit)?;
-        rename(self.as_file(), &self.parent, &name, replace)?;
-        // This is the commit boundary. No error below may delete the target,
-        // retry a copy, or cause the source archive to be recycled as success.
-        self.state = State::Committed;
-        self.path = target.to_owned();
-        step(Step::AfterCommit)
-            .and_then(|_| step(Step::ApplyPermissions))
-            .and_then(|_| {
-                if let Some(permissions) = &self.permissions {
-                    apply_native(self.as_file(), permissions)
-                } else {
-                    Ok(())
+        if let Some(expected) = &self.permissions {
+            let token = effective_token()?;
+            let live = ordinary_permissions(&self.parent, &token)?;
+            if !same_file_permissions(expected.0, live.0)? {
+                return Err("destination permissions changed; output was not published".into());
+            }
+            let committed_handle = metadata_handle(self.as_file())?;
+            let marker = output_marker(self.as_file())?;
+            let private = descriptor(self.as_file())?;
+            step(Step::ApplyPermissions)?;
+            let transition = (|| {
+                apply_native(self.as_file(), &live)?;
+                let fresh = ordinary_permissions(&self.parent, &token)?;
+                if !same_file_permissions(live.0, fresh.0)? {
+                    return Err("destination permissions changed; output was not published".into());
                 }
-            })
-            .map_err(|e| {
-                format!(
-                    "output was committed but permission restoration failed: {}: {e}",
-                    target.display()
-                )
-            })?;
+                if info(self.as_file())?[10] != 1 || output_marker(self.as_file())? != marker {
+                    return Err("private output links or streams changed".into());
+                }
+                rename(self.as_file(), &self.parent, &name, replace)
+            })();
+            if let Err(reason) = transition {
+                // Restore the protected scratch permissions while the data
+                // stream is still held exclusively, including collision paths.
+                let status = unsafe {
+                    NtSetSecurityObject(self.as_file().as_raw_handle(), 0x80000004, private.0)
+                };
+                if status < 0 {
+                    let cleanup = self.abort();
+                    return Err(format!(
+                        "{reason}; restoring private output failed; cleanup: {cleanup:?}"
+                    ));
+                }
+                return Err(reason);
+            }
+            self.state = State::Committed;
+            self.path = target.to_owned();
+            self.file = Some(committed_handle);
+        } else {
+            // Single-stream media have no persistent DACL to restore.
+            step(Step::ApplyPermissions)?;
+            rename(self.as_file(), &self.parent, &name, replace)?;
+            self.state = State::Committed;
+            self.path = target.to_owned();
+        }
+        // No policy snapshot is applied after the public name exists.
+        step(Step::AfterCommit)
+            .map_err(|e| format!("output was committed: {}: {e}", target.display()))?;
         self.state = State::Finalized;
         Ok(self.file.take().expect("committed output handle"))
     }
@@ -526,19 +607,15 @@ pub(crate) fn create_output(
     parent_path: &Path,
     parent: &File,
 ) -> Result<PrivateOutputFile, String> {
-    create_with_sharing(parent_path, parent, false)
+    create_exclusive(parent_path, parent)
 }
 pub(super) fn create_archive_file(
     parent_path: &Path,
     parent: &File,
 ) -> Result<PrivateOutputFile, String> {
-    create_with_sharing(parent_path, parent, true)
+    create_exclusive(parent_path, parent)
 }
-fn create_with_sharing(
-    parent_path: &Path,
-    parent: &File,
-    exclusive: bool,
-) -> Result<PrivateOutputFile, String> {
+fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFile, String> {
     if info(parent)?[0] & 0x410 != 0x10 {
         return Err("invalid private output parent".into());
     }
@@ -595,11 +672,7 @@ fn create_with_sharing(
                 &mut status,
                 std::ptr::null(),
                 0x80,
-                if mode == Mode::PrivateAcl && !exclusive {
-                    1
-                } else {
-                    0
-                },
+                0,
                 2,
                 0x200060,
                 std::ptr::null_mut(),
@@ -988,8 +1061,8 @@ mod tests {
                         }
                     })
                     .unwrap_err();
-                assert_private(output.as_file());
-                if failure == Step::BeforeCommit {
+                if failure != Step::AfterCommit {
+                    assert_private(output.as_file());
                     assert!(!message.contains("was committed"));
                     if replace {
                         assert_eq!(fs::read(&target).unwrap(), b"old");
@@ -999,12 +1072,48 @@ mod tests {
                     output.abort().unwrap();
                     assert!(!scratch.exists());
                 } else {
-                    assert!(message.contains("was committed but permission restoration failed"));
+                    assert!(message.contains("was committed"));
                     output.abort().unwrap(); // Postcommit abort MUST NOT remove the target.
                     assert_eq!(fs::read(&target).unwrap(), b"new");
                     assert!(!scratch.exists());
                     drop(output);
                     assert_eq!(fs::read(&target).unwrap(), b"new");
+                }
+            }
+        }
+    }
+    #[test]
+    fn revoking_inherited_read_before_or_during_finalization_preserves_existing_contents() {
+        let user = current_sid(&effective_token().unwrap()).unwrap();
+        let base = format!("D:PAI(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        for replace in [false, true] {
+            for revoke in [Step::BeforeCommit, Step::ApplyPermissions] {
+                let root = tempfile::tempdir().unwrap();
+                let parent = open_parent(root.path());
+                policy(&parent, &format!("{base}(A;OICI;FR;;;LS)"));
+                let target = root.path().join("final.txt");
+                if replace {
+                    fs::write(&target, b"original").unwrap();
+                }
+                let mut output = create_output(root.path(), &parent).unwrap();
+                output.as_file_mut().write_all(b"unpublished").unwrap();
+                let scratch = output.path().to_owned();
+                let error = output
+                    .commit_with(&target, replace, &mut |step| {
+                        if step == revoke {
+                            policy(&parent, &base);
+                        }
+                        Ok(())
+                    })
+                    .unwrap_err();
+                assert!(error.contains("permissions changed"));
+                assert_private(output.as_file());
+                output.abort().unwrap();
+                assert!(!scratch.exists());
+                if replace {
+                    assert_eq!(fs::read(&target).unwrap(), b"original");
+                } else {
+                    assert!(!target.exists());
                 }
             }
         }
@@ -1022,7 +1131,14 @@ mod tests {
         assert!(error.contains(&path.display().to_string()));
         assert!(error.contains("cleanup private output failed"));
         assert_private(output.as_file());
-        assert_eq!(fs::read(&path).unwrap(), b"unpublished");
+        // The private writer also denies separate opens of its default stream.
+        assert!(fs::read(&path).is_err());
+        let mut contents = [0; 11];
+        assert_eq!(
+            std::os::windows::fs::FileExt::seek_read(output.as_file(), &mut contents, 0).unwrap(),
+            contents.len()
+        );
+        assert_eq!(&contents, b"unpublished");
         output.abort().unwrap();
         assert!(!path.exists());
     }
