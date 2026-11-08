@@ -10,6 +10,10 @@ on:
         description: Successful official x64 build for candidate, empty for baseline-only
         required: false
         type: string
+      edit_contention:
+        description: Also race the real CLI against writes and forced termination
+        type: boolean
+        default: false
       asset:
         description: Exact x64 release draft asset ID, tested with read-only short-lived grant
         type: string
@@ -100,6 +104,8 @@ jobs:
           python -m pip install pywinauto==0.6.9
       - name: Create uniquely backed image, revalidate device and exercise real archive operations
         shell: pwsh
+        env:
+          QING_FAT_CONTENTION: ${{ inputs.edit_contention }}
         run: ./scripts/check-hosted-vhd.ps1 -FileSystem '${{ matrix.filesystem }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
