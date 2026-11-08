@@ -26,7 +26,10 @@ int wmain() {
     {
         auto zip = shell_item(archive), text = shell_item(ordinary), directory = shell_item(folder);
         std::vector<std::wstring> found;
-        assert(selection(zip.Get(), qing::Action::SmartExtract, &found) == S_OK && found.size() == 1 && found[0] == archive.wstring());
+        assert(selection(zip.Get(), qing::Action::SmartExtract, &found) == S_OK);
+        assert(found.size() == 1);
+        // The shell can expand an 8.3 component in the runner's TEMP path.
+        assert(std::filesystem::equivalent(found.front(), archive));
         assert(selection(zip.Get(), qing::Action::ExtractHere, nullptr) == S_OK);
         assert(selection(zip.Get(), qing::Action::Open, nullptr) == S_OK);
         assert(FAILED(selection(zip.Get(), qing::Action::Compress, nullptr)));
