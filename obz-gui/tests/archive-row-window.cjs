@@ -26,7 +26,7 @@ function viewFixture(count=50000){
       }
     }
   }
-  const viewport={scrollTop:0,clientWidth:900,clientHeight:320,listeners:new Map(),getBoundingClientRect:()=>({top:0,bottom:320}),
+  const viewport={scrollTop:0,querySelector:()=>null,clientWidth:900,clientHeight:320,listeners:new Map(),getBoundingClientRect:()=>({top:0,bottom:320}),
     addEventListener(k,fn){this.listeners.set(k,fn)},removeEventListener(k){this.listeners.delete(k)}};
   const table=new Element(),header=new Element(),body=new Element();table.insertBefore(header,null);table.insertBefore(body,null);
   header.getBoundingClientRect=()=>({bottom:84-viewport.scrollTop});
@@ -52,6 +52,16 @@ test('50000 detail rows stay bounded through scrolling and logical End/Home focu
   f.setCursor(last);f.window.reveal(last);assert.ok(f.window.nodes.has(last));assert.equal(f.window.nodes.get(last).attributes['aria-rowindex'],'50001');
   f.setCursor(0);f.window.reveal(0);assert.ok(f.window.nodes.has(0));assert.ok(!f.window.nodes.has(last));
   f.viewport.listeners.get('scroll')();f.window.stop();assert.equal(f.frames.size,0);assert.equal(f.viewport.listeners.size,0);assert.equal(f.observer.watched.size,0);
+});
+test('keyboard navigation keeps the target row between the sticky controls',()=>{
+  const f=viewFixture();
+  f.viewport.querySelector=selector=>selector==='.qa-path'
+    ? {getBoundingClientRect:()=>({bottom:45})}
+    : {getBoundingClientRect:()=>({top:260})};
+  f.setCursor(49999);f.window.reveal(49999);
+  assert.equal(f.window.heights.before(50000)-f.window.visibleTop(),260);
+  f.setCursor(0);f.window.reveal(0);
+  assert.equal(f.window.heights.before(0)-f.window.visibleTop(),45);
 });
 test('wrapped rows change cumulative height and are remeasured after a width change',()=>{
   const f=viewFixture(1000);f.sizes.set(0,112);f.observer.fn();f.advance();

@@ -151,8 +151,14 @@ class ArchiveRowWindow {
   }
   reveal(index) {
     const top = this.visibleTop(), start = this.heights.before(index), end = this.heights.before(index + 1);
-    if (start < top) this.viewport.scrollTop += start - top;
-    else if (end > top + this.viewport.clientHeight) this.viewport.scrollTop += end - top - this.viewport.clientHeight;
+    const bounds = this.viewport.getBoundingClientRect();
+    const pathBar = this.viewport.querySelector('.qa-path');
+    const actions = this.viewport.querySelector('.oa-selection-actions:not([hidden])');
+    const insetTop = pathBar ? Math.max(0, pathBar.getBoundingClientRect().bottom - bounds.top) : 0;
+    const insetBottom = actions ? Math.max(0, bounds.bottom - actions.getBoundingClientRect().top) : 0;
+    const visibleStart = top + insetTop, visibleEnd = top + this.viewport.clientHeight - insetBottom;
+    if (start < visibleStart) this.viewport.scrollTop += start - visibleStart;
+    else if (end > visibleEnd) this.viewport.scrollTop += end - visibleEnd;
     this.paint();
   }
 }
