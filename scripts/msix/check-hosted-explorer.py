@@ -79,10 +79,10 @@ def settings(on):
             main=desktop.window(handle=next(w.handle for w in desktop.windows(process=app.pid) if w.class_name()=='Tauri Window')).wrapper_object()
             def named(text):
                 return next((w for w in main.descendants() if text in w.window_text()),None)
-            tab=wait(lambda:named("??"),12)
+            tab=wait(lambda:named("设置"),12)
             try:tab.iface_invoke.Invoke()
             except Exception:tab.click_input()
-            checkbox=wait(lambda:named("???????"),12)
+            checkbox=wait(lambda:named("文件夹右键显示"),12)
             if bool(command(folder_reg))!=on:
                 try:checkbox.iface_toggle.Toggle()
                 except Exception:checkbox.click_input()
@@ -203,11 +203,12 @@ def explorer_item(path):
 def menuitems():
     foreground=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
     items=[]
-    for w in foreground.descendants(control_type='MenuItem'):
+    for w in foreground.descendants():
+        if w.element_info.control_type!='MenuItem':continue
         try:
             box=w.rectangle()
-            if box.right>box.left and box.bottom>box.top:
-                items.append((w.window_text(),((box.left+box.right)//2,(box.top+box.bottom)//2)))
+            xy=((box.left+box.right)//2,(box.top+box.bottom)//2) if box.right>box.left and box.bottom>box.top else None
+            items.append((w.window_text(),xy))
         except Exception:pass
     return items
 def relevant(items):
@@ -218,25 +219,31 @@ def first_menu(path,label):
     time.sleep(.65)
     items=menuitems(); names=[n for n,xy in items]
     report['menus'][label]=names;shots(label);save()
-    if not any('more options' in n.lower() or '????' in n for n in names):
+    if not any('more options' in n.lower() or '更多选项' in n for n in names):
         fg=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
         report['foreground']={'class':fg.class_name(),'title':fg.window_text(),'elements':[(w.element_info.control_type,w.window_text()) for w in fg.descendants()][:140]};save()
     assert any('more options' in n.lower() or '更多选项' in n for n in names),(label,names)
     return items
 def act(items,label,target):
-    def named(parts):return next((xy for n,xy in parts if target in n),None)
-    where=named(items)
-    if not where:
+    def find(parts):return next(((n,xy) for n,xy in parts if target in n),None)
+    def trigger(name,xy):
+        if xy:
+            mouse.click(coords=xy);return
+        win=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
+        item=next(w for w in win.descendants() if w.element_info.control_type=="MenuItem" and w.window_text()==name)
+        item.iface_invoke.Invoke()
+    entry=find(items)
+    if not entry:
         group=next(((n,xy) for n,xy in items if 'qing' in n.lower()),None)
         assert group,(label,items)
-        mouse.move(coords=group[1]);time.sleep(.8)
+        if group[1]:mouse.move(coords=group[1]);time.sleep(.8)
         items=menuitems()
-        if not named(items):
-            mouse.click(coords=group[1]);time.sleep(.65);items=menuitems()
+        if not find(items):
+            trigger(*group);time.sleep(.65);items=menuitems()
         report['menus'][label+'-expanded']=[n for n,xy in items];shots(label+'-expanded');save()
-        where=named(items)
-    assert where,(label,items)
-    mouse.click(coords=where)
+        entry=find(items)
+    assert entry,(label,items)
+    trigger(*entry)
 def processes():
     cmd="Get-CimInstance Win32_Process -Filter \"Name='qing-zip.exe'\" | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
     out=subprocess.check_output(['powershell','-NoProfile','-Command',cmd])
@@ -319,7 +326,12 @@ try:
     items=first_menu(folder,'folder-on')
     act(items,'folder-on','压缩')
     def genuine_folder_activation():
-        return next((p for p in processes() if '--compress-folder' in (p['CommandLine'] or '') and str(folder) in p['CommandLine']),None)
+        for p in processes():
+            cmd=p['CommandLine'] or ''
+            if '--compress-folder' in cmd:
+                selected=cmd.split('--compress-folder',1)[1].strip().strip('"')
+                if os.path.exists(selected) and os.path.samefile(selected,folder):return p
+        return None
     report['actions']['folder_activation']=wait(genuine_folder_activation,22)
     time.sleep(2);shots('compression-dialog');save();stop_own()
     settings(False)
