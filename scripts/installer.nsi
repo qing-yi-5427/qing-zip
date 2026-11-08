@@ -135,7 +135,7 @@ FunctionEnd
  ${EndIf}
 !macroend
 Section "Uninstall"
- ; The desktop binary derives its own path and atomically removes matching candidates.
+ ; The desktop binary derives its own path and removes matching candidates after verifying their ownership.
  ReadRegStr $0 HKCU "Software\OpenArchive\Associations" "ManagedBy"
  ReadRegStr $1 HKCU "Software\Classes\OpenArchive.Archive\shell\open\command" ""
  ${If} $0 == "OpenArchive.Associations.v1"
@@ -145,6 +145,16 @@ Section "Uninstall"
   Pop $1
   ${If} $0 != "0"
    Push "[optional-associations] 未清理无法核对的文件关联，继续卸载。($0) $1"
+   Call un.LogIssue
+  ${EndIf}
+ ${EndIf}
+ ReadRegStr $0 HKCU "Software\Classes\CLSID\{B1031E9C-F2AA-4658-8932-E2596415A942}\LocalServer32" ""
+ ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" --shell-compress-server'
+  nsExec::ExecToStack '$\"$INSTDIR\qing-zip.exe$\" --unregister-compress-menu'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+   Push "[optional-compress-menu] 文件压缩右键入口无法清理，继续卸载。($0) $1"
    Call un.LogIssue
   ${EndIf}
  ${EndIf}
