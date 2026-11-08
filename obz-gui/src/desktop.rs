@@ -56,6 +56,22 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
     no_links(&p)?;
     Ok(p)
 }
+// Preserve the filesystem spelling of distinct names in case-sensitive directories.
+pub(crate) fn canonical_spelling(path: &Path, directory: bool) -> Result<String, String> {
+    let path = obz_core::engine::canonical_input_path(path, directory).map_err(|error| match error.kind() {
+        std::io::ErrorKind::InvalidData => "路径不能包含链接或重解析点".to_string(),
+        std::io::ErrorKind::InvalidInput if directory => "请选择普通文件夹".to_string(),
+        std::io::ErrorKind::InvalidInput => "请选择普通压缩文件".to_string(),
+        _ => error.to_string(),
+    })?
+        .to_string_lossy()
+        .into_owned();
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        Ok(format!(r"\\{unc}"))
+    } else {
+        Ok(path.strip_prefix(r"\\?\").unwrap_or(&path).to_string())
+    }
+}
 fn existing(path: &str) -> Result<PathBuf, String> {
     let p = absolute(path)?;
     if !p.exists() {
@@ -218,35 +234,43 @@ pub fn list_directory(path: String) -> Result<Vec<DirectoryEntry>, String> {
     out.sort_by_key(|e| e.name.to_lowercase());
     Ok(out)
 }
-/// Retained because Explorer can paste files after this application exits.
+type ClipboardExport = obz_core::engine::ShellDragDirectory;
+static CLIPBOARD_EXPORTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, ClipboardExport>>,
+> = std::sync::LazyLock::new(Default::default);
+
 #[tauri::command]
 pub fn clipboard_directory() -> Result<String, String> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let base = std::env::temp_dir();
-    no_links(&base)?;
-    if !base.is_absolute() || !base.is_dir() {
-        return Err("系统临时目录无效".into());
+    let directory = ClipboardExport::create()?;
+    let path = directory.path().to_str().ok_or("临时目录编码无效")?.to_owned();
+    CLIPBOARD_EXPORTS.lock().map_err(|_| "剪贴板导出暂不可用")?
+        .insert(path.clone(), directory);
+    Ok(path)
+}
+
+fn take_clipboard_export(dest: &str) -> Result<Option<ClipboardExport>, String> {
+    Ok(CLIPBOARD_EXPORTS.lock().map_err(|_| "剪贴板导出暂不可用")?.remove(dest))
+}
+
+#[tauri::command]
+pub fn discard_clipboard_export(dest: String) -> Result<(), String> {
+    drop(take_clipboard_export(&dest)?);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn publish_clipboard_export(
+    window: tauri::Window, dest: String, paths: Vec<String>,
+) -> Result<(), String> {
+    let export = take_clipboard_export(&dest)?.ok_or("剪贴板导出已结束")?;
+    let _pin = export.pin_for_read()?;
+    let paths = checked_paths(paths)?;
+    let root = canonical_spelling(export.path(), true)?;
+    if !paths.iter().all(|p| Path::new(p).starts_with(&root) && p != &root) {
+        return Err("所选文件不在本次导出目录中".into());
     }
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    for _ in 0..100 {
-        let path = base.join(format!(
-            "open-archive-clipboard-{}-{time}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => {
-                no_links(&path)?;
-                return Ok(path.to_string_lossy().into_owned());
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    Err("无法创建剪贴板临时目录".into())
+    let owner = window.hwnd().map_err(|e| e.to_string())?;
+    publish_paths(HWND(owner.0), &paths, Some(&export))
 }
 pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     if paths.is_empty() || paths.len() > MAX_PATHS {
@@ -259,7 +283,7 @@ pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
             return Err("文件列表必须使用完整路径".into());
         }
         let path = existing(&p)?;
-        let p = crate::instance::canonical_spelling(&path, path.is_dir())?;
+        let p = canonical_spelling(&path, path.is_dir())?;
         if seen.insert(p.clone()) {
             out.push(p)
         }
@@ -364,22 +388,30 @@ pub fn clipboard_paths(
     let owner = window.hwnd().map_err(|e| e.to_string())?;
     clipboard_inner(HWND(owner.0), paths)
 }
+fn publish_paths(owner: HWND, paths: &[String], export: Option<&ClipboardExport>) -> Result<(), String> {
+    let data = Memory::from_bytes(&drop_payload(paths)?)?;
+    let effect = Memory::from_bytes(&1u32.to_le_bytes())?;
+    let format =
+        unsafe { RegisterClipboardFormatW(PCWSTR(wide("Preferred DropEffect")?.as_ptr())) };
+    if format == 0 {
+        return Err("无法注册剪贴板格式".into());
+    }
+    let _clip = Clipboard::open(owner)?;
+    unsafe {
+        EmptyClipboard().map_err(|e| e.to_string())?;
+    }
+    data.publish(15)?;
+    // Once CF_HDROP is visible another process may use these paths after we exit.
+    if let Some(export) = export {
+        export.retain_for_shell();
+    }
+    effect.publish(format)?;
+    Ok(())
+}
 fn clipboard_inner(owner: HWND, paths: Option<Vec<String>>) -> Result<Vec<String>, String> {
     if let Some(paths) = paths {
         let paths = checked_paths(paths)?;
-        let data = Memory::from_bytes(&drop_payload(&paths)?)?;
-        let effect = Memory::from_bytes(&1u32.to_le_bytes())?;
-        let format =
-            unsafe { RegisterClipboardFormatW(PCWSTR(wide("Preferred DropEffect")?.as_ptr())) };
-        if format == 0 {
-            return Err("无法注册剪贴板格式".into());
-        }
-        let _clip = Clipboard::open(owner)?;
-        unsafe {
-            EmptyClipboard().map_err(|e| e.to_string())?;
-        }
-        data.publish(15)?;
-        effect.publish(format)?;
+        publish_paths(owner, &paths, None)?;
         return Ok(paths);
     }
     let _clip = Clipboard::open(owner)?;
@@ -633,7 +665,7 @@ mod tests {
         let lower = temp.0.join("sample.txt");
         let upper = temp.0.join("SAMPLE.txt");
         fs::write(&lower, b"lower").unwrap();
-        let canonical_parent = crate::instance::canonical_spelling(&temp.0, true).unwrap();
+        let canonical_parent = canonical_spelling(&temp.0, true).unwrap();
         let expected = |name| Path::new(&canonical_parent).join(name).display().to_string();
         let path_list = || [&lower, &upper, &lower].map(|p| p.display().to_string()).to_vec();
         if upper.exists() {
@@ -701,7 +733,9 @@ mod tests {
         for path in [first, second] {
             assert!(path.starts_with(std::env::temp_dir()));
             assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
-            fs::remove_dir(path).unwrap();
+            fs::write(path.join("partial"), b"partial extraction").unwrap();
+            discard_clipboard_export(path.display().to_string()).unwrap();
+            assert!(!path.exists());
         }
     }
     #[test]

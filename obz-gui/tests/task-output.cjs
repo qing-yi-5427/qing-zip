@@ -40,3 +40,33 @@ test('listing results belong to the caller and are not retained in task history'
   assert.equal(state.jobs[0].status, 'complete');
   assert.ok(!JSON.stringify(state.jobs).includes('member.txt'));
 });
+
+test('clipboard export discards incomplete output and publishes only a completed selection', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const copy = source.slice(source.indexOf('async function copySelectedFiles('), source.indexOf('async function run('));
+  for (const failure of [null, 'extract', 'publish_clipboard_export']) {
+    const calls = [], notices = [];
+    const context = vm.createContext({
+      s: {archive: 'sample.zip', selected: new Set(['nested/item.txt'])},
+      invoke: async (name, args) => {
+        calls.push(name);
+        if (name === failure) throw Error(name);
+        if (name === 'clipboard_directory') return 'C:\\export';
+        if (name === 'publish_clipboard_export') assert.equal(args.paths[0], 'C:\\export\\nested\\item.txt');
+      },
+      run: async (request, label, options) => {
+        calls.push('extract');
+        assert.equal(request.dest, 'C:\\export');
+        assert.equal(options.temporaryOutput, true);
+        if (failure === 'extract') throw Error('cancelled');
+      },
+      toast: message => notices.push(message)
+    });
+    const result = vm.runInContext(copy + '\ncopySelectedFiles()', context);
+    if (failure) await assert.rejects(result);
+    else await result;
+    assert.equal(calls.at(-1), 'discard_clipboard_export');
+    assert.equal(calls.includes('publish_clipboard_export'), failure !== 'extract');
+    assert.equal(notices.length, failure ? 0 : 1);
+  }
+});

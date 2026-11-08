@@ -461,7 +461,7 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(fs::read(&other_file).unwrap(), b"not a drag output");
         fs::remove_file(other_file).unwrap();
-        fs::remove_dir(other).unwrap();
+        crate::desktop::discard_clipboard_export(other.display().to_string()).unwrap();
     }
 
     #[test] fn drop_source_requires_held_button_and_honors_escape(){

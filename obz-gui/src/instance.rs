@@ -37,22 +37,7 @@ pub fn canonical_archive_path(path: String) -> Result<String, String> {
     canonical_spelling(Path::new(&path), false)
 }
 
-// Preserve the filesystem spelling of distinct names in case-sensitive directories.
-pub(crate) fn canonical_spelling(path: &Path, directory: bool) -> Result<String, String> {
-    let path = obz_core::engine::canonical_input_path(path, directory).map_err(|error| match error.kind() {
-        std::io::ErrorKind::InvalidData => "路径不能包含链接或重解析点".to_string(),
-        std::io::ErrorKind::InvalidInput if directory => "请选择普通文件夹".to_string(),
-        std::io::ErrorKind::InvalidInput => "请选择普通压缩文件".to_string(),
-        _ => error.to_string(),
-    })?
-        .to_string_lossy()
-        .into_owned();
-    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
-        Ok(format!(r"\\{unc}"))
-    } else {
-        Ok(path.strip_prefix(r"\\?\").unwrap_or(&path).to_string())
-    }
-}
+use crate::desktop::canonical_spelling;
 fn paths(args: impl IntoIterator<Item = String>, cwd: &Path, folders: bool) -> Vec<String> {
     let mut result = Vec::new();
     for arg in args.into_iter().skip(1).take(1024) {
