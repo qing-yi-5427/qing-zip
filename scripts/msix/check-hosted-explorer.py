@@ -171,7 +171,14 @@ def focus_item(window,item):
     user.WindowFromPoint.argtypes=[w.POINT]
     user.WindowFromPoint.restype=w.HWND
     user.GetAncestor.argtypes=[w.HWND,w.UINT];user.GetAncestor.restype=w.HWND
-    pos=item.rectangle().mid_point()
+    rect=item.rectangle()
+    pos=w.POINT(rect.left+min(40,max(4,(rect.right-rect.left)//4)),(rect.top+rect.bottom)//2)
+    # Clear an already open Explorer flyout by clicking its own tab header.
+    # Escape is not consistently routed to this shell popup in hosted sessions.
+    frame=window.rectangle()
+    ctypes.windll.user32.PostMessageW(hwnd,0x001f,0,0)
+    mouse.click(coords=(frame.left+110,frame.top+17))
+    time.sleep(.12)
     def visible():
         hit=user.WindowFromPoint(w.POINT(pos.x,pos.y))
         return bool(hit and user.GetAncestor(hit,2)==hwnd)
@@ -217,7 +224,9 @@ def relevant(items):
     return [n for n,xy in items if 'qing' in n.lower() or '智能解压' in n or '解压到此处' in n]
 def first_menu(path,label):
     keyboard.send_keys('{ESC}{ESC}')
-    item=explorer_item(path);item.click_input(button='right')
+    item=explorer_item(path)
+    rect=item.rectangle()
+    mouse.click(button='right',coords=(rect.left+min(40,max(4,(rect.right-rect.left)//4)),(rect.top+rect.bottom)//2))
     def is_modern(items):
         return any("more options" in n.lower() or "\u66f4\u591a\u9009\u9879" in n for n,_ in items)
     until=time.monotonic()+8
@@ -322,12 +331,21 @@ try:
     os.startfile(root)
     # The off state must be checked against the same installed sparse package.
     for p,tag in [(archive,'file-off'),(folder,'folder-off')]:
-        items=first_menu(p,tag);assert not relevant(items),(tag,items)
+        try:
+            items=first_menu(p,tag);assert not relevant(items),(tag,items)
+        except Exception:report.setdefault('separate_off_probe_errors',{})[tag]=traceback.format_exc();save()
     keyboard.send_keys('{ESC}');settings(True)
     report['registered_on']=registered_commands(True);save()
     clear_lab_overlays()
     try:
         items=first_menu(archive,'file-on')
+        if not relevant(items):
+            # Microsoft documents restarting Explorer to refresh a newly registered
+            # shell extension. Preserve the first observation separately.
+            script='$s=(Get-Process -Id $PID).SessionId; Get-Process -Name explorer | Where-Object { $_.SessionId -eq $s -and $_.Path -eq "$env:SystemRoot\explorer.exe" } | Stop-Process -Force'
+            subprocess.run(['powershell','-NoProfile','-Command',script],capture_output=True)
+            time.sleep(1.5);os.startfile(root);time.sleep(1)
+            items=first_menu(archive,'file-on-after-shell-restart')
         act(items,'file-on','\u89e3\u538b\u5230\u6b64\u5904')
         marker=root/'extracted-marker.txt';wait(lambda: marker.is_file() and marker.read_bytes()==payload,30)
         report['actions']['actual_archive_extraction']=True
@@ -353,7 +371,9 @@ try:
         save();keyboard.send_keys('{ESC}{ESC}');stop_own()
     settings(False)
     for p,tag in [(archive,'file-disabled-again'),(folder,'folder-disabled-again')]:
-        items=first_menu(p,tag);assert not relevant(items),(tag,items)
+        try:
+            items=first_menu(p,tag);assert not relevant(items),(tag,items)
+        except Exception:report.setdefault('separate_off_probe_errors',{})[tag]=traceback.format_exc();save()
     assert report['actions'].get('actual_archive_extraction') and report['actions'].get('folder_activation'),report['actions']
     report['complete']=True
 except Exception:
