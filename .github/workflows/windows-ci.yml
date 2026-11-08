@@ -45,6 +45,9 @@ jobs:
           $build = ./scripts/build-hardened.ps1
           python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
           exit $LASTEXITCODE
+      - name: Invoke the registered Explorer compression action for two files
+        shell: pwsh
+        run: python scripts/check-classic-shell.py dist/x64 target/qing-shell/Release/qing-shell-classic-forwarding.exe
       - name: Upload validated Windows x64 portable build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
