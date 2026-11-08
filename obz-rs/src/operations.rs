@@ -107,8 +107,16 @@ pub fn execute(mut r: Request) -> Result<Value, String> {
         "extract" => {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
             if r.smart {
-                let entries = list_archive(&r.path, &r.options)?;
-                r.dest = crate::smart_extract::destination(&r.path, &r.dest, &entries, &r.options)?;
+                return engine::with_zip_source(&r.path, &r.options, |source| {
+                    let entries = list_archive(source, &r.options)?;
+                    let destination = crate::smart_extract::destination(&r.path, &r.dest, &entries, &r.options)?;
+                    let mut options = r.options.clone();
+                    if options.zone_identifier.is_none() {
+                        options.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(&r.path))?);
+                    }
+                    let files = extract_archive(source, &destination, &options)?;
+                    Ok(json!({"files":files,"destination":destination}))
+                });
             }
             let count = extract_archive(&r.path, &r.dest, &r.options)?;
             Ok(json!({"files": count, "destination": r.dest}))

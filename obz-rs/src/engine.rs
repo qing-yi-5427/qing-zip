@@ -5,6 +5,8 @@ pub mod selected_worker;
 #[cfg(windows)]
 mod created_directories;
 mod bounded_archive_stage;
+mod zip_volume_view;
+pub(crate) use zip_volume_view::with_source as with_zip_source;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -4336,6 +4338,7 @@ pub fn update(
     let locked_path = absolute(path)?;
     no_links(&locked_path)?;
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
+    zip_volume_view::require_editable(&locked_path)?;
     if action != "add" {
         let existing = list(path, opts)?;
         let sources: Vec<&String> = if action == "rename" {
@@ -4534,12 +4537,14 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
 }
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
-    if compound_tar(path) {
-        let (_temp, inner) = unpack_tar(path, opts)?;
-        list_raw(&inner, opts)
-    } else {
-        list_raw(path, opts)
-    }
+    with_zip_source(path, opts, |path| {
+        if compound_tar(path) {
+            let (_temp, inner) = unpack_tar(path, opts)?;
+            list_raw(&inner, opts)
+        } else {
+            list_raw(path, opts)
+        }
+    })
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let _policy = crate::machine_policy::scope();
@@ -4551,31 +4556,37 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         opts
     };
-    if compound_tar(path) {
-        let (_temp, inner) = unpack_tar(path, opts)?;
-        extract_raw(&inner, dest, opts)
-    } else {
-        extract_raw(path, dest, opts)
-    }
+    with_zip_source(path, opts, |path| {
+        if compound_tar(path) {
+            let (_temp, inner) = unpack_tar(path, opts)?;
+            extract_raw(&inner, dest, opts)
+        } else {
+            extract_raw(path, dest, opts)
+        }
+    })
 }
 
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
-    test_raw(path, opts)?;
-    if compound_tar(path) {
-        let (_temp, inner) = unpack_tar(path, opts)?;
-        test_raw(&inner, opts)?;
-    }
-    Ok(())
+    with_zip_source(path, opts, |path| {
+        test_raw(path, opts)?;
+        if compound_tar(path) {
+            let (_temp, inner) = unpack_tar(path, opts)?;
+            test_raw(&inner, opts)?;
+        }
+        Ok(())
+    })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
     let _policy = crate::machine_policy::scope();
-    if compound_tar(path) {
-        let (_temp, inner) = unpack_tar(path, opts)?;
-        preview_raw(&inner, name, opts)
-    } else {
-        preview_raw(path, name, opts)
-    }
+    with_zip_source(path, opts, |path| {
+        if compound_tar(path) {
+            let (_temp, inner) = unpack_tar(path, opts)?;
+            preview_raw(&inner, name, opts)
+        } else {
+            preview_raw(path, name, opts)
+        }
+    })
 }
 // Keep the already-open output handle for metadata, avoiding both a second
 // path lookup and a path-substitution window between publication and timestamp.

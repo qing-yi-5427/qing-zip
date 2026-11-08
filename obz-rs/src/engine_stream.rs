@@ -375,7 +375,7 @@ pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
     })
 }
 
-fn open_source_leaf(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_source_leaf(path: &Path) -> std::io::Result<File> {
     let mut options = File::options();
     options.read(true);
     #[cfg(windows)]
