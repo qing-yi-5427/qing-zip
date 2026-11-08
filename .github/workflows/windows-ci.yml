@@ -6,6 +6,10 @@ on:
         description: Candidate build run, or baseline for harness verification
         required: true
         type: string
+      reverse_pairs:
+        description: Start with candidate for an independent block
+        default: "0"
+        type: string
 permissions:
   contents: read
   actions: read
@@ -18,6 +22,7 @@ jobs:
       - shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REVERSE_PAIRS: ${{ inputs.reverse_pairs }}
           CANDIDATE: ${{ inputs.candidate_run }}
         run: |
           $baseline='42456912193'

@@ -166,6 +166,6 @@ with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"],ignore_cleanup_er
         for i in range(50000): z.writestr(f"file-{i:05d}.txt",str(i))
     for rep in range(1 if os.environ.get("CANDIDATE") in ("baseline","42459789971") else 3):
         order=[("base",base),("candidate",candidate)]
-        if rep%2:order.reverse()
+        if (rep+int(os.environ.get("REVERSE_PAIRS","0")))%2:order.reverse()
         for label,exe in order:run(root,archive,label,exe,rep)
 result["complete"]=True;save()
