@@ -44,6 +44,7 @@ def main():
         (src / "empty").mkdir(parents=True)
         (src / "empty.txt").touch()
         nested = src / "folder"; nested.mkdir()
+        (src / "folder.rs").write_bytes(b"directory prefix ordering")
         (nested / ("mixed-" + chr(0x4E2D) + chr(0x1F4E6) + ".txt")).write_bytes(b"real data\n" * 1000)
         # Actual source files exercise nontrivial content without any reference installer.
         shutil.copy2(repo / "obz-rs/src/engine_stream.rs", src / "stream.rs")

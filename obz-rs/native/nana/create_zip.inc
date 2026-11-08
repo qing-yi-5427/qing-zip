@@ -62,6 +62,31 @@ bool valid_leaf(std::wstring_view name) {
   }
   return true;
 }
+// Order path components like the console's Windows archive enumerator. A
+// separator precedes any legal filename character (e.g. a/b precedes a.rs).
+// Windows uppercases individual UTF-16 units for this comparison.
+wchar_t order_unit(wchar_t value) {
+  if (value == L'\\')
+    return 1;
+  if (value >= L'a' && value <= L'z')
+    return value - (L'a' - L'A');
+  if (value <= 0x7f)
+    return value;
+  return static_cast<wchar_t>(reinterpret_cast<UINT_PTR>(
+      CharUpperW(reinterpret_cast<LPWSTR>(static_cast<UINT_PTR>(value)))));
+}
+int path_order(std::wstring_view left, std::wstring_view right) {
+  const size_t n = std::min(left.size(), right.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (left[i] == right[i])
+      continue;
+    const auto a = order_unit(left[i]), b = order_unit(right[i]);
+    if (a != b)
+      return a < b ? -1 : 1;
+  }
+  return left.size() == right.size() ? 0
+                                     : (left.size() < right.size() ? -1 : 1);
+}
 class Source {
   using Open = NTSTATUS(NTAPI *)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                  PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG,
@@ -236,12 +261,10 @@ public:
       }
     }
     std::sort(items.begin(), items.end(), [](const Record &a, const Record &b) {
-      return CompareStringOrdinal(a.path.c_str(), -1, b.path.c_str(), -1,
-                                  TRUE) == CSTR_LESS_THAN;
+      return path_order(a.path, b.path) < 0;
     });
     for (size_t j = 1; j < items.size(); ++j) {
-      if (CompareStringOrdinal(items[j - 1].path.c_str(), -1,
-                               items[j].path.c_str(), -1, TRUE) == CSTR_EQUAL)
+      if (!path_order(items[j - 1].path, items[j].path))
         throw NotEligible{};
     }
   }
