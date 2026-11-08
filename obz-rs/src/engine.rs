@@ -6,6 +6,8 @@ pub mod selected_worker;
 mod created_directories;
 mod bounded_archive_stage;
 mod zip_volume_view;
+mod zip_preview;
+pub use zip_preview::ZipPreviewBatch;
 pub(crate) use zip_volume_view::with_source as with_zip_source;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -634,13 +636,7 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
     let execute = if candidate { run_with_zealfs } else { run };
-    let listing = match execute(&args, None, opts, None) {
-        Err(error) if unsupported_utc_listing_switch(&error) => {
-            args.retain(|argument| argument != "-slmu");
-            execute(&args, None, opts, None)?
-        }
-        result => result?,
-    };
+    let listing = run_technical_listing(&mut args, opts, execute)?;
     let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
     let bare_listing;
     let listing = if candidate {
@@ -733,6 +729,20 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
     }
     ctl.set("complete", Some(100), "Archive directory ready");
     Ok((out, PayloadSource::Engine))
+}
+
+fn run_technical_listing(
+    args: &mut Vec<String>,
+    opts: &EngineOptions,
+    execute: impl Fn(&[String], Option<&Path>, &EngineOptions, Option<File>) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    match execute(args, None, opts, None) {
+        Err(error) if unsupported_utc_listing_switch(&error) => {
+            args.retain(|argument| argument != "-slmu");
+            execute(args, None, opts, None)
+        }
+        result => result,
+    }
 }
 pub fn list_with_control(
     path: &str,

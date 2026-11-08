@@ -60,7 +60,7 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
   const paints=[],cache=[];
   let finish;
   const context={
-   thumbnailQueue:new Map([['a.png',{generation:1,policyRevision:2,args:{}}]]),
+   thumbnailQueue:new Map([['a.png',{batch:true,generation:1,policyRevision:2,args:{}}]]),
    previewGeneration:1,thumbnailPolicyRevision:2,thumbnailPolicyToken:token,
    thumbnailActive:0,thumbnailInflight:new Set(),
    invoke:()=>new Promise(resolve=>{finish=resolve;}),
@@ -68,7 +68,7 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
   };
   vm.runInNewContext(pump+'\npumpThumbnails();',context);
   context.thumbnailPolicyRevision=revisionAfterStart;
-  finish({data_url:'data:image/png;base64,AA==',format_policy:returned});
+  finish([{name:'a.png',data_url:'data:image/png;base64,AA==',format_policy:returned}]);
   await new Promise(resolve=>setImmediate(resolve));
   return {paints,cache};
  };
@@ -80,6 +80,41 @@ test('an in-flight thumbnail cannot repaint or cache plaintext under a different
  const current=await run('new','new',2);
  assert.equal(current.cache.length,1);
  assert.equal(current.paints[0].data_url,'data:image/png;base64,AA==');
+});
+
+test('visible thumbnails use bounded batches and one corrupt image does not discard valid neighbors', async()=>{
+ const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function observeThumbnails()'));
+ const names=Array.from({length:20},(_,i)=>i+'.png'), requests=[], paints=new Map(), cache=new Map();
+ const context={
+  thumbnailQueue:new Map(names.map(name=>[name,{name,batch:true,generation:2,policyRevision:3,args:{path:'archive.zip'}}])),
+  previewGeneration:2,thumbnailPolicyRevision:3,thumbnailPolicyToken:'token',thumbnailActive:0,thumbnailInflight:new Set(),
+  invoke:(cmd,args)=>{assert.equal(cmd,'preview_thumbnails');assert.equal(args.path,'archive.zip');
+    requests.push([...args.names]);return Promise.resolve(args.names.map(name=>name==='1.png'?{name,error:'corrupt'}:
+      {name,data_url:'data:image/png;base64,AA==',format_policy:'token'}));},
+  paintMatchingThumbnails:(name,value)=>paints.set(name,value), rememberThumbnail:(name,value)=>cache.set(name,value)
+ };
+ vm.runInNewContext(pump+'\npumpThumbnails();',context);
+ assert.deepEqual(requests.map(batch=>batch.length),[8]);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(requests.flat(),names);assert.equal(requests[2].length,4);
+ assert.equal(cache.size,19);assert.equal(cache.has('1.png'),false);assert.match(paints.get('1.png').error,/corrupt/);
+ assert.equal(context.thumbnailActive,0);assert.equal(context.thumbnailInflight.size,0);
+});
+
+test('small or password-protected archives retain the individual thumbnail calls', async()=>{
+ const pump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function observeThumbnails()'));
+ const names=['a.png','b.png','c.png'], sent=[], painted=[];
+ const context={
+  thumbnailQueue:new Map(names.map(name=>[name,{name,batch:false,generation:1,policyRevision:1,args:{path:'a.zip',password:'pw'}}])),
+  previewGeneration:1,thumbnailPolicyRevision:1,thumbnailPolicyToken:'default',thumbnailActive:0,thumbnailInflight:new Set(),
+  invoke:(cmd,args)=>{assert.equal(cmd,'preview_entry');assert.equal(args.password,'pw');
+    sent.push(args.name);return Promise.resolve({name:args.name,data_url:'data:image/png;base64,QQ==',format_policy:'default'});},
+  paintMatchingThumbnails:name=>painted.push(name),rememberThumbnail:()=>{}
+ };
+ vm.runInNewContext(pump+'\npumpThumbnails();',context);
+ assert.deepEqual(sent,['a.png','b.png']);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(painted,names);assert.equal(context.thumbnailActive,0);
 });
 
 test('switching folder, query, sort and refreshed listings invalidates displayed rows',()=>{

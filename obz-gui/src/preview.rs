@@ -561,13 +561,53 @@ pub struct Preview {
     #[serde(skip_serializing_if = "Option::is_none")]
     height: Option<u32>,
 }
+fn try_pinned_batch<T>(
+    path: &str, names: &[String], options: &EngineOptions, epoch: u64,
+    read: impl FnOnce(&obz_core::engine::ZipPreviewBatch) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+    if options.password.is_some() || options.codepage.is_some()
+        || !Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+        || obz_core::machine_policy::scope().restricted()
+    {
+        return Ok(None);
+    }
+    let (_source, identity) = source(path, options)?;
+    if identity.volatile != 0 { return Ok(None); }
+    // Serialize with the existing preview worker. clear_preview_cache can
+    // cancel ACTIVE before waiting for this lock; newer jobs cannot replace it.
+    let mut cache = CACHE.lock().map_err(|_| "预览缓存不可用")?;
+    if cache.as_ref().is_some_and(|c| c.identity != identity) { cache.take(); }
+    if cache.as_ref().is_some_and(|c| c.entries.len() <= 4096) { return Ok(None); }
+    let control = obz_core::engine::JobControl::new();
+    *ACTIVE.lock().map_err(|_| "预览不可用")? = Some(control.clone());
+    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+    let options = EngineOptions { control: Some(control), ..options.clone() };
+    let Some(batch) = obz_core::engine::ZipPreviewBatch::open(path, names, &options)? else { return Ok(None); };
+    let result = read(&batch)?;
+    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+    Ok(Some(result))
+}
+
 fn preview_inner(
-    path: &str,
+    path: &str, name: &str, options: &EngineOptions, kind: &str,
+    text_encoding: Option<&str>, epoch: u64,
+) -> Result<Preview, String> {
+    let _policy = obz_core::machine_policy::scope();
+    let limit = match kind {
+        "text" if text_name(name) => TEXT_LIMIT,
+        "text" => return Err("此文件类型不支持文本预览".into()),
+        "thumbnail" => { image_format(name)?; IMAGE_LIMIT },
+        _ => return Err("不支持的预览方式".into()),
+    };
+    let bytes = bytes_for(path, name, options, limit, epoch)?;
+    render_preview(name, kind, text_encoding, bytes)
+}
+fn render_preview(
     name: &str,
-    options: &EngineOptions,
     kind: &str,
     text_encoding: Option<&str>,
-    epoch: u64,
+    bytes: Vec<u8>,
 ) -> Result<Preview, String> {
     let policy = obz_core::machine_policy::scope();
     let mut result = Preview {
@@ -583,17 +623,11 @@ fn preview_inner(
     };
     match kind {
         "text" => {
-            if !text_name(name) {
-                return Err("此文件类型不支持文本预览".into());
-            }
-            let bytes = bytes_for(path, name, options, TEXT_LIMIT, epoch)?;
             let (text, encoding) = decode_text(&bytes, text_encoding)?;
             result.text = Some(text);
             result.encoding = Some(encoding);
         }
         "thumbnail" => {
-            image_format(name)?;
-            let bytes = bytes_for(path, name, options, IMAGE_LIMIT, epoch)?;
             let image = decoded_image(name, &bytes)?;
             result.width = Some(image.width());
             result.height = Some(image.height());
@@ -641,6 +675,44 @@ pub async fn preview_entry(
     .await
     .map_err(|e| e.to_string())?
 }
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum ThumbnailResult {
+    Ready(Preview),
+    Failed { name: String, error: String },
+}
+
+#[tauri::command]
+pub async fn preview_thumbnails(
+    path: String, names: Vec<String>, password: Option<String>, codepage: Option<u32>,
+) -> Result<Vec<ThumbnailResult>, String> {
+    if names.is_empty() || names.len() > 8 { return Err("一次最多预览 8 张图片".into()); }
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        let policy = obz_core::machine_policy::scope();
+        let options = EngineOptions { password, codepage, ..Default::default() };
+        let render = |read: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>| -> Result<_, String> {
+            let mut results = Vec::with_capacity(names.len());
+            for name in &names {
+                if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+                let result = image_format(name).and_then(|_| read(name))
+                    .and_then(|bytes| render_preview(name, "thumbnail", None, bytes));
+                results.push(match result {
+                    Ok(preview) => ThumbnailResult::Ready(preview),
+                    Err(error) => ThumbnailResult::Failed { name: name.clone(), error },
+                });
+            }
+            if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+            policy.validate_output()?;
+            Ok(results)
+        };
+        if let Some(results) = try_pinned_batch(&path, &names, &options, epoch, |batch| {
+            render(&mut |name| batch.read(name, IMAGE_LIMIT))
+        })? { return Ok(results); }
+        render(&mut |name| bytes_for(&path, name, &options, IMAGE_LIMIT, epoch))
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn clear_preview_cache() -> Result<(), String> {
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -838,6 +910,27 @@ mod tests {
     // epoch across several calls. Keep their scenarios atomic within this test
     // binary while allowing all independent preview tests to run in parallel.
     static CACHE_SCENARIO: Mutex<()> = Mutex::new(());
+    #[test]
+    fn thumbnail_batch_keeps_good_images_when_a_neighbor_is_corrupt() {
+        let _scenario = CACHE_SCENARIO.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let mut image = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 3).write_to(&mut image, image::ImageFormat::Png).unwrap();
+        let good = temp.path().join("good.png");
+        let bad = temp.path().join("bad.png");
+        fs::write(&good, image.into_inner()).unwrap();
+        fs::write(&bad, b"corrupt").unwrap();
+        let path = temp.path().join("sample.zip").display().to_string();
+        obz_core::engine::create(&path, &[bad.display().to_string(), good.display().to_string()], "zip", &Default::default()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let invalid = preview_thumbnails(path.clone(), vec!["good.png".into(); 9], None, None).await;
+            assert!(invalid.is_err());
+            let rows = preview_thumbnails(path, vec!["bad.png".into(), "good.png".into()], None, None).await.unwrap();
+            assert!(matches!(&rows[0], ThumbnailResult::Failed { name, .. } if name == "bad.png"));
+            assert!(matches!(&rows[1], ThumbnailResult::Ready(p) if p.name == "good.png" && p.height == Some(3)));
+            clear_preview_cache().await.unwrap();
+        });
+    }
     #[test]
     fn text_decoding_preserves_unicode_and_refuses_binary() {
         assert_eq!(
