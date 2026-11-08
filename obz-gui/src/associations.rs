@@ -114,9 +114,21 @@ impl Registry {
         if self.prefix.is_empty(){Ok(string_data(read_value(HKEY_CLASSES_ROOT,ext,"")?))}
         else{Ok(string_data(self.read(&format!(r"MachineClasses\{ext}"),"")?))}
     }
+    fn advertised(&self) -> Result<bool, String> {
+        Ok(string_data(self.read(r"Software\RegisteredApplications", APP_NAME)?)
+            .as_deref() == Some(CAPABILITIES))
+    }
+    fn default_apps_uri(&self) -> Result<String, String> {
+        let page = "ms-settings:defaultapps";
+        if self.advertised()? {
+            Ok(format!("{page}?registeredAppUser={APP_NAME}"))
+        } else {
+            Ok(page.into())
+        }
+    }
     fn statuses(&self)->Result<Vec<AssociationStatus>,String>{
         let handler=string_data(self.read(&format!(r"Software\Classes\{PROGID}\shell\open\command"),"")?).is_some();
-        let advertised=string_data(self.read(r"Software\RegisteredApplications",APP_NAME)?).as_deref()==Some(CAPABILITIES);
+        let advertised=self.advertised()?;
         EXTENSIONS.iter().map(|ext|{
             let current=self.default_progid(ext)?;
             let registered=handler && advertised && self.read(&format!(r"Software\Classes\{ext}\OpenWithProgids"),PROGID)?.is_some()
@@ -246,7 +258,7 @@ pub fn set_file_associations(extensions:Vec<String>)->Result<Vec<AssociationStat
 }
 #[tauri::command]
 pub fn open_default_apps()->Result<(),String>{
-    let uri=wide("ms-settings:defaultapps?registeredAppUser=Open%20Archive")?;
+    let uri=wide(&Registry::user().default_apps_uri()?)?;
     let verb=wide("open")?;
     let result=unsafe{ShellExecuteW(None,PCWSTR(verb.as_ptr()),PCWSTR(uri.as_ptr()),PCWSTR::null(),PCWSTR::null(),SW_SHOWNORMAL)};
     if result.0 as isize<=32 {Err("无法打开 Windows 默认应用设置".into())}else{Ok(())}
@@ -270,6 +282,7 @@ mod tests {
     }
     #[test]fn registration_preserves_other_defaults_and_candidates(){
         let t=TestRegistry::new();let reg=&t.0;
+        assert_eq!(reg.default_apps_uri().unwrap(), "ms-settings:defaultapps");
         reg.write(r"Software\Classes\.zip","",Some(&string_value("Other.Archive"))).unwrap();
         reg.write(r"Software\Classes\.zip\OpenWithProgids","Other.Archive",Some(&RawValue{kind:REG_NONE,data:vec![]})).unwrap();
         let choice=r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.zip\UserChoice";
@@ -277,9 +290,11 @@ mod tests {
         reg.write(choice,"Hash",Some(&string_value("unchanged hash"))).unwrap();
         let chosen=selections(vec![".zip".into(),".7z".into()]).unwrap();
         apply_edits(reg,registration_edits(reg,&chosen,r"C:\qing-zip.exe").unwrap(),None).unwrap();
+        assert_eq!(reg.default_apps_uri().unwrap(), "ms-settings:defaultapps?registeredAppUser=qing-zip");
         let statuses=reg.statuses().unwrap();let zip=statuses.iter().find(|s|s.extension==".zip").unwrap();
         assert!(zip.registered);assert!(!zip.is_default);assert_eq!(zip.current_progid.as_deref(),Some("User.Selected"));
         apply_edits(reg,registration_edits(reg,&BTreeSet::new(),r"C:\qing-zip.exe").unwrap(),None).unwrap();
+        assert_eq!(reg.default_apps_uri().unwrap(), "ms-settings:defaultapps");
         assert!(reg.read(r"Software\Classes\.zip\OpenWithProgids",PROGID).unwrap().is_none());
         assert!(reg.read(r"Software\Classes\.zip\OpenWithProgids","Other.Archive").unwrap().is_some());
         assert_eq!(string_data(reg.read(choice,"Hash").unwrap()).as_deref(),Some("unchanged hash"));
