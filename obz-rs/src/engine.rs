@@ -2391,7 +2391,15 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let mut stage;
     let mut output_guards = CheckedDirectories::default();
     output_guards.check(&dest)?;
-    let defer_preflight = opts.selected.is_empty()
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    let selected_zip_candidate = matches!(payload_source, PayloadSource::Engine)
+        && !opts.selected.is_empty() && selected_source.is_some()
+        && memory_source.is_some() && entries.iter().filter(|e| !e.is_dir).nth(127).is_some()
+        // The shared filesystem publisher uses at most four workers.
+        && opts.threads.is_none_or(|limit| limit >= 4) && using_process_token();
+    #[cfg(not(all(windows, target_pointer_width = "64")))]
+    let selected_zip_candidate = false;
+    let defer_preflight = (opts.selected.is_empty() || selected_zip_candidate)
         && !dest.try_exists().map_err(|e| e.to_string())?
         && dest.parent().is_some_and(Path::is_dir);
     if !defer_preflight {
@@ -2400,7 +2408,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     ctl.check()?;
     let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
     let (mut bounded_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
-        && defer_preflight && expected.len() <= 65_536
+        && opts.selected.is_empty() && defer_preflight && expected.len() <= 65_536
     {
         bounded_archive_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
             .map_or((None, None), |(plan, transaction)| (Some(plan), Some(transaction)))
@@ -2425,8 +2433,11 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let plan_selection = split_plan.is_some() && using_process_token();
     #[cfg(not(nana_selected_worker))]
     let plan_selection = false;
-    let projected = plan_selection.then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
-    let safe_projection = opts.selected.is_empty() || plan_selection;
+    // Only decode_memory_zip has read every member to EOF and retained exactly
+    // the selected file bytes. A fallback decoder may still produce the whole tree.
+    let memory_selection = selected_zip_candidate && defer_preflight && memory.is_some();
+    let projected = (plan_selection || memory_selection).then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
+    let safe_projection = opts.selected.is_empty() || projected.is_some();
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
     let mut transaction = if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
@@ -2435,6 +2446,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         None
     };
+    if PhaseTimer::enabled() && !opts.selected.is_empty() {
+        eprintln!("OA_SELECTED_PUBLISH bounded={} deferred={} memory={} transaction={}", selected_zip_candidate, defer_preflight, memory.is_some(), transaction.is_some());
+    }
     // Small-file parallel publication keeps its established route. Large serial
     // output can move verified files from an atomic private stage on this volume.
     let serial_publication = !(opts.overwrite == "error"
@@ -2489,24 +2503,26 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         stage_guards = Some(fallback.guards(None)?);
         stage = Some(fallback);
     }
+    let verified_projection = split_streamed || memory_selection;
+    let staged_entries = projected.as_deref().filter(|_| verified_projection).unwrap_or(&all_entries);
     if let Some(stage) = &stage {
         let stage_guards = stage_guards.as_mut().unwrap();
         stage_guards.check(stage.path())?;
         if !split_streamed {
             ctl.set("decoding", Some(0), "Decoding archive into temporary storage");
         }
-        let streamed = split_streamed || decode_selected_zip(
+        let streamed = split_streamed || (memory.is_none() && decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,
             stage.path(),
             stage_guards,
             &ctl,
-        )?;
+        )?);
         if let Some(plan) = bounded_plan.take() {
             plan.decode(&all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if let Some(files) = &memory {
-            stage_verified_memory(files, &all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
+            stage_verified_memory(files, staged_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
             let mut args = base("x", opts)?;
             let execute = if official_zeal {
@@ -2542,8 +2558,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
                 execute(&args, None, opts, None)?;
             }
         }
-        let mut staged_expected = if let Some(projection) = projected.as_deref().filter(|_| split_streamed) {
-            expected_tree(projection)?
+        let mut staged_expected = if verified_projection && projected.is_some() {
+            expected_tree(staged_entries)?
         } else if streamed {
             expected_tree(&entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>())?
         } else {
@@ -2571,11 +2587,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             &staged_expected,
             &ctl,
             stage_guards,
-            (transaction.is_some() || file_publication_stage).then_some(
-                projected.as_deref().filter(|_| split_streamed).unwrap_or(&all_entries)),
+            (transaction.is_some() || file_publication_stage).then_some(staged_entries),
             if transaction.is_some() || file_publication_stage { opts.zone_identifier.as_ref() } else { None },
         )?;
-        if split_streamed && transaction.is_some() { expected = staged_expected; }
+        if verified_projection && transaction.is_some() { expected = staged_expected; }
     }
     policy.validate_output()?;
     if let Some(transaction) = transaction.as_ref() {
@@ -2631,7 +2646,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             if transaction.witnessed.is_some() && PhaseTimer::enabled() {
                 eprintln!("OA_PUBLICATION witnessed_directory_commit=1");
             }
-            if split_streamed && PhaseTimer::enabled() {
+            if verified_projection && PhaseTimer::enabled() {
                 eprintln!("OA_PUBLICATION selected_directory_commit=1");
             }
             return Ok(entries.iter().filter(|e| !e.is_dir).count());
@@ -2656,7 +2671,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         ctl.check()?;
         output_guards.check(&dest)?;
         #[cfg(windows)]
-        if split_streamed {
+        if verified_projection {
             // Claim a fresh directory without following or merging a competing
             // creation. Keep its identity for rollback if copying is cancelled.
             let leaf = dest.file_name().ok_or("missing fallback destination leaf")?;
@@ -2695,7 +2710,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
     let count = if opts.overwrite == "error"
-        && opts.selected.is_empty()
+        && (opts.selected.is_empty() || memory_selection)
         && file_count >= 128
         && entries
             .iter()
@@ -6575,6 +6590,54 @@ mod staging_tests {
         });
         zip.finish().unwrap();
         (temp, path, entries)
+    }
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn selected_zip_directory_commit_verifies_unselected_files_and_preserves_zone() {
+        let (fixture, archive, entries) = memory_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let destination = parent.join("out");
+        let zone = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+        fs::write(format!("{}:Zone.Identifier", archive.display()), zone).unwrap();
+        let selected = entries.iter().take(128).map(|entry| entry.name.clone())
+            .chain(std::iter::once("empty".into())).collect();
+        let opts = EngineOptions { selected, ..Default::default() };
+        let unpack = |dest: &Path| extract(archive.to_str().unwrap(), dest.to_str().unwrap(), &opts);
+        assert_eq!(unpack(&destination).unwrap(), 128);
+        assert!(destination.join("empty").is_dir());
+        assert_eq!(fs::read_dir(destination.join("folder")).unwrap().count(), 128);
+        for index in 0..128 {
+            let path = destination.join(&entries[index].name);
+            let bytes = fs::read(&path).unwrap();
+            assert_eq!(bytes.len() as u64, entries[index].size);
+            assert!(bytes.iter().all(|byte| *byte == index as u8));
+            assert_eq!(fs::read(format!("{}:Zone.Identifier", path.display())).unwrap(), zone);
+        }
+        assert!(unpack(&destination).is_err());
+        let cancelled_dest = parent.join("cancelled");
+        let ctl = JobControl::new();
+        let cancellable = EngineOptions { control: Some(ctl.clone()), ..opts.clone() };
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| extract(archive.to_str().unwrap(), cancelled_dest.to_str().unwrap(), &cancellable));
+            while !worker.is_finished() {
+                if ctl.snapshot().phase == "extracting" {
+                    ctl.cancel();
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+        });
+        assert!(!cancelled_dest.exists());
+        let mut archive_bytes = fs::read(&archive).unwrap();
+        let corrupt_at = archive_bytes.windows(32).position(|slice| slice == [159; 32]).unwrap();
+        archive_bytes[corrupt_at] ^= 1;
+        fs::write(&archive, archive_bytes).unwrap();
+        let corrupt_dest = parent.join("corrupt");
+        assert!(unpack(&corrupt_dest).is_err());
+        assert!(!corrupt_dest.exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
     }
     #[test]
     fn selected_zip_streams_large_unselected_data_without_staging_it() {
