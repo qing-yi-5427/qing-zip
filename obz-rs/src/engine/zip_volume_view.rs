@@ -94,6 +94,8 @@ pub(crate) fn with_source<T>(
     opts: &EngineOptions,
     action: impl FnOnce(&str) -> Result<T, String>,
 ) -> Result<T, String> {
+    let ctl = control(opts);
+    ctl.check()?;
     let input = Path::new(path);
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
     let numeric = numeric_zip(input, ext);
@@ -110,7 +112,6 @@ pub(crate) fn with_source<T>(
         let _scope = Scope;
         return action(path);
     }
-    let ctl = control(opts);
     let mut parts = Vec::new();
     let stem = input
         .file_stem()
