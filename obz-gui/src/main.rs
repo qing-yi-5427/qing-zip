@@ -8,6 +8,7 @@ use obz_core::engine::{self, EngineOptions};
 mod jobs;
 mod desktop;
 mod drag;
+mod shell_compress;
 mod associations;
 mod preview;
 mod instance;
@@ -182,12 +183,14 @@ async fn dropped(path: String) -> Result<ArchiveView, String> {
 
 fn main() {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let installer_action = if matches!(args.as_slice(), [arg] if arg == "--unregister-owned-associations") {
+    let early_action = if matches!(args.as_slice(), [arg] if arg == "--unregister-owned-associations") {
         Some(associations::unregister_for_uninstall())
     } else {
-        associations::shortcuts::configure(&args)
+        associations::shortcuts::configure(&args).or_else(|| {
+            shell_compress::startup(&args).map(|result| result.map_err(|error| error.to_string()))
+        })
     };
-    if let Some(result) = installer_action {
+    if let Some(result) = early_action {
         if let Err(error) = result {
             eprintln!("{error}");
             std::process::exit(1);
