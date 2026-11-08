@@ -26,6 +26,33 @@ def digest(p):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+
+def change_stage_acl(path):
+    # Restrict only the newly generated empty-directory hierarchy supplied by
+    # this test. Existing ordinary child files inherit the new access policy.
+    from ctypes import wintypes
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    adv.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL)]
+    adv.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    descriptor = ctypes.c_void_p()
+    access = "D:P(D;OICI;FR;;;LS)(A;OICI;FA;;;OW)(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+    assert adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(access, 1, ctypes.byref(descriptor), None)
+    try:
+        present, defaulted, acl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
+        assert adv.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted))
+        code = adv.SetNamedSecurityInfoW(str(path), 1, 0x80000004, None, None, acl, None)
+        assert code == 0, code
+    finally:
+        kernel.LocalFree(descriptor)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli", type=Path, required=True)
@@ -148,14 +175,17 @@ def main():
                     assert "linked input path rejected" in errors and "OA_PHASE engine-process" not in errors and not target.exists(),errors
                     cases.append(["file-symlink","rejected before encoding, no retry"])
                 finally:link.unlink()
-            if args.require_file_symlink:
-                # Replace a regular manifest entry after the native encoder starts.
-                # This tests the worker even on hosts whose enumeration happens to
-                # discover the static link during the bounded routing sample.
-                head = src / "000-first.bin"
-                head.write_bytes(hashlib.shake_256(b"native-create-symlink").digest(8 << 20))
-                tail = src / "zzz-last.txt"; tail.write_bytes(b"original")
-                bad = root / "in-flight-link.zip"
+            # The marker follows enumeration. A large first file and one
+            # encoding thread keep the final selected leaf pending.
+            head = src / "000-first.bin"
+            head.write_bytes(hashlib.shake_256(b"native-create-races").digest(8 << 20))
+            tail = src / "zzz-last.txt"
+            changes = ["acl", "alternate-stream"] + (["file-symlink"] if args.require_file_symlink else [])
+            for change in changes:
+                tail.write_bytes(b"original")
+                dest = root / ("in-flight-" + change)
+                dest.mkdir()
+                bad = dest / "result.zip"
                 with subprocess.Popen(list(map(str, [cli, "create", bad, src, "--level", "9", "--threads", "1"])),
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "OPEN_ARCHIVE_PROFILE":"1"}) as worker:
                     for line in worker.stderr:
@@ -163,13 +193,38 @@ def main():
                             break
                     else:
                         raise AssertionError("worker did not begin encoding")
-                    tail.unlink(); tail.symlink_to(outside)
+                    stages = list(dest.glob(".qing-zip-create-*"))
+                    assert len(stages) == 1 and stages[0].parent == dest
+                    if change == "acl":
+                        change_stage_acl(stages[0])
+                    elif change == "alternate-stream":
+                        files = list(stages[0].glob(".qing-zip-output-*"))
+                        assert len(files) == 1 and files[0].parent == stages[0]
+                        invalid = ctypes.c_void_p(-1).value
+                        default = kernel.CreateFileW(str(files[0]), 0x80000000, 7, None, 3, 0, None)
+                        assert default == invalid and ctypes.get_last_error() == 32
+                        stream = kernel.CreateFileW(str(files[0]) + ":foreign", 0x40000000, 7, None, 1, 0, None)
+                        assert stream != invalid, ctypes.get_last_error()
+                        written = ctypes.c_ulong()
+                        try:
+                            assert kernel.WriteFile(ctypes.c_void_p(stream), b"x", 1, ctypes.byref(written), None) and written.value == 1
+                        finally:
+                            kernel.CloseHandle(stream)
+                    else:
+                        tail.unlink()
+                        tail.symlink_to(outside)
                     try:
                         _, errors = worker.communicate(timeout=90)
                         assert worker.returncode and not bad.exists() and b"OA_PHASE engine-process" not in errors
-                        cases.append(["in-flight-file-symlink","native rejected after encoding began, no retry"])
+                        if change == "acl":
+                            assert b"permissions changed" in errors, errors
+                        if change == "alternate-stream":
+                            assert b"identity or streams changed" in errors, errors
+                        assert not list(dest.glob(".qing-zip-create-*"))
+                        cases.append(["in-flight-" + change,"native rejected after encoding began, no retry"])
                     finally:
-                        tail.unlink()
+                        if tail.is_symlink():
+                            tail.unlink()
             target=root/"default.zip"; before=digest(target)
             run([cli,"create",target,src],False)
             assert before==digest(target)

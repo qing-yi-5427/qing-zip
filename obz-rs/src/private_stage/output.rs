@@ -187,6 +187,66 @@ fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescripto
     acl_bytes(computed.0)?;
     Ok(computed)
 }
+fn acl_entries(bytes: &[u8]) -> Result<&[u8], String> {
+    let count = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    let mut end = 8;
+    for _ in 0..count {
+        let header = bytes
+            .get(end..end + 4)
+            .ok_or("invalid archive permission ACE")?;
+        let size = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        if size < 4 || size > bytes.len() - end {
+            return Err("invalid archive permission ACE size".into());
+        }
+        end += size;
+    }
+    Ok(&bytes[8..end])
+}
+fn same_file_permissions(a: Handle, b: Handle) -> Result<bool, String> {
+    // Allocation slack after the last ACE has no access semantics. Keep every
+    // ACE byte, their order, and all protection/inheritance control flags.
+    Ok((control(a)? ^ control(b)?) & 0x1400 == 0
+        && acl_entries(&acl_bytes(a)?)? == acl_entries(&acl_bytes(b)?)?)
+}
+fn only_default_stream(file: &File) -> Result<bool, String> {
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(file: Handle, class: i32, data: *mut u32, size: u32)
+            -> i32;
+    }
+    // FILE_STREAM_INFO: next, UTF-16 byte length, two 64-bit sizes, then name.
+    let mut aligned = [0u64; 64];
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            7,
+            aligned.as_mut_ptr().cast(),
+            std::mem::size_of_val(&aligned) as u32,
+        )
+    } == 0
+    {
+        let e = io::Error::last_os_error();
+        return if matches!(e.raw_os_error(), Some(38 | 122 | 234)) {
+            Ok(false)
+        } else {
+            Err(format!("query archive streams: {e}"))
+        };
+    }
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            aligned.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(&aligned),
+        )
+    };
+    let name = "::$DATA"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    Ok(bytes[..4] == [0; 4]
+        && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize == name.len()
+        && bytes[24..24 + name.len()] == name)
+}
+
 fn private_permissions(sid: &str) -> Result<Allocation, String> {
     let text: Vec<u16> = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)")
         .encode_utf16()
@@ -233,9 +293,6 @@ struct RenameInformation {
     name: [u16; 1],
 }
 fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
-    name_by_handle(file,parent,name,replace,10)
-}
-fn name_by_handle(file: &File,parent: &File,name:&[u16],replace:bool,class:u32)->Result<(),String>{
     let offset = std::mem::offset_of!(RenameInformation, name);
     let length = offset + (name.len() + 1) * 2;
     let mut buffer = vec![0usize; length.div_ceil(std::mem::size_of::<usize>())];
@@ -252,7 +309,7 @@ fn name_by_handle(file: &File,parent: &File,name:&[u16],replace:bool,class:u32)-
             status.as_mut_ptr(),
             raw.cast(),
             length as u32,
-            class,
+            10,
         )
     };
     if result < 0 {
@@ -346,19 +403,52 @@ impl PrivateOutputFile {
         self.state = State::Finalized;
         Ok(self.file.take().expect("committed output handle"))
     }
-    /// The console creates its archive one directory below the requested destination.
-    /// Link the protected, verified file without replacement, then restore permissions
-    /// against that same staging parent before removing its original link.
-    pub(super) fn publish_archive(&mut self,target_parent:&File,name:&OsStr)->Result<(),String>{
-        if self.state!=State::Private { return Err("invalid archive publication state".into()); }
-        let info=info(self.as_file())?;
-        if info[0]&0x410!=0 || info[10]!=1 {return Err("archive staging identity changed".into());}
-        name_by_handle(self.as_file(),target_parent,&leaf(name)?,false,11)?;
-        // abort() removes only the original staging link, including after a
-        // permissions error. Its handle has never named the public target.
-        let restored=self.permissions.as_ref().map_or(Ok(()),|p|apply_native(self.as_file(),p));
-        let removed=self.abort();
-        restored.and(removed).map_err(|e|format!("archive was committed but finalization failed: {e}"))
+    /// Restore inheritance at the original (console-compatible) depth while
+    /// the default stream is still exclusively held and has no public name.
+    /// Once ordinary inheritance is active it can follow subsequent native
+    /// propagation. The public rename must never replay a prior DACL.
+    pub(super) fn publish_archive(
+        &mut self,
+        target_parent: &File,
+        ordinary: &File,
+        name: &OsStr,
+        before_commit: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.state != State::Private {
+            return Err("invalid archive publication state".into());
+        }
+        let expected = self
+            .permissions
+            .as_ref()
+            .ok_or("archive storage has no inherited permissions")?;
+        let token = effective_token()?;
+        let current = ordinary_permissions(&self.parent, &token)?;
+        if !same_file_permissions(expected.0, current.0)? {
+            return Err("archive staging permissions changed; archive was not published".into());
+        }
+        apply_native(self.as_file(), &current)?;
+        let actual = descriptor(self.as_file())?;
+        let fresh = ordinary_permissions(&self.parent, &token)?;
+        let ordinary_acl = descriptor(ordinary)?;
+        // Compare to an actual unprotected file created by NTFS under the
+        // same parent. Legacy NTFS marks inherited ACEs differently from
+        // the private-object derivation used to restore the data file.
+        if !same_file_permissions(actual.0, ordinary_acl.0)?
+            || !same_file_permissions(fresh.0, expected.0)?
+        {
+            return Err(
+                "archive inheritance changed during finalization; archive was not published".into(),
+            );
+        }
+        let metadata = info(self.as_file())?;
+        if metadata[0] & 0x410 != 0 || metadata[10] != 1 || !only_default_stream(self.as_file())? {
+            return Err("archive staging identity or streams changed".into());
+        }
+        before_commit()?;
+        rename(self.as_file(), target_parent, &leaf(name)?, false)?;
+        self.state = State::Finalized;
+        self.file.take();
+        Ok(())
     }
     pub(crate) fn abort(&mut self) -> Result<(), String> {
         self.abort_with(&mut || Ok(()))
@@ -436,6 +526,19 @@ pub(crate) fn create_output(
     parent_path: &Path,
     parent: &File,
 ) -> Result<PrivateOutputFile, String> {
+    create_with_sharing(parent_path, parent, false)
+}
+pub(super) fn create_archive_file(
+    parent_path: &Path,
+    parent: &File,
+) -> Result<PrivateOutputFile, String> {
+    create_with_sharing(parent_path, parent, true)
+}
+fn create_with_sharing(
+    parent_path: &Path,
+    parent: &File,
+    exclusive: bool,
+) -> Result<PrivateOutputFile, String> {
     if info(parent)?[0] & 0x410 != 0x10 {
         return Err("invalid private output parent".into());
     }
@@ -492,7 +595,11 @@ pub(crate) fn create_output(
                 &mut status,
                 std::ptr::null(),
                 0x80,
-                if mode == Mode::PrivateAcl { 1 } else { 0 },
+                if mode == Mode::PrivateAcl && !exclusive {
+                    1
+                } else {
+                    0
+                },
                 2,
                 0x200060,
                 std::ptr::null_mut(),
