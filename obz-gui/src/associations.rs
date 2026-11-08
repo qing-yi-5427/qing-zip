@@ -156,8 +156,8 @@ impl Registry {
     }
 }
 #[derive(Clone)]
-struct Edit {key:String,name:String,value:Option<RawValue>}
-fn edit(key:impl Into<String>,name:impl Into<String>,value:Option<RawValue>)->Edit{Edit{key:key.into(),name:name.into(),value}}
+struct Edit {key:String,name:String,value:Option<RawValue>,expected:Option<Option<RawValue>>}
+fn edit(key:impl Into<String>,name:impl Into<String>,value:Option<RawValue>)->Edit{Edit{key:key.into(),name:name.into(),value,expected:None}}
 fn selections(extensions:Vec<String>)->Result<BTreeSet<String>,String>{
     if extensions.len()>EXTENSIONS.len(){return Err("文件类型数量超出支持范围".into());}
     let mut selected=BTreeSet::new();
@@ -255,6 +255,9 @@ fn apply_edits(reg:&Registry,edits:Vec<Edit>,fail_after:Option<usize>)->Result<(
         for (index,entry) in edits.into_iter().enumerate() {
             if fail_after==Some(index){return Err("injected registration failure".to_string());}
             let before=reg.read(&entry.key,&entry.name)?;
+            if entry.expected.as_ref().is_some_and(|expected| expected != &before) {
+                return Err("注册值已被其他程序修改".into());
+            }
             reg.write(&entry.key,&entry.name,entry.value.as_ref())?;
             applied.push((entry,before));
         }
