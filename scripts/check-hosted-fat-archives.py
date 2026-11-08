@@ -2,6 +2,7 @@
 from pathlib import Path
 import ctypes,hashlib,json,os,subprocess,time,zipfile
 from pywinauto import Desktop, keyboard
+import win32clipboard
 
 assert os.environ.get("RUNNER_ENVIRONMENT")=="github-hosted" and os.environ.get("GITHUB_ACTIONS")=="true"
 root=Path(os.environ["QING_VHD_ROOT"])
@@ -19,7 +20,8 @@ def members(p):
 def save_as(app,src,dest,scope):
     env=dict(os.environ,WEBVIEW2_USER_DATA_FOLDER=str(scope/"browser"),LOCALAPPDATA=str(scope/"local"))
     (scope/"local").mkdir(parents=True,exist_ok=True)
-    child=subprocess.Popen([str(app),str(src)],env=env)
+    neutral=scope/"dialog-start";neutral.mkdir()
+    child=subprocess.Popen([str(app),str(src)],env=env,cwd=neutral)
     desktop=Desktop(backend="uia")
     def wait(fn,label,sec=15):
         end=time.monotonic()+sec
@@ -40,23 +42,42 @@ def save_as(app,src,dest,scope):
         wait(lambda:named(main,["MenuItem"],"另存为"),"Save As item").click_input()
         dialog=wait(lambda:next((w for w in desktop.windows(process=child.pid,class_name="#32770") if w.is_visible()),None),"native save dialog")
         dialog.set_focus()
-        field=next((w for w in controls(dialog) if w.element_info.control_type=="Edit" and w.element_info.automation_id=="1001"),None)
-        if field:
-            field.set_edit_text(str(dest));field.set_focus()
-        else:
-            keyboard.send_keys("%n");keyboard.send_keys("^a");keyboard.send_keys(str(dest),with_spaces=True)
-        keyboard.send_keys("{ENTER}")
-        wait(lambda:not ctypes.windll.user32.IsWindowVisible(dialog.handle),"dialog submitted",5)
+        def filename_box():
+            return next((w for w in controls(dialog) if w.element_info.control_type=="Edit" and
+                         (w.element_info.automation_id=="1001" or w.parent().element_info.automation_id=="FileNameControlHost")),None)
+        field=wait(filename_box,"actual filename textbox")
+        field.click_input()
+        # Real paste sends the filename-change notification to the native
+        # dialog; UIA ValuePattern.SetValue alone can leave its default active.
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(str(dest),13)
+        finally:win32clipboard.CloseClipboard()
+        keyboard.send_keys("^a^v")
+        def entered():
+            current=filename_box()
+            return current is not None and current.get_value()==str(dest)
+        wait(entered,"filename textbox echoed exact requested destination",6)
+        entered_path=filename_box().get_value()
+        button=wait(lambda:next((v for v in controls(dialog) if v.element_info.control_type=="Button" and
+                         v.element_info.automation_id=="1"),None),"native Save button")
+        button.click_input()
+        wait(lambda:not ctypes.windll.user32.IsWindowVisible(dialog.handle),"dialog submitted",8)
         end=time.monotonic()+5
         seen=set()
         while time.monotonic()<end:
             seen.update(c.element_info.name for c in controls(main) if c.element_info.control_type in ("Text","Alert","Custom") and c.element_info.name)
             if dest.exists():break
             time.sleep(.15)
-        return {"method":"real GUI and common save dialog", "hints":sorted(seen), "ok":dest.exists() and dest.read_bytes()==src.read_bytes()}
+        return {"method":"real GUI and common save dialog", "entered_path":entered_path, "hints":sorted(seen), "ok":dest.exists() and dest.read_bytes()==src.read_bytes()}
     except Exception as e:
         visible=[] if 'main' not in locals() else [(c.element_info.control_type,c.element_info.name,c.element_info.automation_id) for c in controls(main)][:180]
-        return {"driver_error":repr(e),"visible":visible,"ok":False}
+        dialogs=[]
+        for modal in desktop.windows(process=child.pid,class_name="#32770"):
+            if modal.is_visible():
+                dialogs.append([(v.element_info.control_type,v.element_info.name,v.element_info.automation_id) for v in controls(modal)][:100])
+        return {"driver_error":repr(e),"visible":visible,"dialogs":dialogs,"ok":False}
     finally:
         if child.poll() is None:child.terminate();child.wait(timeout=15)
 
