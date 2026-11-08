@@ -22,6 +22,7 @@ function entryType(entry) {
 function modifiedTime(entry) {
   return entry.modifiedTime ??= Date.parse((entry.modified || '').replace(' ', 'T'));
 }
+const flatNameOrder = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
 function compareEntries(a, b) {
   const directoriesFirst = Number(!!b.is_dir) - Number(!!a.is_dir);
   if (directoriesFirst) return directoriesFirst;
@@ -40,7 +41,10 @@ function compareEntries(a, b) {
     if (unknownLast) return unknownLast;
     order = left - right;
   }
-  return (s.reverse ? -1 : 1) * (order || a.leaf.localeCompare(b.leaf) || (s.flatView ? a.name.localeCompare(b.name) : 0));
+  if (!order) order = s.flatView
+    ? flatNameOrder.compare(a.leaf,b.leaf) || flatNameOrder.compare(a.name,b.name) || a.name.localeCompare(b.name)
+    : a.leaf.localeCompare(b.leaf);
+  return s.reverse ? -order : order;
 }
 function sortableColumn(key, label) {
   const direction = s.sort !== key ? 'none' : s.reverse ? 'descending' : 'ascending';

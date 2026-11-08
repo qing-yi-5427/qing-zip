@@ -156,3 +156,12 @@ test('flat view includes implied and empty directories, scopes search, and prese
  s.folder='top/';s.flatView=false;s.reverse=false;
  assert.deepEqual(names(),['top/a/','top/b/']);
 });
+
+test('flat filenames sort embedded numbers naturally while ordinary browsing keeps its ordering',()=>{
+ const {api,s}=fixture();
+ s.entries=['item10','item2','item1'].map(name=>({name,size:1}));
+ Object.assign(s,{sort:'name',flatView:true});
+ assert.deepEqual(Array.from(api.visibleEntries(),e=>e.name),['item1','item2','item10']);
+ s.flatView=false;
+ assert.deepEqual(Array.from(api.visibleEntries(),e=>e.name),['item1','item10','item2']);
+});
