@@ -98,6 +98,21 @@ Section /o "资源管理器右键入口" Shell
  ${EndIf}
 SectionEnd
 Section "Uninstall"
+ ; The desktop binary derives its own path and atomically removes matching candidates.
+ ReadRegStr $0 HKCU "Software\OpenArchive\Associations" "ManagedBy"
+ ReadRegStr $1 HKCU "Software\Classes\OpenArchive.Archive\shell\open\command" ""
+ ${If} $0 == "OpenArchive.Associations.v1"
+ ${AndIf} $1 == '$\"$INSTDIR\qing-zip.exe$\" $\"%1$\"'
+  ClearErrors
+  ExecWait '$\"$INSTDIR\qing-zip.exe$\" --unregister-owned-associations' $0
+  ${If} ${Errors}
+  ${OrIf} $0 != 0
+   SetErrorLevel 1
+   IfSilent +2
+   MessageBox MB_ICONSTOP "无法清理本安装的文件关联。请关闭相关程序，必要时重新安装后再卸载。"
+   Abort
+  ${EndIf}
+ ${EndIf}
  ReadRegStr $0 HKCU "Software\Classes\*\shell\qing-zip\command" ""
  ${If} $0 == '$\"$INSTDIR\qing-zip.exe$\" $\"%1$\"'
   DeleteRegKey HKCU "Software\Classes\*\shell\qing-zip"

@@ -83,6 +83,9 @@ fn read_value(hive:HKEY,path:&str,name:&str)->Result<Option<RawValue>,String>{
     let status=unsafe{RegOpenKeyExW(hive,PCWSTR(path.as_ptr()),None,KEY_QUERY_VALUE,&mut key)};
     if status==ERROR_FILE_NOT_FOUND || status==ERROR_PATH_NOT_FOUND {return Ok(None);}
     status.ok().map_err(|e|e.to_string())?;let key=Key(key);
+    query_value(&key, &name)
+}
+fn query_value(key: &Key, name: &[u16]) -> Result<Option<RawValue>, String> {
     let mut kind=REG_VALUE_TYPE::default();let mut len=0u32;
     let status=unsafe{RegQueryValueExW(key.0,PCWSTR(name.as_ptr()),None,Some(&mut kind),None,Some(&mut len))};
     if status==ERROR_FILE_NOT_FOUND {return Ok(None);}
@@ -171,6 +174,22 @@ fn handler_command(exe:&str, arguments:&str)->Result<String,String>{
     }
     Ok(format!("\"{exe}\"{arguments} \"%1\""))
 }
+fn handler_values(progid: &str, exe: &str, command: &str) -> [Edit; 4] {
+    [
+        edit(progid,"",Some(string_value("qing-zip 压缩文件"))),
+        edit(format!(r"{progid}\DefaultIcon"),"",Some(string_value(&format!("\"{exe}\",0")))),
+        edit(format!(r"{progid}\shell\open\command"),"",Some(string_value(command))),
+        edit(OWNER_KEY,"ManagedBy",Some(string_value(OWNER))),
+    ]
+}
+fn capability_values(exe: &str) -> [Edit; 4] {
+    [
+        edit(CAPABILITIES,"ApplicationName",Some(string_value(APP_NAME))),
+        edit(CAPABILITIES,"ApplicationDescription",Some(string_value("本地压缩与解压工具"))),
+        edit(CAPABILITIES,"ApplicationIcon",Some(string_value(&format!("\"{exe}\",0")))),
+        edit(r"Software\RegisteredApplications",APP_NAME,Some(string_value(CAPABILITIES))),
+    ]
+}
 fn registration_edits(reg:&Registry,selected:&BTreeSet<String>,exe:&str)->Result<Vec<Edit>,String>{
     let command=open_command(exe)?;
     let progid=format!(r"Software\Classes\{PROGID}");
@@ -208,22 +227,12 @@ fn registration_edits(reg:&Registry,selected:&BTreeSet<String>,exe:&str)->Result
     }
     let keep_handler=!selected.is_empty() || reg.statuses()?.iter().any(|s|s.is_default);
     if keep_handler {
-        edits.extend([
-            edit(&progid,"",Some(string_value("qing-zip 压缩文件"))),
-            edit(format!(r"{progid}\DefaultIcon"),"",Some(string_value(&format!("\"{exe}\",0")))),
-            edit(format!(r"{progid}\shell\open\command"),"",Some(string_value(&command))),
-            edit(OWNER_KEY,"ManagedBy",Some(string_value(OWNER))),
-        ]);
+        edits.extend(handler_values(&progid, exe, &command));
     }else if owns {
         edits.extend([edit(&progid,"",None),edit(format!(r"{progid}\DefaultIcon"),"",None),edit(format!(r"{progid}\shell\open\command"),"",None)]);
     }
     if !selected.is_empty() {
-        edits.extend([
-            edit(CAPABILITIES,"ApplicationName",Some(string_value(APP_NAME))),
-            edit(CAPABILITIES,"ApplicationDescription",Some(string_value("本地压缩与解压工具"))),
-            edit(CAPABILITIES,"ApplicationIcon",Some(string_value(&format!("\"{exe}\",0")))),
-            edit(r"Software\RegisteredApplications",APP_NAME,Some(string_value(CAPABILITIES))),
-        ]);
+        edits.extend(capability_values(exe));
     }else if owns {
         edits.extend([edit(CAPABILITIES,"ApplicationName",None),edit(CAPABILITIES,"ApplicationDescription",None),edit(CAPABILITIES,"ApplicationIcon",None)]);
         if string_data(reg.read(r"Software\RegisteredApplications",APP_NAME)?).as_deref()==Some(CAPABILITIES) {
@@ -255,6 +264,60 @@ fn apply_edits(reg:&Registry,edits:Vec<Edit>,fail_after:Option<usize>)->Result<(
     }
     Ok(())
 }
+// Pin the ownership reads and all matching removals to one registry transaction.
+// A conflicting registration must never leave mixed candidates or a dead handler.
+fn uninstall_associations(reg: &Registry, exe: &str) -> Result<bool, String> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{CommitTransaction, CreateTransaction}};
+
+    let command = open_command(exe)?;
+    let progid = format!(r"Software\Classes\{PROGID}");
+    let tx = unsafe { CreateTransaction(std::ptr::null_mut(), std::ptr::null_mut(), 0, 0, 0, 0, PCWSTR::null()) }
+        .map_err(|e| e.to_string())?;
+    let tx = unsafe { OwnedHandle::from_raw_handle(tx.0) };
+    let open = |path: &str, access: REG_SAM_FLAGS| -> Result<Option<Key>, String> {
+        let path = wide(&reg.path(path))?;
+        let mut key = HKEY::default();
+        let status = unsafe { RegOpenKeyTransactedW(HKEY_CURRENT_USER, PCWSTR(path.as_ptr()), None, access,
+            &mut key, HANDLE(tx.as_raw_handle()), None) };
+        if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND { return Ok(None); }
+        status.ok().map_err(|e| e.to_string())?;
+        Ok(Some(Key(key)))
+    };
+    let handler = format!(r"{progid}\shell\open\command");
+    for (path, name, expected) in [(OWNER_KEY, "ManagedBy", OWNER), (handler.as_str(), "", command.as_str())] {
+        let Some(key) = open(path, KEY_QUERY_VALUE)? else { return Ok(false); };
+        if query_value(&key, &wide(name)?)? != Some(string_value(expected)) { return Ok(false); }
+    }
+
+    // An extension default or Explorer UserChoice is never among the owned values.
+    let mut values = Vec::new();
+    for ext in EXTENSIONS {
+        values.push(edit(format!(r"Software\Classes\{ext}\OpenWithProgids"), PROGID,
+            Some(RawValue { kind: REG_NONE, data: vec![] })));
+        values.push(edit(format!(r"{CAPABILITIES}\FileAssociations"), *ext, Some(string_value(PROGID))));
+    }
+    values.extend(capability_values(exe));
+    values.extend(handler_values(&progid, exe, &command));
+    for value in values {
+        let Some(key) = open(&value.key, KEY_QUERY_VALUE)? else { continue; };
+        let name = wide(&value.name)?;
+        if query_value(&key, &name)? == value.value {
+            let key = open(&value.key, KEY_SET_VALUE)?.ok_or("注册项已改变")?;
+            unsafe { RegDeleteValueW(key.0, PCWSTR(name.as_ptr())) }.ok().map_err(|e| e.to_string())?;
+        }
+    }
+    unsafe { CommitTransaction(HANDLE(tx.as_raw_handle())) }.map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub(crate) fn unregister_for_uninstall() -> Result<(), String> {
+    if uninstall_associations(&Registry::user(), &executable_path()?)? {
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None); }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn association_status()->Result<Vec<AssociationStatus>,String>{Registry::user().statuses()}
 #[tauri::command]
@@ -342,6 +405,70 @@ mod tests {
         apply_edits(reg,registration_edits(reg,&BTreeSet::new(),r"C:\qing-zip.exe").unwrap(),None).unwrap();
         assert!(reg.read(&format!(r"Software\Classes\{PROGID}\shell\open\command"),"").unwrap().is_some());
         assert!(reg.statuses().unwrap().iter().find(|s|s.extension==".zip").unwrap().is_default);
+    }
+    #[test]
+    fn uninstall_clears_own_candidates_but_preserves_foreign_values_and_user_choice() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let exe = r"C:\Program Files\qing-zip\qing-zip.exe";
+        let progid = format!(r"Software\Classes\{PROGID}");
+        let choice = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.zip\UserChoice";
+        let chosen = selections(vec![".zip".into(), ".rar".into()]).unwrap();
+        apply_edits(reg, registration_edits(reg, &chosen, exe).unwrap(), None).unwrap();
+        reg.write(choice, "ProgId", Some(&string_value(PROGID))).unwrap();
+        reg.write(choice, "Hash", Some(&string_value("untouched"))).unwrap();
+        let openwith = r"Software\Classes\.zip\OpenWithProgids";
+        reg.write(openwith, "Another.Archive", Some(&string_value("foreign"))).unwrap();
+        reg.write(r"Software\Classes\.zip", "", Some(&string_value("Another.Archive"))).unwrap();
+        let caps = format!(r"{CAPABILITIES}\FileAssociations");
+        reg.write(&caps, ".rar", Some(&string_value("Other.RAR"))).unwrap();
+        reg.write(CAPABILITIES, "ApplicationDescription", Some(&string_value("custom"))).unwrap();
+
+        assert!(uninstall_associations(reg, exe).unwrap());
+        assert!(!uninstall_associations(reg, exe).unwrap());
+        for (path, name) in [
+            (OWNER_KEY, "ManagedBy"), (&progid, ""), (openwith, PROGID), (caps.as_str(), ".zip"),
+            (r"Software\Classes\.rar\OpenWithProgids", PROGID), (CAPABILITIES, "ApplicationIcon"),
+            (&format!(r"{progid}\DefaultIcon"), ""), (&format!(r"{progid}\shell\open\command"), ""),
+            (r"Software\RegisteredApplications", APP_NAME),
+        ] { assert_eq!(reg.read(path, name).unwrap(), None, "{path}:{name}"); }
+        for (path, name, expected) in [
+            (choice, "ProgId", PROGID), (choice, "Hash", "untouched"),
+            (openwith, "Another.Archive", "foreign"), (r"Software\Classes\.zip", "", "Another.Archive"),
+            (caps.as_str(), ".rar", "Other.RAR"), (CAPABILITIES, "ApplicationDescription", "custom"),
+        ] { assert_eq!(reg.read(path, name).unwrap(), Some(string_value(expected))); }
+    }
+    #[test]
+    fn uninstall_after_settings_deselection_retires_the_default_handler() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let exe = r"C:\Installed\qing-zip.exe";
+        let command = format!(r"Software\Classes\{PROGID}\shell\open\command");
+        let choice = r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.zip\UserChoice";
+        let selected = selections(vec![".zip".into()]).unwrap();
+        apply_edits(reg, registration_edits(reg, &selected, exe).unwrap(), None).unwrap();
+        reg.write(choice, "ProgId", Some(&string_value(PROGID))).unwrap();
+        apply_edits(reg, registration_edits(reg, &BTreeSet::new(), exe).unwrap(), None).unwrap();
+        assert_eq!(reg.read(&command, "").unwrap(), Some(string_value(&open_command(exe).unwrap())));
+        assert!(uninstall_associations(reg, exe).unwrap());
+        assert_eq!(reg.read(&command, "").unwrap(), None);
+        assert_eq!(reg.read(choice, "ProgId").unwrap(), Some(string_value(PROGID)));
+    }
+    #[test]
+    fn uninstall_preserves_a_portable_takeover_and_unmarked_registrations() {
+        let sandbox = TestRegistry::new();
+        let reg = &sandbox.0;
+        let installed = r"C:\Installed\qing-zip.exe";
+        let portable = r"D:\Portable\qing-zip.exe";
+        let chosen = selections(vec![".zip".into(), ".7z".into()]).unwrap();
+        apply_edits(reg, registration_edits(reg, &chosen, installed).unwrap(), None).unwrap();
+        let edits = registration_edits(reg, &chosen, portable).unwrap();
+        apply_edits(reg, edits.clone(), None).unwrap();
+        assert!(!uninstall_associations(reg, installed).unwrap());
+        for v in edits { assert_eq!(reg.read(&v.key, &v.name).unwrap(), v.value); }
+        reg.write(OWNER_KEY, "ManagedBy", Some(&string_value("other"))).unwrap();
+        assert!(!uninstall_associations(reg, portable).unwrap());
+        assert_eq!(reg.read(r"Software\RegisteredApplications", APP_NAME).unwrap(), Some(string_value(CAPABILITIES)));
     }
     #[test]fn unowned_registration_is_never_overwritten(){
         let t=TestRegistry::new();let reg=&t.0;

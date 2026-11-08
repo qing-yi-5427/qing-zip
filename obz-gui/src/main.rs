@@ -181,6 +181,13 @@ async fn dropped(path: String) -> Result<ArchiveView, String> {
 }
 
 fn main() {
+    if std::env::args_os().skip(1).eq([std::ffi::OsString::from("--unregister-owned-associations")]) {
+        if let Err(error) = associations::unregister_for_uninstall() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     instance::queue_startup();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(instance::receive))

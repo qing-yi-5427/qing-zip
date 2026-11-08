@@ -30,6 +30,54 @@ def key(root,name):
             return winreg.QueryValueEx(k,name)[0]
     except FileNotFoundError:return None
 
+def seed_runner_associations(application):
+    """Model candidates left by the installed version on a disposable hosted runner."""
+    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
+        return None
+    prog = r'Software\Classes\OpenArchive.Archive'
+    caps = r'Software\OpenArchive\Capabilities'
+    openwith = r'Software\Classes\.zip\OpenWithProgids'
+    owner = r'Software\OpenArchive\Associations'
+    registered = r'Software\RegisteredApplications'
+    entries = [
+        (owner, 'ManagedBy', winreg.REG_SZ, 'OpenArchive.Associations.v1'),
+        (prog, '', winreg.REG_SZ, 'qing-zip 压缩文件'),
+        (prog+r'\shell\open\command', '', winreg.REG_SZ, f'"{application}" "%1"'),
+        (prog+r'\DefaultIcon', '', winreg.REG_SZ, f'"{application}",0'),
+        (openwith, 'OpenArchive.Archive', winreg.REG_NONE, b''),
+        (caps+r'\FileAssociations', '.zip', winreg.REG_SZ, 'OpenArchive.Archive'),
+        (caps, 'ApplicationName', winreg.REG_SZ, 'qing-zip'),
+        (caps, 'ApplicationDescription', winreg.REG_SZ, '本地压缩与解压工具'),
+        (caps, 'ApplicationIcon', winreg.REG_SZ, f'"{application}",0'),
+        (registered, 'qing-zip', winreg.REG_SZ, caps),
+    ]
+    external = (openwith, 'QingZipTest.OtherArchive', winreg.REG_SZ, 'preserve')
+    for path, name, _, _ in [*entries, external]:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path) as h:
+                winreg.QueryValueEx(h,name)
+        except FileNotFoundError:
+            continue
+        raise ValueError(f'Runner already contains {path}:{name}')
+    for path, name, kind, value in [*entries, external]:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as h:
+            winreg.SetValueEx(h,name,0,kind,value)
+    return entries, external
+
+def check_runner_associations(fixture):
+    entries, (path, name, _, value) = fixture
+    for candidate, setting, _, _ in entries:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,candidate) as h:
+                winreg.QueryValueEx(h,setting)
+        except FileNotFoundError:
+            continue
+        raise ValueError(f'Uninstall left an advertised association at {candidate}:{setting}')
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER,path,0,winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as h:
+        assert winreg.QueryValueEx(h,name)[0] == value
+        winreg.DeleteValue(h,name)
+    return {'owned_values_removed':len(entries),'other_candidate_preserved':True}
+
 def smoke_desktop(application, archive, scratch):
     """Observe the trial app starting its own WebView2 process. No UI injection."""
     from ctypes import wintypes as w
@@ -172,6 +220,7 @@ def main():
         installed=files(inst);del installed['Uninstall.exe'];assert installed==exported
         report['installed']=exercise(inst,tmp/'installed-test')
         keep=inst/'user-sentinel.txt';keep.write_text('retain this local file',encoding='utf8')
+        assoc_fixture=seed_runner_associations(inst/'qing-zip.exe')
         run([uninstall,'/S'])
         deadline=time.monotonic()+90
         while time.monotonic()<deadline and (uninstall.exists() or key(arp,'InstallLocation') is not None):time.sleep(.2)
@@ -182,6 +231,8 @@ def main():
         keep.unlink();inst.rmdir()
         assert previous_x64==(key(x64_install,'InstallDir'),key(x64_arp,'InstallLocation'))
         report['uninstall']={'bootstrap':'x86','registration_removed':True,'shortcuts_removed':True,'user_file_preserved':True}
+        if assoc_fixture:
+            report['uninstall']['file_associations']=check_runner_associations(assoc_fixture)
     report['assets']={}
     for p in [setup,portable]:
         digest=sha(p)
