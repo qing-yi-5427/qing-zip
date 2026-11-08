@@ -19,7 +19,7 @@ jobs:
           path: candidate-source
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 4ab6ad7db742a2d1732874d1a2120e85ac0bf991
+          ref: 37aa6ebcc8b2be2e8325b8bde8118f9a9a4ff580
           path: bounded
       - name: Build both hardened CLIs and verify native journal eligibility
         shell: pwsh
@@ -36,14 +36,16 @@ jobs:
           if ($LASTEXITCODE) {exit $LASTEXITCODE}
           Pop-Location
           Push-Location bounded
-          if ((git rev-parse HEAD) -ne '4ab6ad7db742a2d1732874d1a2120e85ac0bf991') {throw 'Wrong trial SHA'}
+          if ((git rev-parse HEAD) -ne '37aa6ebcc8b2be2e8325b8bde8118f9a9a4ff580') {throw 'Wrong trial SHA'}
           $volume=$env:TEMP.Substring(0,2)
           fsutil usn queryjournal $volume
           if ($LASTEXITCODE) {fsutil usn createjournal m=268435456 a=33554432 $volume}
           if ($LASTEXITCODE) {throw 'Disposable test volume has no usable NTFS journal'}
           cargo --config $cfg build --target $target --target-dir $env:RUNNER_TEMP/bounded-build --release --locked --manifest-path obz-rs/Cargo.toml --bin obz
           if ($LASTEXITCODE) {exit $LASTEXITCODE}
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib compact_receipt
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib private_stage::output_receipt::tests
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --test engine_staging cancelled_bulk_publication
           if ($LASTEXITCODE) {exit $LASTEXITCODE}
           Pop-Location
       - name: Fetch and verify published 0.11.8
