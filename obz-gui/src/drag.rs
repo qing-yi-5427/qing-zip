@@ -1,4 +1,6 @@
 //! Copy-only native Explorer drag. Sources are retained for asynchronous shell consumers.
+#[path = "drag_completion.rs"]
+mod completion;
 use windows::{core::{implement, BOOL, HRESULT, PCWSTR}, Win32::{
     Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK},
     System::{Com::{CoTaskMemFree, IDataObject}, Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY}, SystemServices::{MODIFIERKEYS_FLAGS, MK_LBUTTON}},
@@ -48,7 +50,7 @@ struct Preparation {
     control: JobControl,
     phase: AtomicU8,
     ready: AtomicBool,
-    directory: ShellDragDirectory,
+    directory: Arc<ShellDragDirectory>,
     paths: Vec<String>,
 }
 static ACTIVE: Mutex<Option<Arc<Preparation>>> = Mutex::new(None);
@@ -170,7 +172,7 @@ fn start_with_input(
         .iter()
         .map(|name| obz_core::engine::validate_name(name))
         .collect::<Result<Vec<PathBuf>, _>>()?;
-    let directory = ShellDragDirectory::create()?;
+    let directory = Arc::new(ShellDragDirectory::create()?);
     request.dest = directory
         .path()
         .to_str()
@@ -245,8 +247,12 @@ fn native_drag(p: &Preparation) -> Result<bool, String> {
         if !p.handoff(button_held())? {
             return Ok(false);
         }
+        let capability = completion::enable(&data);
         let hr = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
         p.complete_handoff(hr);
+        if hr == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY {
+            completion::after_copy(&p.directory, &data, capability.as_ref());
+        }
         hr.ok().map_err(|e| e.to_string())?;
         Ok(hr == DRAGDROP_S_DROP && effect.0 & DROPEFFECT_COPY.0 != 0)
     }
