@@ -1,4 +1,4 @@
-﻿name: Physical drag from qing-zip into Explorer
+name: Physical drag from qing-zip into Explorer
 on: workflow_dispatch
 permissions:
   contents: read
@@ -10,12 +10,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Fetch verified public 0.11.7 x64 trial
+      - name: Fetch verified public 0.11.8 x64 trial
         shell: pwsh
         run: |
-          $file=Join-Path $env:RUNNER_TEMP 'qing-zip-0.11.7-portable.zip'
-          Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.7/qing-zip-0.11.7-portable.zip' -OutFile $file
-          if ((Get-FileHash $file).Hash -ne 'C420E655F8436751F62E39A38E8E57979F00E080714BAEF5E16EC8DFAB406CC7'){throw 'Unexpected portable'}
+          $file=Join-Path $env:RUNNER_TEMP 'qing-zip-0.11.8-portable.zip'
+          Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.8/qing-zip-0.11.8-portable.zip' -OutFile $file
+          if ((Get-FileHash $file).Hash -ne 'CACA993662690D45CFBF679FFF1F5BEF50D6F3B21E686D80BFCE12F5D7FDABB4'){throw 'Unexpected portable'}
           Expand-Archive -LiteralPath $file -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
           python -m pip install pywinauto==0.6.9 pillow==11.3.0
       - name: Drag two selected items into a real destination folder

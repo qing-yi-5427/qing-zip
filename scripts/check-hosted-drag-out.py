@@ -19,7 +19,7 @@ from win32com.client import Dispatch
 
 result=Path('drag-evidence');result.mkdir()
 exe=next((Path(os.environ['RUNNER_TEMP'])/'qing-trial').rglob('qing-zip.exe'))
-assert hashlib.sha256(exe.read_bytes()).hexdigest()=='a04fda1b8665339e93b4863614d64393c8cff21c6529987bc45cf7c0ffbfcb76'
+assert hashlib.sha256(exe.read_bytes()).hexdigest()=='319112564bbeb8fbb18f6a9a2f45576dd05d7e215ec4b458250b373f48884ac7'
 report={'binary':hashlib.sha256(exe.read_bytes()).hexdigest()}
 def wait(fn,why,seconds=30):
     end=time.monotonic()+seconds
@@ -54,7 +54,9 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
                 if os.path.normcase(w.Document.Folder.Self.Path)==os.path.normcase(str(dest)):return w
             except Exception:pass
     target=wait(target_window,'Explorer destination'); target_hwnd=int(target.HWND)
-    app=subprocess.Popen([exe,archive],env={**os.environ,'WEBVIEW2_USER_DATA_FOLDER':str(scratch/'profile')})
+    drag_temp=scratch/"drag-temp";drag_temp.mkdir()
+    def drag_stages():return {p.name:manifest(p) for p in drag_temp.glob("qing-zip-drag-*")}
+    app=subprocess.Popen([exe,archive],env={**os.environ,'TEMP':str(drag_temp),'TMP':str(drag_temp),'WEBVIEW2_USER_DATA_FOLDER':str(scratch/'profile')})
     desktop=Desktop(backend='uia')
     try:
         win=wait(lambda:next((w for w in desktop.windows(process=app.pid) if w.is_visible()),None),'application')
@@ -110,11 +112,13 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         assert manifest(dest)=={}
         mouse.click(coords=center(find(win,'文件','Button').rectangle()))
         wait(lambda:find(win,'take.txt','Button'),'return to archive')
+        report['after_escape_stages']=drag_stages()
         report['escape_left_empty_destination']=True
         move_selection();save('dragging');mouse.release(coords=drop)
         expected={name:hashlib.sha256(data).hexdigest() for name,data in contents.items() if name!='dont-copy.txt'}
         wait(lambda:manifest(dest)==expected,'exact dropped files',25)
         report['verified']=manifest(dest)
+        time.sleep(.75);report['after_copy_stages']=drag_stages()
         save('after')
     except Exception as exc:
         report['error']=repr(exc);save('failure')
