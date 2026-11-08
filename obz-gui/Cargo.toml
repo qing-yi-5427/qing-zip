@@ -1,6 +1,6 @@
 [package]
 name = "obz-gui"
-version = "0.11.8"
+version = "0.11.9"
 edition = "2021"
 description = "qing-zip desktop archiver (Tauri)"
 license = "MIT"
