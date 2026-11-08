@@ -354,6 +354,18 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false)
+        .map(|(log, _)| log)
+}
+fn run_program_log_with_directory(
+    program: PathBuf,
+    args: &[String],
+    cwd: Option<&Path>,
+    opts: &EngineOptions,
+    output: Option<File>,
+    allow_zealfs: bool,
+    collect_directory: bool,
+) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
     let policy = archive_command.then(crate::machine_policy::scope);
@@ -367,9 +379,15 @@ fn run_program_log(
     if let Some(password) = &opts.password { crate::engine_password::validate(password)?; }
     let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
     let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
-    let stdout = match output {
-        Some(f) => f,
-        None => logs.try_clone().map_err(|e| e.to_string())?,
+    let pipe = collect_directory.then(directory_capture::pipe).and_then(Result::ok);
+    let (stdout, capture_files) = if let Some((reader, writer)) = pipe {
+        (writer, Some((reader, logs.try_clone().map_err(|e| e.to_string())?)))
+    } else {
+        let stdout = match output {
+            Some(file) => file,
+            None => logs.try_clone().map_err(|e| e.to_string())?,
+        };
+        (stdout, None)
     };
     let mut guarded_args = args.to_vec();
     if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
@@ -394,6 +412,19 @@ fn run_program_log(
         .map_err(|e| format!("cannot launch archive engine: {e}"))?;
     #[cfg(test)]
     crate::machine_policy::child_started(cmd.get_program(), args.first().map(String::as_str).unwrap_or(""));
+    // Retain the normal exclusive, delete-on-close diagnostic spool. No
+    // pathname or shareable temporary file is introduced for this optimization.
+    drop(cmd);
+    let mut capture = if let Some((pipe, spool)) = capture_files {
+        match DirectoryCapture::start(pipe, spool, ctl.clone()) {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+    } else { None };
     let password_input = match opts.password.as_deref() {
         Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
             Ok(input) => Some(input),
@@ -412,6 +443,12 @@ fn run_program_log(
             let _ = child.wait();
             if let Some(input) = password_input { let _ = input.finish(); }
             return Err("operation cancelled".into());
+        }
+        if let Some(reader) = capture.as_mut().filter(|reader| reader.ended()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(reader.finish().err()
+                .unwrap_or_else(|| "archive directory reader stopped unexpectedly".into()));
         }
         match child.try_wait() {
             Ok(Some(s)) => break s,
@@ -457,6 +494,10 @@ fn run_program_log(
         }
     };
     let password_result = password_input.map(|input| input.finish()).unwrap_or(Ok(()));
+    let parsed = match capture.as_mut() {
+        Some(capture) => capture.finish()?,
+        None => None,
+    };
     use std::io::{Seek, SeekFrom};
     // Child writers share these file positions. Rewind only after the child
     // exits; the live progress reader above has an independent position.
@@ -485,7 +526,8 @@ fn run_program_log(
     }
     password_result?;
     if let Some(policy) = &policy { policy.unchanged()?; }
-    Ok(logs)
+    if collect_directory { ctl.check()?; }
+    Ok((logs, parsed))
 }
 /// Resolve a member name to the same safe relative path used during extraction.
 pub fn validate_name(name: &str) -> Result<PathBuf, String> {
@@ -557,6 +599,9 @@ fn append_listing_lines<'a>(
     }
     Ok(())
 }
+
+mod directory_capture;
+use directory_capture::DirectoryCapture;
 
 // The technical listing is already in a private file. Parse complete records
 // in batches so its whole text never coexists in memory with the decoded tree.
@@ -703,7 +748,14 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
         absolute(path)?.display().to_string(),
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
-    let mut log = run_technical_listing(&mut args, opts, candidate)?;
+    let overlap = !candidate && opts.password.is_none() && cfg!(windows)
+        && Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        && directory_capture::large_zip_hint(source);
+    let (mut log, live_entries) = run_technical_listing_with_directory(&mut args, opts, candidate, overlap)?;
+    if let Some(entries) = live_entries {
+        ctl.set("complete", Some(100), "Archive directory ready");
+        return Ok((entries, PayloadSource::Engine));
+    }
     if !candidate && raw_format.is_none() && opts.password.is_none()
         && log.metadata().map_err(|e| e.to_string())?.len() >= 1024 * 1024 {
         if let Some(entries) = large_directory(&mut log, &ctl)? {
@@ -806,8 +858,15 @@ fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> 
     Ok((out, PayloadSource::Engine))
 }
 
-fn run_technical_listing(args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool) -> Result<File, String> {
-    let execute = |args: &[String]| run_program_log(executable()?, args, None, opts, None, allow_zealfs);
+fn run_technical_listing(args: &mut Vec<String>, opts: &EngineOptions, allow: bool) -> Result<File, String> {
+    run_technical_listing_with_directory(args, opts, allow, false).map(|(log, _)| log)
+}
+fn run_technical_listing_with_directory(
+    args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool, collect_directory: bool,
+) -> Result<(File, Option<Vec<Entry>>), String> {
+    let execute = |args: &[String]| run_program_log_with_directory(
+        executable()?, args, None, opts, None, allow_zealfs, collect_directory,
+    );
     match execute(args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
             args.retain(|argument| argument != "-slmu");
