@@ -41,6 +41,9 @@ fn regular_create_reports_progress_and_cancels_without_publication() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("source");
     fs::create_dir(&src).unwrap();
+    for n in 0..2048 {
+        fs::write(src.join(format!("z{n:04}.txt")), b"entry").unwrap();
+    }
     let file = src.join("payload.bin");
     let mut writer = fs::File::create(&file).unwrap();
     let mut buf = [0u8; 65536];

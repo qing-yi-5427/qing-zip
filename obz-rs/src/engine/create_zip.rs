@@ -85,6 +85,58 @@ pub(in crate::engine) fn eligible(format: &str, names: &[String], opts: &EngineO
         && opts.zone_identifier.is_none()
 }
 
+// Routing samples a limited number of directory listings. The actual native
+// manifest or the ordinary source preflight always rechecks the tree independently.
+const MIN_WORKER_FILES: usize = 2048;
+const PROBE_DIRECTORIES: usize = 32;
+const PROBE_ENTRIES: usize = MIN_WORKER_FILES + 256;
+
+fn large_directory_hint(root: &Path, ctl: &JobControl) -> Result<bool, String> {
+    use std::collections::VecDeque;
+    let mut pending = VecDeque::from([root.to_owned()]);
+    let mut probe_pins = SourceValidationGuards::new();
+    let (mut visited, mut entries, mut files) = (0, 0, 0);
+    while let Some(dir) = pending.pop_front() {
+        // Root and its ancestors are pinned by the caller. Each additional
+        // directory is opened without following reparse points; listed types
+        // select work only and cannot authorize a path or file.
+        if dir != root && !matches!(probe_pins.pin_directory(&dir), Ok(true)) {
+            return Ok(false);
+        }
+        visited += 1;
+        let Ok(iter) = fs::read_dir(dir) else {
+            return Ok(false);
+        };
+        for entry in iter {
+            ctl.check()?;
+            if entries == PROBE_ENTRIES {
+                return Ok(false);
+            }
+            entries += 1;
+            let Ok(entry) = entry else { return Ok(false) };
+            let Ok(kind) = entry.file_type() else {
+                return Ok(false);
+            };
+            if kind.is_symlink() {
+                return Ok(false);
+            }
+            if kind.is_file() {
+                files += 1;
+                if files == MIN_WORKER_FILES {
+                    return Ok(true);
+                }
+            } else if kind.is_dir() {
+                if visited + pending.len() < PROBE_DIRECTORIES {
+                    pending.push_back(entry.path());
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// false is possible only before UpdateItems starts; the caller must then redo
 /// the complete ordinary source validation. Security, cancellation, protocol and
 /// publication errors never turn into a second encode.
@@ -113,6 +165,19 @@ pub(in crate::engine) fn try_create(
     if !parent.is_dir() || !src.is_dir() {
         return Ok(false);
     }
+    let mut source_guards = SourceValidationGuards::new();
+    for a in src.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        if !source_guards.pin_directory(a)? {
+            return Ok(false);
+        }
+    }
+    let large = {
+        let _timer = PhaseTimer::new("zip-create-size-probe");
+        large_directory_hint(&src, ctl)?
+    };
+    if !large {
+        return Ok(false);
+    }
     let inputs = checked_input_roots(names)?;
     no_links(&target)?;
     reject_output_in_inputs(parent, &inputs)?;
@@ -128,12 +193,6 @@ pub(in crate::engine) fn try_create(
     let Some(runtime) = runtime_dir()? else {
         return Ok(false);
     };
-    let mut source_guards = SourceValidationGuards::new();
-    for a in src.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        if !source_guards.pin_directory(a)? {
-            return Ok(false);
-        }
-    }
     let mut guards = CheckedDirectories::default();
     guards.check(parent)?;
     let Some((destination, _)) = guards.held.get(parent) else {

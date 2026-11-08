@@ -43,6 +43,17 @@ def main():
         src = root / "source"
         (src / "empty").mkdir(parents=True)
         (src / "empty.txt").touch()
+        bulk = src / "wrappers" / "level-2" / "bulk"
+        bulk.mkdir(parents=True)
+        for n in range(2048):
+            (bulk / f"f{n:04d}.txt").write_bytes(b"file")
+        small = root / "small"; small.mkdir()
+        (small / "one.txt").write_bytes(b"ordinary")
+        little = root / "little.zip"
+        errors = run([cli, "create", little, small], profile=True)
+        assert "OA_CREATE_WORKER status=encoding" not in errors and "OA_PHASE engine-process" in errors
+        cases.append(["small-directory", "ordinary console"])
+
         nested = src / "folder"; nested.mkdir()
         (src / "folder.rs").write_bytes(b"directory prefix ordering")
         (nested / ("mixed-" + chr(0x4E2D) + chr(0x1F4E6) + ".txt")).write_bytes(b"real data\n" * 1000)
@@ -122,6 +133,28 @@ def main():
                     assert "linked input path rejected" in errors and "OA_PHASE engine-process" not in errors and not target.exists(),errors
                     cases.append(["file-symlink","rejected before encoding, no retry"])
                 finally:link.unlink()
+            if args.require_file_symlink:
+                # Replace a regular manifest entry after the native encoder starts.
+                # This tests the worker even on hosts whose enumeration happens to
+                # discover the static link during the bounded routing sample.
+                head = src / "000-first.bin"
+                head.write_bytes(hashlib.shake_256(b"native-create-symlink").digest(8 << 20))
+                tail = src / "zzz-last.txt"; tail.write_bytes(b"original")
+                bad = root / "in-flight-link.zip"
+                with subprocess.Popen(list(map(str, [cli, "create", bad, src, "--level", "9", "--threads", "1"])),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "OPEN_ARCHIVE_PROFILE":"1"}) as worker:
+                    for line in worker.stderr:
+                        if b"OA_CREATE_WORKER status=encoding" in line:
+                            break
+                    else:
+                        raise AssertionError("worker did not begin encoding")
+                    tail.unlink(); tail.symlink_to(outside)
+                    try:
+                        _, errors = worker.communicate(timeout=90)
+                        assert worker.returncode and not bad.exists() and b"OA_PHASE engine-process" not in errors
+                        cases.append(["in-flight-file-symlink","native rejected after encoding began, no retry"])
+                    finally:
+                        tail.unlink()
             target=root/"default.zip"; before=digest(target)
             run([cli,"create",target,src],False)
             assert before==digest(target)

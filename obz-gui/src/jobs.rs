@@ -236,6 +236,9 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         let source = temp.path().join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("notes.txt"), b"desktop create").unwrap();
+        for n in 0..2048 {
+            std::fs::write(source.join(format!("entry-{n:04}.txt")), b"desktop source").unwrap();
+        }
         let archive = temp.path().join("result.zip").display().to_string();
         let request = Request {
             operation: "create".into(), format: "zip".into(), path: archive.clone(),
