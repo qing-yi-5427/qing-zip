@@ -5,10 +5,10 @@ const names=['canRecycleArchive','finishExtraction','shellQueueStatus','clearShe
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
 function fixture(options={}){
- const calls=[],errors=[],elements={},native={extractions:[],folders:[],archives:[]};
+ const calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
  const context={
   s:{archive:'',password:'',codepage:null,overwrite:'error',recycleAfter:false,openAfter:false,closeAfter:false,jobs:[],recent:[],view:'jobs',...options},
-  pendingShellExtractions:[],pendingFolders:[],pendingArchivePaths:[],archiveTabs:[],
+  pendingShellExtractions:[],pendingFolders:[],pendingFileGroups:[],pendingArchivePaths:[],archiveTabs:[],
   shellQueueRunning:false,shellQueuePaused:false,shellQueueInterrupted:false,shellActiveRequest:null,shellPasswordRequest:null,openQueueRunning:false,drainingNativeQueue:false,nativeDrainAgain:false,
   overlay:{hidden:true},archiveKey:p=>(p||'').replaceAll('/','\\').toLowerCase(),filename:p=>p.split(/[\\/]/).at(-1),
   esc:x=>String(x),btn:(label,action)=>`<button data-action="${action}">${label}</button>`,
@@ -18,16 +18,39 @@ function fixture(options={}){
   dialog:(title,body,footer)=>{calls.push(['dialog',title,body,footer]);context.overlay.hidden=false;elements['qa-shell-password']={value:''};},
   close:()=>{context.overlay.hidden=true;delete elements['qa-shell-password'];},
   openArchive:async path=>calls.push(['open',path]),openDialog:()=>{},
-  invoke:async(command,args)=>{calls.push([command,args]);switch(command){case'take_pending_shell_extractions':return native.extractions.splice(0);case'take_pending_folders':return native.folders.splice(0);case'take_pending_archives':return native.archives.splice(0);default:return null;}},
+  invoke:async(command,args)=>{calls.push([command,args]);switch(command){case'take_pending_shell_extractions':return native.extractions.splice(0);case'take_pending_compression_files':return native.files.splice(0);case'take_pending_folders':return native.folders.splice(0);case'take_pending_archives':return native.archives.splice(0);default:return null;}},
   run:async(request,label,settings)=>{calls.push(['run',JSON.parse(JSON.stringify(request)),settings]);context.s.jobs.push({summary:'done'});return {destination:request.dest,recycled:settings.recycleAfter};},
  };
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
- vm.createContext(context);vm.runInContext(functions,context);
+ const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
+ vm.createContext(context);vm.runInContext(compression+'\n'+functions,context);
  const actions=source.split('\n').find(line=>line.startsWith("case'shell-continue':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
  return {context,calls,errors,elements,native,queue:(path,smart=true)=>context.enqueueShellExtractions([{path,dest:'C:\\archives',smart}])};
 }
+test('Explorer file selections are grouped in one compression dialog, including deferred selections',async()=>{
+ const f=fixture();
+ f.context.compress=()=>{
+  f.context.overlay.hidden=false;
+  f.elements['qa-inputs']={value:''};
+  f.elements['qa-save']={value:''};
+ };
+ const first=['C:\\sample\\one.txt','C:\\sample\\子 项.txt'];
+ const second=['D:\\single.bin'];
+ f.native.files.push({Ok:first},{Err:'selection invalid'},{Ok:second});
+ await f.context.drainNativeArchives();
+ await f.context.pumpArchiveQueue();
+ assert.equal(f.elements['qa-inputs'].value,first.join('\n'));
+ assert.equal(f.elements['qa-save'].value,'C:\\sample\\sample.zip');
+ await f.context.pumpArchiveQueue();
+ assert.equal(f.elements['qa-inputs'].value,first.join('\n'));
+ f.context.overlay.hidden=true;
+ await f.context.pumpArchiveQueue();
+ assert.equal(f.elements['qa-inputs'].value,second[0]);
+ assert.equal(f.elements['qa-save'].value,'D:\\single.bin.zip');
+ assert.ok(f.calls.some(([op,label])=>op==='toast'&&label==='selection invalid'));
+});
 test('smart and here retain exact request rules and inherit completion preferences',async()=>{
  const f=fixture({overwrite:'rename',recycleAfter:true,openAfter:true,closeAfter:true});
  f.queue('C:\\archives\\one.zip',true);f.queue('C:\\archives\\two.7z',false);

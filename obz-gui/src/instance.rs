@@ -5,6 +5,7 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 static PENDING_FOLDERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static PENDING_FILE_GROUPS: Mutex<Vec<Result<Vec<String>, String>>> = Mutex::new(Vec::new());
 static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static PENDING_EXTRACTIONS: Mutex<Vec<ShellExtraction>> = Mutex::new(Vec::new());
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -14,10 +15,11 @@ pub struct ShellExtraction {
     smart: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum StartupMode { Open, CompressFolders, SmartExtract, ExtractHere }
+enum StartupMode { Open, CompressFolders, CompressFiles, SmartExtract, ExtractHere }
 fn startup_mode(args: &[String]) -> StartupMode {
     match args.get(1).map(String::as_str) {
         Some("--compress-folder") => StartupMode::CompressFolders,
+        Some("--compress-files") => StartupMode::CompressFiles,
         Some("--smart-extract") => StartupMode::SmartExtract,
         Some("--extract-here") => StartupMode::ExtractHere,
         _ => StartupMode::Open,
@@ -132,11 +134,20 @@ fn extraction_requests(paths: Vec<String>, smart: bool) -> Vec<ShellExtraction> 
 }
 fn queue_arguments(args: Vec<String>, cwd: &Path) {
     let mode = startup_mode(&args);
-    let paths = paths(args, cwd, mode == StartupMode::CompressFolders);
     match mode {
-        StartupMode::Open => enqueue(&paths),
-        StartupMode::CompressFolders => queue_folders(paths),
+        StartupMode::Open => enqueue(&paths(args, cwd, false)),
+        StartupMode::CompressFolders => queue_folders(paths(args, cwd, true)),
+        StartupMode::CompressFiles => {
+            let selection = compression_files(&args[2..], cwd);
+            let mut pending = PENDING_FILE_GROUPS.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.len() < 128 {
+                pending.push(selection);
+            } else if pending.len() == 128 {
+                pending.push(Err("待处理的压缩任务已满，请稍后重试".into()));
+            }
+        }
         StartupMode::SmartExtract | StartupMode::ExtractHere => {
+            let paths = paths(args, cwd, false);
             let mut pending = PENDING_EXTRACTIONS.lock().unwrap_or_else(|e| e.into_inner());
             for request in extraction_requests(paths, mode == StartupMode::SmartExtract) {
                 if pending.len() < 128 && !pending.iter().any(|p| p.smart == request.smart && p.path.eq_ignore_ascii_case(&request.path)) {
@@ -145,6 +156,25 @@ fn queue_arguments(args: Vec<String>, cwd: &Path) {
             }
         }
     }
+}
+fn compression_files(args: &[String], cwd: &Path) -> Result<Vec<String>, String> {
+    if !(1..=128).contains(&args.len()) {
+        return Err("每次可选择 1 至 128 个文件压缩".into());
+    }
+    let mut files = Vec::new();
+    for name in args {
+        if name.is_empty() || name.contains(['\0', '\r', '\n']) || name.contains("://") {
+            return Err("压缩来源包含无效文件路径".into());
+        }
+        let path = cwd.join(name);
+        let path = canonical_archive_path(path.to_str().ok_or("无效的文件路径")?.to_owned())?;
+        if !files.contains(&path) { files.push(path); }
+    }
+    Ok(files)
+}
+#[tauri::command]
+pub fn take_pending_compression_files() -> Vec<Result<Vec<String>, String>> {
+    std::mem::take(&mut *PENDING_FILE_GROUPS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 #[tauri::command]
 pub fn take_pending_shell_extractions() -> Vec<ShellExtraction> {
@@ -200,6 +230,28 @@ mod tests {
         std::fs::write(root.path().join("file.zip"),b"data").unwrap();
         let found=paths(["app.exe","--compress-folder","中文 folder","file.zip","missing"].map(str::to_string),root.path(),true);
         assert_eq!(found.len(),1);assert!(found[0].ends_with("中文 folder"));
+    }
+    #[test]
+    fn file_compression_requests_keep_each_selection_together() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["one.txt", "文件 二.txt"] { std::fs::write(temp.path().join(name), b"x").unwrap(); }
+        let submit = |items: &[&str]| {
+            let args = ["qing-zip.exe", "--compress-files"].into_iter()
+                .chain(items.iter().copied()).map(str::to_string).collect();
+            queue_arguments(args, temp.path());
+        };
+        submit(&["one.txt", "文件 二.txt", "one.txt"]);
+        submit(&["one.txt", "missing.txt"]);
+        submit(&["文件 二.txt"]);
+        let groups = take_pending_compression_files();
+        assert_eq!(groups.len(), 3);
+        let expected: Vec<_> = ["one.txt", "文件 二.txt"].iter().map(|name|
+            canonical_archive_path(temp.path().join(name).display().to_string()).unwrap()).collect();
+        assert_eq!(groups[0].as_ref().unwrap(), &expected);
+        assert!(groups[1].is_err());
+        assert_eq!(groups[2].as_ref().unwrap(), &expected[1..]);
+        assert!(take_pending_compression_files().is_empty());
+        assert!(compression_files(&vec!["one.txt".into();129], temp.path()).is_err());
     }
     #[test]
     fn arguments_only_select_existing_regular_files() {
