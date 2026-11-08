@@ -167,7 +167,7 @@ fn safe_ancestors(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn protect(input: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
+pub(crate) fn protect(input: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
     #[repr(C)]
     struct Blob {
         len: u32,

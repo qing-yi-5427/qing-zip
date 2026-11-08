@@ -1,3 +1,5 @@
+#[path = "edit_recovery.rs"]
+mod journal;
 use super::{
     directory_identity, rename_directory_noclobber_in, validate_transaction_root,
     CheckedDirectories,
@@ -6,6 +8,7 @@ use crate::{
     engine_stream::{pin, PinnedSource},
     private_stage::{self, PrivateStage},
 };
+pub(super) use journal::recover_missing;
 use std::{
     ffi::c_void,
     fs::File,
@@ -13,13 +16,25 @@ use std::{
     os::windows::{
         ffi::OsStrExt,
         fs::{FileExt, MetadataExt, OpenOptionsExt},
-        io::AsRawHandle,
+        io::{AsRawHandle, FromRawHandle},
     },
     path::{Path, PathBuf},
 };
 
 #[link(name = "kernel32")]
 extern "system" {
+    fn ReOpenFile(file: *mut c_void, access: u32, sharing: u32, flags: u32) -> *mut c_void;
+    fn GetFinalPathNameByHandleW(file: *mut c_void, path: *mut u16, size: u32, flags: u32) -> u32;
+    fn GetVolumeInformationByHandleW(
+        file: *mut c_void,
+        volume: *mut u16,
+        volume_len: u32,
+        serial: *mut u32,
+        max_component: *mut u32,
+        flags: *mut u32,
+        filesystem: *mut u16,
+        filesystem_len: u32,
+    ) -> i32;
     fn ReplaceFileW(
         target: *const u16,
         replacement: *const u16,
@@ -49,13 +64,79 @@ fn wide_name(path: &Path) -> io::Result<Vec<u16>> {
     Ok(absolute.as_os_str().encode_wide().chain(Some(0)).collect())
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 enum FileId {
     Extended(u64, [u8; 16]),
     Legacy(u32, u64),
+    Contents([u8; 32]),
+    DirectoryName(Vec<u16>),
+}
+
+fn reopen(file: &File, access: u32, share: u32) -> Result<File, String> {
+    let raw = unsafe { ReOpenFile(file.as_raw_handle(), access, share, 0x00200000) };
+    if raw as isize == -1 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(unsafe { File::from_raw_handle(raw) })
+}
+
+fn actual_name(file: &File) -> Result<Vec<u16>, String> {
+    let size =
+        unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), std::ptr::null_mut(), 0, 0) };
+    if size == 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let mut name = vec![0; size as usize + 1];
+    let used = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+            0,
+        )
+    };
+    if used == 0 || used as usize >= name.len() {
+        return Err("Cannot identify archive name".into());
+    }
+    name.truncate(used as usize);
+    Ok(name)
 }
 
 fn id(handle: &File) -> Result<FileId, String> {
+    let mut fs = [0u16; 32];
+    let volume_ok = unsafe {
+        GetVolumeInformationByHandleW(
+            handle.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            fs.as_mut_ptr(),
+            fs.len() as u32,
+        )
+    };
+    let fs = String::from_utf16_lossy(&fs[..fs.iter().position(|x| *x == 0).unwrap_or(fs.len())]);
+    if volume_ok == 0 || !(fs.eq_ignore_ascii_case("NTFS") || fs.eq_ignore_ascii_case("ReFS")) {
+        if handle.metadata().map_err(|e| e.to_string())?.is_dir() {
+            return actual_name(handle).map(FileId::DirectoryName);
+        }
+        // FAT directory-entry IDs can change when a file is renamed. Preserve
+        // payload identity across the two private names without depending on it.
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let mut file = reopen(handle, 0x80000000, 7)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 256 * 1024];
+        loop {
+            let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+        return Ok(FileId::Contents(hasher.finalize().into()));
+    }
     #[repr(C)]
     struct Info {
         volume: u64,
@@ -144,6 +225,7 @@ impl EditOutput {
 
 pub(crate) struct EditSource {
     path: PathBuf,
+    original_name: Vec<u16>,
     read: PinnedSource,
     bridge: File,
     parent: File,
@@ -161,12 +243,14 @@ impl EditSource {
         // A second handle keeps in-place writes denied during ReplaceFileW.
         // The first handle also denies renames until the verified output is ready.
         let bridge = leaf(path, 0x80000000, 5)?;
+        let original_name = actual_name(&read)?;
         let identity = id(&read)?;
         if id(&bridge)? != identity {
             return Err("Archive identity changed".into());
         }
         Ok(Self {
             path: path.to_path_buf(),
+            original_name,
             read,
             bridge,
             parent: parent_handle,
@@ -218,85 +302,114 @@ impl EditSource {
         } = output;
         let path = &self.path;
         let staged = &staged;
-        let recovery_dir = stage.path().join("recovery");
+        // ReplaceFileW may briefly vacate its target and then overwrite a file
+        // created in that gap. Only use it between two private, pinned names.
+        let name = path.file_name().ok_or("missing archive filename")?;
+        let merge_dir = stage.path().join("merge");
+        let recovery_dir = stage.path().join("original");
+        std::fs::create_dir(&merge_dir).map_err(|e| e.to_string())?;
         std::fs::create_dir(&recovery_dir).map_err(|e| e.to_string())?;
+        let merge_parent = pin_directory(&merge_dir)?;
+        let recovery_parent = pin_directory(&recovery_dir)?;
+        let merge_path = merge_dir.join(name);
+        let backup = recovery_dir.join(name);
         validate_transaction_root(
             &output_pin,
             staged.parent().ok_or("missing private output parent")?,
         )?;
-        let recovery_pin = pin_directory(&recovery_dir)?;
-        let backup = recovery_dir.join("previous-archive");
         let proposed = leaf(staged, 0, 7)?;
         let proposed_id = id(&proposed)?;
-        // Do not close the write-denying bridge until the displaced object has
-        // been identified. This prevents an undetectable in-place writer.
+        let intent =
+            journal::Intent::write(&stage, &self.parent, path, &self.identity, &proposed_id)?;
+
+        // The read handle used by Nana must not request DELETE. A second
+        // handle continues to deny writes during the handoff. If a competing
+        // rename wins in that interval, leave its replacement untouched.
         drop(self.read);
-        let current = leaf(path, 0, 7)?;
-        if id(&current)? != self.identity {
+        before_replace();
+        let original = reopen(&self.bridge, 0x10080, 1)?;
+        if actual_name(&original)? != self.original_name
+            || id(&original)? != self.identity
+            || leaf(path, 0, 7).and_then(|f| id(&f)).ok().as_ref() != Some(&self.identity)
+        {
             return Err("Archive changed before commit; edit cancelled".into());
         }
-        drop(current);
-        before_replace();
-        let swapped = atomic_replace(path, staged, &backup);
-        after_replace();
-        if let Err(e) = swapped {
-            if !matches!(backup.try_exists(), Ok(false)) {
-                // Some ReplaceFileW errors occur after the original was moved.
-                // Only restore into a vacant name. Keep every file on failure.
-                let _ = restore_if_absent(&backup, path, &self.parent);
-                return Err(recovery(
-                    stage,
-                    path,
-                    &format!("Archive replacement failed: {e}"),
-                ));
-            }
-            return Err(e.to_string());
+        if !rename_directory_noclobber_in(&original, &merge_path, Some(&merge_parent))? {
+            return Err("Could not claim the original archive for editing".into());
         }
-        // The backup denotes what Windows actually replaced, including a path
-        // replacement that won the race immediately before the system call.
-        let displaced = match leaf(&backup, 0, 7).and_then(|f| id(&f)) {
-            Ok(identity) => identity,
-            Err(reason) => return Err(recovery(stage, path, &reason)),
-        };
-        if displaced != self.identity {
-            // Move only our published object, through a pinned DELETE handle.
-            // If anyone changed its bytes, that version is preserved too. If
-            // anyone replaced it again, the newer object stays at the name.
-            if let Ok(current) = leaf(path, 0x10080, 1) {
-                if id(&current).ok() == Some(proposed_id) {
-                    drop(proposed);
-                    let kept = recovery_dir.join("edited-result");
-                    let _ = rename_directory_noclobber_in(&current, &kept, Some(&recovery_pin));
+        // After this point an unwind must not recursively remove the original.
+        let mut recovery = PreserveOnDrop(Some(stage));
+        drop(original);
+        after_replace();
+        let publish: Result<(), String> = (|| {
+            atomic_replace(&merge_path, staged, &backup).map_err(|e| e.to_string())?;
+            let candidate = leaf(&merge_path, 0x10080, 1)?;
+            if id(&candidate)? != proposed_id {
+                return Err("Private replacement archive changed".into());
+            }
+            drop(proposed);
+            if !rename_directory_noclobber_in(&candidate, path, Some(&self.parent))? {
+                return Err(
+                    "Another file occupies the archive name, or publication was denied".into(),
+                );
+            }
+            Ok(())
+        })();
+        drop(self.bridge);
+        if let Err(reason) = publish {
+            // ReplaceFileW can fail with the original at either private name.
+            // Restore by verified handle, and only into a vacant public name.
+            for saved in [&backup, &merge_path] {
+                if let Ok(handle) = leaf(saved, 0x10080, 1) {
+                    if id(&handle).ok().as_ref() == Some(&self.identity)
+                        && rename_directory_noclobber_in(&handle, path, Some(&self.parent))
+                            .unwrap_or(false)
+                    {
+                        drop(handle);
+                        drop(recovery_parent);
+                        drop(merge_parent);
+                        drop(output_pin);
+                        intent.disarm();
+                        recovery.finished();
+                        return Err(format!("{reason}. Original archive restored."));
+                    }
                 }
             }
-            let restored = restore_if_absent(&backup, path, &self.parent);
-            let reason = if restored {
-                "Concurrent archive replacement detected; external archive restored"
-            } else {
-                "Concurrent archive replacement detected; destination retained"
-            };
-            return Err(recovery(stage, path, reason));
+            if std::fs::symlink_metadata(path).is_ok() {
+                intent.disarm();
+            }
+            return Err(format!("{reason}. Archive: {}. Private recovery directory (original filename preserved): {}",
+                path.display(), recovery.path().display()));
         }
-        drop(self.bridge);
+        drop(recovery_parent);
+        drop(merge_parent);
+        drop(output_pin);
+        intent.disarm();
+        recovery.finished();
         Ok(())
     }
 }
 
-fn restore_if_absent(backup: &Path, path: &Path, parent: &File) -> bool {
-    let Ok(file) = leaf(backup, 0x10080, 1) else {
-        return false;
-    };
-    rename_directory_noclobber_in(&file, path, Some(parent)).unwrap_or(false)
+// The transaction owns user data between claiming the old name and a verified
+// publication or rollback. Losing the process in that interval leaves the
+// private recovery directory and its original archive on disk.
+struct PreserveOnDrop(Option<PrivateStage>);
+impl PreserveOnDrop {
+    fn path(&self) -> &Path {
+        self.0.as_ref().expect("active edit recovery").path()
+    }
+    fn finished(&mut self) {
+        drop(self.0.take());
+    }
+}
+impl Drop for PreserveOnDrop {
+    fn drop(&mut self) {
+        if let Some(stage) = self.0.take() {
+            stage.keep();
+        }
+    }
 }
 
-fn recovery(stage: PrivateStage, path: &Path, reason: &str) -> String {
-    let kept: PathBuf = stage.keep();
-    format!(
-        "{reason}. Archive: {}. Preserved recovery directory: {}",
-        path.display(),
-        kept.display()
-    )
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,8 +492,119 @@ mod tests {
     }
 
     #[test]
-    fn preserve_external_update_even_at_final_replace_boundary() {
-        for second_writer in [false, true] {
+    fn framework_child_pauses_with_original_in_recovery() {
+        let Some(root) = std::env::var_os("QING_TEST_INTERRUPTED_EDIT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let edit = EditSource::open(&root.join("archive.zip")).unwrap();
+        let output = edit.output().unwrap();
+        fs::copy(root.join("proposal.zip"), output.path()).unwrap();
+        let _ = edit.commit_with(
+            output,
+            || {},
+            || {
+                fs::write(root.join("ready-to-kill"), b"claimed").unwrap();
+                loop {
+                    std::thread::park();
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn terminated_edit_recovers_only_its_verified_original_and_never_an_external_namesake() {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        for mode in ["list", "gui-path", "external", "tampered-original"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let path = root.join("archive.zip");
+            for (name, file) in [
+                ("original-member", &path),
+                ("proposed-member", &root.join("proposal.zip")),
+            ] {
+                let mut zip = zip::ZipWriter::new(File::create(file).unwrap());
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(name.as_bytes()).unwrap();
+                drop(zip.finish().unwrap());
+            }
+            let original = fs::read(&path).unwrap();
+            let marker = PathBuf::from(format!("{}:Zone.Identifier", path.display()));
+            fs::write(&marker, b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "engine::edit_source::tests::framework_child_pauses_with_original_in_recovery",
+                    "--nocapture",
+                ])
+                .env("QING_TEST_INTERRUPTED_EDIT", root)
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap();
+            let start = Instant::now();
+            while !root.join("ready-to-kill").is_file() && start.elapsed() < Duration::from_secs(12)
+            {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            let ready = root.join("ready-to-kill").is_file();
+            if ready {
+                assert!(!path.exists());
+                assert!(
+                    !recover_missing(&path).unwrap(),
+                    "must not interrupt a live commit"
+                );
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(ready, "child did not reach the commit boundary");
+            if mode == "external" {
+                fs::copy(root.join("proposal.zip"), &path).unwrap();
+                assert!(!recover_missing(&path).unwrap());
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    fs::read(root.join("proposal.zip")).unwrap()
+                );
+            } else if mode == "tampered-original" {
+                let stage = fs::read_dir(root)
+                    .unwrap()
+                    .flatten()
+                    .find(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with(".qing-zip-stage-")
+                    })
+                    .unwrap()
+                    .path();
+                let saved = stage.join("merge/archive.zip");
+                fs::rename(&saved, root.join("true-original")).unwrap();
+                fs::copy(root.join("proposal.zip"), &saved).unwrap();
+                assert!(!recover_missing(&path).unwrap());
+                assert!(!path.exists());
+            } else {
+                if mode == "list" {
+                    let entries =
+                        super::super::list(path.to_str().unwrap(), &Default::default()).unwrap();
+                    assert!(entries.iter().any(|e| e.name == "original-member"));
+                } else {
+                    crate::engine_stream::canonical_input_path(&path, false).unwrap();
+                }
+                assert_eq!(fs::read(&path).unwrap(), original);
+                assert_eq!(fs::read(marker).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_at_handoff_and_publication_is_never_overwritten() {
+        for at_publication in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let parent = temp.path();
             let path = parent.join("sample.zip");
@@ -389,36 +613,37 @@ mod tests {
             let output = edit.output().unwrap();
             let recovery = output.stage.path().to_owned();
             fs::write(output.path(), b"our proposed bytes").unwrap();
-            let second = parent.join("replacement");
-            fs::write(&second, b"first external bytes").unwrap();
-            let third = parent.join("newest");
-            fs::write(&third, b"second external bytes").unwrap();
+            let incoming = parent.join("external");
+            fs::write(&incoming, b"external bytes").unwrap();
             let err = edit
                 .commit_with(
                     output,
-                    || atomic_replace(&path, &second, &parent.join("old-displaced")).unwrap(),
                     || {
-                        if second_writer {
-                            atomic_replace(&path, &third, &parent.join("proposal-displaced"))
+                        if !at_publication {
+                            atomic_replace(&path, &incoming, &parent.join("external-backup"))
                                 .unwrap();
+                        }
+                    },
+                    || {
+                        if at_publication {
+                            fs::rename(&incoming, &path).unwrap();
                         }
                     },
                 )
                 .unwrap_err();
-            assert!(err.contains(&recovery.display().to_string()), "{err}");
-            let public = fs::read(&path).unwrap();
-            if second_writer {
-                assert_eq!(public, b"second external bytes");
+            assert_eq!(fs::read(&path).unwrap(), b"external bytes");
+            if at_publication {
+                assert!(err.contains(&recovery.display().to_string()), "{err}");
                 assert_eq!(
-                    fs::read(recovery.join("recovery/previous-archive")).unwrap(),
-                    b"first external bytes"
+                    fs::read(recovery.join("original/sample.zip")).unwrap(),
+                    b"old bytes"
                 );
-            } else {
-                assert_eq!(public, b"first external bytes", "{err}");
                 assert_eq!(
-                    fs::read(recovery.join("recovery/edited-result")).unwrap(),
+                    fs::read(recovery.join("merge/sample.zip")).unwrap(),
                     b"our proposed bytes"
                 );
+            } else {
+                assert!(!recovery.exists());
             }
         }
     }
