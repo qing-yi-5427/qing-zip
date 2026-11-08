@@ -136,3 +136,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 
 #qing-archive .oa-icons.oa-windowed tbody{position:relative}
 #qing-archive .oa-icons.oa-windowed tbody tr{position:absolute}
+
+#oa-tree.oa-windowed-tree{position:relative;overflow-anchor:none}
+#oa-tree.oa-windowed-tree .oa-tree-row{position:absolute;left:0;right:0}

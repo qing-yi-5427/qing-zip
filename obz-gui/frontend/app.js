@@ -219,7 +219,43 @@ function folderTree(entries, collapsed) {
   });
 }
 // End folder tree model.
-function renderChrome(){renderArchiveTabs();root.dataset.page=s.page;$('oa-heading').innerHTML=s.page==='files'?`<div class="oa-heading-copy"><span class="oa-archive-symbol">${icon('archive')}</span><div><h1>${s.archive?esc(filename(s.archive)):'文件'}</h1><p>${s.archive?`${esc(filename(s.archive).split('.').pop().toUpperCase())} 压缩文件 · ${s.entries.length} 个条目`:'轻透、专注的本地归档工作空间'}</p></div></div><div id="oa-primary-action">${s.archive?btn('解压','extract','primary','folder-output'):''}</div>`:'';$('oa-toolbar').innerHTML=btn('打开','open','','folder-open')+btn('新建','compress','','plus')+'<span class="oa-divider"></span>'+btn('添加','add','','plus')+'<span class="oa-spacer"></span>'+(s.archive?btn('解压','extract','primary','folder-output'):'');$('oa-heading').hidden=s.page!=='files'||!!s.archive;$('oa-toolbar').hidden=s.page!=='files';$('oa-tree').innerHTML=folderTree(s.entries,s.collapsed).map(({path:p,depth,hasChildren})=>{return `<div class="oa-tree-row" style="--depth:${depth}">${hasChildren?`<button class="oa-tree-toggle" data-tree-toggle="${esc(p)}" aria-label="${s.collapsed.has(p)?'展开':'折叠'} ${esc(p||'根目录')}" aria-expanded="${!s.collapsed.has(p)}">${icon('chevron')}</button>`:'<span class="oa-tree-toggle"></span>'}<button data-tree="${esc(p)}" aria-current="${p===s.folder&&s.page==='files'}">${icon(p?'folder':'archive')}<span>${esc(p?p.split('/').filter(Boolean).pop():s.archive?filename(s.archive):'未打开压缩文件')}</span></button></div>`;}).join('');updateToolbar();}
+function folderRow({path:p,depth,hasChildren}) {
+  return `<div class="oa-tree-row" style="--depth:${depth}">${hasChildren?`<button class="oa-tree-toggle" data-tree-toggle="${esc(p)}" aria-label="${s.collapsed.has(p)?'展开':'折叠'} ${esc(p||'根目录')}" aria-expanded="${!s.collapsed.has(p)}">${icon('chevron')}</button>`:'<span class="oa-tree-toggle"></span>'}<button data-tree="${esc(p)}" aria-current="${p===s.folder&&s.page==='files'}">${icon(p?'folder':'archive')}<span>${esc(p?p.split('/').filter(Boolean).pop():s.archive?filename(s.archive):'未打开压缩文件')}</span></button></div>`;
+}
+
+let renderedTree;
+function renderFolderTree() {
+  const host = $('oa-tree');
+  const current = s.page === 'files' ? s.folder : null;
+  if (renderedTree && renderedTree.entries === s.entries && renderedTree.archive === s.archive
+      && renderedTree.collapsed.size === s.collapsed.size
+      && [...s.collapsed].every(path => renderedTree.collapsed.has(path))) {
+    if (current !== renderedTree.current) {
+      host.querySelector('[data-tree][aria-current="true"]')?.setAttribute('aria-current', 'false');
+      const button = current === null ? null : host.querySelector('[data-tree="' + CSS.escape(current) + '"]');
+      button?.setAttribute('aria-current', 'true');
+      renderedTree.current = current;
+    }
+    return;
+  }
+  const viewport = host.closest('.oa-tree-section');
+  const sameListing = renderedTree?.entries === s.entries;
+  const scrollTop = sameListing ? viewport.scrollTop : 0;
+  const focused = sameListing && host.contains(document.activeElement) ? document.activeElement.dataset : null;
+  renderedTree?.window?.stop();
+  const rows = folderTree(s.entries, s.collapsed);
+  const treeWindow = rows.length > 256 ? new ArchiveTreeWindow(host, rows, folderRow, scrollTop) : null;
+  if (!treeWindow) {
+    host.innerHTML = rows.map(folderRow).join('');
+    viewport.scrollTop = scrollTop;
+  }
+  if (focused?.treeToggle !== undefined || focused?.tree !== undefined) {
+    const toggle = focused.treeToggle !== undefined;
+    host.querySelector('[' + (toggle ? 'data-tree-toggle' : 'data-tree') + '="' + CSS.escape(toggle ? focused.treeToggle : focused.tree) + '"]')?.focus({preventScroll:true});
+  }
+  renderedTree = {entries:s.entries, archive:s.archive, collapsed:new Set(s.collapsed), current, window:treeWindow};
+}
+function renderChrome(){renderArchiveTabs();root.dataset.page=s.page;$('oa-heading').innerHTML=s.page==='files'?`<div class="oa-heading-copy"><span class="oa-archive-symbol">${icon('archive')}</span><div><h1>${s.archive?esc(filename(s.archive)):'文件'}</h1><p>${s.archive?`${esc(filename(s.archive).split('.').pop().toUpperCase())} 压缩文件 · ${s.entries.length} 个条目`:'轻透、专注的本地归档工作空间'}</p></div></div><div id="oa-primary-action">${s.archive?btn('解压','extract','primary','folder-output'):''}</div>`:'';$('oa-toolbar').innerHTML=btn('打开','open','','folder-open')+btn('新建','compress','','plus')+'<span class="oa-divider"></span>'+btn('添加','add','','plus')+'<span class="oa-spacer"></span>'+(s.archive?btn('解压','extract','primary','folder-output'):'');$('oa-heading').hidden=s.page!=='files'||!!s.archive;$('oa-toolbar').hidden=s.page!=='files';renderFolderTree();updateToolbar();}
 function showMenu(group,anchor){rememberMenuFocus();const anchorRect=anchor?.closest?.('#oa-menu')?menuAnchorRect:(anchor?.getBoundingClientRect?.()||root.querySelector('[data-action=app-menu]').getBoundingClientRect());const items=menuGroups[group]||[];const box=$('oa-menu');box.innerHTML=`<div class="oa-submenu-head">${btn('返回','more-menu','quiet')}<strong>${({file:'文件',edit:'编辑',find:'查找',options:'选项',view:'视图',tools:'工具',help:'帮助'})[group]}</strong></div>`+items.map(it=>it?`<button role="menuitem" data-action="${it[1]}"><span>${it[0]}</span><small>${it[2]}</small></button>`:'<hr>').join('');positionMenu(box,{getBoundingClientRect:()=>anchorRect});box.querySelector('button')?.focus();}
 // File and menu keyboard behavior. Keep focus separate from the range anchor.
 let listingWindow = null;
