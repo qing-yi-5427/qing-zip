@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.19)
+project(probe LANGUAGES CXX)
+add_executable(probe probe.cpp)
+target_compile_features(probe PRIVATE cxx_std_17)
+target_link_libraries(probe PRIVATE shell32 ole32 user32 uuid)

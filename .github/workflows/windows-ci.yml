@@ -1,36 +1,19 @@
-name: Physical drag from qing-zip into Explorer
+﻿name: Observe Explorer completion signals
 on: workflow_dispatch
 permissions:
   contents: read
-  actions: read
 jobs:
-  drag:
+  observe:
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - name: Stage the exact tested candidate package
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - shell: pwsh
         run: |
-          $id='42463804415'
-          $donor=gh run view $id --json headSha,conclusion|ConvertFrom-Json
-          if(!$donor.headSha.StartsWith('96a766d') -or $donor.conclusion -ne 'success'){throw "Unexpected donor"}
-          gh run download $id -n qing-zip-windows-x64-trial -D incoming
+          python -m pip install pywinauto==0.6.9
+          cmake -S scripts/drag-signal-fixture -B target/probe -A x64
           if($LASTEXITCODE){exit $LASTEXITCODE}
-          $p=@(Get-ChildItem incoming -Filter '*-portable.zip' -Recurse)
-          if($p.Count -ne 1){throw "Missing portable"}
-          Expand-Archive $p[0].FullName (Join-Path $env:RUNNER_TEMP 'qing-trial')
-          $exe=Join-Path $env:RUNNER_TEMP 'qing-trial/qing-zip.exe'
-          "QING_FIXTURE_SHA256=$((Get-FileHash $exe).Hash.ToLowerInvariant())" >> $env:GITHUB_ENV
-          python -m pip install pywinauto==0.6.9 pillow==11.3.0
-      - name: Drag two selected items into a real destination folder
-        run: python -u scripts/check-hosted-drag-out.py
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: drag-out-desktop
-          path: drag-evidence
+          cmake --build target/probe --config Release
+          if($LASTEXITCODE){exit $LASTEXITCODE}
+          python -X utf8 scripts/drag-signal-fixture/probe.py
+          exit $LASTEXITCODE
