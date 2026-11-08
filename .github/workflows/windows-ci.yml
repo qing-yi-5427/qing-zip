@@ -11,13 +11,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 0ea90c462b52b2ae93021abcbc9e9203fc0eb862
+          ref: 9eed1a4f3cad49a35095cba534cde9c3b122662a
           path: candidate-source
       - name: Build hardened candidate CLI and run publication tests
         shell: pwsh
         run: |
           Push-Location candidate-source
-          if (-not (git rev-parse HEAD).StartsWith('0ea90c462b52b2ae93021abcbc9e9203fc0eb862')) { throw 'Unexpected candidate revision' }
+          if (-not (git rev-parse HEAD).StartsWith('9eed1a4f3cad49a35095cba534cde9c3b122662a')) { throw 'Unexpected candidate revision' }
           $target='x86_64-pc-windows-msvc'
           $cfg=Join-Path $env:RUNNER_TEMP 'file-copy-hardening.toml'
           @'
@@ -37,6 +37,17 @@ jobs:
           $p=Get-Item incoming/qing-zip-0.11.8-portable.zip
           if ((Get-FileHash $p).Hash -ne 'caca993662690d45cfbf679fff1f5bef50d6f3b21e686d80bfce12f5d7fdabb4') {throw 'Wrong published package'}
           Expand-Archive $p.FullName app
+      - name: Compare handle, private memory and time for a fresh 12000-file output
+        shell: pwsh
+        run: |
+          python -m pip install --quiet --only-binary=:all: psutil==7.1.3
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          $exe=@(Get-ChildItem app -Filter obz.exe -Recurse)[0]
+          python scripts/compare-new-extract-resources.py $exe.FullName candidate-source/obz-rs/target/x86_64-pc-windows-msvc/release/obz.exe resource-results/handles.json
+          exit $LASTEXITCODE
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: fresh-extraction-resources, path: resource-results/*.json}
       - name: Extract to five existing-directory layouts and verify every file
         shell: pwsh
         run: |
