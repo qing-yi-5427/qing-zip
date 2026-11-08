@@ -18,6 +18,8 @@ mod witnessed;
 #[cfg(target_pointer_width = "64")]
 pub(crate) use witnessed::qualifies_legacy_parent;
 mod output;
+mod edit_permissions;
+pub(crate) use edit_permissions::EditPermissions;
 mod output_receipt;
 pub(crate) use output_receipt::{directory_stamp,OutputReceipt};
 
@@ -104,7 +106,6 @@ extern "system" {
         mapping: *mut GenericMapping,
     ) -> i32;
     fn DestroyPrivateObjectSecurity(descriptor: *mut Handle) -> i32;
-    #[cfg(test)]
     fn SetSecurityInfo(
         handle: Handle,
         kind: u32,
