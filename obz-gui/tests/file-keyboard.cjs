@@ -94,3 +94,28 @@ test('range selection and keyboard focus use the logical order outside the mount
  f.press(0,'ArrowDown',{shiftKey:true});
  assert.deepEqual([...f.state.selected],['file1','file2']);
 });
+
+test('select by type uses visible leaf extensions, independent of each member path',()=>{
+ const f=fixture(6);
+ const entries=['left/report.TXT','right/note.txt','left/data.zip','LICENSE','README','dir.txt/'].map((name,i)=>({
+  name,leaf:name.split('/').filter(Boolean).at(-1),is_dir:i===5
+ }));
+ f.context.visibleEntries=()=>entries;
+ f.buttons.forEach((b,i)=>{b.closest().dataset.row=entries[i].name;});
+ f.state.selected.add('left/data.zip');
+ assert.equal(f.press(0,'+',{altKey:true,code:'NumpadAdd'}).prevented,true);
+ assert.deepEqual([...f.state.selected],['left/data.zip','left/report.TXT','right/note.txt']);
+ f.press(1,'-',{altKey:true,code:'NumpadSubtract'});
+ assert.deepEqual([...f.state.selected],['left/data.zip']);
+ f.state.cursor='LICENSE';f.context.selectFocusedType(true);
+ assert.deepEqual([...f.state.selected],['left/data.zip','LICENSE','README']);
+ f.press(5,'+',{altKey:true,code:'NumpadAdd'});
+ assert.equal(f.state.selected.has('dir.txt/'),true);
+});
+test('Backspace on an archive row returns to its parent and respects active dialogs',()=>{
+ const f=fixture();f.context.action=async name=>f.calls.push(name);
+ f.state.folder='nested/';assert.equal(f.press(0,'Backspace').prevented,true);
+ f.state.folder='';f.press(0,'Backspace');
+ f.context.overlay.hidden=false;f.state.folder='nested/';f.press(0,'Backspace');
+ assert.deepEqual(f.calls,['up']);
+});
