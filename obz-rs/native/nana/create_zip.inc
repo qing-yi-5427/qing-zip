@@ -167,7 +167,7 @@ public:
     if (WaitForSingleObject(owner_, 0) != WAIT_TIMEOUT)
       fail("parent exited", E_ABORT);
   }
-  File current(const Record &r) const {
+  File open(const Record &r) const {
     live();
     UNICODE_STRING name{};
     name.Buffer = const_cast<wchar_t *>(r.name.data());
@@ -196,8 +196,9 @@ public:
         throw NotEligible{};
       fail("cannot safely open enumerated source");
     }
-    File file(h);
-    BY_HANDLE_FILE_INFORMATION i{};
+    return File(h);
+  }
+  static void verify(HANDLE h, const Record &r, BY_HANDLE_FILE_INFORMATION &i) {
     win(GetFileInformationByHandle(h, &i), "source file information");
     uint64_t id = (uint64_t(i.nFileIndexHigh) << 32) | i.nFileIndexLow;
     uint64_t size = (uint64_t(i.nFileSizeHigh) << 32) | i.nFileSizeLow;
@@ -211,7 +212,6 @@ public:
         (i.dwFileAttributes != r.attributes ||
          ticks(i.ftLastWriteTime) != r.modified || size != r.size))
       fail("source size or timestamp changed");
-    return file;
   }
   void enumerate(HANDLE root, std::wstring name) {
     wchar_t fs[32]{};
@@ -284,10 +284,9 @@ public:
             if (entry.directory()) {
               if (pins_.size() >= 4095)
                 throw NotEligible{};
-              auto pin = current(entry);
+              auto pin = open(entry);
               BY_HANDLE_FILE_INFORMATION actual{};
-              win(GetFileInformationByHandle(pin.get(), &actual),
-                  "pinned directory metadata");
+              verify(pin.get(), entry, actual);
               entry.modified = ticks(actual.ftLastWriteTime);
               entry.created = ticks(actual.ftCreationTime);
               entry.accessed = ticks(actual.ftLastAccessTime);
@@ -341,12 +340,25 @@ protected:
 };
 class Input final : public ComObject<IInStream> {
   File f_;
-  uint64_t size_, position_ = 0;
+  const Record &record_;
+  uint64_t position_ = 0;
   const Source &source_;
+  std::atomic<unsigned> &verified_;
+  bool checked_ = false;
+  void check() {
+    if (checked_) return;
+    BY_HANDLE_FILE_INFORMATION info{};
+    Source::verify(f_.get(), record_, info);
+    checked_ = true;
+    ++verified_;
+  }
 
 public:
-  Input(File f, uint64_t size, const Source &s)
-      : f_(std::move(f)), size_(size), source_(s) {}
+  Input(File f, const Record &r, const Source &s, std::atomic<unsigned> &verified)
+      : f_(std::move(f)), record_(r), source_(s), verified_(verified) {
+    // The encoder may legitimately request no reads from an empty file.
+    if (!r.size) check();
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
     return identify(out, i == IID_IUnknown || i == IID_ISequentialInStream ||
@@ -358,8 +370,9 @@ public:
       *read = 0;
     return boundary([&]() -> HRESULT {
       source_.live();
+      check();
       DWORD got = 0, requested = static_cast<DWORD>(std::min<uint64_t>(
-                         position_ >= size_ ? 0 : size_ - position_, n));
+                         position_ >= record_.size ? 0 : record_.size - position_, n));
       if (requested) {
         win(ReadFile(f_.get(), buf, requested, &got, nullptr), "source read");
         if (!got)
@@ -373,14 +386,16 @@ public:
   }
   HRESULT STDMETHODCALLTYPE Seek(Int64 offset, UInt32 origin,
                                  UInt64 *pos) noexcept override {
-    LARGE_INTEGER d{}, result{};
-    d.QuadPart = offset;
-    if (!SetFilePointerEx(f_.get(), d, &result, origin))
-      return HRESULT_FROM_WIN32(GetLastError());
-    position_ = uint64_t(result.QuadPart);
-    if (pos)
-      *pos = position_;
-    return S_OK;
+    return boundary([&]() -> HRESULT {
+      check();
+      LARGE_INTEGER d{}, result{};
+      d.QuadPart = offset;
+      if (!SetFilePointerEx(f_.get(), d, &result, origin))
+        return HRESULT_FROM_WIN32(GetLastError());
+      position_ = uint64_t(result.QuadPart);
+      if (pos) *pos = position_;
+      return S_OK;
+    });
   }
 };
 class Output final : public ComObject<IOutStream> {
@@ -430,6 +445,7 @@ class Update final : public ComObject<IArchiveUpdateCallback> {
 
 public:
   std::atomic<HRESULT> error{S_OK};
+  std::atomic<unsigned> requested{0}, verified{0};
   explicit Update(Source &s) : src_(s) {}
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
@@ -520,7 +536,10 @@ public:
     if (r.directory())
       return S_OK;
     auto status = boundary([&]() {
-      *out = new Input(src_.current(r), r.size, src_);
+      // Take the same deny-write/delete pin at the callback boundary. Only the
+      // metadata check moves to the codec reader, before its first read/seek.
+      *out = new Input(src_.open(r), r, src_, verified);
+      ++requested;
       return S_OK;
     });
     if (FAILED(status))
@@ -594,6 +613,8 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
                                static_cast<UInt32>(src.items.size()), cb.get()),
           "encode ZIP");
     exact(cb->error.load(), "ZIP source item failure");
+    if (cb->requested.load() != cb->verified.load())
+      fail("ZIP source stream was not validated");
     src.live();
     if (qing_machine_policy_restricts_native())
       fail("machine policy changed");

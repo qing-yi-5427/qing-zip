@@ -180,9 +180,15 @@ def main():
             head = src / "000-first.bin"
             head.write_bytes(hashlib.shake_256(b"native-create-races").digest(8 << 20))
             tail = src / "zzz-last.txt"
-            changes = ["acl", "alternate-stream"] + (["file-symlink"] if args.require_file_symlink else [])
+            changes = ["acl", "alternate-stream", "empty-file-replacement"] + (["file-symlink"] if args.require_file_symlink else [])
             for change in changes:
-                tail.write_bytes(b"original")
+                tail.write_bytes(b"" if change == "empty-file-replacement" else b"original")
+                if change == "empty-file-replacement":
+                    replacement = root / "replacement.tmp"
+                    replacement.touch()
+                    meta = tail.stat()
+                    os.utime(replacement, ns=(meta.st_atime_ns, meta.st_mtime_ns))
+                    assert not replacement.samefile(tail)
                 dest = root / ("in-flight-" + change)
                 dest.mkdir()
                 bad = dest / "result.zip"
@@ -210,6 +216,10 @@ def main():
                             assert kernel.WriteFile(ctypes.c_void_p(stream), b"x", 1, ctypes.byref(written), None) and written.value == 1
                         finally:
                             kernel.CloseHandle(stream)
+                    elif change == "empty-file-replacement":
+                        # Same size and modification time, different file ID. The
+                        # codec need not issue a Read for a zero-byte file.
+                        replacement.replace(tail)
                     else:
                         tail.unlink()
                         tail.symlink_to(outside)
