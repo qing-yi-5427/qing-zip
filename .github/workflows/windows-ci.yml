@@ -1,65 +1,76 @@
-name: Windows regression
+name: Archive edits on verified disposable FAT images
 on:
-  push:
-    branches: [main, codex/nanazip-parity]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional exact candidate source, baseline is always tested
+        required: false
+        type: string
+      source_run:
+        description: Successful official x64 build for candidate, empty for baseline-only
+        required: false
+        type: string
 permissions:
+  actions: read
   contents: read
 jobs:
-  public-regressions:
+  vhd:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        filesystem: [FAT32, exFAT]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          python-version: '3.12'
-      - name: Runtime provenance and frontend syntax
+          persist-credentials: false
+      - name: Obtain exact released baseline and optional verified candidate
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_RUN: ${{ inputs.source_run }}
         run: |
-          python scripts/verify-runtime.py
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/app.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/tools.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --check obz-gui/frontend/compression-options.js
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | ForEach-Object FullName)
-          node --test @frontendTests
-          exit $LASTEXITCODE
-      - name: Explorer argument, COM and filesystem selection tests
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory fat-evidence | Out-Null
+          $bins=@{}
+          function Portable($role,$archive,$cliHash,$guiHash,$source) {
+            $dir=Join-Path $env:RUNNER_TEMP ("fat-package-"+$role)
+            Expand-Archive -LiteralPath $archive -DestinationPath $dir
+            $cli=@(Get-ChildItem $dir -Recurse -File -Filter 'obz.exe')
+            $gui=@(Get-ChildItem $dir -Recurse -File -Filter 'qing-zip.exe')
+            if($cli.Count -ne 1 -or $gui.Count -ne 1 -or (Get-FileHash $cli[0].FullName).Hash.ToLowerInvariant() -cne $cliHash -or (Get-FileHash $gui[0].FullName).Hash.ToLowerInvariant() -cne $guiHash){throw 'Wrong executable identity'}
+            $bins[$role]=@{cli=$cli[0].FullName;gui=$gui[0].FullName;cli_sha=$cliHash;gui_sha=$guiHash;source=$source;archive_sha=(Get-FileHash $archive).Hash.ToLowerInvariant()}
+          }
+          $old=Join-Path $env:RUNNER_TEMP 'old.zip'
+          Invoke-WebRequest 'https://github.com/qing-yi-5427/qing-zip/releases/download/v0.11.8/qing-zip-0.11.8-portable.zip' -OutFile $old
+          if((Get-FileHash $old).Hash.ToLowerInvariant() -cne 'caca993662690d45cfbf679fff1f5bef50d6f3b21e686d80bfce12f5d7fdabb4'){throw 'Wrong baseline package'}
+          Portable 'release' $old 'c17930677e2938f58bfd1bca7dd97313d774db51f6c7c2e926a6716835d9ead0' '319112564bbeb8fbb18f6a9a2f45576dd05d7e215ec4b458250b373f48884ac7' '55f874e52e04067752dc697eb46e0aa8af1a42da'
+          if($env:SOURCE_RUN -or $env:SOURCE_SHA) {
+            if($env:SOURCE_RUN -cnotmatch '^[0-9]+$' -or $env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$'){throw 'Invalid source binding'}
+            $official=gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+            if($official.head_sha -cne $env:SOURCE_SHA -or $official.conclusion -ne 'success' -or $official.path -ne '.github/workflows/windows-ci.yml'){throw 'Unverified build'}
+            $art=@((gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN/artifacts" | ConvertFrom-Json).artifacts | Where-Object {$_.name -eq 'qing-zip-windows-x64-trial' -and !$_.expired})
+            if($art.Count -ne 1 -or $art[0].workflow_run.head_sha -cne $env:SOURCE_SHA){throw 'Unexpected official artifact'}
+            $z=Join-Path $env:RUNNER_TEMP 'donor.zip'
+            Invoke-WebRequest $art[0].archive_download_url -Headers @{Authorization="Bearer $env:GH_TOKEN"} -OutFile $z
+            if(('sha256:'+(Get-FileHash $z).Hash.ToLowerInvariant()) -cne $art[0].digest){throw 'Artifact digest mismatch'}
+            $dir=Join-Path $env:RUNNER_TEMP 'donor';Expand-Archive -LiteralPath $z -DestinationPath $dir
+            $build=@(Get-ChildItem $dir -Recurse -Filter 'hardened-build.json')
+            $portable=@(Get-ChildItem $dir -Recurse -File -Filter '*-portable.zip')
+            if($build.Count -ne 1 -or $portable.Count -ne 1){throw 'Unexpected artifact layout'}
+            $rec=Get-Content -Raw $build[0].FullName | ConvertFrom-Json
+            if($rec.target -cne 'x86_64-pc-windows-msvc'){throw 'Wrong target'}
+            Portable 'candidate' $portable[0].FullName ($rec.binaries|Where-Object name -eq 'obz.exe').sha256 ($rec.binaries|Where-Object name -eq 'obz-gui.exe').sha256 $env:SOURCE_SHA
+          }
+          $bins | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8NoBOM fat-evidence/tools.json
+          python -m pip install pywinauto==0.6.9
+      - name: Create uniquely backed image, revalidate device and exercise real archive operations
         shell: pwsh
-        run: ./scripts/msix/Build-Component.ps1 -Architecture x64
-      - name: Public core tests (no external proprietary reference executable)
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams --test verified_zip_create
-          exit $LASTEXITCODE
-      - name: Desktop regression and embedded frontend build
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path obz-gui/Cargo.toml
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $build = ./scripts/build-hardened.ps1
-          python scripts/package.py --binary-directory $build.BinaryDirectory --output-directory dist/x64
-          exit $LASTEXITCODE
-      - name: Check native ZIP creation and real file symbolic links
-        shell: pwsh
-        run: |
-          python scripts/check-zip-create-worker.py --cli target/hardened/x86_64-pc-windows-msvc/release/obz.exe --console runtime/nanazip/NanaZip.Universal.Console.exe --require-file-symlink
-          exit $LASTEXITCODE
-      - name: Invoke the registered Explorer compression action for two files
-        shell: pwsh
-        run: python scripts/check_classic_shell.py dist/x64 target/qing-shell/Release/qing-shell-classic-forwarding.exe
-      - name: Upload validated Windows x64 portable build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        run: ./scripts/check-hosted-vhd.ps1 -FileSystem '${{ matrix.filesystem }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          name: qing-zip-windows-x64-trial
-          if-no-files-found: error
-          retention-days: 21
-          path: |
-            dist/x64/*-portable.zip
-            target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
-            target/hardened/x86_64-pc-windows-msvc/release/pe-security.json
+          name: fat-compatibility-${{ matrix.filesystem }}
+          path: fat-evidence
