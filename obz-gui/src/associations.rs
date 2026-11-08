@@ -9,6 +9,9 @@ use windows::{core::PCWSTR, Win32::{
     UI::{Shell::{ShellExecuteW, SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST}, WindowsAndMessaging::SW_SHOWNORMAL},
 }};
 
+mod registration_lock;
+pub(crate) use registration_lock::registration_lock;
+
 const PROGID: &str = "OpenArchive.Archive";
 const APP_NAME: &str = "qing-zip";
 const FOLDER_MENU: &str = r"Software\Classes\Directory\shell\qing-zip-compress";
