@@ -46,6 +46,9 @@ def main():
             finally:win32clipboard.CloseClipboard()
             keyboard.send_keys("^a^v")
             assert edit.get_value()==str(dest)
+            smart=wait(lambda:next((v for v in controls() if v.element_info.automation_id=="qa-smart"),None),"smart extract preference")
+            if smart.iface_toggle.CurrentToggleState:smart.click_input()
+            assert smart.iface_toggle.CurrentToggleState==0
             wait(lambda:button("开始解压"),"start extract").click_input()
             cancel=wait(lambda:button("取消任务"),"running cancel")
             def published():
