@@ -258,8 +258,9 @@ pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
         if !Path::new(&p).is_absolute() {
             return Err("文件列表必须使用完整路径".into());
         }
-        let p = existing(&p)?.to_string_lossy().into_owned();
-        if seen.insert(p.to_lowercase()) {
+        let path = existing(&p)?;
+        let p = crate::instance::canonical_spelling(&path, path.is_dir())?;
+        if seen.insert(p.clone()) {
             out.push(p)
         }
     }
@@ -615,6 +616,37 @@ mod tests {
     impl Drop for Temp {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn shell_file_lists_resolve_pinned_drag_exports() {
+        let export = obz_core::engine::ShellDragDirectory::create().unwrap();
+        let file = export.path().join("drag.txt");
+        fs::write(&file, b"payload").unwrap();
+        let _pin = export.pin_for_read().unwrap();
+        let paths = checked_paths(vec![file.display().to_string()]).unwrap();
+        assert_eq!(fs::read(&paths[0]).unwrap(), b"payload");
+    }
+    #[test]
+    fn shell_file_lists_keep_distinct_names_and_fold_aliases() {
+        let temp = Temp::new();
+        let lower = temp.0.join("sample.txt");
+        let upper = temp.0.join("SAMPLE.txt");
+        fs::write(&lower, b"lower").unwrap();
+        let canonical_parent = crate::instance::canonical_spelling(&temp.0, true).unwrap();
+        let expected = |name| Path::new(&canonical_parent).join(name).display().to_string();
+        let path_list = || [&lower, &upper, &lower].map(|p| p.display().to_string()).to_vec();
+        if upper.exists() {
+            assert_eq!(checked_paths(path_list()).unwrap(), vec![expected("sample.txt")]);
+        }
+        fs::remove_file(&lower).unwrap();
+        let enabled = std::process::Command::new("fsutil")
+            .args(["file", "setCaseSensitiveInfo"]).arg(&temp.0).arg("enable").output().unwrap();
+        if enabled.status.success() {
+            fs::write(&lower, b"lower").unwrap();
+            File::create_new(&upper).unwrap();
+            assert_eq!(checked_paths(path_list()).unwrap(),
+                vec![expected("sample.txt"), expected("SAMPLE.txt")]);
         }
     }
     #[test]
