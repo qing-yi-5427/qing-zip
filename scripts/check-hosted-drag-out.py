@@ -83,14 +83,23 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         assert owner(point)==win.handle and owner(drop)==target_hwnd,report
         report['drop_control']=desktop.from_point(*drop).element_info.name
         save('before')
-        mouse.press(coords=point)
-        for distance in (3,8,15,22):
-            mouse.move(coords=(point[0]+distance,point[1]));time.sleep(.16)
-        time.sleep(1.0)
-        for step in range(1,15):
-            x=int((point[0]+22)*(1-step/14)+drop[0]*step/14);y=int(point[1]*(1-step/14)+drop[1]*step/14)
-            mouse.move(coords=(x,y));time.sleep(.075)
-        time.sleep(.5);save('dragging');mouse.release(coords=drop)
+        def move_selection():
+            mouse.press(coords=point)
+            for distance in (3,8,15,22):
+                mouse.move(coords=(point[0]+distance,point[1]));time.sleep(.16)
+            time.sleep(1.0)
+            for step in range(1,15):
+                x=int((point[0]+22)*(1-step/14)+drop[0]*step/14);y=int(point[1]*(1-step/14)+drop[1]*step/14)
+                mouse.move(coords=(x,y));time.sleep(.075)
+            time.sleep(.5)
+        move_selection()
+        from pywinauto import keyboard
+        keyboard.send_keys('{ESC}')
+        time.sleep(.3);mouse.release(coords=drop)
+        wait(lambda:find(win,'??????','Text'),'cancelled drag acknowledgement',4)
+        assert manifest(dest)=={}
+        report['escape_left_empty_destination']=True
+        move_selection();save('dragging');mouse.release(coords=drop)
         expected={name:hashlib.sha256(data).hexdigest() for name,data in contents.items() if name!='dont-copy.txt'}
         wait(lambda:manifest(dest)==expected,'exact dropped files',25)
         report['verified']=manifest(dest)
