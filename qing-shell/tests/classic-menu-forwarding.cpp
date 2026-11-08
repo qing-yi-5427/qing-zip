@@ -71,16 +71,7 @@ std::vector<std::wstring> arguments(const std::string& raw) {
     }
     return out;
 }
-void exercise(const fs::path& exe,const fs::path& first,const fs::path& second) {
-    require(first.parent_path()==second.parent_path(),"select siblings");
-    WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=sinkClass;wc.lpfnWndProc=sink;
-    require(RegisterClassW(&wc)!=0,"cannot register fixture window class");
-    require(!FindWindowW(sinkClass,sinkTitle),"a real qing-zip instance already exists");
-    HANDLE mutex=CreateMutexW(nullptr,TRUE,sinkMutex);
-    require(mutex!=nullptr && GetLastError()!=ERROR_ALREADY_EXISTS,"a real qing-zip mutex already exists");
-    HWND hwnd=CreateWindowW(sinkClass,sinkTitle,WS_OVERLAPPED,0,0,1,1,nullptr,nullptr,wc.hInstance,nullptr);
-    require(hwnd!=nullptr,"cannot create forwarding receiver");
-
+void invokeMenu(HWND hwnd, const fs::path& first, const fs::path& second) {
     PIDLIST_ABSOLUTE rawFolder=nullptr;
     check(SHParseDisplayName(first.parent_path().c_str(),nullptr,&rawFolder,0,nullptr),"parse parent");
     Item folder(rawFolder);
@@ -111,6 +102,19 @@ void exercise(const fs::path& exe,const fs::path& first,const fs::path& second) 
     invoke.fMask=CMIC_MASK_UNICODE|CMIC_MASK_NOASYNC|CMIC_MASK_FLAG_NO_UI;
     invoke.lpVerb=MAKEINTRESOURCEA(command);invoke.lpVerbW=MAKEINTRESOURCEW(command);invoke.nShow=SW_SHOWNORMAL;
     check(context->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&invoke)),"invoke actual menu item");
+    DestroyMenu(menu);
+}
+void exercise(const fs::path& exe,const fs::path& first,const fs::path& second) {
+    require(first.parent_path()==second.parent_path(),"select siblings");
+    WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=sinkClass;wc.lpfnWndProc=sink;
+    require(RegisterClassW(&wc)!=0,"cannot register fixture window class");
+    require(!FindWindowW(sinkClass,sinkTitle),"a real qing-zip instance already exists");
+    HANDLE mutex=CreateMutexW(nullptr,TRUE,sinkMutex);
+    require(mutex!=nullptr && GetLastError()!=ERROR_ALREADY_EXISTS,"a real qing-zip mutex already exists");
+    HWND hwnd=CreateWindowW(sinkClass,sinkTitle,WS_OVERLAPPED,0,0,1,1,nullptr,nullptr,wc.hInstance,nullptr);
+    require(hwnd!=nullptr,"cannot create forwarding receiver");
+
+    invokeMenu(hwnd,first,second);
     const auto deadline=std::chrono::steady_clock::now()+40s;
     while(received.empty() && std::chrono::steady_clock::now()<deadline) pumpMessages(std::chrono::steady_clock::now()+100ms);
     require(!received.empty(),"no qing-zip single-instance forwarding");
@@ -122,14 +126,31 @@ void exercise(const fs::path& exe,const fs::path& first,const fs::path& second) 
     require((fs::equivalent(args[3],first)&&fs::equivalent(args[4],second)) ||
             (fs::equivalent(args[3],second)&&fs::equivalent(args[4],first)),"selection paths changed");
     std::cout << "{\"selection_items\":2,\"advertised_verb\":true,\"groups_received\":1,\"matched_paths\":2,\"settle_seconds\":5}\n";
-    DestroyMenu(menu);DestroyWindow(hwnd);ReleaseMutex(mutex);CloseHandle(mutex);
+    DestroyWindow(hwnd);ReleaseMutex(mutex);CloseHandle(mutex);
+}
+void invokeForGui(const fs::path& exe, const fs::path& first, const fs::path& second, DWORD expectedPid) {
+    require(first.parent_path()==second.parent_path(),"select siblings");
+    HWND primary=FindWindowW(sinkClass,sinkTitle);
+    require(primary!=nullptr,"no running GUI single-instance window");
+    DWORD pid=0;
+    GetWindowThreadProcessId(primary,&pid);
+    require(pid==expectedPid,"single-instance window is not owned by the launched GUI");
+    HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
+    require(process!=nullptr,"cannot identify primary GUI");
+    wchar_t path[32768]{}; DWORD length=static_cast<DWORD>(std::size(path));
+    const BOOL found=QueryFullProcessImageNameW(process,0,path,&length);
+    CloseHandle(process);
+    require(found && fs::equivalent(path,exe),"unexpected primary executable");
+    invokeMenu(nullptr,first,second);
+    std::cout<<"{\"real_primary_pid\":"<<pid<<",\"invoked_for_files\":2}\n";
 }
 } // namespace
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==4&&envIs(L"GITHUB_ACTIONS",L"true")&&envIs(L"RUNNER_ENVIRONMENT",L"github-hosted"),"requires isolated hosted Windows runner");
+        require((argc==4||argc==5)&&envIs(L"GITHUB_ACTIONS",L"true")&&envIs(L"RUNNER_ENVIRONMENT",L"github-hosted"),"requires isolated hosted Windows runner");
         check(OleInitialize(nullptr),"initialize shell apartment");
-        exercise(argv[1],argv[2],argv[3]);
+        if(argc==4) exercise(argv[1],argv[2],argv[3]);
+        else invokeForGui(argv[1],argv[2],argv[3],std::stoul(argv[4]));
         OleUninitialize();return 0;
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
 }

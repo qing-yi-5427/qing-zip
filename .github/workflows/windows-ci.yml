@@ -53,6 +53,15 @@ jobs:
       - name: Invoke the registered Explorer compression action for two files
         shell: pwsh
         run: python scripts/check_classic_shell.py dist/x64 target/qing-shell/Release/qing-shell-classic-forwarding.exe
+      - name: Upload real Explorer dialog evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: explorer-dialog-x64
+          if-no-files-found: error
+          retention-days: 21
+          path: |
+            dist/x64/shell-create-dialog.png
+            dist/x64/shell-create-dialog.json
       - name: Upload validated Windows x64 portable build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
