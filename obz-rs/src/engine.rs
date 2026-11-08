@@ -475,12 +475,14 @@ fn run_program(
 }
 /// Resolve a member name to the same safe relative path used during extraction.
 pub fn validate_name(name: &str) -> Result<PathBuf, String> {
-    let name = name.replace('\\', "/");
-    if name.starts_with('/') {
+    if name.starts_with(['/', '\\']) {
         return Err("absolute archive path rejected".into());
     }
+    if !name.split(['/', '\\']).any(|part| part == ".") {
+        return crate::extract::relative_path(name);
+    }
     let normalized = name
-        .split('/')
+        .split(['/', '\\'])
         .filter(|part| *part != ".")
         .collect::<Vec<_>>()
         .join("/");

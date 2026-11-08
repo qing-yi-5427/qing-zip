@@ -49,12 +49,20 @@ fn unsafe_names_are_rejected() {
         "a./x",
         "NUL",
         "CON.txt",
+        "output/CoM¹.txt",
+        "LPT²",
+        "lpt³.tar.gz",
+        "conin$",
+        "folder/CONOUT$",
         "a/../",
         "a\0b",
     ] {
         assert!(extract::relative_path(name).is_err(), "{name}");
     }
     assert!(extract::relative_path("中文/hello.txt").is_ok());
+    for name in ["COM¹file.txt", "LPT10", "complete", "目录/¹.txt"] {
+        assert!(extract::relative_path(name).is_ok(), "{name}");
+    }
 }
 
 #[test]

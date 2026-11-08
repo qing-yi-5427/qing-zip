@@ -12,14 +12,23 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+fn is_device_name(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or_default();
+    if ["CON", "PRN", "AUX", "NUL"].iter().any(|dev| stem.eq_ignore_ascii_case(dev))
+        || part.eq_ignore_ascii_case("CONIN$") || part.eq_ignore_ascii_case("CONOUT$") {
+        return true;
+    }
+    let Some((prefix, number)) = stem.split_at_checked(3) else { return false };
+    (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && (matches!(number.as_bytes(), [b'0'..=b'9']) || matches!(number, "¹" | "²" | "³"))
+}
+
 pub fn relative_path(name: &str) -> Result<PathBuf, String> {
-    let name = name.replace('\\', "/");
-    if name.is_empty() || name.starts_with('/') {
+    if name.is_empty() || name.starts_with(['/', '\\']) {
         return Err("unsafe archive path".into());
     }
     let mut path = PathBuf::new();
-    for part in name.trim_end_matches('/').split('/') {
-        let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+    for part in name.trim_end_matches(['/', '\\']).split(['/', '\\']) {
         if part.is_empty()
             || part == "."
             || part == ".."
@@ -27,12 +36,9 @@ pub fn relative_path(name: &str) -> Result<PathBuf, String> {
             || part
                 .chars()
                 .any(|c| c.is_control() || "<>:\"|?*".contains(c))
-            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || (stem.len() == 4
-                && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                && stem.as_bytes()[3].is_ascii_digit())
+            || is_device_name(part)
         {
-            return Err(format!("unsafe archive path: {name}"));
+            return Err(format!("unsafe archive path: {}", name.replace('\\', "/")));
         }
         path.push(part);
     }
