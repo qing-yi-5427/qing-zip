@@ -53,7 +53,7 @@ def settings(on):
                 report['cdp_pages']=[x.get('url') for x in tabs]
                 return next((x for x in tabs if x.get('type')=='page' and ('tauri.localhost' in x['url'] or 'tauri://' in x['url'])),None)
             except (OSError,ValueError,IndexError):return
-        tab=wait(target,35)
+        tab=wait(target,5)
         with connect(tab['webSocketDebuggerUrl'],proxy=None) as ws:
             seq=0
             def js(code):
@@ -74,15 +74,28 @@ def settings(on):
         report.setdefault('gui_setting_error',{})[str(on)] = traceback.format_exc()
         report.setdefault('gui_setting_windows',{})[str(on)] = [(w.element_info.process_id,w.class_name(),w.window_text()) for w in desktop.windows()][:40]
         shots("settings-diagnostic-"+str(on));save()
-        # Preserve evidence for the genuine file-menu setting, and separately
-        # exercise the documented owned folder command even if WebView debugging
-        # is unavailable on this hosted ARM64 runtime.
-        if on:
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,folder_reg) as h:
-                winreg.SetValueEx(h,None,0,winreg.REG_SZ,f'"{exe}" --compress-folder "%1"')
-        elif command(folder_reg)==f'"{exe}" --compress-folder "%1"':
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER,folder_reg)
-        report.setdefault('folder_setting_method',{})[str(on)]='manual owned-command fixture; folder settings UI unverified'
+        try:
+            clear_lab_overlays()
+            main=desktop.window(handle=next(w.handle for w in desktop.windows(process=app.pid) if w.class_name()=='Tauri Window')).wrapper_object()
+            def named(text):
+                return next((w for w in main.descendants() if text in w.window_text()),None)
+            tab=wait(lambda:named("??"),12)
+            try:tab.iface_invoke.Invoke()
+            except Exception:tab.click_input()
+            checkbox=wait(lambda:named("???????"),12)
+            if bool(command(folder_reg))!=on:
+                try:checkbox.iface_toggle.Toggle()
+                except Exception:checkbox.click_input()
+            wait(lambda:bool(command(folder_reg))==on)
+            report.setdefault('folder_setting_method',{})[str(on)]='actual qing-zip settings via Windows accessibility'
+        except Exception:
+            report.setdefault('folder_ui_error',{})[str(on)]=traceback.format_exc()
+            if on:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER,folder_reg) as h:
+                    winreg.SetValueEx(h,None,0,winreg.REG_SZ,f'"{exe}" --compress-folder "%1"')
+            elif command(folder_reg)==f'"{exe}" --compress-folder "%1"':
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER,folder_reg)
+            report.setdefault('folder_setting_method',{})[str(on)]='manual owned-command fixture; folder settings UI unverified'
     finally:
         if app.poll() is None: app.terminate()
         app.wait(timeout=15)
@@ -146,6 +159,9 @@ def clear_lab_overlays():
     """
     out=subprocess.run(['powershell','-NoProfile','-Command',script],capture_output=True)
     report.setdefault('session_overlays_closed',[]).append(out.stdout.decode(errors='replace').splitlines())
+    for window in desktop.windows():
+        if window.window_text().lower().endswith(r"\system32\wsl.exe") and window.class_name() in ("ConsoleWindowClass","CASCADIA_HOSTING_WINDOW_CLASS"):
+            ctypes.windll.user32.PostMessageW(window.handle,0x10,0,0)
     time.sleep(.4)
 
 def focus_item(window,item):
@@ -185,14 +201,13 @@ def explorer_item(path):
                     return item
     return wait(selected,24)
 def menuitems():
-    typ=ui.CreatePropertyCondition(30003,50011)
-    array=ui.GetRootElement().FindAll(4,typ)
+    foreground=desktop.window(handle=ctypes.windll.user32.GetForegroundWindow()).wrapper_object()
     items=[]
-    for i in range(array.Length):
+    for w in foreground.descendants(control_type='MenuItem'):
         try:
-            e=array.GetElement(i); b=e.CurrentBoundingRectangle
-            if not e.CurrentIsOffscreen and b.right>b.left and b.bottom>b.top:
-                items.append((e.CurrentName,((b.left+b.right)//2,(b.top+b.bottom)//2)))
+            box=w.rectangle()
+            if box.right>box.left and box.bottom>box.top:
+                items.append((w.window_text(),((box.left+box.right)//2,(box.top+box.bottom)//2)))
         except Exception:pass
     return items
 def relevant(items):
@@ -231,7 +246,7 @@ def stop_own():
     for p in processes():
         if os.path.normcase(p['ExecutablePath'] or '')==os.path.normcase(str(exe)):
             subprocess.run(['taskkill','/F','/PID',str(p['ProcessId'])],stdout=subprocess.DEVNULL)
-def registered_commands(enabled):
+def registered_commands(enabled, exercise=False):
     # This packaged COM probe is separately labelled; it is never a substitute
     # for the Explorer menu clicks and screenshots.
     import uuid
@@ -247,10 +262,14 @@ def registered_commands(enabled):
         if hr<0:raise OSError(hex(hr&0xffffffff))
         return hr
     result={}
+    probe_archive=root/'Registered COM sample.zip'
+    if exercise:
+        with zipfile.ZipFile(probe_archive,'w') as z:z.writestr('registered-marker.txt',payload)
     for key,cls,path in [('open','9A406E20-1F79-49F3-94F9-179D18761D4A',archive),
                           ('compress','A65CB9C7-E692-4D0B-A5A1-4F19530EE312',folder),
                           ('smart','8148C339-AF9A-4E1E-8BE9-469F28DA1B75',archive),
                           ('here','0C0C73E7-2D76-4823-AB70-F9BE332B1360',archive)]:
+        if exercise and key=='here':path=probe_archive
         obj=P();pidl=P();selection=P();title=P()
         try:
             ole.CoCreateInstance(ctypes.byref(guid(cls)),None,5,ctypes.byref(interface),ctypes.byref(obj))
@@ -261,6 +280,18 @@ def registered_commands(enabled):
             method(obj,7,[P,ctypes.c_int,ctypes.POINTER(ctypes.c_uint)],selection,1,ctypes.byref(state))
             result[key]={'title':ctypes.wstring_at(title),'state':state.value}
             assert state.value==(0 if enabled else 2),(key,state.value)
+            if exercise and key=='here':
+                method(obj,8,[P,P],selection,None)
+                result[key]['invoked']=True
+                marker=root/'registered-marker.txt'
+                try:
+                    wait(lambda:marker.is_file() and marker.read_bytes()==payload,25)
+                    result[key]['extracted_expected_bytes']=True
+                except RuntimeError:
+                    result[key]['extracted_expected_bytes']=False
+                    result[key]['processes']=processes()
+                    shots('registered-action')
+
         finally:
             if title:ole.CoTaskMemFree(title)
             if selection:method(selection,2,[])
@@ -298,7 +329,7 @@ try:
 except Exception:
     report['error']=traceback.format_exc();shots('last-desktop')
     try:
-        stop_own();settings(True);report['registered_on']=registered_commands(True)
+        stop_own();settings(True);report['registered_on']=registered_commands(True,exercise=True);save();stop_own()
         settings(False);report['registered_off_again']=registered_commands(False)
     except Exception:report['independent_probe_error']=traceback.format_exc()
     raise
