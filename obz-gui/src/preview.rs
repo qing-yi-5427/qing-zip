@@ -53,6 +53,8 @@ struct Identity {
     index: u64,
     password: u64,
     codepage: Option<u32>,
+    split: bool,
+    revision: Option<obz_core::engine::PreviewRevision>,
     volatile: u64,
 }
 struct ArchiveCache {
@@ -137,18 +139,23 @@ fn source(path: &str, options: &EngineOptions) -> Result<(File, Identity), Strin
         || path.with_extension("z01").exists()
         || PathBuf::from(format!("{}.001", path.display())).exists()
         || PathBuf::from(format!("{}.002", path.display())).exists();
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    let revision = if split { None } else { obz_core::engine::PreviewRevision::read(&file, index) };
+    let volatile = revision.is_none();
     let identity = Identity {
         format_policy: obz_core::machine_policy::scope().cache_token().to_owned(),
         path,
         len: meta.len(),
         modified: meta.last_write_time(),
         volume: info.dwVolumeSerialNumber,
-        index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        index,
+        split,
+        revision,
         password: PASSWORD_HASH
             .get_or_init(RandomState::new)
             .hash_one(&options.password),
         codepage: options.codepage,
-        volatile: if split {
+        volatile: if volatile {
             VOLATILE.fetch_add(1, Ordering::Relaxed)
         } else {
             0
@@ -573,7 +580,7 @@ fn try_pinned_batch<T>(
         return Ok(None);
     }
     let (_source, identity) = source(path, options)?;
-    if identity.volatile != 0 { return Ok(None); }
+    if identity.split { return Ok(None); }
     // Serialize with the existing preview worker. clear_preview_cache can
     // cancel ACTIVE before waiting for this lock; newer jobs cannot replace it.
     let mut cache = CACHE.lock().map_err(|_| "预览缓存不可用")?;
@@ -1092,6 +1099,25 @@ mod tests {
         fs::write(&path, b"longer").unwrap();
         let (_, c) = source(name, &EngineOptions::default()).unwrap();
         assert!(a != c);
+    }
+    #[test]
+    fn source_revision_detects_same_size_rewrite_with_restored_timestamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("rewrite.zip");
+        fs::write(&path, b"first").unwrap();
+        let name = path.to_str().unwrap();
+        let options = EngineOptions::default();
+        let (handle, before) = source(name, &options).unwrap();
+        let modified = handle.metadata().unwrap().modified().unwrap();
+        drop(handle);
+        assert!(before == source(name, &options).unwrap().1);
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(b"other").unwrap();
+        writer.set_modified(modified).unwrap();
+        drop(writer);
+        let (_, after) = source(name, &options).unwrap();
+        assert_eq!((before.index, before.modified, before.len), (after.index, after.modified, after.len));
+        assert!(before != after);
     }
     #[test]
     fn archive_cache_reuses_safe_stage_and_invalidates_after_replacement() {

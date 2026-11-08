@@ -24,6 +24,39 @@ use std::{
     time::Duration,
 };
 
+/// Evidence for reusing plaintext previews between separately pinned reads.
+#[cfg(windows)]
+#[derive(PartialEq, Eq)]
+pub enum PreviewRevision {
+    Journal(u64, i64),
+    Digest([u8; 32]),
+}
+
+#[cfg(windows)]
+impl PreviewRevision {
+    /// The caller holds a read handle that denies writers for this request.
+    pub fn read(file: &File, index: u64) -> Option<Self> {
+        if let Some((journal, usn)) = created_directories::read_revision(file, index) {
+            return Some(Self::Journal(journal, usn));
+        }
+        // Bound the cost of cache validation on volumes without a usable journal.
+        if file.metadata().ok()?.len() > 1024 * 1024 {
+            return None;
+        }
+        use sha2::{Digest, Sha256};
+        let mut input = file;
+        let mut digest = Sha256::new();
+        input.rewind().ok()?;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = input.read(&mut buffer).ok()?;
+            if count == 0 { break; }
+            digest.update(&buffer[..count]);
+        }
+        Some(Self::Digest(digest.finalize().into()))
+    }
+}
+
 // Opt-in diagnostic timing; no paths, passwords or archive names are logged.
 struct PhaseTimer(&'static str, Option<std::time::Instant>);
 impl PhaseTimer {

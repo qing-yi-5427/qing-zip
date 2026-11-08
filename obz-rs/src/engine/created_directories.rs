@@ -77,6 +77,26 @@ impl Journal {
     }
 }
 
+fn file_usn(file: &File, index: u64) -> Option<i64> {
+    let mut buf = [0; 1024];
+    let len = query(file, READ_FILE_USN, &mut buf)?;
+    if len < 60
+        || u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize != len
+        || u16::from_le_bytes(buf[4..6].try_into().unwrap()) != 2
+        || u64::from_le_bytes(buf[8..16].try_into().unwrap()) != index
+    {
+        return None;
+    }
+    Some(i64::from_le_bytes(buf[24..32].try_into().unwrap()))
+}
+
+pub(super) fn read_revision(file: &File, index: u64) -> Option<(u64, i64)> {
+    let before = Journal::read(file)?;
+    let usn = file_usn(file, index)?;
+    let after = Journal::read(file)?;
+    after.contains(before.id, usn).then_some((before.id, usn))
+}
+
 impl Stamp {
     pub(super) fn capture(created: &File) -> Option<Self> {
         let before = Journal::read(created)?;
@@ -98,16 +118,7 @@ impl Stamp {
         if directory_identity(current).ok() != Some(self.file_id) {
             return false;
         }
-        let mut buf = [0; 1024];
-        let Some(len) = query(current, READ_FILE_USN, &mut buf) else {
-            return false;
-        };
-        if len < 60
-            || u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize != len
-            || u16::from_le_bytes(buf[4..6].try_into().unwrap()) != 2
-            || u64::from_le_bytes(buf[8..16].try_into().unwrap()) != self.file_id.1
-            || i64::from_le_bytes(buf[24..32].try_into().unwrap()) != self.usn
-        {
+        if file_usn(current, self.file_id.1) != Some(self.usn) {
             return false;
         }
         // USNs are unique offsets within one journal generation. Deleting and
