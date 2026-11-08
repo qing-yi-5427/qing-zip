@@ -32,9 +32,9 @@ pub fn checksum_files(
         )
     };
     let mut results = Vec::with_capacity(paths.len());
-    if names.is_empty() {
+    if super::CommonSelection::from_names(names).is_some() {
         for path in paths {
-            results.push(super::checksum(path, &child_options)?);
+            results.push(super::checksum_selected(path, names, &child_options)?);
             progress(results.len());
         }
     } else {

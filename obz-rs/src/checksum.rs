@@ -34,12 +34,21 @@ pub fn algorithms(opts: &EngineOptions) -> Result<Vec<Algorithm>, String> {
 }
 
 /// Empty selection retains the original four-hash, single-pass API. An explicit
-/// selection (or "*") computes all requested hashes in one engine read of the file.
+/// selection (or "*") computes all requested hashes in one read of the file.
 pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> Result<serde_json::Value, String> {
     if names.is_empty() { return checksum(path, opts); }
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
-    let file = HashInput::open(path)?;
+    let mut file = HashInput::open(path)?;
+    if let Some(selection) = CommonSelection::from_names(names) {
+        ctl.set("checksum", Some(0), "Calculating file checksums");
+        let (size, hashes) = hash_reader(&mut *file.source, file.before.len(), &ctl, selection)?;
+        file.verify()?;
+        if size != file.before.len() { return Err("file changed while calculating checksums".into()); }
+        ctl.check()?;
+        ctl.set("complete", Some(100), "File checksums ready");
+        return Ok(serde_json::json!({"path":path, "size":size, "hashes":hashes}));
+    }
     let chosen = choose_algorithms(names, opts)?;
     ctl.set("checksum", Some(0), "Calculating file checksums");
     let mut args = vec!["h".into(), "-sccUTF-8".into(), "-bsp2".into(), "-spd".into()];
@@ -130,37 +139,68 @@ pub fn checksum(path: &str, opts: &EngineOptions) -> Result<serde_json::Value, S
         return Err("checksums require a regular file".into());
     }
     ctl.set("checksum", Some(0), "Calculating file checksums");
-    let result = hash_reader(&mut file, before.len(), &ctl)?;
+    let (size, hashes) = hash_reader(&mut file, before.len(), &ctl, CommonSelection::ALL)?;
     let after = file.metadata().map_err(|e| e.to_string())?;
     if before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
-        || result.0 != before.len()
+        || size != before.len()
     {
         return Err("file changed while calculating checksums".into());
     }
     ctl.check()?;
     ctl.set("complete", Some(100), "File checksums ready");
     Ok(
-        serde_json::json!({"path":path, "size":result.0, "md5":result.1,
-        "sha1":result.2, "sha256":result.3, "crc32":result.4}),
+        serde_json::json!({"path":path, "size":size, "md5":hashes["MD5"],
+        "sha1":hashes["SHA1"], "sha256":hashes["SHA256"], "crc32":hashes["CRC32"]}),
     )
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
+#[derive(Default)]
+struct CommonSelection {
+    md5: bool,
+    sha1: bool,
+    sha256: bool,
+    crc32: bool,
+}
+impl CommonSelection {
+    const ALL: Self = Self { md5:true, sha1:true, sha256:true, crc32:true };
+
+    fn from_names(names: &[String]) -> Option<Self> {
+        if names.len() > 128 { return None; }
+        let mut selection = Self::default();
+        for name in names {
+            match name.to_ascii_uppercase().as_str() {
+                "MD5" => selection.md5 = true,
+                "SHA1" => selection.sha1 = true,
+                "SHA256" => selection.sha256 = true,
+                "CRC32" => selection.crc32 = true,
+                _ => return None,
+            }
+        }
+        Some(selection)
+    }
 }
 
 fn hash_reader(
     reader: &mut impl Read,
     total: u64,
     ctl: &JobControl,
-) -> Result<(u64, String, String, String, String), String> {
-    let (mut md5, mut sha1, mut sha256, mut crc) = (
-        Md5::new(),
-        Sha1::new(),
-        Sha256::new(),
-        crc32fast::Hasher::new(),
-    );
+    selected: CommonSelection,
+) -> Result<(u64, std::collections::BTreeMap<&'static str, String>), String> {
+    let mut md5 = selected.md5.then(Md5::new);
+    let mut sha1 = selected.sha1.then(Sha1::new);
+    let mut sha256 = selected.sha256.then(Sha256::new);
+    let mut crc = selected.crc32.then(crc32fast::Hasher::new);
     let mut buffer = vec![0u8; total.clamp(1, 1024 * 1024) as usize];
     let mut size = 0u64;
     loop {
@@ -170,10 +210,10 @@ fn hash_reader(
             break;
         }
         size = size.checked_add(n as u64).ok_or("file size overflow")?;
-        md5.update(&buffer[..n]);
-        sha1.update(&buffer[..n]);
-        sha256.update(&buffer[..n]);
-        crc.update(&buffer[..n]);
+        if let Some(h) = &mut md5 { h.update(&buffer[..n]); }
+        if let Some(h) = &mut sha1 { h.update(&buffer[..n]); }
+        if let Some(h) = &mut sha256 { h.update(&buffer[..n]); }
+        if let Some(h) = &mut crc { h.update(&buffer[..n]); }
         let percent = if total == 0 {
             0
         } else {
@@ -182,13 +222,12 @@ fn hash_reader(
         ctl.set("checksum", Some(percent), "Calculating file checksums");
     }
     ctl.check()?;
-    Ok((
-        size,
-        hex(&md5.finalize()),
-        hex(&sha1.finalize()),
-        hex(&sha256.finalize()),
-        format!("{:08x}", crc.finalize()),
-    ))
+    let mut hashes = std::collections::BTreeMap::new();
+    if let Some(h) = md5 { hashes.insert("MD5", hex(&h.finalize())); }
+    if let Some(h) = sha1 { hashes.insert("SHA1", hex(&h.finalize())); }
+    if let Some(h) = sha256 { hashes.insert("SHA256", hex(&h.finalize())); }
+    if let Some(h) = crc { hashes.insert("CRC32", format!("{:08x}", h.finalize())); }
+    Ok((size, hashes))
 }
 
 #[cfg(test)]
@@ -237,35 +276,35 @@ mod tests {
     #[test]
     fn published_vectors_and_empty_file() {
         let ctl = JobControl::new();
-        let h = hash_reader(&mut &b"abc"[..], 3, &ctl).unwrap();
-        assert_eq!(h.1, "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(h.2, "a9993e364706816aba3e25717850c26c9cd0d89d");
+        let h = hash_reader(&mut &b"abc"[..], 3, &ctl, CommonSelection::ALL).unwrap();
+        assert_eq!(h.1["MD5"], "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(h.1["SHA1"], "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(
-            h.3,
+            h.1["SHA256"],
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        assert_eq!(h.4, "352441c2");
-        let h = hash_reader(&mut &b""[..], 0, &ctl).unwrap();
-        assert_eq!(h.1, "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(h.2, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(h.1["CRC32"], "352441c2");
+        let h = hash_reader(&mut &b""[..], 0, &ctl, CommonSelection::ALL).unwrap();
+        assert_eq!(h.1["MD5"], "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(h.1["SHA1"], "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(
-            h.3,
+            h.1["SHA256"],
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        assert_eq!(h.4, "00000000");
+        assert_eq!(h.1["CRC32"], "00000000");
     }
     #[test]
     fn multiple_buffers_match_independent_hashlib_vectors() {
         let data = vec![b'a'; 2_000_000];
-        let h = hash_reader(&mut data.as_slice(), data.len() as u64, &JobControl::new()).unwrap();
+        let h = hash_reader(&mut data.as_slice(), data.len() as u64, &JobControl::new(), CommonSelection::ALL).unwrap();
         assert_eq!(h.0, 2_000_000);
-        assert_eq!(h.1, "2a915e52d86d42e58e580f4073120a6b");
-        assert_eq!(h.2, "46aa62723f78ff6e2e381d21988a801db99c2a32");
+        assert_eq!(h.1["MD5"], "2a915e52d86d42e58e580f4073120a6b");
+        assert_eq!(h.1["SHA1"], "46aa62723f78ff6e2e381d21988a801db99c2a32");
         assert_eq!(
-            h.3,
+            h.1["SHA256"],
             "bcf7f9d1b4311c3352e60502255ce09a6744df84e8f2c89f79c4b5d74933a95a"
         );
-        assert_eq!(h.4, "eab6f954");
+        assert_eq!(h.1["CRC32"], "eab6f954");
     }
     #[test]
     fn file_is_unchanged_and_cancelled_request_fails() {
@@ -308,7 +347,7 @@ mod tests {
             ctl: ctl.clone(),
             reads: 0,
         };
-        assert!(hash_reader(&mut reader, 100, &ctl)
+        assert!(hash_reader(&mut reader, 100, &ctl, CommonSelection::ALL)
             .unwrap_err()
             .contains("cancelled"));
         assert_eq!(reader.reads, 1);
