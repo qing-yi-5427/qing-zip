@@ -103,6 +103,13 @@ fn actual_name(file: &File) -> Result<Vec<u16>, String> {
 }
 
 fn id(handle: &File) -> Result<FileId, String> {
+    id_checked(handle, None)
+}
+
+fn id_checked(handle: &File, control: Option<&super::JobControl>) -> Result<FileId, String> {
+    if let Some(control) = control {
+        control.check()?;
+    }
     let mut fs = [0u16; 32];
     let volume_ok = unsafe {
         GetVolumeInformationByHandleW(
@@ -129,6 +136,9 @@ fn id(handle: &File) -> Result<FileId, String> {
         let mut hasher = Sha256::new();
         let mut buffer = vec![0; 256 * 1024];
         loop {
+            if let Some(control) = control {
+                control.check()?;
+            }
             let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
@@ -230,10 +240,17 @@ pub(crate) struct EditSource {
     bridge: File,
     parent: File,
     _ancestors: CheckedDirectories,
-    identity: FileId,
+    control: super::JobControl,
 }
 impl EditSource {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
+        Self::open_controlled(path, &super::JobControl::new())
+    }
+    pub(crate) fn open_controlled(
+        path: &Path,
+        control: &super::JobControl,
+    ) -> Result<Self, String> {
+        control.check()?;
         let parent = path.parent().ok_or("missing archive parent")?;
         let mut ancestors = CheckedDirectories::default();
         ancestors.allow_publication(parent)?;
@@ -242,12 +259,8 @@ impl EditSource {
         let read = pin(path)?;
         // A second handle keeps in-place writes denied during ReplaceFileW.
         // The first handle also denies renames until the verified output is ready.
-        let bridge = leaf(path, 0x80000000, 5)?;
+        let bridge = reopen(&read, 0x80000000, 5)?;
         let original_name = actual_name(&read)?;
-        let identity = id(&read)?;
-        if id(&bridge)? != identity {
-            return Err("Archive identity changed".into());
-        }
         Ok(Self {
             path: path.to_path_buf(),
             original_name,
@@ -255,7 +268,7 @@ impl EditSource {
             bridge,
             parent: parent_handle,
             _ancestors: ancestors,
-            identity,
+            control: control.clone(),
         })
     }
     pub(crate) fn output(&self) -> Result<EditOutput, String> {
@@ -318,9 +331,9 @@ impl EditSource {
             staged.parent().ok_or("missing private output parent")?,
         )?;
         let proposed = leaf(staged, 0, 7)?;
-        let proposed_id = id(&proposed)?;
-        let intent =
-            journal::Intent::write(&stage, &self.parent, path, &self.identity, &proposed_id)?;
+        let identity = id_checked(&self.read, Some(&self.control))?;
+        let proposed_id = id_checked(&proposed, Some(&self.control))?;
+        let intent = journal::Intent::write(&stage, &self.parent, path, &identity, &proposed_id)?;
 
         // The read handle used by Nana must not request DELETE. A second
         // handle continues to deny writes during the handoff. If a competing
@@ -329,11 +342,11 @@ impl EditSource {
         before_replace();
         let original = reopen(&self.bridge, 0x10080, 1)?;
         if actual_name(&original)? != self.original_name
-            || id(&original)? != self.identity
-            || leaf(path, 0, 7).and_then(|f| id(&f)).ok().as_ref() != Some(&self.identity)
+            || id_checked(&leaf(path, 0, 7)?, Some(&self.control))? != identity
         {
             return Err("Archive changed before commit; edit cancelled".into());
         }
+        self.control.check()?;
         if !rename_directory_noclobber_in(&original, &merge_path, Some(&merge_parent))? {
             return Err("Could not claim the original archive for editing".into());
         }
@@ -342,12 +355,14 @@ impl EditSource {
         drop(original);
         after_replace();
         let publish: Result<(), String> = (|| {
+            self.control.check()?;
             atomic_replace(&merge_path, staged, &backup).map_err(|e| e.to_string())?;
             let candidate = leaf(&merge_path, 0x10080, 1)?;
-            if id(&candidate)? != proposed_id {
+            if id_checked(&candidate, Some(&self.control))? != proposed_id {
                 return Err("Private replacement archive changed".into());
             }
             drop(proposed);
+            self.control.check()?;
             if !rename_directory_noclobber_in(&candidate, path, Some(&self.parent))? {
                 return Err(
                     "Another file occupies the archive name, or publication was denied".into(),
@@ -361,7 +376,7 @@ impl EditSource {
             // Restore by verified handle, and only into a vacant public name.
             for saved in [&backup, &merge_path] {
                 if let Ok(handle) = leaf(saved, 0x10080, 1) {
-                    if id(&handle).ok().as_ref() == Some(&self.identity)
+                    if id(&handle).ok().as_ref() == Some(&identity)
                         && rename_directory_noclobber_in(&handle, path, Some(&self.parent))
                             .unwrap_or(false)
                     {
@@ -488,6 +503,21 @@ mod tests {
         assert!(archive.by_name("old.txt").is_ok());
         assert!(archive.by_name("new.txt").is_err());
         assert_eq!(fs::read(mark).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancellation_after_claim_rolls_back_without_publishing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("original.zip");
+        fs::write(&path, b"original contents").unwrap();
+        let control = super::super::JobControl::new();
+        let edit = EditSource::open_controlled(&path, &control).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"cancelled proposal").unwrap();
+        let result = edit.commit_with(output, || {}, || control.cancel());
+        assert!(result.is_err());
+        assert_eq!(fs::read(path).unwrap(), b"original contents");
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
