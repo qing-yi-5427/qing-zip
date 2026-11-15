@@ -99,3 +99,16 @@ test('partial moves retain counts and the backend reason in task history', async
     if(reason)assert.ok(history.includes(reason));
   }
 });
+
+
+test('directory content merge shows retained metadata in both task presentations',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+ const result={copied:3,retained_sources:[],metadata_not_merged:['C:/source/folder']};const state={jobs:[]};
+ const context=vm.createContext({s:state,esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
+ vm.runInContext(source.split('\n').find(line=>line.startsWith('async function run(')),context);
+ assert.equal(await context.run({operation:'fs-copy'},'复制文件',{silent:true}),result);
+ for(const name of ['jobs','historyPage']){
+  vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'()')),context);
+  const html=context[name]();assert.match(html,/部分完成/);assert.match(html,/已复制 3 个文件/);assert.match(html,/附加数据未合并/);assert.ok(html.includes('C:/source/folder'));
+ }
+});

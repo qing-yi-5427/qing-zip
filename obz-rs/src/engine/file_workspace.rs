@@ -491,6 +491,7 @@ struct PublishedCopy {
     target_id: (u32, u64),
     digest: [u8; 32],
     created_directory: bool,
+    unmerged_target_digest: Option<[u8;32]>,
 }
 #[derive(Debug, Serialize)]
 pub struct Transfer {
@@ -500,6 +501,8 @@ pub struct Transfer {
     pub skipped: usize,
     pub retained_sources: Vec<String>,
     pub retained_reasons: Vec<String>,
+    /// Ordinary children merged; these source directory EA/ADS were not merged.
+    pub metadata_not_merged: Vec<String>,
 }
 pub fn transfer(
     inputs: &[String],
@@ -561,6 +564,7 @@ pub fn transfer(
         skipped: 0,
         retained_sources: Vec::new(),
         retained_reasons: Vec::new(),
+        metadata_not_merged: Vec::new(),
     };
     if moving {
         let parent = File::options()
@@ -681,6 +685,7 @@ pub fn transfer(
                 guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
                 let source = node.handle.as_ref().unwrap();
                 let existing_directory = target.exists();
+                let mut unmerged_target_digest = None;
                 if existing_directory {
                     guards.check(&target)?;
                     if !target.is_dir() {
@@ -689,10 +694,24 @@ pub fn transfer(
                     let mut empty = Sha256::new();
                     let compression = super::file_workspace_compression::get(source)?;
                     if compression != 0 { empty.update(b"main-compression"); empty.update(compression.to_le_bytes()); }
-                    if streams(source, None, &ctl)? != <[u8; 32]>::from(empty.finalize()) {
-                        return Err(
-                            "目标文件夹已存在，未覆盖其备用数据流或扩展属性；请选择新目标文件夹".into()
-                        );
+                    let source_digest = streams(source, None, &ctl)?;
+                    if source_digest != <[u8; 32]>::from(empty.finalize()) {
+                        // Match directory-content merging without writing the existing
+                        // directory's EA/ADS. NTFS exposes no create-only EA update;
+                        // query-then-write could overwrite a concurrent new EA.
+                        let target_reader = File::options().read(true).share_mode(3)
+                            .custom_flags(0x02200000).open(&target).map_err(|e|e.to_string())?;
+                        let metadata = crate::private_stage::checked_metadata(&target_reader)?;
+                        if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0
+                            || directory_identity(&target_reader)? != directory_identity(
+                                &guards.held.get(&target).ok_or("目标目录锁缺失")?.0)? {
+                            return Err("目标文件夹已改变，未继续合并".into());
+                        }
+                        let target_digest = streams(&target_reader, None, &ctl)?;
+                        if target_digest != source_digest {
+                            unmerged_target_digest = Some(target_digest);
+                            result.metadata_not_merged.push(node.path.display().to_string());
+                        }
                     }
                 } else {
                     let held = &guards.held.get(parent).ok_or("缺少目标父目录锁")?.0;
@@ -757,6 +776,7 @@ pub fn transfer(
                     target_id: directory_identity(&guards.held.get(&target).ok_or("目标目录锁缺失")?.0)?,
                     digest: streams(source, None, &ctl)?,
                     created_directory: !existing_directory,
+                    unmerged_target_digest,
                 });
                 continue;
             }
@@ -830,7 +850,7 @@ pub fn transfer(
             }
             copies.push(PublishedCopy { index: node_index, path: target,
                 source_id: directory_identity(input)?, target_id: published_identity,
-                digest: expected, created_directory: false });
+                digest: expected, created_directory: false, unmerged_target_digest: None });
             published.push(published_pin);
             result.copied += 1;
         }
@@ -901,7 +921,11 @@ fn finish_transactional_move(
                 if streams(source.reader(), None, ctl).map_err(|e|format!("复验来源：{e}"))? != copy.digest {
                     return Err("来源的内容、数据流或存储属性已改变，保留来源".to_string());
                 }
-                if streams(target.reader(), None, ctl).map_err(|e|format!("复验目标：{e}"))? != copy.digest {
+                let target_digest = streams(target.reader(), None, ctl).map_err(|e|format!("复验目标：{e}"))?;
+                if target_digest != copy.digest {
+                    if copy.unmerged_target_digest == Some(target_digest) {
+                        return Err("目标文件夹保留了原有附加数据，来源文件夹的附加数据未合并，因此保留来源文件夹".to_string());
+                    }
                     return Err("目标的内容、数据流或存储属性已改变，保留来源".to_string());
                 }
                 let source_meta = source.reader().metadata().map_err(|e| e.to_string())?;
@@ -1542,8 +1566,10 @@ mod tests {
         let original = put_ea(&source, 0, b"source directory");
         fs::create_dir(dest.join("source")).unwrap();
         fs::write(dest.join("source/keep"), b"keep").unwrap();
-        assert!(transfer(&[source.display().to_string()], dest.to_str().unwrap(), false,
-            &EngineOptions::default()).is_err());
+        let merged=transfer(&[source.display().to_string()], dest.to_str().unwrap(), false,
+            &EngineOptions::default()).unwrap();
+        assert_eq!(merged.metadata_not_merged,vec![source.display().to_string()]);
+        assert_eq!(fs::read(dest.join("source/a.txt")).unwrap(),b"known local bytes");
         assert_eq!(get_ea(&source), original);
         assert!(get_ea(&dest.join("source")).is_empty());
         assert_eq!(fs::read(dest.join("source/keep")).unwrap(), b"keep");
@@ -2070,25 +2096,120 @@ mod tests {
         assert_eq!(fs::read_dir(dest).unwrap().count(), 0);
     }
     #[test]
+    fn existing_directory_metadata_is_preserved_across_child_conflict_choices() {
+        for kind in ["source-only","target-only","conflicting","equal","different-names"] {
+            for policy in ["error","skip","rename","overwrite"] {
+                let (_temp,source,dest)=setup();let target=dest.join("source");fs::create_dir(&target).unwrap();
+                fs::write(target.join("a.txt"),b"old destination child").unwrap();
+                if kind!="target-only" {
+                    put_ea(&source,0x80,b"source metadata");
+                    fs::write(format!("{}:same",source.display()),b"source ADS").unwrap();
+                }
+                if kind!="source-only" {
+                    put_ea(&target,0x80,if kind=="equal"{b"source metadata"}else{b"target metadata"});
+                    fs::write(format!("{}:same",target.display()),if kind=="equal"{b"source ADS"}else{b"target ADS"}).unwrap();
+                }
+                if kind=="different-names" {
+                    for (directory,name,value) in [(&source,b"QING.SOURCE".as_slice(),b"source only".as_slice()),(&target,b"QING.TARGET".as_slice(),b"target only".as_slice())] {
+                        let mut raw=vec![0;8];raw[5]=name.len() as u8;raw[6..8].copy_from_slice(&(value.len() as u16).to_le_bytes());raw.extend_from_slice(name);raw.push(0);raw.extend_from_slice(value);
+                        assert_eq!(put_raw_ea(directory,&raw),0);fs::write(format!("{}:{}",directory.display(),String::from_utf8_lossy(name)),value).unwrap();
+                    }
+                }
+                let source_before=streams(&File::options().read(true).custom_flags(0x02200000).open(&source).unwrap(),None,&JobControl::new()).unwrap();
+                let target_before=streams(&File::options().read(true).custom_flags(0x02200000).open(&target).unwrap(),None,&JobControl::new()).unwrap();
+                let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions{overwrite:policy.into(),..Default::default()});
+                if policy=="error" {assert!(result.is_err());} else {
+                    let result=result.unwrap();assert_eq!(result.metadata_not_merged.is_empty(),matches!(kind,"target-only"|"equal"),"{kind} {policy}");
+                    let child=target.join(if policy=="rename"{"a (1).txt"}else{"a.txt"});
+                    assert_eq!(fs::read(child).unwrap(),if policy=="skip"{b"old destination child".as_slice()}else{b"known local bytes".as_slice()});
+                }
+                assert_eq!(streams(&File::options().read(true).custom_flags(0x02200000).open(&source).unwrap(),None,&JobControl::new()).unwrap(),source_before);
+                assert_eq!(streams(&File::options().read(true).custom_flags(0x02200000).open(&target).unwrap(),None,&JobControl::new()).unwrap(),target_before);
+                assert_eq!(fs::read(source.join("a.txt")).unwrap(),b"known local bytes");
+            }
+        }
+    }
+    #[test]
+    fn moving_directory_metadata_obeys_all_existing_conflict_choices() {
+        for policy in ["error","skip","rename","overwrite"] {
+            let (_a,_b,source,dest,_force)=copy_move_setup();let target=dest.join("source");fs::create_dir(&target).unwrap();fs::write(target.join("a.txt"),b"old").unwrap();
+            let source_ea=put_ea(&source,0,b"source only");let target_ea=put_ea(&target,0,b"target only");
+            fs::write(format!("{}:same",source.display()),b"source ADS").unwrap();fs::write(format!("{}:same",target.display()),b"target ADS").unwrap();
+            let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:policy.into(),..Default::default()});
+            if policy=="error" {assert!(result.is_err());} else {
+                let result=result.unwrap();
+                if policy=="rename" {
+                    assert!(!source.exists());let renamed=dest.join("source (1)");assert_eq!(get_ea(&renamed),source_ea);
+                    assert_eq!(fs::read(format!("{}:same",renamed.display())).unwrap(),b"source ADS");assert!(result.metadata_not_merged.is_empty());
+                } else if policy=="overwrite" {
+                    assert!(!source.join("a.txt").exists());assert_eq!(result.metadata_not_merged,vec![source.display().to_string()]);assert_eq!(result.retained_sources,vec![source.display().to_string()]);
+                } else {assert!(source.join("a.txt").exists());assert_eq!(result.moved,0);}
+            }
+            assert_eq!(get_ea(&target),target_ea);assert_eq!(fs::read(format!("{}:same",target.display())).unwrap(),b"target ADS");
+            if source.exists(){assert_eq!(get_ea(&source),source_ea);assert_eq!(fs::read(format!("{}:same",source.display())).unwrap(),b"source ADS");}
+            assert_eq!(fs::read(target.join("a.txt")).unwrap(),if policy=="overwrite"{b"known bytes".as_slice()}else{b"old".as_slice()});
+        }
+    }
+    #[test]
+    fn nested_directory_merge_moves_children_but_keeps_distinct_source_metadata() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let target=dest.join("source");
+        fs::create_dir(&target).unwrap();fs::create_dir(source.join("nested")).unwrap();fs::create_dir(target.join("nested")).unwrap();
+        fs::write(source.join("nested/child"),b"nested content").unwrap();
+        for (base,tag) in [(&source,b"source".as_slice()),(&target,b"target".as_slice())] {
+            for folder in [base.clone(),base.join("nested")] {put_ea(&folder,0,tag);fs::write(format!("{}:custom",folder.display()),tag).unwrap();}
+        }
+        let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"overwrite".into(),..Default::default()}).unwrap();
+        assert_eq!(result.metadata_not_merged.len(),2);assert_eq!(result.retained_sources,vec![source.display().to_string()]);
+        assert!(result.retained_reasons.iter().all(|reason|reason.contains("附加数据未合并")),"{:?}",result.retained_reasons);
+        assert!(!source.join("a.txt").exists());assert!(!source.join("nested/child").exists());
+        assert_eq!(fs::read(target.join("nested/child")).unwrap(),b"nested content");
+        assert!(source.join("nested").is_dir());
+        for (base,tag) in [(&source,b"source".as_slice()),(&target,b"target".as_slice())] {
+            for folder in [base.clone(),base.join("nested")] {assert_eq!(fs::read(format!("{}:custom",folder.display())).unwrap(),tag);assert!(!get_ea(&folder).is_empty());}
+        }
+    }
+    #[test]
+    fn late_directory_metadata_change_is_not_disguised_as_expected_merge_retention() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let target=dest.join("source");fs::create_dir(&target).unwrap();
+        put_ea(&source,0,b"source metadata");put_ea(&target,0,b"original target metadata");
+        let late=target.clone();BEFORE_MOVE.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{put_ea(&late,0,b"late target metadata");})));
+        let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"overwrite".into(),..Default::default()}).unwrap();
+        assert_eq!(result.metadata_not_merged.len(),1);assert!(source.is_dir());
+        assert!(result.retained_reasons.iter().any(|reason|reason.contains("目标的内容、数据流或存储属性已改变")),"{:?}",result.retained_reasons);
+        assert!(!result.retained_reasons.iter().any(|reason|reason.contains("附加数据未合并")));
+    }
+    #[test]
+    fn cancelling_directory_content_merge_preserves_both_directory_stream_sets() {
+        let (_temp,source,dest)=setup();let target=dest.join("source");fs::create_dir(&target).unwrap();
+        put_ea(&source,0,b"source EA");put_ea(&target,0,b"target EA");
+        fs::write(format!("{}:source-only",source.display()),b"source").unwrap();fs::write(format!("{}:target-only",target.display()),b"target").unwrap();
+        let source_ea=get_ea(&source);let target_ea=get_ea(&target);let ctl=JobControl::new();let cancel=ctl.clone();
+        AFTER_CHUNK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        assert!(transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"overwrite".into(),control:Some(ctl),..Default::default()}).unwrap_err().contains("cancelled"));
+        assert_eq!(get_ea(&source),source_ea);assert_eq!(get_ea(&target),target_ea);
+        assert_eq!(fs::read(format!("{}:source-only",source.display())).unwrap(),b"source");assert_eq!(fs::read(format!("{}:target-only",target.display())).unwrap(),b"target");
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(),b"known local bytes");assert!(!target.join("a.txt").exists());
+    }
+    #[test]
     fn directory_stream_conflict_never_overwrites_existing_directory_streams() {
         let (_t, source, dest) = setup();
         fs::write(format!("{}:custom", source.display()), b"source stream").unwrap();
         let existing = dest.join("source");
         fs::create_dir(&existing).unwrap();
         fs::write(format!("{}:custom", existing.display()), b"existing stream").unwrap();
-        let error = transfer(
+        let result = transfer(
             &[source.display().to_string()],
             dest.to_str().unwrap(),
             false,
             &EngineOptions::default(),
         )
-        .unwrap_err();
-        assert!(error.contains("未覆盖其备用数据流"), "{error}");
+        .unwrap();
+        assert_eq!(result.metadata_not_merged,vec![source.display().to_string()]);
         assert_eq!(
             fs::read(format!("{}:custom", existing.display())).unwrap(),
             b"existing stream"
         );
-        assert!(!existing.join("a.txt").exists());
+        assert_eq!(fs::read(existing.join("a.txt")).unwrap(),b"known local bytes");
         assert_eq!(
             fs::read(format!("{}:custom", source.display())).unwrap(),
             b"source stream"
