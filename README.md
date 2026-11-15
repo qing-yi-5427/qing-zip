@@ -37,7 +37,7 @@
 
 x64 版支持 Windows 10 2004（19041）及以上版本和 Windows 11。Windows 11 ARM64 设备请选择文件名含 `arm64` 的版本。桌面界面需要 Microsoft Edge WebView2 Runtime。
 
-- **便携版**：完整解压 `qing-zip-版本-portable.zip`，运行 `qing-zip.exe`，保留旁边的 `runtime` 目录。
+- **便携版**：完整解压 `qing-zip-版本-portable.zip`，运行 `qing-zip.exe`，保留同目录中的其他程序文件及 `runtime` 目录。
 - **安装版**：运行 `qing-zip-版本-setup.exe`，默认安装到当前用户目录，无需管理员权限。
 - `Ctrl+O` 打开，`Ctrl+N` 新建，`Ctrl+E` 解压，`Ctrl+T` 检查完整性，`Ctrl+Tab` 切换标签。
 - 文件列表支持方向键、Home / End、Shift 连续选择、空格勾选、回车打开和 Shift+F10 右键菜单。
