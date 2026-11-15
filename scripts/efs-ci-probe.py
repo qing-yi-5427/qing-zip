@@ -25,6 +25,9 @@ K.GetFileAttributesW.argtypes = [W.LPCWSTR]
 K.GetFileAttributesW.restype = W.DWORD
 K.GetVolumeInformationW.argtypes = [W.LPCWSTR, W.LPWSTR, W.DWORD, C.c_void_p,
     C.c_void_p, C.c_void_p, W.LPWSTR, W.DWORD]
+K.GetVolumeInformationByHandleW.argtypes = [W.HANDLE, W.LPWSTR, W.DWORD, C.c_void_p,
+    C.c_void_p, C.c_void_p, W.LPWSTR, W.DWORD]
+K.GetFinalPathNameByHandleW.argtypes = [W.HANDLE, W.LPWSTR, W.DWORD, W.DWORD]
 A.EncryptFileW.argtypes = [W.LPCWSTR]
 A.EncryptionDisable.argtypes = [W.LPCWSTR, W.BOOL]
 A.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
@@ -108,6 +111,22 @@ def keys(path, recovery=False):
         return sorted(hashes)
     finally:
         A.FreeEncryptionCertificateHashList(pointer)
+
+def location(path):
+    h = handle(path)
+    try:
+        filesystem = C.create_unicode_buffer(64)
+        final = C.create_unicode_buffer(32768)
+        flags, serial = W.DWORD(), W.DWORD()
+        require(K.GetVolumeInformationByHandleW(h, None, 0, C.byref(serial), None, C.byref(flags), filesystem, 64),
+                f"handle volume query failed: {C.get_last_error()}")
+        length = K.GetFinalPathNameByHandleW(h, final, len(final), 0)
+        require(0 < length < len(final), "handle path query failed")
+        return {"path": final.value, "filesystem": filesystem.value, "volume_serial": serial.value,
+                "volume_supports_encryption": bool(flags.value & 0x20000),
+                "attributes": K.GetFileAttributesW(str(path))}
+    finally:
+        K.CloseHandle(h)
 
 def copy(source, target, cancel=False):
     # No ALLOW_DECRYPTED_DESTINATION. This is Nana's ordinary-copy flag.
@@ -216,6 +235,12 @@ try:
                 "target_encrypted": encrypted(plaintext_target) if plaintext_target.exists() else None,
                 "target_content_matches": digest(plaintext_target) == original if plaintext_target.exists() else None,
                 "source_encrypted_before": True}
+            if plaintext_target.exists():
+                receipt["fat32_copy"]["actual_location"] = location(plaintext_target)
+                try:
+                    receipt["fat32_copy"]["same_user_keys"] = keys(plaintext_target) == source_keys
+                except RuntimeError as query_error:
+                    receipt["fat32_copy"]["key_query_error"] = str(query_error)
         require(digest(source) == original and encrypted(source) and keys(source) == source_keys,
                 "refused plaintext fallback changed source")
         receipt["plaintext_fallback_rejection_error"] = error
