@@ -817,11 +817,23 @@ fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
 }
 enum PayloadSource {
     Engine,
+    VerifiedEmptyZip,
     OfficialZeal,
     VerifiedZeal(MemoryFiles),
 }
 fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, PayloadSource), String> {
     read_directory(path, opts, source, false)
+}
+
+fn verified_empty_zip(path: &str, opts: &EngineOptions, source: &mut File, ctl: &JobControl) -> Result<bool, String> {
+    let policy = crate::machine_policy::scope();
+    if policy.restricted() || opts.password.is_some() || opts.codepage.is_some()
+        || !Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+        return Ok(false);
+    }
+    let empty = zip_input_probe::canonical_empty(source, ctl)?;
+    policy.unchanged()?;
+    Ok(empty)
 }
 
 fn read_directory(
@@ -832,6 +844,11 @@ fn read_directory(
     ctl.set("listing", None, "Reading archive directory");
     let raw_format = crate::stream_formats::raw_format(path);
     if raw_format.is_some() { crate::stream_formats::validate_raw_options(opts)?; }
+    let mut args = base("l", opts)?;
+    if verified_empty_zip(path, opts, source, &ctl)? {
+        ctl.set("complete", Some(100), "Archive directory ready");
+        return Ok((Vec::new(), PayloadSource::VerifiedEmptyZip));
+    }
     #[cfg(nana_selected_worker)]
     if raw_format.is_none() && zip_volume_view::positioned_zip_hint(&absolute(path)?) {
         if let Some(entries) = selected_worker::zip_listing::try_list(source, opts, &ctl)? {
@@ -843,7 +860,6 @@ fn read_directory(
         Some(crate::zealfs_guard::SourceProbe::read(source)?)
     } else { None };
     let candidate = probe.as_ref().is_some_and(|p| p.is_candidate());
-    let mut args = base("l", opts)?;
     if let Some(format) = raw_format { args.push(format!("-t{format}")); }
     args.extend([
         "-slt".into(),
@@ -2719,7 +2735,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         (None, None)
     };
-    let memory = if verified_memory.is_some() {verified_memory} else if bounded_plan.is_some() || memory_attempted { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
+    let memory = if matches!(payload_source, PayloadSource::VerifiedEmptyZip) { Some(MemoryFiles::new()) }
+    else if verified_memory.is_some() {verified_memory} else if bounded_plan.is_some() || memory_attempted { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
         Some(files)
     } else if Path::new(path)
         .extension()
@@ -4314,6 +4331,10 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
     ctl.set("testing", None, "Checking archive integrity");
     let mut a = base("t", opts)?;
     let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
+    if verified_empty_zip(path, opts, &mut source_guard, &ctl)? {
+        ctl.set("complete", Some(100), "Archive integrity verified");
+        return Ok(());
+    }
     let probe = if crate::stream_formats::raw_format(path).is_none() && policy.handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
         Some(crate::zealfs_guard::SourceProbe::read(&mut *source_guard)?)
     } else { None };
@@ -5533,6 +5554,27 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn canonical_empty_zip_keeps_options_selection_and_destination_checks() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("empty.zip");
+        let mut bytes=vec![0u8;22];bytes[..4].copy_from_slice(b"PK\x05\x06");fs::write(&archive,&bytes).unwrap();
+        let path=archive.to_str().unwrap();let opts=EngineOptions::default();
+        let mut pinned=crate::engine_stream::pin(&archive).unwrap();
+        let (entries,payload)=list_raw_with_source(path,&opts,&mut pinned).unwrap();
+        assert!(entries.is_empty());assert!(matches!(payload,PayloadSource::VerifiedEmptyZip));
+        drop(pinned);
+        let output=temp.path().join("out");assert_eq!(extract(path,output.to_str().unwrap(),&opts).unwrap(),0);
+        assert!(output.is_dir());assert_eq!(fs::read_dir(&output).unwrap().count(),0);
+        test(path,&opts).unwrap();
+        for invalid in [EngineOptions{threads:Some(0),..Default::default()},EngineOptions{overwrite:"invalid".into(),..Default::default()}] {
+            assert!(list(path,&invalid).is_err());assert!(extract(path,output.to_str().unwrap(),&invalid).is_err());assert!(test(path,&invalid).is_err());
+        }
+        let selected=EngineOptions{selected:vec!["missing.txt".into()],..Default::default()};
+        let absent=temp.path().join("selected");assert!(extract(path,absent.to_str().unwrap(),&selected).is_err());assert!(!absent.exists());
+        let occupied=temp.path().join("occupied");fs::write(&occupied,b"keep").unwrap();
+        assert!(extract(path,occupied.to_str().unwrap(),&opts).is_err());assert_eq!(fs::read(&occupied).unwrap(),b"keep");
+        assert_eq!(fs::read(&archive).unwrap(),bytes);
+    }
     #[test]
     fn parallel_publication_counts_only_written_files_and_preserves_skipped_contents() {
         let (_temp, archive, _entries) = memory_zip_fixture();

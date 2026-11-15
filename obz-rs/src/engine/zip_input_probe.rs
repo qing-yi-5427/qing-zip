@@ -2,6 +2,25 @@
 //! decrypts and extracts the archive; no payload is accepted by this probe.
 use super::*;
 
+// Complete proof for the canonical empty ZIP, not a search hint: no prefix,
+// payload, central directory, split disks or trailing bytes are admitted.
+// The only optional bytes are the exact EOCD comment. Other layouts retain
+// the official handler, including ZIP64 and self-extracting empty archives.
+pub(super) fn canonical_empty(file: &mut File, ctl: &JobControl) -> Result<bool, String> {
+    ctl.check()?;
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    let result = (|| {
+        if !(22..=22 + u16::MAX as u64).contains(&length) { return Ok(false); }
+        let header = read_at(file, 0, 22)?;
+        Ok(header[..4] == *b"PK\x05\x06"
+            && header[4..20].iter().all(|b| *b == 0)
+            && length == 22 + u64::from(zip_u16(&header, 20)))
+    })();
+    file.rewind().map_err(|e| e.to_string())?;
+    ctl.check()?;
+    result
+}
+
 fn u64_at(data: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(data[at..at + 8].try_into().unwrap())
 }
@@ -306,6 +325,28 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn canonical_empty_requires_the_whole_eocd_layout_and_exact_comment_length() {
+        let mut header = vec![0u8; 22]; header[..4].copy_from_slice(b"PK\x05\x06");
+        let check = |bytes: &[u8]| {
+            let mut file = tempfile::tempfile().unwrap();file.write_all(bytes).unwrap();
+            let accepted = canonical_empty(&mut file, &JobControl::new()).unwrap();
+            assert_eq!(file.stream_position().unwrap(), 0);
+            accepted
+        };
+        assert!(check(&header));
+        for at in 0..20 {let mut bad=header.clone();bad[at]^=1;assert!(!check(&bad),"field {at}");}
+        assert!(!check(&header[..21]));
+        let mut trailing=header.clone();trailing.push(0);assert!(!check(&trailing));
+        let mut prefixed=vec![0];prefixed.extend(&header);assert!(!check(&prefixed));
+        for length in [1usize, 128, u16::MAX as usize] {
+            let mut comment=header.clone();comment[20..22].copy_from_slice(&(length as u16).to_le_bytes());
+            comment.extend(vec![0xff;length]);assert!(check(&comment));
+            comment.pop();assert!(!check(&comment));
+        }
+        let mut file=tempfile::tempfile().unwrap();file.write_all(&header).unwrap();
+        let ctl=JobControl::new();ctl.cancel();assert!(canonical_empty(&mut file,&ctl).is_err());
+    }
     fn fixture(prefix: usize, suffix: &[u8]) -> tempfile::NamedTempFile {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer.start_file("-test.txt", zip::write::SimpleFileOptions::default()).unwrap();
