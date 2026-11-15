@@ -22,6 +22,19 @@ pub struct Directory {
     pub parent: Option<String>,
     pub entries: Vec<LocalEntry>,
 }
+// Ordinary Windows disk paths accept either separator. Normalize only that
+// spelling so existing directory guards can pin the path; preserve case, dot
+// components, trailing separators, and all UNC/verbatim namespace semantics.
+fn local_path(text: &str) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Component, Prefix};
+    let path = absolute(text)?;
+    if matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))) {
+        let wide = path.as_os_str().encode_wide().map(|c| if c == 47 { 92 } else { c }).collect::<Vec<_>>();
+        return Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide)));
+    }
+    Ok(path)
+}
 pub fn browse(path: &str) -> Result<Directory, String> {
     if path.is_empty() {
         #[link(name = "kernel32")]
@@ -48,7 +61,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
             entries,
         });
     }
-    let root = absolute(path)?;
+    let root = local_path(path)?;
     let mut guards = CheckedDirectories::default();
     guards.check(&root)?;
     if !root.is_dir() {
@@ -502,7 +515,7 @@ pub fn transfer(
     if !["error", "skip", "rename", "overwrite"].contains(&opts.overwrite.as_str()) {
         return Err("无效的冲突处理方式".into());
     }
-    let dest = absolute(destination)?;
+    let dest = local_path(destination)?;
     let mut guards = CheckedDirectories::default();
     guards.check(&dest)?;
     if !dest.is_dir() {
@@ -510,7 +523,7 @@ pub fn transfer(
     }
     let paths = inputs
         .iter()
-        .map(|p| absolute(p))
+        .map(|p| local_path(p))
         .collect::<Result<Vec<_>, _>>()?;
     let mut keys = HashSet::new();
     for (i, path) in paths.iter().enumerate() {
@@ -930,6 +943,24 @@ mod tests {
     use super::*;
     use std::io::Write;
     struct CopyMoveGuard;
+    #[test]
+    fn local_disk_separator_normalization_preserves_dot_case_and_special_namespaces() {
+        assert_eq!(local_path("c:/Mixed/./Folder/../file/").unwrap().as_os_str(),std::ffi::OsStr::new("c:\\Mixed\\.\\Folder\\..\\file\\"));
+        for special in [r"\\server\share/folder/../file",r"\\?\C:\folder/file",r"\\?\UNC\server\share/folder"] {
+            assert_eq!(local_path(special).unwrap().as_os_str(),std::ffi::OsStr::new(special));
+        }
+    }
+    #[test]
+    fn copied_move_and_copy_accept_forward_slash_source_and_destination() {
+        for moving in [false,true] {
+            let (_a,_b,source,dest,_force)=copy_move_setup();
+            let input=source.join("a.txt");let source_text=input.display().to_string().replace('\\',"/");let target_text=dest.display().to_string().replace('\\',"/");
+            let result=transfer(&[source_text],&target_text,moving,&EngineOptions::default()).unwrap();
+            assert_eq!(result.moved,usize::from(moving));assert!(result.retained_sources.is_empty(),"{:?}",result.retained_reasons);
+            assert_eq!(input.exists(),!moving);assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"known bytes");
+            assert!(browse(&target_text).unwrap().entries.iter().any(|e|e.name=="a.txt"));
+        }
+    }
     impl Drop for CopyMoveGuard { fn drop(&mut self) { FORCE_COPY_MOVE.with(|v|v.set(false)); } }
     fn copy_move_setup() -> (tempfile::TempDir,tempfile::TempDir,PathBuf,PathBuf,CopyMoveGuard) {
         let first=tempfile::tempdir().unwrap();
