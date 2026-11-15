@@ -94,7 +94,12 @@ pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String>
 // ZIP search. A false/ambiguous EOCD, multi-disk record or unsupported ZIP64
 // layout falls back to the captured-volume path.
 pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
-    let result = probe(file, ctl, deep, false).map(|value| value.map(|layout| layout.search_limit));
+    scoped_search_hint(file, ctl, deep).map(|value| value.map(|(limit, _)| limit))
+}
+// Count is an exclusion hint only. Eligible native jobs still re-prove the
+// layout from their own pinned source; this value never grants input access.
+pub(super) fn scoped_search_hint(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<(u64, u64)>, String> {
+    let result = probe(file, ctl, deep, false).map(|value| value.map(|layout| (layout.search_limit, layout.count)));
     file.rewind().map_err(|e| e.to_string())?;
     result
 }

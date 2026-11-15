@@ -5,7 +5,7 @@ use std::{
 };
 
 thread_local! {
-    static HINTS: RefCell<Vec<(PathBuf, String)>> = const { RefCell::new(Vec::new()) };
+    static HINTS: RefCell<Vec<(PathBuf, String, Option<u64>)>> = const { RefCell::new(Vec::new()) };
     static ACTIVE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -25,15 +25,16 @@ impl Drop for HintScope {
 // A scope hint is only a routing hint; the native worker re-proves the layout
 // from the exact pinned handle it will read. Ordinary files incur no new probe.
 pub(super) fn positioned_zip_hint(path: &Path) -> bool {
-    HINTS.with(|hints| hints.borrow().iter().rev().find(|(input, _)| input == path)
-        .and_then(|(_,hint)| hint.strip_prefix("-tzip:s"))
+    HINTS.with(|hints| hints.borrow().iter().rev().find(|(input, _, _)| input == path)
+        .filter(|(_, _, count)| count.is_some_and(|n| n <= 65536))
+        .and_then(|(_,hint,_)| hint.strip_prefix("-tzip:s"))
         .and_then(|value| value.parse::<u64>().ok())
         .is_some_and(|limit| limit > 8 * 1024 * 1024))
 }
 pub(super) fn apply_read_hint(args: &mut Vec<String>) {
     if !matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) { return; }
     HINTS.with(|hints| {
-        for (path, hint) in hints.borrow().iter().rev() {
+        for (path, hint, _) in hints.borrow().iter().rev() {
             let Some(separator) = args.iter().position(|arg| arg == "--") else { break; };
             if args.get(separator + 1).is_some_and(|arg| Path::new(arg) == path) {
                 if !args[..separator].iter().any(|arg| arg.starts_with("-t")) { args.insert(1, hint.clone()); }
@@ -43,7 +44,10 @@ pub(super) fn apply_read_hint(args: &mut Vec<String>) {
     });
 }
 fn with_hint<T>(input: PathBuf, hint: String, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    HINTS.with(|hints| hints.borrow_mut().push((input.clone(), hint)));
+    with_count_hint(input, hint, None, action)
+}
+fn with_count_hint<T>(input: PathBuf, hint: String, count: Option<u64>, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    HINTS.with(|hints| hints.borrow_mut().push((input.clone(), hint, count)));
     let _hint = HintScope;
     ACTIVE.with(|paths| paths.borrow_mut().push(input));
     let _scope = Scope;
@@ -169,8 +173,8 @@ pub(crate) fn with_source<T>(
         }
         let deep = !zip_input_probe::known_native_family(&head[..read])
             && ["zip", "zipx", "7z", "rar", "exe"].iter().any(|value| ext.eq_ignore_ascii_case(value));
-        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl, deep)? {
-            return with_hint(input, format!("-tzip:s{limit}"), || action(path));
+        if let Some((limit, count)) = zip_input_probe::scoped_search_hint(&mut anchor, &ctl, deep)? {
+            return with_count_hint(input, format!("-tzip:s{limit}"), Some(count), || action(path));
         }
         if !ext.eq_ignore_ascii_case("zip") { return action(path); }
     }
@@ -307,6 +311,30 @@ mod tests {
             assert_eq!(explicit.len(), 4);
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn native_count_hint_only_excludes_jobs_and_keeps_console_search() {
+        let path = PathBuf::from("C:/archive.zip");
+        for count in [None, Some(1), Some(65536), Some(65537)] {
+            with_count_hint(path.clone(), "-tzip:s20000000".into(), count, || {
+                assert_eq!(positioned_zip_hint(&path), count.is_some_and(|n|n <= 65536));
+                let mut args = vec!["l".into(),"--".into(),path.display().to_string()];
+                apply_read_hint(&mut args);
+                assert_eq!(args[1],"-tzip:s20000000");
+                assert!(!positioned_zip_hint(Path::new("C:/other.zip")));
+                Ok(())
+            }).unwrap();
+            assert!(!positioned_zip_hint(&path));
+        }
+        with_count_hint(path.clone(), "-tzip:s20000000".into(), Some(1), || {
+            assert!(positioned_zip_hint(&path));
+            with_count_hint(path.clone(), "-tzip:s20000000".into(), Some(65537), || {
+                assert!(!positioned_zip_hint(&path)); Ok(())
+            })?;
+            assert!(positioned_zip_hint(&path)); Ok(())
+        }).unwrap();
+        assert!(!positioned_zip_hint(&path));
     }
 
     fn fixture(numeric: bool, readonly: bool) {
