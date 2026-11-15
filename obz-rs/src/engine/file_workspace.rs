@@ -1308,11 +1308,23 @@ mod tests {
                     stream.seek(SeekFrom::End(-1)).unwrap();stream.write_all(&[0x71]).unwrap();
                 }
                 layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
+                eprintln!("SPARSE fixture before read {name}: {:?}",layouts.last().unwrap());
                 bytes.push(fs::read(path).unwrap());
+                eprintln!("SPARSE fixture after read {name}: {:?}",sparse::query(&stream,&JobControl::new()).unwrap());
             }
         }
+        let sample=|label:&str,path:&Path|{
+            let main=File::open(path).unwrap();
+            for name in &names{
+                let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+                eprintln!("SPARSE {label} {name}: {:?}",sparse::query(&stream,&JobControl::new()).unwrap());
+            }
+        };
+        sample("closed source before transfer",&input);
         transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
-        let output=dest.join("a.txt");let main=File::open(&output).unwrap();
+        let output=dest.join("a.txt");
+        sample("closed source after transfer",&input);sample("closed target after transfer",&output);
+        let main=File::open(&output).unwrap();
         assert!(sparse::query(&main,&JobControl::new()).unwrap().is_none());
         for (index,name) in names.iter().enumerate() {
             let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
