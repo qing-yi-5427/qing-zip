@@ -56,7 +56,14 @@ def raw_directory(source,target,precreate=False):
     finally:A.CloseEncryptedFileRaw(context)
     result["export_bytes"]=len(exported)
     if result["read_raw"]:return result
+    sentinel_before={}
     if precreate:target.mkdir()
+    if precreate=="nonempty":
+        for name,secret in [("plain-sentinel.txt",False),("encrypted-sentinel.txt",True)]:
+            p=target/name;p.write_bytes(("owned disposable "+name).encode())
+            if secret:require(A.EncryptFileW(str(p)),"encrypt sentinel failed")
+            sentinel_before[name]={"digest":digest(p),"encrypted":encrypted(p),"keys":[b.hex() for b in keys(p)] if secret else []}
+    result["sentinel_before"]=sentinel_before
     context=C.c_void_p();code=A.OpenEncryptedFileRawW(str(target),3,C.byref(context));result["open_import"]=code
     if code:return result
     offset=0
@@ -80,7 +87,11 @@ def raw_directory(source,target,precreate=False):
     finally:K.CloseHandle(h)
     result["directory"]=state(target)
     result["children_before_explicit_copy"]=[p.name for p in target.iterdir()]
-    result["checks"]={"empty_import_no_recursive_surprise":not any(target.iterdir()),
+    sentinel_after={name:{"digest":digest(target/name),"encrypted":encrypted(target/name),
+        "keys":[b.hex() for b in keys(target/name)] if encrypted(target/name) else []} for name in sentinel_before}
+    result["sentinel_after"]=sentinel_after
+    result["checks"]={"no_recursive_surprise":set(p.name for p in target.iterdir())==set(sentinel_before),
+      "sentinels_unchanged":sentinel_before==sentinel_after,
       "encrypted":encrypted(target),"users_equal":keys(source)==keys(target),
       "recovery_equal":keys(source,True)==keys(target,True),"ea_equal":ea(source)==ea(target),
       "ads_equal":Path(str(target)+":meta").exists() and Path(str(target)+":meta").read_bytes()==Path(str(source)+":meta").read_bytes()}
@@ -126,9 +137,10 @@ try:
         require(all(receipt["checks"].values()),"directory policy expectation failed")
         receipt["raw_directory_new"]=raw_directory(src,base/"raw-new")
         receipt["raw_directory_existing"]=raw_directory(src,base/"raw-existing",True)
+        receipt["raw_directory_nonempty"]=raw_directory(src,base/"raw-nonempty","nonempty")
         receipt["source_after_raw"]=state(src)
         receipt["raw_checks"]={label:bool(item.get("checks")) and all(item["checks"].values()) and item.get("new_child_encrypted") is True
-            for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"])]}
+            for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"]),("nonempty",receipt["raw_directory_nonempty"])]}
         require(all(receipt["raw_checks"].values()),"raw directory full preservation failed")
         require(receipt["source_after_raw"]==receipt["encrypted_source"]["directory"],"source directory changed")
         receipt["status"]="passed"
