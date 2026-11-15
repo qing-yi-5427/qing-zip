@@ -502,6 +502,18 @@ impl Session {
             }
         }
     }
+    fn wait_exit(&self, ctl: &JobControl) -> Result<u32, String> {
+        loop {
+            ctl.check()?;
+            if let Some(code) = self.exit_code()? { return Ok(code); }
+            // A signalled process wakes immediately; timeout only bounds cancel
+            // checks. Keep the owned process handle until Drop has reaped it.
+            match unsafe { WaitForSingleObject(self.child.as_raw_handle(), 10) } {
+                0 | 258 => (),
+                _ => return Err(std::io::Error::last_os_error().to_string()),
+            }
+        }
+    }
     fn exit_code(&self) -> Result<Option<u32>, String> {
         match unsafe { WaitForSingleObject(self.child.as_raw_handle(), 0) } {
             258 => Ok(None),
@@ -796,13 +808,7 @@ fn run(
             _ => return Err("unexpected selected worker frame".into()),
         }
     }
-    let status = loop {
-        ctl.check()?;
-        if let Some(status) = session.exit_code()? {
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let status = session.wait_exit(ctl)?;
     let used = terminal.ok_or_else(|| {
         format!("selected worker exited without a terminal receipt (exit {status:#010x})")
     })??;
@@ -934,4 +940,30 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn exit_wait_cancels_pending_worker_and_drop_reaps_it() {
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("obz.exe");
+        assert!(exe.is_file(), "build the CLI before worker lifecycle tests");
+        let session = Session::start(&exe, false).unwrap();
+        let child = session.child.try_clone().unwrap();
+        assert!(session.exit_code().unwrap().is_none());
+        let ctl = JobControl::new(); let cancel = ctl.clone();
+        let cancel_thread = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(25)); cancel.cancel(); });
+        assert!(session.wait_exit(&ctl).unwrap_err().contains("cancel"));
+        cancel_thread.join().unwrap(); drop(session);
+        assert_eq!(unsafe { WaitForSingleObject(child.as_raw_handle(), 0) }, 0);
+    }
+
+    #[test]
+    fn exit_wait_observes_an_already_exited_worker_and_keeps_status() {
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("obz.exe");
+        assert!(exe.is_file());
+        let mut session = Session::start(&exe, false).unwrap();
+        session.input.take(); // Closed request channel: worker fails without outputs.
+        assert_eq!(unsafe { WaitForSingleObject(session.child.as_raw_handle(), 5000) }, 0);
+        let expected = session.exit_code().unwrap().unwrap();
+        assert_ne!(expected, 0);
+        assert_eq!(session.wait_exit(&JobControl::new()).unwrap(), expected);
+    }
+
 }
