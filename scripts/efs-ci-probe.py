@@ -208,13 +208,18 @@ try:
         require(not ok or encrypted(plaintext_target), "encryption-disabled directory accepted plaintext fallback")
         with non_efs_volume(base) as non_efs:
             plaintext_target = non_efs / "must-not-decrypt.bin"
+            require(encrypted(source) and keys(source) == source_keys, "source lost EFS before FAT test")
             ok, error = copy(source, plaintext_target)
-            require(not ok, "encrypted copy unexpectedly accepted FAT32 destination")
-            require(not plaintext_target.exists(), "failed encrypted copy left FAT32 destination object")
+            native_plaintext_refused = not ok and not plaintext_target.exists()
+            receipt["fat32_copy"] = {"succeeded": ok, "error": error,
+                "target_exists": plaintext_target.exists(),
+                "target_encrypted": encrypted(plaintext_target) if plaintext_target.exists() else None,
+                "target_content_matches": digest(plaintext_target) == original if plaintext_target.exists() else None,
+                "source_encrypted_before": True}
         require(digest(source) == original and encrypted(source) and keys(source) == source_keys,
                 "refused plaintext fallback changed source")
         receipt["plaintext_fallback_rejection_error"] = error
-        receipt["checks"]["fat32_target_rejects_plaintext_fallback"] = True
+        receipt["checks"]["fat32_target_rejects_plaintext_fallback"] = native_plaintext_refused
 
         existing = private / "existing.bin"
         existing.write_bytes(b"existing target must survive")
@@ -230,7 +235,8 @@ try:
         require(not cancelled_target.exists(), "cancel left partial target")
         require(digest(source) == original and encrypted(source) and ea(source) == expected_ea, "cancel changed source")
         receipt["checks"]["cancel_removes_partial_preserves_source"] = True
-        require(native_ea_preserved, "CopyFileEx EFS path lost EA; explicit private EA restore works, native-only parity is incomplete")
+        require(native_ea_preserved and native_plaintext_refused,
+                "CopyFileEx EFS native metadata/fallback checks failed; do not enable native-only copying")
         receipt["status"] = "passed"
 except Exception as error:
     receipt["error"] = str(error)
