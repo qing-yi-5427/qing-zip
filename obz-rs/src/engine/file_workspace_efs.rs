@@ -796,11 +796,10 @@ impl PreparedDirectory{
             }
         }
         let proof=Proof{source:&self.source,digest:self.expected.digest,ctl};
+        let pin=self.output.retain_directory_ea_metadata()?;
         let result=self.output.commit_local_streams(target,false,&proof);
         let cleanup=self.output.abort();
         let output=match (result,cleanup){(Ok(file),Ok(()))=>file,(Err(e),Ok(()))=>return Err(e),(Ok(_),Err(e))=>return Err(e),(Err(e),Err(c))=>return Err(format!("{e}; {c}"))};
-        let pin=File::options().access_mode(0x120188).share_mode(3).custom_flags(0x02200000)
-            .open(path(&output)?).map_err(|e|e.to_string())?;
         if identity_kind(pin.as_raw_handle(),true)?!=identity_kind(output.as_raw_handle(),true)?{return Err("published EFS directory identity changed".into());}
         Ok(pin)
     }

@@ -625,6 +625,12 @@ impl PrivateOutputFile {
     ) -> Result<File, String> {
         self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None)
     }
+    /// Retain metadata access before the ordinary inherited DACL is finalized,
+    /// just like the directory publisher's existing metadata handle.
+    pub(crate) fn retain_directory_ea_metadata(&self)->Result<File,String>{
+        if !self.directory || self.state!=State::Private{return Err("directory metadata ownership required".into());}
+        directory_handle(self.as_file(),0x120188,7)
+    }
     /// Narrow EFS-directory native operation. A metadata handle remains live
     /// during Raw import and the relative-empty-name takeover, so neither path
     /// substitution nor ID recycling can authorize a different output object.
