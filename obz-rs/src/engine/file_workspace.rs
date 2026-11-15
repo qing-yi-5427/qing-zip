@@ -188,7 +188,7 @@ impl Backup<'_> {
         Ok(())
     }
 }
-// Copy and verify main data and named $DATA streams. Other backup
+// Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
 fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     let mut input = Backup {
@@ -203,6 +203,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     });
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
+    let mut seen_ea = false;
     for _ in 0..4096 {
         ctl.check()?;
         let mut header = [0u8; 20];
@@ -214,11 +215,38 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
         let id = u32::from_le_bytes(header[..4].try_into().unwrap());
         let mut size = u64::from_le_bytes(header[8..16].try_into().unwrap());
         let namesize = u32::from_le_bytes(header[16..].try_into().unwrap()) as usize;
-        if !matches!(id, 1 | 4) || namesize > 65536 || namesize % 2 != 0 {
+        if !matches!(id, 1 | 2 | 4) || namesize > 65536 || namesize % 2 != 0 {
             return Err("此文件含暂不支持的特殊数据，源文件保持不变".into());
         }
         let mut name = vec![0; namesize];
         input.exact(&mut name)?;
+        if id == 2 {
+            if seen_ea || size > super::file_workspace_ea::MAX_EA_BYTES as u64 {
+                return Err("扩展属性重复或过大，源保持不变".into());
+            }
+            seen_ea = true;
+            let mut payload = vec![0; size as usize];
+            input.exact(&mut payload)?;
+            super::file_workspace_ea::validate(
+                u32::from_le_bytes(header[4..8].try_into().unwrap()),
+                namesize,
+                &payload,
+                || ctl.check(),
+            )?;
+            hash.update(header);
+            hash.update(&name);
+            hash.update(&payload);
+            if let Some(out) = output.as_mut() {
+                out.write(&header)?;
+                out.write(&payload)?;
+                #[cfg(test)]
+                AFTER_CHUNK.with(|hook| {
+                    if let Some(run) = hook.borrow_mut().take() { run(); }
+                });
+            }
+            ctl.check()?;
+            continue;
+        }
         if id == 4 {
             let units = name
                 .chunks_exact(2)
@@ -267,7 +295,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
 }
 
 /// Only this module can construct a proof, after source and private target have
-/// matching complete main/named data streams. Archive publication never uses it.
+/// matching complete main/named data streams and EA. Archive publication never uses it.
 pub(crate) struct LocalStreamProof {
     digest: [u8; 32],
     control: JobControl,
@@ -566,7 +594,7 @@ pub fn transfer(
                     }
                     if streams(source, None, &ctl)? != <[u8; 32]>::from(Sha256::digest([])) {
                         return Err(
-                            "目标文件夹已存在，未覆盖其备用数据流；请选择新目标文件夹".into()
+                            "目标文件夹已存在，未覆盖其备用数据流或扩展属性；请选择新目标文件夹".into()
                         );
                     }
                 } else {
@@ -715,6 +743,112 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    fn put_ea(path: &Path, flags: u8, value: &[u8]) -> Vec<u8> {
+        #[repr(C)]
+        struct IoStatus { status: usize, information: usize }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtSetEaFile(file: Handle, status: *mut IoStatus, data: *const u8, size: u32) -> i32;
+        }
+        let file = File::options().access_mode(0x0008 | 0x0010).share_mode(7)
+            .custom_flags(0x02200000).open(path).unwrap();
+        let name = b"QING.TEST";
+        let mut data = vec![0; 8];
+        data[4] = flags;
+        data[5] = name.len() as u8;
+        data[6..8].copy_from_slice(&(value.len() as u16).to_le_bytes());
+        data.extend_from_slice(name);
+        data.push(0);
+        data.extend_from_slice(value);
+        let mut status = IoStatus { status: 0, information: 0 };
+        assert_eq!(unsafe { NtSetEaFile(file.as_raw_handle(), &mut status,
+            data.as_ptr(), data.len() as u32) }, 0);
+        data
+    }
+    fn get_ea(path: &Path) -> Vec<u8> {
+        let file = File::options().read(true).share_mode(7).custom_flags(0x02200000).open(path).unwrap();
+        let mut reader = Backup { file: &file, context: std::ptr::null_mut(), writing: false };
+        loop {
+            let mut header = [0; 20];
+            let n = reader.read(&mut header).unwrap();
+            if n == 0 { return Vec::new(); }
+            reader.exact(&mut header[n..]).unwrap();
+            let id = u32::from_le_bytes(header[..4].try_into().unwrap());
+            let size = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
+            let name = u32::from_le_bytes(header[16..].try_into().unwrap()) as usize;
+            assert!(size + name < 1024 * 1024);
+            let mut payload = vec![0; size + name];
+            reader.exact(&mut payload).unwrap();
+            if id == 2 { return payload; }
+        }
+    }
+
+    #[test]
+    fn local_ea_file_directory_and_ads_roundtrip() {
+        for flags in [0, 0x80] {
+            let (_temp, source, dest) = setup();
+            let directory_ea = put_ea(&source, flags, b"directory");
+            let file_ea = put_ea(&source.join("a.txt"), flags, b"file");
+            for path in [&source, &source.join("a.txt")] {
+                fs::write(format!("{}:custom", path.display()), b"ads preserved").unwrap();
+            }
+            transfer(&[source.display().to_string()], dest.to_str().unwrap(), false,
+                &EngineOptions::default()).unwrap();
+            assert_eq!(get_ea(&dest.join("source")), directory_ea);
+            assert_eq!(get_ea(&dest.join("source/a.txt")), file_ea);
+            assert_eq!(get_ea(&source), directory_ea);
+            for path in [dest.join("source"), dest.join("source/a.txt")] {
+                assert_eq!(fs::read(format!("{}:custom", path.display())).unwrap(), b"ads preserved");
+            }
+        }
+    }
+
+    #[test]
+    fn local_ea_file_conflict_policies() {
+        for mode in ["overwrite", "skip", "rename", "error"] {
+            let (_temp, source, dest) = setup();
+            let input = source.join("a.txt");
+            let original = put_ea(&input, 0x80, b"source");
+            let target = dest.join("a.txt");
+            fs::write(&target, b"old").unwrap();
+            let old = put_ea(&target, 0, b"old");
+            let result = transfer(&[input.display().to_string()], dest.to_str().unwrap(), false,
+                &EngineOptions { overwrite: mode.into(), ..Default::default() });
+            if mode == "error" { assert!(result.is_err()); } else { result.unwrap(); }
+            assert_eq!(get_ea(&input), original);
+            assert_eq!(get_ea(&target), if mode == "overwrite" { original.clone() } else { old });
+            if mode == "rename" {
+                let renamed = fs::read_dir(&dest).unwrap().map(|v| v.unwrap().path())
+                    .find(|path| path != &target).unwrap();
+                assert_eq!(get_ea(&renamed), original);
+            }
+        }
+    }
+
+    #[test]
+    fn local_ea_cancel_before_publication_and_existing_directory_keep_data() {
+        for directory in [false, true] {
+            let (_temp, source, dest) = setup();
+            let input = if directory { source.clone() } else { source.join("a.txt") };
+            let original = put_ea(&input, 0x80, b"source");
+            let ctl = JobControl::new();
+            let cancel = ctl.clone();
+            AFTER_CHUNK.with(|hook| *hook.borrow_mut() = Some(Box::new(move || cancel.cancel())));
+            assert!(transfer(&[input.display().to_string()], dest.to_str().unwrap(), false,
+                &EngineOptions { control: Some(ctl), ..Default::default() }).is_err());
+            assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+            assert_eq!(get_ea(&input), original);
+        }
+        let (_temp, source, dest) = setup();
+        let original = put_ea(&source, 0, b"source directory");
+        fs::create_dir(dest.join("source")).unwrap();
+        fs::write(dest.join("source/keep"), b"keep").unwrap();
+        assert!(transfer(&[source.display().to_string()], dest.to_str().unwrap(), false,
+            &EngineOptions::default()).is_err());
+        assert_eq!(get_ea(&source), original);
+        assert!(get_ea(&dest.join("source")).is_empty());
+        assert_eq!(fs::read(dest.join("source/keep")).unwrap(), b"keep");
+    }
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let source = t.path().join("source");
