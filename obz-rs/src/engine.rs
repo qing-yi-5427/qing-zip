@@ -11,6 +11,8 @@ pub mod file_parts;
 pub mod archive_properties;
 #[cfg(windows)]
 pub mod file_workspace;
+#[cfg(windows)]
+mod archive_add;
 pub(crate) mod compression_parameters;
 mod bounded_archive_stage;
 pub mod benchmark;
@@ -4807,7 +4809,22 @@ pub fn update(
     inputs: &[String],
     opts: &EngineOptions,
 ) -> Result<(), String> {
+    update_impl(path, action, inputs, opts, None)
+}
+
+/// File-workspace add: destination folder and conflict policy are explicit.
+#[cfg(windows)]
+pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<(), String> {
+    let mut options = opts.clone();
+    options.selected.clear();
+    update_impl(path, "add", inputs, &options, Some(folder))
+}
+
+fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, folder: Option<&str>) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
+    if folder.is_some() && opts.update_mode != UpdateMode::Add {
+        return Err("文件管理添加仅支持保留其他成员的添加模式".into());
+    }
     if opts.volume_bytes.is_some() {
         return Err("updating split archives is unsupported".into());
     }
@@ -4842,6 +4859,14 @@ pub fn update(
         return Err("archive not found".into());
     }
     let parent = path.parent().ok_or("missing archive parent")?;
+    #[cfg(windows)]
+    let prepared = folder.map(|folder| archive_add::prepare(&path, inputs, folder, opts)).transpose()?;
+    #[cfg(windows)]
+    if prepared.as_ref().is_some_and(|p| p.names.is_empty()) {
+        control(opts).check()?;
+        control(opts).set("complete", Some(100), "所有同名项目已跳过，压缩包未修改");
+        return Ok(());
+    }
     #[cfg(windows)]
     let output = source.output()?;
     #[cfg(windows)]
@@ -4890,6 +4915,8 @@ pub fn update(
         inputs.to_vec()
     };
     #[cfg(windows)]
+    let names = match &prepared { Some(p) => p.names.clone(), None => names };
+    #[cfg(windows)]
     let _list = update_list::append(&mut a, if direct { &path } else { &staged }, names)?;
     #[cfg(not(windows))]
     {
@@ -4899,7 +4926,11 @@ pub fn update(
     }
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
-    run(&a, None, opts, None)?;
+    #[cfg(windows)]
+    let cwd = prepared.as_ref().map(|p| p.directory.path());
+    #[cfg(not(windows))]
+    let cwd = None;
+    run(&a, cwd, opts, None)?;
     #[cfg(test)]
     update_modes_tests::AFTER_ENGINE.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() { run(&staged); }

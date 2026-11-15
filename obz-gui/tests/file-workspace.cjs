@@ -4,7 +4,7 @@ const local=(path,selected=[])=>({kind:'local',path,selected:new Set(selected)})
 const archive=(selected=[])=>({kind:'archive',archive:'C:\\sample.zip',path:'folder/',password:'secret',selected:new Set(selected)});
 test('local transfer and archive handoffs retain explicit selections and conflict choices',()=>{
  assert.deepEqual(request(local('C:\\left',['C:\\left\\a']),local('D:\\right'),true,'rename'),{operation:'fs-move',inputs:['C:\\left\\a'],dest:'D:\\right',options:{overwrite:'rename'}});
- const add=request(local('C:\\left',['C:\\left\\a']),archive(),false,'error');assert.equal(add.operation,'add');assert.equal(add.path,'C:\\sample.zip');assert.equal(add.options.password,'secret');
+ const add=request(local('C:\\left',['C:\\left\\a']),archive(),false,'error');assert.equal(add.operation,'archive-add');assert.equal(add.dest,'folder/');assert.equal(add.options.overwrite,'error');assert.equal(add.path,'C:\\sample.zip');assert.equal(add.options.password,'secret');
  const extract=request(archive(['folder/a']),local('D:\\right'),false,'skip');assert.equal(extract.smart,false);assert.deepEqual(extract.options.selected,['folder/a']);assert.equal(extract.options.overwrite,'skip');
 });
 test('empty targets, in-flight navigation and unsupported archive moves cannot start a job',()=>{
@@ -57,4 +57,16 @@ test('unknown archive sizes stay unknown and folders use selection then explicit
  handlers.keydown({...event(),key:'Enter'});await new Promise(setImmediate);assert.equal(calls[1],'C:/folder/next');
  workspace.state.panes[0].entries=archiveRows([{name:'unknown',size:0,size_known:false,is_dir:false}],'');
  assert.equal(workspace.state.panes[0].entries[0].size_known,false);assert.ok(workspace.page().includes('>未知</small>'));
+});
+
+test('workspace archive refresh invalidates previews and removes only missing selections',async()=>{
+ const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
+ const code=source.match(/ updated:(async\(path,entries\)=>\{[^\n]+\})\n/)[1];
+ const tab={archive:'C:/a.zip',entries:[],selected:new Set(['folder/','old.txt']),anchor:'old.txt',cursor:'old.txt',focusFile:'old.txt'};
+ const state={...tab,selected:new Set(tab.selected)};const calls=[];let finish;
+ const updated=Function('archiveTabs','s','archiveKey','resetPreviewState','invoke','return '+code)([tab],state,p=>p.toLowerCase(),()=>calls.push('reset'),name=>{calls.push(name);return new Promise(r=>finish=r)});
+ const entries=[{name:'folder/new.txt'}];const pending=updated('C:/a.zip',entries);
+ assert.deepEqual(calls,['reset','clear_preview_cache']);assert.notEqual(tab.entries,entries);
+ finish();await pending;
+ for(const value of [tab,state]){assert.equal(value.entries,entries);assert.deepEqual([...value.selected],['folder/']);assert.equal(value.anchor,null);assert.equal(value.cursor,null);assert.equal(value.focusFile,null);}
 });

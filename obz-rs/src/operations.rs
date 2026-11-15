@@ -119,7 +119,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
         return Err("更新模式仅适用于添加文件".into());
     }
-    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
+    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "archive-add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
@@ -190,11 +190,18 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             }
             Ok(json!({"outputs": engine::create(&r.path, &r.inputs, format, &r.options)?}))
         },
-        "add" | "delete" | "rename" => {
+        "add" | "archive-add" | "delete" | "rename" => {
             if !restricted && (crate::installer::recognize(&r.path)?.is_some() || crate::korean::is_supported(&r.path) || crate::legacy::is_supported(&r.path) || crate::stream_formats::is_supported(&r.path) || crate::envelopes::is_supported(&r.path) || crate::rare::supports(&r.path)) {
                 return Err("this archive type is read-only; extract its files and create a new archive".into());
             }
-            engine::update(&r.path, &r.operation, &r.inputs, &r.options)?;
+            if r.operation == "archive-add" {
+                #[cfg(windows)]
+                engine::archive_add(&r.path, &r.inputs, &r.dest, &r.options)?;
+                #[cfg(not(windows))]
+                return Err("文件管理添加仅支持 Windows".into());
+            } else {
+                engine::update(&r.path, &r.operation, &r.inputs, &r.options)?;
+            }
             Ok(json!({"updated":r.path}))
         },
         "preview" => {
