@@ -120,6 +120,15 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive input.oa-switch:checked::after{transform:translateX(16px)}
 #qing-archive input.oa-switch:focus-visible{outline:2px solid var(--qa-accent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){#qing-archive input.oa-switch,#qing-archive input.oa-switch::after{transition:none}}
+@media(forced-colors:active){
+ #qing-archive input.oa-switch{forced-color-adjust:none;background:Canvas;border-color:ButtonText;transition:none}
+ #qing-archive input.oa-switch::after{background:ButtonText;box-shadow:none;transition:none}
+ #qing-archive input.oa-switch:checked{background:Highlight;border-color:Highlight}
+ #qing-archive input.oa-switch:checked::after{background:HighlightText}
+ #qing-archive input.oa-switch:focus-visible{outline-color:Highlight}
+ #qing-archive input.oa-switch:disabled{border-color:GrayText;background:Canvas}
+ #qing-archive input.oa-switch:disabled::after{background:GrayText}
+}
 
 #qing-archive .oa-app-info{display:flex;align-items:center;gap:12px}#qing-archive .oa-app-info p{margin-top:5px;color:var(--qa-sub);font-size:12px}#qing-archive .qa-logo img{width:30px;height:30px;object-fit:contain}
 
