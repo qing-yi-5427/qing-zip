@@ -191,6 +191,10 @@ impl Backup<'_> {
 // Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
 fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
+    use super::file_workspace_compression as compression;
+    ctl.check()?;
+    let main_compression = compression::get(source)?;
+    if let Some(target) = target { compression::set(target, main_compression)?; }
     let mut input = Backup {
         file: source,
         context: std::ptr::null_mut(),
@@ -202,6 +206,8 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
         writing: true,
     });
     let mut hash = Sha256::new();
+    // Uncompressed empty directories retain the existing empty-stream digest.
+    if main_compression != 0 { hash.update(b"main-compression"); hash.update(main_compression.to_le_bytes()); }
     let mut buffer = vec![0u8; 1024 * 1024];
     let mut seen_ea = false;
     for _ in 0..4096 {
@@ -247,6 +253,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             ctl.check()?;
             continue;
         }
+        let mut alternate = None;
         if id == 4 {
             let units = name
                 .chunks_exact(2)
@@ -265,7 +272,11 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             {
                 return Err("无效的数据流名称".into());
             }
+            let pin = compression::stream(source, &units, false)?;
+            let state = compression::get(&pin)?;
+            alternate = Some((units, pin, state));
         }
+        if let Some((_, _, state)) = &alternate {hash.update(b"alternate-compression");hash.update(state.to_le_bytes());}
         hash.update(header);
         hash.update(&name);
         if let Some(out) = output.as_mut() {
@@ -289,6 +300,10 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
                     }
                 });
             }
+        }
+        if let (Some(target), Some((name, _, state))) = (target, &alternate) {
+            let output = compression::stream(target, name, true)?;
+            compression::set(&output, *state)?;
         }
     }
     Err("文件数据流过多".into())
@@ -320,8 +335,8 @@ fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
         ) -> i32;
     }
     let info = source.metadata().map_err(|e| e.to_string())?;
-    // Reparse, EFS, sparse and compressed storage need their own native pipeline.
-    if info.file_attributes() & (0x400 | 0x4000 | 0x200 | 0x800) != 0 {
+    // Compression is independently copied and verified per stream above.
+    if info.file_attributes() & (0x400 | 0x4000 | 0x200) != 0 {
         return Err("此存储属性需要专用复制，源文件保持不变".into());
     }
     let attrs = info.file_attributes() & 0x3127;
@@ -342,8 +357,8 @@ fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
 
 fn check_directory_streams(file: &File, ctl: &JobControl) -> Result<(), String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if metadata.file_attributes() & (0x400 | 0x4000 | 0x200 | 0x800) != 0 {
-        return Err("文件夹含不支持的链接、加密、压缩或稀疏属性，源文件夹保持不变".into());
+    if metadata.file_attributes() & (0x400 | 0x4000 | 0x200) != 0 {
+        return Err("文件夹含不支持的链接、加密或稀疏属性，源文件夹保持不变".into());
     }
     streams(file, None, ctl).map(|_| ())
 }
@@ -592,7 +607,10 @@ pub fn transfer(
                     if !target.is_dir() {
                         return Err("目标名称已被文件占用".into());
                     }
-                    if streams(source, None, &ctl)? != <[u8; 32]>::from(Sha256::digest([])) {
+                    let mut empty = Sha256::new();
+                    let compression = super::file_workspace_compression::get(source)?;
+                    if compression != 0 { empty.update(b"main-compression"); empty.update(compression.to_le_bytes()); }
+                    if streams(source, None, &ctl)? != <[u8; 32]>::from(empty.finalize()) {
                         return Err(
                             "目标文件夹已存在，未覆盖其备用数据流或扩展属性；请选择新目标文件夹".into()
                         );
@@ -743,6 +761,88 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn compressed_transfer_preserves_each_stream_ea_and_directory_state() {
+        use super::super::file_workspace_compression as compression;
+        for directory in [false,true] {
+            for main in [0,2] {
+                for ads in [0,2] {
+                    let (_temp,source,dest)=setup();
+                    let input=if directory {source.clone()}else{source.join("a.txt")};
+                    let ea=put_ea(&input,0x80,b"compressed EA");
+                    fs::write(format!("{}:custom",input.display()),b"compressed ADS").unwrap();
+                    {
+                        let file=File::options().read(true).write(true).share_mode(7)
+                            .custom_flags(0x02000000).open(&input).unwrap();
+                        compression::set(&file,main).unwrap();
+                        let stream=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                        compression::set(&stream,ads).unwrap();
+                    }
+                    transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+                    let output=dest.join(input.file_name().unwrap());
+                    let file=File::options().read(true).share_mode(7).custom_flags(0x02000000).open(&output).unwrap();
+                    assert_eq!(compression::get(&file).unwrap(),main);
+                    let stream=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),false).unwrap();
+                    assert_eq!(compression::get(&stream).unwrap(),ads);
+                    assert_eq!(get_ea(&output),ea);
+                    assert_eq!(fs::read(format!("{}:custom",output.display())).unwrap(),b"compressed ADS");
+                    assert_eq!(get_ea(&input),ea);
+                    if directory {assert_eq!(fs::read(output.join("a.txt")).unwrap(),b"known local bytes");}
+                    else {assert_eq!(fs::read(output).unwrap(),b"known local bytes");}
+                }
+            }
+        }
+    }
+    #[test]
+    fn compressed_copy_cancel_keeps_source_and_publishes_nothing() {
+        use super::super::file_workspace_compression as compression;
+        for directory in [false,true] {
+            let (_temp,source,dest)=setup();
+            let input=if directory {source.clone()}else{source.join("a.txt")};
+            let ea=put_ea(&input,0,b"keep EA");
+            fs::write(format!("{}:custom",input.display()),b"keep ADS").unwrap();
+            {
+                let file=File::options().read(true).write(true).share_mode(7)
+                    .custom_flags(0x02000000).open(&input).unwrap();
+                compression::set(&file,2).unwrap();
+            }
+            let ctl=JobControl::new();let cancel=ctl.clone();
+            AFTER_CHUNK.with(|hook| *hook.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+            assert!(transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,
+                &EngineOptions{control:Some(ctl),..Default::default()}).is_err());
+            assert_eq!(fs::read_dir(dest).unwrap().count(),0);
+            assert_eq!(get_ea(&input),ea);
+            assert_eq!(fs::read(format!("{}:custom",input.display())).unwrap(),b"keep ADS");
+        }
+    }
+    #[test]
+    fn compressed_directory_merge_keeps_existing_destination_state() {
+        use super::super::file_workspace_compression as compression;
+        let (_temp,source,dest)=setup();
+        {let file=File::options().read(true).write(true).share_mode(7).custom_flags(0x02000000).open(&source).unwrap();compression::set(&file,2).unwrap();}
+        fs::create_dir(dest.join("source")).unwrap();
+        transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+        let file=File::options().read(true).custom_flags(0x02000000).open(dest.join("source")).unwrap();
+        assert_eq!(compression::get(&file).unwrap(),0);
+        assert_eq!(fs::read(dest.join("source/a.txt")).unwrap(),b"known local bytes");
+    }
+    #[test]
+    fn compressed_unsupported_target_error_keeps_source_and_no_output() {
+        use super::super::file_workspace_compression as compression;
+        for directory in [false,true] {
+            let (_temp,source,dest)=setup();
+            let input=if directory{source.clone()}else{source.join("a.txt")};
+            let ea=put_ea(&input,0,b"keep EA");
+            {let file=File::options().read(true).write(true).share_mode(7).custom_flags(0x02000000).open(&input).unwrap();compression::set(&file,2).unwrap();}
+            compression::FAIL_SET.with(|failure|failure.set(true));
+            let error=transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap_err();
+            assert!(error.contains("目标无法保留压缩存储属性"));
+            assert_eq!(fs::read_dir(dest).unwrap().count(),0);
+            assert_eq!(get_ea(&input),ea);
+            assert!(input.exists());
+            assert!(!compression::FAIL_SET.with(|failure|failure.replace(false)));
+        }
+    }
     fn put_ea(path: &Path, flags: u8, value: &[u8]) -> Vec<u8> {
         let name = b"QING.TEST";
         let mut data = vec![0; 8];
