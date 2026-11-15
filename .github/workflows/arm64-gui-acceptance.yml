@@ -32,6 +32,8 @@ jobs:
       - name: Install test transport and click the real ARM64 application
         shell: pwsh
         run: |
+          python scripts/test-arm-gui-lifecycle.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m pip install websockets==15.0.1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $exe = @(Get-ChildItem package -Filter qing-zip.exe -Recurse)

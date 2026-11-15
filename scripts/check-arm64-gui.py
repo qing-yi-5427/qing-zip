@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse,base64,socket,winreg,ctypes,hashlib,json,os,struct,subprocess,tempfile,time,traceback,urllib.request,zipfile
 from ctypes import wintypes as w
 from websockets.sync.client import connect
+from arm_gui_lifecycle import guarded_run
 
 SOURCE='1688b5e741e86cd6e347046343ec3666aafcf3bf'
 GUI_SHA='8604d47b41643a8f4d89bcc01f686855c15acdd9144528101e75378a7693a936'
@@ -48,13 +49,12 @@ def main():
  assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ARCH')=='ARM64'
  policy_path=r'SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
  policy=winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE,policy_path,0,winreg.KEY_QUERY_VALUE|winreg.KEY_SET_VALUE|winreg.KEY_WOW64_64KEY)
- try:old_policy=winreg.QueryValueEx(policy,exe.name)
- except FileNotFoundError:old_policy=None
- winreg.SetValueEx(policy,exe.name,0,winreg.REG_SZ,env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'])
- evidence['hosted_debug_override']={'scope':'HKLM per executable, restored in finally; disposable hosted ARM runner only','name':exe.name,'port':debug_port,'prior_value_present':old_policy is not None}
- proc=subprocess.Popen([str(exe)],cwd=root,env=env,startupinfo=startup,stdout=(out/'process.stdout.log').open('wb'),stderr=(out/'process.stderr.log').open('wb'))
- evidence['pid']=proc.pid
- try:
+ evidence['hosted_debug_override']={'scope':'HKLM per executable, restored in finally; disposable hosted ARM runner only','name':exe.name,'port':debug_port}
+ with guarded_run(winreg,policy,exe.name,env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'],evidence,out/'receipt.json') as lifetime:
+  proc=None
+  proc=subprocess.Popen([str(exe)],cwd=root,env=env,startupinfo=startup,stdout=(out/'process.stdout.log').open('wb'),stderr=(out/'process.stderr.log').open('wb'))
+  lifetime['proc']=proc
+  evidence['pid']=proc.pid
   evidence['native_process']=native(w.HANDLE(proc._handle))
   until=time.monotonic()+60
   while time.monotonic()<until:
@@ -146,11 +146,4 @@ def main():
     evidence['passed']=True
    except Exception:
     evidence['last_ui']=js('document.body.innerText');shot('failure');raise
- finally:
-  if proc.poll() is None:proc.terminate()
-  proc.wait(timeout=15);evidence['process_terminal']=proc.returncode
-  if old_policy is None:winreg.DeleteValue(policy,exe.name)
-  else:winreg.SetValueEx(policy,exe.name,0,old_policy[1],old_policy[0])
-  winreg.CloseKey(policy);evidence['debug_override_restored']=True
-  (out/'receipt.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
 if __name__=='__main__':main()
