@@ -768,7 +768,7 @@ async function showProperties(wholeArchive){
  dialog(query?'压缩包属性':details.title,markup(details.rows)+(query?'<section id="qa-property-status"><p>正在读取格式属性…</p></section>':''),btn('关闭','close')+(query?btn('取消读取','canceljob'):''));
  if(!query)return;
  const target=$('qa-property-status');
- try{const properties=await run({operation:'archive-properties',path:archive,options},'读取压缩包属性',{silent:true});
+ try{const properties=await run({operation:'archive-properties',path:archive,options},'读取压缩包属性',{silent:true,startJob:async request=>{const id=await invoke('start_operation',{request});if(!target.isConnected)await invoke('cancel_operation',{id}).catch(()=>{});return id;}});
   if(target.isConnected)target.innerHTML=markup(QingArchiveProperties.technical(properties))+(properties.partial?'<p class="qa-sub">部分属性未提供：归档包含无法可靠解析的多行元数据。</p>':'');
  }catch(reason){if(target.isConnected)target.textContent=/cancelled/i.test(String(reason))?'已取消属性读取':'格式属性读取失败：'+String(reason);}
  finally{if(target.isConnected)overlay.querySelector('[data-action="canceljob"]')?.remove();}
