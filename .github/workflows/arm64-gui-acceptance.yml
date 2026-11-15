@@ -1,0 +1,51 @@
+name: Published ARM64 GUI acceptance
+on:
+  push:
+    branches: [codex/arm64-gui-acceptance]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gui:
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify native host and download immutable published package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Native ARM64 runner required' }
+          New-Item -ItemType Directory -Path evidence | Out-Null
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,OSArchitecture | ConvertTo-Json | Set-Content evidence/host.json
+          gh release download v0.11.13 --repo qing-yi-5427/qing-zip --pattern qing-zip-0.11.13-arm64-portable.zip --dir evidence
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $package = Resolve-Path evidence/qing-zip-0.11.13-arm64-portable.zip
+          $hash = (Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'be9237d20c37efe2014dff3ea74c6a08a410de5206674bed7708e7f6365be0fb') { throw 'Published package SHA mismatch' }
+          @{tag='v0.11.13';source='1688b5e741e86cd6e347046343ec3666aafcf3bf';sha256=$hash;workflow_source=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID} | ConvertTo-Json | Set-Content evidence/package-binding.json
+          Expand-Archive -LiteralPath $package -DestinationPath package
+          $webview = Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application','C:/Program Files/Microsoft/EdgeWebView/Application' -Filter msedgewebview2.exe -Recurse -ErrorAction SilentlyContinue | Select-Object FullName,VersionInfo
+          $webview | ConvertTo-Json -Depth 3 | Set-Content evidence/webview-installed.json
+          if (!$webview) { throw 'Runner WebView2 runtime unavailable; do not count process startup as GUI acceptance' }
+      - name: Install test transport and click the real ARM64 application
+        shell: pwsh
+        run: |
+          python -m pip install websockets==15.0.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = @(Get-ChildItem package -Filter qing-zip.exe -Recurse)
+          if ($exe.Count -ne 1) { throw 'Ambiguous portable executable' }
+          python scripts/check-arm64-gui.py --exe $exe[0].FullName --out evidence/gui 2>&1 | Tee-Object evidence/gui.log
+          exit $LASTEXITCODE
+      - name: Preserve actual GUI evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: published-01113-arm64-gui
+          retention-days: 21
+          if-no-files-found: error
+          path: |
+            evidence/*.json
+            evidence/*.log
+            evidence/gui/**
