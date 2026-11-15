@@ -67,7 +67,7 @@ output.parent.mkdir(exist_ok=True)
 readme = (
     'Corresponding source for qing-zip bundled archive engines.\n'
     + ('These are the exact upstream source archives. The ARM64 GUI self-extractor was rebuilt from 7-Zip SFXWin source.\n'
-     if args.arm64_runtime else 'These are the exact upstream source archives; the bundled binaries are unmodified.\n')
+     if args.arm64_runtime else 'These are the exact upstream NanaZip and 7-Zip source archives; their bundled runtime binaries are unmodified.\n')
     + 'See each archive for its licenses, build instructions, and upstream credits.\n'
     'Modified lzma-rust2 0.23.0 source, original license and upstream provenance are included in lzma-rust2-modified-0.23.0/.\n'
     'The modified ZPAQ helper source and build instructions are in the portable package runtime/zpaq/.\n'
