@@ -4248,7 +4248,9 @@ fn publish_staged_files_parallel(
                                 progress(&entry.name);
                                 continue;
                             }
-                            prepared_guards.check_prepared(parent)?;
+                            // The next call immediately checks this exact parent in
+                            // output_temp_named, before opening/creating anything.
+                            // Avoid repeating the same ancestor walk with no intervening IO.
                             let committed = with_output_temp_named(parent, prepared_guards, direct.then_some(target.as_path()), |temp| {
                                 if !stage.write_to(&relative, temp.as_file_mut(), &mut buffer, entry.size_known.then_some(entry.size), || {
                                     ctl.check()?;
