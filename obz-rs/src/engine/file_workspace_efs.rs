@@ -283,6 +283,7 @@ fn stream_names(file: &File) -> Result<Vec<(Vec<u16>, u64)>, String> {
     Ok(result)
 }
 struct Snapshot {
+    #[cfg(test)] basic: [u64;3],
     digest: [u8; 32],
     ea: Vec<u8>,
     _pins: Vec<File>,
@@ -387,6 +388,7 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
         }
     }
     Ok(Snapshot {
+        #[cfg(test)] basic: [basic.creation_time(), basic.last_write_time(), u64::from(basic.file_attributes()&0x3127)],
         digest: hash.finalize().into(),
         ea,
         _pins: pins,
@@ -519,11 +521,12 @@ impl Prepared {
     }
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
         crate::private_stage::verify_native_private_child(self.stage.root(), &self.file)?;
-        if snapshot(&self.source, ctl)?.digest != self.expected.digest
-            // Private target main handle owns DELETE for identity-bound cleanup.
-            // Its ADS reads must share that existing right, never share WRITE.
-            || snapshot_with_share(&self.file, ctl, 5)?.digest != self.expected.digest
-        {
+        let source=snapshot(&self.source,ctl)?;
+        // Private target main handle owns DELETE for identity-bound cleanup.
+        // Its ADS reads must share that existing right, never share WRITE.
+        let target=snapshot_with_share(&self.file,ctl,5)?;
+        if source.digest!=self.expected.digest || target.digest!=self.expected.digest {
+            #[cfg(test)] eprintln!("EFS proof mismatch source_same={} target_same={} basic expected={:?} source={:?} target={:?}",source.digest==self.expected.digest,target.digest==self.expected.digest,self.expected.basic,source.basic,target.basic);
             return Err("EFS源或私有目标发生变化".into());
         }
         Ok(())
