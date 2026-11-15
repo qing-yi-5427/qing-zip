@@ -472,6 +472,7 @@ fn verify_empty_directory(file:&File)->Result<(),String>{
 }
 
 pub(crate) struct PrivateOutputFile {
+    direct: bool,
     directory:bool,
     file: Option<File>,
     parent: File,
@@ -523,6 +524,9 @@ impl PrivateOutputFile {
     ) -> Result<File, String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("commit_journaled");
+        if self.direct && (replace || journal.is_none() || target != self.path || local_proof.is_some()) {
+            return Err("direct output requires its owned no-replace journal".into());
+        }
         if self.directory && local_proof.is_none() {return Err("directory output requires local stream proof".into());}
         if self.directory {verify_empty_directory(self.as_file())?;}
         let mut pending = None;
@@ -547,7 +551,7 @@ impl PrivateOutputFile {
             if !same_file_permissions(expected.0, live.0)? {
                 return Err("destination permissions changed; output was not published".into());
             }
-            let committed_handle = if self.directory {directory_metadata_handle(self.as_file())?}else{metadata_handle(self.as_file(), 7)?};
+            let committed_handle = if self.direct {self.as_file().try_clone().map_err(|e|e.to_string())?} else if self.directory {directory_metadata_handle(self.as_file())?}else{metadata_handle(self.as_file(), 7)?};
             let marker = match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?};
             let private = descriptor(self.as_file())?;
             step(Step::ApplyPermissions)?;
@@ -564,7 +568,17 @@ impl PrivateOutputFile {
                 pending = journal
                     .map(|_| OutputReceipt::capture(target, self.as_file()))
                     .transpose()?;
-                rename(self.as_file(), &self.parent, &name, replace)
+                if self.direct {
+                    #[cfg(test)]
+                    BEFORE_DIRECT_CLEAR.with(|hook|if let Some(run)=hook.borrow_mut().take(){run()});
+                    // The creation-time DELETE_ON_CLOSE flag is cancelled only
+                    // after bytes, metadata, live ACLs and rollback evidence exist.
+                    // flags=0 does NOT cancel creation-time deletion; ON_CLOSE does.
+                    let keep = 8u32;
+                    if unsafe {SetFileInformationByHandle(self.as_file().as_raw_handle(),21,
+                        (&keep as *const u32).cast(),4)} == 0 {return Err(error("commit direct output"));}
+                    Ok(())
+                } else {rename(self.as_file(), &self.parent, &name, replace)}
             })();
             if let Err(reason) = transition {
                 // Restore the protected scratch permissions while the data
@@ -754,13 +768,29 @@ pub(crate) fn create_local_directory_output(parent_path:&Path,parent:&File)->Res
 fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFile, String> {
     create_exclusive_kind(parent_path,parent,false)
 }
+pub(crate) fn direct_output_supported(parent:&File)->bool {
+    let mut filesystem=[0u16;32];let mut flags=0u32;
+    let ok=unsafe{GetVolumeInformationByHandleW(parent.as_raw_handle(),std::ptr::null_mut(),0,
+        std::ptr::null_mut(),std::ptr::null_mut(),&mut flags,filesystem.as_mut_ptr(),filesystem.len() as u32)};
+    ok!=0 && flags&8!=0 && String::from_utf16_lossy(&filesystem[..filesystem.iter().position(|v|*v==0).unwrap_or(filesystem.len())]).eq_ignore_ascii_case("NTFS")
+}
+pub(crate) fn create_direct_output(parent_path: &Path, parent: &File, name: &OsStr) -> Result<PrivateOutputFile,String> {
+    leaf(name)?;
+    create_exclusive_named(parent_path,parent,false,Some(name))
+}
+#[cfg(test)]
+thread_local! {static BEFORE_DIRECT_CLEAR:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Result<PrivateOutputFile, String> {
+    create_exclusive_named(parent_path,parent,directory,None)
+}
+fn create_exclusive_named(parent_path: &Path, parent: &File,directory:bool, direct_name: Option<&OsStr>) -> Result<PrivateOutputFile,String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("create_exclusive_kind");
     if info(parent)?[0] & 0x410 != 0x10 {
         return Err("invalid private output parent".into());
     }
     let mode = volume_mode(parent)?;
+    if direct_name.is_some() && mode != Mode::PrivateAcl {return Err("direct output requires persistent private permissions".into());}
     let token = effective_token()?;
     let permissions = if mode == Mode::PrivateAcl {
         Some(ordinary_permissions_kind(parent, &token,directory)?)
@@ -777,8 +807,8 @@ fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Re
     };
     let parent_pin = parent.try_clone().map_err(|e| e.to_string())?;
     for _ in 0..16 {
-        let name = private_name()?;
-        let mut wide: Vec<u16> = name.encode_utf16().collect();
+        let name = match direct_name {Some(name)=>name.to_os_string(),None=>private_name()?.into()};
+        let mut wide: Vec<u16> = name.encode_wide().collect();
         let mut unicode = UnicodeString {
             length: (wide.len() * 2) as u16,
             maximum_length: (wide.len() * 2) as u16,
@@ -810,19 +840,20 @@ fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Re
                 if directory {0x10}else{0x80},
                 0,
                 2,
-                if directory {0x200021}else{0x200060},
+                if directory {0x200021}else{0x200060 | if direct_name.is_some(){0x1000}else{0}},
                 std::ptr::null_mut(),
                 0,
             )
         } };
         if result < 0 {
             let code = unsafe { RtlNtStatusToDosError(result) };
-            if matches!(code, 80 | 183) {
+            if direct_name.is_none() && matches!(code, 80 | 183) {
                 continue;
             }
             return Err(nt_error("create private output", result));
         }
         let mut output = PrivateOutputFile {
+            direct: direct_name.is_some(),
             directory,
             file: Some(unsafe { File::from_raw_handle(handle) }),
             parent: parent_pin,
@@ -1013,6 +1044,131 @@ mod tests {
                 accepted,
                 "{label}"
             );
+        }
+    }
+    #[test]
+    fn direct_output_commit_and_private_failure_preserve_contract() {
+        for foreign_after in [false,true] {
+            let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+            let path=root.path().join("final.txt");let journal=crate::engine::PublicationJournal::default();
+            let mut output=create_direct_output(root.path(),&parent,OsStr::new("final.txt")).unwrap();
+            assert!(path.exists());assert!(File::open(&path).is_err());
+            output.as_file_mut().write_all(b"complete verified bytes").unwrap();
+            let returned=output.commit_owned(&path,&journal).unwrap();drop(returned);
+            assert!(File::open(&path).is_err(),"journal must keep exclusive data handle");
+            if foreign_after {
+                let mut ads=File::options().write(true).create_new(true).share_mode(7)
+                    .open(format!("{}:foreign",path.display())).unwrap();
+                ads.write_all(b"keep this change").unwrap();drop(ads);
+                assert!(!journal.rollback().is_empty());
+                assert_eq!(fs::read(format!("{}:foreign",path.display())).unwrap(),b"keep this change");
+            } else {
+                drop(journal);
+                assert_eq!(fs::read(&path).unwrap(),b"complete verified bytes");
+            }
+        }
+        let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+        let path=root.path().join("private.txt");let journal=crate::engine::PublicationJournal::default();
+        let mut output=create_direct_output(root.path(),&parent,OsStr::new("private.txt")).unwrap();
+        output.as_file_mut().write_all(b"incomplete").unwrap();
+        let mut ads=File::options().write(true).create_new(true).share_mode(7)
+            .open(format!("{}:foreign",path.display())).unwrap();ads.write_all(b"uncommitted").unwrap();drop(ads);
+        assert!(output.commit_owned(&path,&journal).is_err());
+        output.abort().unwrap();assert!(!path.exists(),"private abort matches existing scratch contract");
+    }
+    #[test]
+    fn direct_output_collision_links_revocation_and_cancel_keep_others() {
+        let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+        let outside=root.path().join("keep");fs::write(&outside,b"original").unwrap();
+        fs::hard_link(&outside,root.path().join("collision")).unwrap();
+        assert!(create_direct_output(root.path(),&parent,OsStr::new("collision")).is_err());
+        assert_eq!(fs::read(&outside).unwrap(),b"original");
+        for (index,step) in [Step::BeforeCommit,Step::ApplyPermissions].iter().enumerate() {
+            let name=format!("cancel-{index}");let path=root.path().join(&name);
+            let journal=crate::engine::PublicationJournal::default();
+            let mut output=create_direct_output(root.path(),&parent,OsStr::new(&name)).unwrap();
+            output.as_file_mut().write_all(b"complete").unwrap();
+            assert!(output.commit_journaled(&path,false,Some(&journal),&mut |current| {
+                if current==*step {Err("cancelled".into())}else{Ok(())}
+            },None).is_err());
+            output.abort().unwrap();assert!(!path.exists());
+        }
+        let user=current_sid(&effective_token().unwrap()).unwrap();
+        policy(&parent,&format!("D:PAI(A;OICI;FA;;;{user})(A;OICI;GR;;;BU)"));
+        let path=root.path().join("revoked");let journal=crate::engine::PublicationJournal::default();
+        let mut output=create_direct_output(root.path(),&parent,OsStr::new("revoked")).unwrap();
+        output.as_file_mut().write_all(b"complete").unwrap();
+        policy(&parent,&format!("D:PAI(A;OICI;FA;;;{user})"));
+        assert!(output.commit_owned(&path,&journal).unwrap_err().contains("permissions changed"));
+        output.abort().unwrap();assert!(!path.exists());assert_eq!(fs::read(&outside).unwrap(),b"original");
+    }
+    #[test]
+    fn direct_output_matches_native_acls_and_late_revocation() {
+        let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+        let user=current_sid(&effective_token().unwrap()).unwrap();
+        for (index,extra) in ["(A;OICI;GR;;;BU)","(A;OICINP;GR;;;BU)","(D;OICI;GW;;;BG)(A;OICI;GR;;;BU)"].iter().enumerate() {
+            policy(&parent,&format!("D:PAI(A;OICI;FA;;;{user})(A;OICI;FA;;;SY){extra}"));
+            let normal=File::options().read(true).write(true).create_new(true)
+                .open(root.path().join(format!("native-{index}"))).unwrap();
+            let name=format!("direct-{index}");let path=root.path().join(&name);
+            let journal=crate::engine::PublicationJournal::default();
+            let mut output=create_direct_output(root.path(),&parent,OsStr::new(&name)).unwrap();
+            output.as_file_mut().write_all(b"complete").unwrap();
+            let returned=output.commit_owned(&path,&journal).unwrap();
+            assert_eq!(security(&returned),security(&normal));drop(returned);
+            assert!(journal.rollback().is_empty());assert!(!path.exists());
+        }
+        let name=OsStr::new("late-revoke");let path=root.path().join(name);
+        let journal=crate::engine::PublicationJournal::default();
+        let mut output=create_direct_output(root.path(),&parent,name).unwrap();
+        output.as_file_mut().write_all(b"complete").unwrap();
+        let reason=output.commit_journaled(&path,false,Some(&journal),&mut |step| {
+            if step==Step::ApplyPermissions {policy(&parent,&format!("D:PAI(A;OICI;FA;;;{user})"));}
+            Ok(())
+        },None).unwrap_err();
+        assert!(reason.contains("permissions changed"));output.abort().unwrap();assert!(!path.exists());
+    }
+    fn direct_checkpoint(name:&str) {
+        if std::env::var("QING_TEST_DIRECT_CHECKPOINT").ok().as_deref()==Some(name) {
+            fs::write(Path::new(&std::env::var("QING_TEST_DIRECT_ROOT").unwrap()).join("ready"),name).unwrap();
+            loop {std::thread::sleep(Duration::from_millis(10));}
+        }
+    }
+    #[test]
+    fn direct_crash_child() {
+        let Ok(root)=std::env::var("QING_TEST_DIRECT_ROOT") else{return};
+        let root=Path::new(&root);let parent=open_parent(root);let path=root.join("final.txt");
+        let journal=crate::engine::PublicationJournal::default();
+        let mut output=create_direct_output(root,&parent,OsStr::new("final.txt")).unwrap();
+        direct_checkpoint("created");
+        output.as_file_mut().write_all(b"partial").unwrap();direct_checkpoint("partial");
+        output.as_file_mut().write_all(b"-complete").unwrap();
+        let mut attributes=output.as_file().metadata().unwrap().permissions();attributes.set_readonly(true);
+        output.as_file().set_permissions(attributes).unwrap();
+        BEFORE_DIRECT_CLEAR.with(|hook|*hook.borrow_mut()=Some(Box::new(||direct_checkpoint("before-clear"))));
+        let returned=output.commit_owned(&path,&journal).unwrap();drop(returned);
+        direct_checkpoint("committed");drop(journal);direct_checkpoint("released");
+    }
+    #[test]
+    fn direct_output_process_termination_never_leaves_incomplete_final_name() {
+        for checkpoint in ["created","partial","before-clear","committed","released"] {
+            let root=tempfile::tempdir().unwrap();
+            let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","private_stage::output::tests::direct_crash_child","--nocapture"])
+                .env("QING_TEST_DIRECT_ROOT",root.path()).env("QING_TEST_DIRECT_CHECKPOINT",checkpoint)
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+            let started=std::time::Instant::now();
+            while !root.path().join("ready").exists() && started.elapsed()<Duration::from_secs(10) {
+                if child.try_wait().unwrap().is_some(){break;}
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let reached=root.path().join("ready").exists();let _=child.kill();child.wait().unwrap();
+            assert!(reached,"child failed to reach {checkpoint}");
+            let path=root.path().join("final.txt");
+            if matches!(checkpoint,"committed"|"released") {
+                assert_eq!(fs::read(&path).unwrap(),b"partial-complete");
+                let mut attributes=fs::metadata(&path).unwrap().permissions();attributes.set_readonly(false);fs::set_permissions(&path,attributes).unwrap();
+            } else {assert!(!path.exists(),"incomplete final survived at {checkpoint}");}
         }
     }
     #[test]

@@ -1146,6 +1146,8 @@ struct CheckedDirectories {
     #[cfg(windows)]
     exclusive_claim: bool,
     #[cfg(windows)]
+    direct_memory_claim: bool,
+    #[cfg(windows)]
     created_output_dirs: Vec<(PathBuf, created_directories::Identity)>,
     // Only validated private stages qualify. Ordinary owned TempDirs may
     // inherit shared permissions and must keep full path checks.
@@ -2602,7 +2604,7 @@ impl PublicationJournal {
     pub(crate) fn record(&self,receipt:crate::private_stage::OutputReceipt){
         self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
     }
-    fn rollback(&self)->Vec<String>{
+    pub(crate) fn rollback(&self)->Vec<String>{
         let mut errors=Vec::new();
         #[cfg(windows)]
         for file in self.files.lock().unwrap_or_else(|p|p.into_inner()).drain(..).rev(){
@@ -2940,6 +2942,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             };
             let created = crate::private_stage::create_journal_directory(parent, leaf)?;
             output_guards.exclusive_claim = true;
+            output_guards.direct_memory_claim = memory.is_some() && opts.selected.is_empty()
+                && using_process_token() && crate::private_stage::direct_output_supported(&created);
             let proof = created_directories::Identity::owned(&created)?;
             output_guards.created_output_dirs.push((dest.clone(),proof));
             output_guards.selected_output_root = Some(dest.clone());
@@ -4074,6 +4078,9 @@ pub fn copy_archive_file(source: &Path, destination: &Path) -> Result<(), String
 }
 
 fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
+    output_temp_named(parent,guards,None)
+}
+fn output_temp_named(parent: &Path, guards: &CheckedDirectories, direct: Option<&Path>) -> Result<OutputTemp,String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("output_temp");
     #[cfg(windows)] {
@@ -4088,10 +4095,13 @@ fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp,
         if directory_identity(held)? != identity || attributes & 0x410 != 0x10 {
             return Err("output parent identity changed".into());
         }
-        Ok(OutputTemp { inner: crate::private_stage::create_output(parent, &pin)? })
+        Ok(OutputTemp { inner: match direct {
+            Some(target)=>crate::private_stage::create_direct_output(parent,&pin,target.file_name().ok_or("missing direct output leaf")?)?,
+            None=>crate::private_stage::create_output(parent, &pin)?,
+        } })
     }
     #[cfg(not(windows))] {
-        let _ = guards;
+        let _ = (guards,direct);
         Ok(OutputTemp { inner: Some(tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?) })
     }
 }
@@ -4099,7 +4109,11 @@ fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp,
 // error/cancel path. Drop remains only a last-resort panic safeguard.
 fn with_output_temp<T>(parent: &Path, guards: &CheckedDirectories,
     write_and_publish: impl FnOnce(&mut OutputTemp) -> Result<T, String>) -> Result<T, String> {
-    let mut temp = output_temp(parent, guards)?;
+    with_output_temp_named(parent,guards,None,write_and_publish)
+}
+fn with_output_temp_named<T>(parent: &Path, guards: &CheckedDirectories, direct:Option<&Path>,
+    write_and_publish: impl FnOnce(&mut OutputTemp)->Result<T,String>) -> Result<T,String> {
+    let mut temp = output_temp_named(parent, guards, direct)?;
     let result = write_and_publish(&mut temp);
     match (result, temp.abort()) {
         (Ok(value), Ok(())) => Ok(value),
@@ -4186,6 +4200,11 @@ fn publish_staged_files_parallel(
             guards.allow_publication(parent)?;
         }
     }
+    #[cfg(windows)]
+    let direct = guards.direct_memory_claim && guards.exclusive_claim
+        && journal.is_some() && policy == "error" && matches!(stage,StagedContents::Memory(_));
+    #[cfg(not(windows))]
+    let direct = false;
     let prepared_guards: &CheckedDirectories = guards;
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
@@ -4227,7 +4246,7 @@ fn publish_staged_files_parallel(
                                 continue;
                             }
                             prepared_guards.check_prepared(parent)?;
-                            let committed = with_output_temp(parent, prepared_guards, |temp| {
+                            let committed = with_output_temp_named(parent, prepared_guards, direct.then_some(target.as_path()), |temp| {
                                 if !stage.write_to(&relative, temp.as_file_mut(), &mut buffer, entry.size_known.then_some(entry.size), || {
                                     ctl.check()?;
                                     Ok(!stopped.load(Ordering::Acquire))
