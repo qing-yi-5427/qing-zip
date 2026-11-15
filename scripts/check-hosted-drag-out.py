@@ -121,6 +121,30 @@ def finish_hosted_privacy(point, expected, blocked):
         wait(lambda:[a.element_info.name for a in controls()]!=previous,'next privacy choices',10)
     raise RuntimeError('Privacy page count exceeds approved bounded flow')
 
+def settle_app_foreground(point, expected):
+    k=c.WinDLL('kernel32',use_last_error=True)
+    k.OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD];k.OpenProcess.restype=w.HANDLE
+    k.QueryFullProcessImageNameW.argtypes=[w.HANDLE,w.DWORD,w.LPWSTR,c.POINTER(w.DWORD)];k.QueryFullProcessImageNameW.restype=w.BOOL
+    k.CloseHandle.argtypes=[w.HANDLE]
+    deadline=time.monotonic()+10;stable=None
+    while time.monotonic()<deadline:
+        blocked=owner(point)
+        if blocked==expected:
+            stable=stable or time.monotonic()
+            if time.monotonic()-stable>=1:return
+        else:
+            stable=None
+            window=Desktop(backend='uia').window(handle=blocked).wrapper_object();h=k.OpenProcess(0x1000,False,window.process_id())
+            try:
+                path=c.create_unicode_buffer(32768);length=w.DWORD(len(path));assert h and k.QueryFullProcessImageNameW(h,0,path,c.byref(length))
+                report.setdefault('post_setup_windows',[]).append({'title':window.window_text(),'path':path.value})
+                if Path(path.value).name.lower()!='startmenuexperiencehost.exe':raise RuntimeError('Unexpected post-setup foreground; no interaction')
+            finally:
+                if h:k.CloseHandle(h)
+            keyboard.send_keys('{ESC}');u.SetForegroundWindow(expected)
+        time.sleep(.15)
+    raise RuntimeError('Application foreground did not settle')
+
 def dismiss_initialization_overlay(point, expected):
     blocked=owner(point)
     if blocked==expected:return
@@ -176,7 +200,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
             report.update(verify(app.pid,target_hwnd))
         for name in ['take.txt','nested']:
             cb=wait(lambda:find(win,'选择 '+name,'CheckBox'),'checkbox '+name)
-            coords=center(cb.rectangle());dismiss_initialization_overlay(coords,win.handle);assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
+            coords=center(cb.rectangle());dismiss_initialization_overlay(coords,win.handle);settle_app_foreground(coords,win.handle);assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
             mouse.click(coords=coords)
         # Place windows after WebView startup and Explorer navigation have settled.
         # Explorer remains topmost so clicking the source cannot cover the drop.
