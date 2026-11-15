@@ -18,6 +18,7 @@ extern "system" {
     ) -> i32;
     fn GetFileInformationByHandle(file: Handle, information: *mut u32) -> i32;
     fn ReOpenFile(file: Handle, access: u32, share: u32, flags: u32) -> Handle;
+    fn GetFinalPathNameByHandleW(file:Handle,path:*mut u16,size:u32,flags:u32)->u32;
     fn SetFileInformationByHandle(file: Handle, class: i32, info: *const c_void, size: u32) -> i32;
 }
 #[link(name = "Advapi32")]
@@ -25,6 +26,12 @@ extern "system" {
     fn OpenThreadToken(thread: Handle, access: u32, as_self: i32, token: *mut Handle) -> i32;
 }
 
+fn pinned_path(file:&File)->Result<String,String>{
+    let mut value=vec![0u16;32768];
+    let length=unsafe{GetFinalPathNameByHandleW(file.as_raw_handle(),value.as_mut_ptr(),value.len() as u32,0)};
+    if length==0 || length as usize>=value.len(){return Err(error("query private native directory path"));}
+    String::from_utf16(&value[..length as usize]).map_err(|_|"invalid private native directory path".into())
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     PrivateAcl,
@@ -445,10 +452,13 @@ enum Step {
 }
 
 fn directory_metadata_handle(file:&File)->Result<File,String>{
+    directory_handle(file,0x120180,7)
+}
+fn directory_handle(file:&File,access:u32,share:u32)->Result<File,String>{
     let mut name=UnicodeString{length:0,maximum_length:0,buffer:std::ptr::null_mut()};
     let attrs=ObjectAttributes{length:std::mem::size_of::<ObjectAttributes>() as u32,root:file.as_raw_handle(),name:&mut name,attributes:0x40,descriptor:std::ptr::null_mut(),qos:std::ptr::null_mut()};
     let mut status=IoStatus{status:0,information:0};let mut handle=std::ptr::null_mut();
-    let result=unsafe{NtCreateFile(&mut handle,0x120180,&attrs,&mut status,std::ptr::null(),0,7,1,0x200021,std::ptr::null_mut(),0)};
+    let result=unsafe{NtCreateFile(&mut handle,access,&attrs,&mut status,std::ptr::null(),0,share,1,0x200021,std::ptr::null_mut(),0)};
     if result<0 {return Err(nt_error("retain directory metadata handle",result));}
     Ok(unsafe{File::from_raw_handle(handle)})
 }
@@ -614,6 +624,38 @@ impl PrivateOutputFile {
         journal: &crate::engine::PublicationJournal,
     ) -> Result<File, String> {
         self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None)
+    }
+    /// Narrow EFS-directory native operation. A metadata handle remains live
+    /// during Raw import and the relative-empty-name takeover, so neither path
+    /// substitution nor ID recycling can authorize a different output object.
+    /// The protected DACL remains unchanged; general publication stays exclusive.
+    pub(crate) fn native_directory<T>(&mut self, run:impl FnOnce(&File,&Path)->Result<T,String>)->Result<T,String>{
+        if !self.directory || self.state!=State::Private || self.direct || self.permissions.is_none(){
+            return Err("native directory requires an owned private ACL output".into());
+        }
+        verify_empty_directory(self.as_file())?;
+        let token=effective_token()?;let sid=current_sid(&token)?;let private=private_permissions(&sid)?;
+        if !verify_private_permissions(self.as_file(),&private,&sid)?{return Err("private directory permissions changed".into());}
+        let original=info(self.as_file())?;let original_path=pinned_path(self.as_file())?;
+        let metadata=directory_handle(self.as_file(),0x120088,5)?;
+        self.file=Some(metadata);
+        let result=run(self.as_file(),&self.path);
+        // An empty name relative to the still-held original directory opens
+        // that object, not a pathname. Unlike a FILE_OPEN_BY_FILE_ID handle,
+        // this normal handle can subsequently rename and dispose the output.
+        // Keep metadata alive until exclusive ownership is established.
+        let strong=directory_handle(self.as_file(),0x17019f,0)?;
+        let actual=info(&strong)?;
+        if [original[7],original[11],original[12]] != [actual[7],actual[11],actual[12]] {
+            return Err("native directory identity changed; no replacement was removed".into());
+        }
+        // Retain the owned strong handle even on rejection; abort operates on
+        // this original object and cannot delete a competitor at the old name.
+        self.file=Some(strong);
+        if pinned_path(self.as_file())?!=original_path {return Err("native directory name changed; replacement retained".into());}
+        if !verify_private_permissions(self.as_file(),&private,&sid)?{return Err("native directory permissions changed".into());}
+        verify_empty_directory(self.as_file())?;
+        result
     }
     /// Explicit local-file mode; default/archive output still rejects custom ADS.
     pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&dyn LocalOutputProof)->Result<File,String>{
@@ -996,6 +1038,45 @@ fn create_exclusive_named(parent_path: &Path, parent: &File,directory:bool, dire
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_directory_overlap_recovers_exclusive_ownership_on_success_and_error(){
+        for fail in [false,true]{
+            let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+            let mut output=create_local_directory_output(root.path(),&parent).unwrap();
+            let path=output.path.clone();let id=info(output.as_file()).unwrap();
+            let result=output.native_directory(|file,_|{
+                assert_eq!(info(file).unwrap()[11..13],id[11..13]);
+                if fail{Err("injected native cancellation".into())}else{Ok(())}
+            });
+            assert_eq!(result.is_err(),fail,"{result:?}");
+            assert_eq!(info(output.as_file()).unwrap()[11..13],id[11..13]);
+            output.abort().unwrap();assert!(!path.exists());
+        }
+    }
+    #[test]
+    fn native_directory_overlap_rejects_name_replacement_without_deleting_competitor(){
+        let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+        let mut output=create_local_directory_output(root.path(),&parent).unwrap();
+        let path=output.path.clone();let moved=root.path().join("moved-owned");
+        let result=output.native_directory(|_,name|{
+            std::fs::rename(name,&moved).unwrap();std::fs::create_dir(name).unwrap();
+            std::fs::write(name.join("competitor"),b"retain").unwrap();Ok(())
+        });
+        let error=result.unwrap_err();assert!(error.contains("name changed"),"{error}");
+        output.abort().unwrap();assert!(!moved.exists());
+        assert_eq!(std::fs::read(path.join("competitor")).unwrap(),b"retain");
+    }
+    #[test]
+    fn native_directory_overlap_rejects_child_and_preserves_it_during_cleanup(){
+        let root=tempfile::tempdir().unwrap();let parent=open_parent(root.path());
+        let mut output=create_local_directory_output(root.path(),&parent).unwrap();
+        let path=output.path.clone();
+        let result=output.native_directory(|_,name|{
+            std::fs::write(name.join("competitor"),b"retain").unwrap();Ok(())
+        });
+        assert!(result.is_err(),"{result:?}");assert!(output.abort().is_err());
+        drop(output);assert_eq!(std::fs::read(path.join("competitor")).unwrap(),b"retain");
+    }
     #[test]
     fn native_file_ace_equivalence_only_ignores_inherited_marker() {
         let mut original = vec![2,0,16,0,1,0,0,0,0,0,8,0,1,2,3,4];
