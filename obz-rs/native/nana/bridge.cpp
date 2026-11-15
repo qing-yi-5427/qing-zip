@@ -539,6 +539,19 @@ bool single_lzma_coder(std::wstring_view method) {
       [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
 void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0) {
+  // Only the new single-archive fast path declines wrappers/tails. The original
+  // listing and complete decoder retain authority over their compatibility;
+  // no output handle has been requested. Split and post-decode health stay strict.
+  if (single_mode) {
+    for (PROPID id : {kpidOffset, kpidTailSize, kpidWarningFlags}) {
+      Variant v; exact(arc->GetArchiveProperty(id, &v.v), "single layout query");
+      if (number(v.v, true)) throw UnsupportedLayout{"single archive wrapper or warning"};
+    }
+    { Variant v; exact(arc->GetArchiveProperty(kpidPhySize, &v.v), "single physical size");
+      if (number(v.v) != source_size) throw UnsupportedLayout{"single archive trailing layout"}; }
+    { Variant v; exact(arc->GetArchiveProperty(kpidWarning, &v.v), "single warning query");
+      if (!text(v.v, true).empty()) throw UnsupportedLayout{"single archive warning"}; }
+  }
   archive_health(arc);
   { Variant v; exact(arc->GetArchiveProperty(kpidOffset, &v.v), "archive offset");
     if (number(v.v, true)) fail("embedded archive is outside supported method set"); }

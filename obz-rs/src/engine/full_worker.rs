@@ -203,4 +203,12 @@ mod tests {
         assert!(prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).unwrap().is_none());reap_proof();
     }
 
+    #[test]
+    fn trailing_zip_declines_before_ack_and_retains_original_decode_decision() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("tail.zip");fixture(&archive,false);
+        File::options().append(true).open(&archive).unwrap().write_all(b"trailing data").unwrap();
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        assert!(prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).unwrap().is_none());reap_proof();
+    }
+
 }
