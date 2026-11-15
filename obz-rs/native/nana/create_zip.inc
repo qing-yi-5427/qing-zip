@@ -161,6 +161,7 @@ class Source {
 
 public:
   std::vector<Record> items;
+  bool needs_substream_size() const { return !classic_zip_; }
   explicit Source(HANDLE owner, bool classic_zip = true) : owner_(owner), classic_zip_(classic_zip) {
     open_ = reinterpret_cast<Open>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
@@ -378,7 +379,7 @@ public:
                                            void **out) noexcept override {
     // 7z's CFolderInStream uses this size to delimit BCJ2 substreams.
     // The value is validated against the same pinned handle used for reads.
-    if (i == IID_IStreamGetSize) {
+    if (i == IID_IStreamGetSize && source_.needs_substream_size()) {
       if (!out) return E_POINTER;
       *out = static_cast<IStreamGetSize *>(this);
       AddRef();
