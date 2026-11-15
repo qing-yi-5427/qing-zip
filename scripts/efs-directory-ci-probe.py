@@ -67,7 +67,9 @@ def raw_directory(source,target,precreate=False,lock_target=False):
     locked=None
     if lock_target:
         if not target.exists():target.mkdir()
-        locked=K.CreateFileW(str(target),0x1f0199,0,None,3,0x02200000,None)
+        access,sharing=lock_target if isinstance(lock_target,tuple) else (0x1f0199,0)
+        result["target_pin"]={"access":hex(access),"share":sharing}
+        locked=K.CreateFileW(str(target),access,sharing,None,3,0x02200000,None)
         require(locked not in (None,C.c_void_p(-1).value),"exclusive directory fixture open failed")
     context=C.c_void_p();code=A.OpenEncryptedFileRawW(str(target),3,C.byref(context));result["open_import"]=code
     if code:
@@ -142,7 +144,7 @@ def guarded_export(source):
     K.MoveFileExW.argtypes=[W.LPCWSTR,W.LPCWSTR,W.DWORD];K.MoveFileExW.restype=W.BOOL
     K.DeviceIoControl.argtypes=[W.HANDLE,W.DWORD,C.c_void_p,W.DWORD,C.c_void_p,W.DWORD,C.POINTER(W.DWORD),C.c_void_p];K.DeviceIoControl.restype=W.BOOL
     try:
-        for p,access,share in [(source,0x20080,3),(Path(str(source)+":meta"),0x80000000,1)]:
+        for p,access,share in [(source,0x20088,1)]:
             h=K.CreateFileW(str(p),access,share,None,3,0x02200000,None)
             require(h not in (None,C.c_void_p(-1).value),"guarded source pin failed")
             pins.append(h)
@@ -173,7 +175,19 @@ def guarded_export(source):
             nonlocal total
             total+=length;return 0 if total<=4*1024*1024 else 8
         result["read_raw"]=A.ReadEncryptedFileRaw(consume,None,context);result["bytes"]=total
-        result["safe_export_available"]=result["rename_blocked"] and result["ads_write_blocked"] and result["reparse_blocked"] and result["read_raw"]==0
+        writer=K.CreateFileW(str(source)+":meta",0x40000000,7,None,3,0,None)
+        result["ads_write_after_read_blocked"]=writer in (None,C.c_void_p(-1).value)
+        if not result["ads_write_after_read_blocked"]:K.CloseHandle(writer)
+        writer=K.CreateFileW(str(source)+":new-during-raw",0x40000000,7,None,1,0,None)
+        result["new_ads_blocked"]=writer in (None,C.c_void_p(-1).value)
+        if not result["new_ads_blocked"]:K.CloseHandle(writer)
+        result["crypto_queries_during_raw"]={}
+        for recovery in [False,True]:
+            try:result["crypto_queries_during_raw"][str(recovery)]=[v.hex() for v in keys(source,recovery)]
+            except Exception as e:result["crypto_queries_during_raw"][str(recovery)]=str(e)
+        info=IOSB();buffer=C.create_string_buffer(65536)
+        result["ea_query_during_raw"]=N.NtQueryEaFile(pins[0],C.byref(info),buffer,len(buffer),False,None,0,None,True)
+        result["safe_export_available"]=result["rename_blocked"] and result["ads_write_blocked"] and result["reparse_blocked"] and result["read_raw"]==0 and result["ads_write_after_read_blocked"] and result["new_ads_blocked"]
         return result
     finally:
         if context.value:A.CloseEncryptedFileRaw(context)
@@ -219,6 +233,7 @@ try:
         receipt["raw_directory_nonempty"]=raw_directory(src,base/"raw-nonempty","nonempty")
         receipt["raw_source_pinned"]=raw_pinned(src,base/"raw-source-pinned")
         receipt["raw_exclusive_target"]=raw_pinned(src,base/"raw-exclusive-target",True)
+        receipt["target_metadata_pins"]={str(share):raw_directory(src,base/("target-meta-"+str(share)),False,(0x20088,share)) for share in [1,3,7]}
         receipt["source_pin_matrix"]=pin_matrix(src)
         receipt["guarded_nonempty"]=guarded_export(src)
         empty=base/"guarded-empty";empty.mkdir();require(A.EncryptFileW(str(empty)),"encrypt empty directory failed")
