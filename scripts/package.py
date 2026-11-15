@@ -89,6 +89,15 @@ def main():
             shutil.copytree(runtime_source, stage / name)
         else:
             shutil.copytree(root / name, stage / name, ignore=ignore_resources)
+    # This dependency has a local owned-output extension. Ship the original
+    # license and modification provenance without touching generated user notices.
+    modified_crate = root / "obz-rs/vendor/lzma-rust2"
+    modified_notice = stage / "licenses/lzma-rust2-modified-0.23.0"
+    modified_notice.mkdir()
+    for name in ("LICENSE", "README.md", "QING-ZIP-MODIFICATIONS.md", "UPSTREAM.json"):
+        shutil.copyfile(modified_crate / name, modified_notice / name)
+    with (stage / "licenses/THIRD-PARTY-NOTICES.txt").open("a", encoding="utf-8") as notice_file:
+        notice_file.write("\nModified lzma-rust2 0.23.0: see licenses/lzma-rust2-modified-0.23.0/. Full source is in the engine-sources release asset and obz-rs/vendor/lzma-rust2.\n")
     if args.architecture == "arm64":
         # The common notice tree ships x64 build descriptions. Keep the legal
         # texts, and replace just the architecture-specific build records.

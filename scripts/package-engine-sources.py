@@ -69,12 +69,18 @@ readme = (
     + ('These are the exact upstream source archives. The ARM64 GUI self-extractor was rebuilt from 7-Zip SFXWin source.\n'
      if args.arm64_runtime else 'These are the exact upstream source archives; the bundled binaries are unmodified.\n')
     + 'See each archive for its licenses, build instructions, and upstream credits.\n'
+    'Modified lzma-rust2 0.23.0 source, original license and upstream provenance are included in lzma-rust2-modified-0.23.0/.\n'
     'The modified ZPAQ helper source and build instructions are in the portable package runtime/zpaq/.\n'
 )
 expected_members = {'README.txt': readme.encode('utf-8')}
 for component, source, manifest in sources:
     expected_members[source.name] = source.read_bytes()
     expected_members[f'{component}-provenance.json'] = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
+# Include the exact locally modified crate, with its original license/credits.
+modified = root / 'obz-rs/vendor/lzma-rust2'
+for source in sorted(modified.rglob('*')):
+    if source.is_file():
+        expected_members['lzma-rust2-modified-0.23.0/' + source.relative_to(modified).as_posix()] = source.read_bytes()
 if output.exists():
     # A previously prepared exact source asset is safe to reuse. Never replace
     # an existing release file or accept extra/mismatched archive members.

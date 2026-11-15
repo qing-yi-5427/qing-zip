@@ -1,0 +1,10 @@
+{
+  "crate": "lzma-rust2",
+  "version": "0.23.0",
+  "archive_url": "https://static.crates.io/crates/lzma-rust2/lzma-rust2-0.23.0.crate",
+  "archive_sha256": "f1c46f3fcd2e888afdb01a07efc071cb21300e07c68d32c3e8b01b5c8cb1fcaa",
+  "modified_files": [
+    "src/lzma2_reader.rs",
+    "src/lz/lz_decoder.rs"
+  ]
+}

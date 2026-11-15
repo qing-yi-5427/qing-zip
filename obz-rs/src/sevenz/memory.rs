@@ -308,14 +308,21 @@ fn decode(
         return Err("memory folder budget exceeded".into());
     }
     let c = &folder.coders[0];
+    let no_reset = if c.codec.as_slice() == CODEC_LZMA2 {
+        strict_lzma2(packed, expected, check)?
+    } else { false };
+    // Only a complete payload with one uninterrupted history may hand its
+    // dictionary to the caller. Other streams keep the existing Read decoder.
+    let owned = if limit == LIMIT && c.codec.as_slice() == CODEC_LZMA2 {
+        let declared = (2u32 | (c.props[0] as u32 & 1)) << (c.props[0] / 2 + 11);
+        no_reset && declared as usize >= expected
+    } else { false };
     let mut output = Vec::new();
-    output
-        .try_reserve_exact(expected)
-        .map_err(|e| e.to_string())?;
-    if output.capacity() > limit {
-        return Err("memory folder allocation limit".into());
+    if !owned {
+        output.try_reserve_exact(expected).map_err(|e| e.to_string())?;
+        if output.capacity() > limit { return Err("memory folder allocation limit".into()); }
+        output.resize(expected, 0);
     }
-    output.resize(expected, 0);
     let fill = |reader: &mut dyn Read, output: &mut [u8]| -> Result<(), String> {
         for chunk in output.chunks_mut(65536) {
             check()?;
@@ -336,7 +343,6 @@ fn decode(
     match c.codec.as_slice() {
         CODEC_COPY => fill(&mut Cursor::new(packed), &mut output)?,
         CODEC_LZMA2 => {
-            strict_lzma2(packed, expected, check)?;
             let p = c.props[0];
             let declared = (2u32 | (p as u32 & 1)) << (p / 2 + 11);
             // There is no preset dictionary. A valid match cannot reach before
@@ -345,10 +351,17 @@ fn decode(
             // the declared dictionary when smaller, including its wrap rules.
             // strict_lzma2 has already bounded every chunk and the exact EOF.
             let dict = declared.min(expected.max(4096) as u32);
-            let mut reader =
-                lzma_rust2::Lzma2Reader::new_mem_limit(Cursor::new(packed), dict, 65 * 1024, None)
-                    .map_err(|e| e.to_string())?;
-            fill(&mut reader, &mut output)?;
+            if owned {
+                output = lzma_rust2::Lzma2Reader::decode_owned(
+                    Cursor::new(packed), declared, expected,
+                    || check().map_err(std::io::Error::other),
+                ).map_err(|e| format!("7z owned decode: {e}"))?;
+            } else {
+                let mut reader =
+                    lzma_rust2::Lzma2Reader::new_mem_limit(Cursor::new(packed), dict, 65 * 1024, None)
+                        .map_err(|e| e.to_string())?;
+                fill(&mut reader, &mut output)?;
+            }
         }
         CODEC_LZMA => {
             let mut reader = lzma_rust2::LzmaReader::new_with_props(
@@ -591,15 +604,17 @@ fn strict_lzma2(
     blob: &[u8],
     expected: usize,
     check: &dyn Fn() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut r = Reader::new(blob);
     let mut total = 0usize;
+    let mut no_reset = true;
     loop {
         check()?;
         let control = r.u8()?;
         if control == 0 {
             break;
         }
+        if total != 0 && (control == 1 || control >= 0xe0) { no_reset = false; }
         let (unpacked, packed) = if control == 1 || control == 2 {
             let b = r.read(2)?;
             let n = u16::from_be_bytes([b[0], b[1]]) as usize + 1;
@@ -625,7 +640,7 @@ fn strict_lzma2(
     if total != expected || r.bytes_left() != 0 {
         return Err("LZMA2 output size mismatch".into());
     }
-    Ok(())
+    Ok(no_reset)
 }
 
 #[cfg(test)]
@@ -729,6 +744,37 @@ pub(crate) mod tests {
             bind_pairs:vec![],packed_indices:vec![0],unpack_sizes:vec![size as u64],unpack_crc:Some(crc)}
     }
     #[test]
+    fn owned_lzma2_api_enforces_history_eof_and_cancellation() {
+        let decode_owned = |data: &[u8], declared, expected| lzma_rust2::Lzma2Reader::decode_owned(
+            Cursor::new(data), declared, expected, || Ok(()));
+        assert_eq!(decode_owned(&[0],4096,0).unwrap(),Vec::<u8>::new());
+        assert_eq!(decode_owned(&[1,0,0,42,0],4096,1).unwrap(),[42]);
+        assert!(decode_owned(&[1,0,0,42,0],4096,0).is_err());
+        assert!(decode_owned(&[1,0,0,42,0],4096,2).is_err());
+        assert!(decode_owned(&[1,0,0,42,0,99],4096,1).is_err());
+        assert!(decode_owned(&[2,0,0,42,0],4096,1).is_err());
+        assert!(decode_owned(&[1,0,0,42,1,0,0,43,0],4096,2).is_err());
+        assert!(!strict_lzma2(&[1,0,0,42,1,0,0,43,0],2,&||Ok(())).unwrap());
+        assert!(strict_lzma2(&[1,0,0,42,2,0,0,43,0],2,&||Ok(())).unwrap());
+        // Malformed compressed range state and missing end marker fail closed.
+        assert!(decode_owned(&[0xe0,0,0,0,4,0,0,255,255,255,255,0],4096,1).is_err());
+        assert!(decode_owned(&[1,0,0,42],4096,1).is_err());
+        assert!(decode_owned(&[0],4096,4097).is_err());
+        assert!(decode_owned(&[0],u32::MAX,LIMIT+1).is_err());
+        let bytes=vec![42u8;3*65536];let mut stream=Vec::new();
+        for (i,chunk) in bytes.chunks(65536).enumerate() {
+            stream.extend([if i==0 {1}else{2},255,255]);stream.extend(chunk);
+        }
+        stream.push(0);
+        let mut calls=0;
+        let error=lzma_rust2::Lzma2Reader::decode_owned(Cursor::new(&stream),1<<20,bytes.len(),|| {
+            calls+=1;if calls==3 {Err(std::io::Error::other("cancelled at 128KiB"))}else{Ok(())}
+        }).unwrap_err();
+        assert!(error.to_string().contains("cancelled at 128KiB"));assert_eq!(calls,3);
+        assert_eq!(decode_owned(&stream,1<<20,bytes.len()).unwrap(),bytes);
+    }
+
+    #[test]
     fn bounded_lzma2_history_preserves_reset_size_crc_and_cancel_boundaries() {
         for size in [0,1,4095,4096,4097,65535,65536,65537,131073] {
             let bytes=(0..size).map(|i|(i%251) as u8).collect::<Vec<_>>();
@@ -794,6 +840,11 @@ pub(crate) mod tests {
         let parsed=parse_memory_archive(&data,&||Ok(())).unwrap().unwrap();
         assert_eq!(parsed.archive.folders[0].coders[0].props,[28]);
         assert_eq!(parsed.archive.folders[0].unpack_size(),160*16384);
+        let payload=&data[parsed.archive.pack_offset..parsed.archive.pack_offset+parsed.archive.pack_sizes[0]];
+        assert!(strict_lzma2(payload,160*16384,&||Ok(())).unwrap(),"real distance fixture must take owned route");
+        let owned=lzma_rust2::Lzma2Reader::decode_owned(Cursor::new(payload),64*1024*1024,160*16384,||Ok(())).unwrap();
+        assert_eq!(owned,parsed.decode(&data,&||Ok(())).unwrap());
+
         let ours=temp.path().join("ours");let official=temp.path().join("official");
         crate::engine::extract(archive.to_str().unwrap(),ours.to_str().unwrap(),&crate::engine::EngineOptions::default()).unwrap();
         let native=std::process::Command::new(&exe).args(["x","-y","-bsp0"])
