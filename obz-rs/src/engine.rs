@@ -7,6 +7,7 @@ mod created_directories;
 #[cfg(windows)]
 pub mod nested;
 mod bounded_archive_stage;
+pub mod benchmark;
 mod zip_volume_view;
 mod zip_input_probe;
 #[cfg(windows)]

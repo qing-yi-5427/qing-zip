@@ -24,6 +24,7 @@ pub struct Request {
     pub max_bytes: Option<u64>,
     pub smart: bool,
     pub hashes: Vec<String>,
+    pub benchmark: Option<engine::benchmark::Options>,
 }
 
 pub fn vault_path() -> Result<PathBuf, String> {
@@ -130,6 +131,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
 
 fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
     match r.operation.as_str() {
+        "benchmark" => serde_json::to_value(engine::benchmark::execute(r.benchmark.unwrap_or_default(), &r.options)?).map_err(|e|e.to_string()),
         "capabilities" => {
             if restricted {
                 let mut caps = engine::capabilities();
