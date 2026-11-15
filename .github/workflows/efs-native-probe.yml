@@ -1,0 +1,26 @@
+name: Isolated native EFS feasibility probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/efs-probe]
+    paths:
+      - scripts/efs-ci-probe.py
+      - .github/workflows/efs-native-probe.yml
+permissions:
+  contents: read
+jobs:
+  ephemeral-efs:
+    if: github.ref == 'refs/heads/codex/efs-probe'
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Probe native EFS in disposable runner only
+        shell: pwsh
+        run: python scripts/efs-ci-probe.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: efs-native-probe-${{ github.run_id }}
+          path: efs-probe-result.json
+          if-no-files-found: error
