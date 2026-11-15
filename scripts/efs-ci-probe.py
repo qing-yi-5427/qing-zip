@@ -63,6 +63,8 @@ def ea(path, value=None):
             require(status == 0, f"NtSetEaFile: {status:#x}")
         buffer = C.create_string_buffer(65536)
         status = N.NtQueryEaFile(h, C.byref(io), buffer, len(buffer), False, None, 0, None, True)
+        if status & 0xffffffff == 0xc0000052:  # STATUS_NO_EAS_ON_FILE
+            return b""
         require(status == 0, f"NtQueryEaFile: {status:#x}")
         return buffer.raw[:io.information]
     finally:
@@ -110,7 +112,11 @@ try:
             raise RuntimeError(f"Runner EFS is unavailable: {receipt['unsupported_error']}; not a pass")
         require(encrypted(source), "source did not become encrypted")
         receipt["checks"]["native_efs_fixture"] = True
-        require(ea(source) == expected_ea, "encrypt changed EA")
+        receipt["encryption_conversion_preserved_ea"] = ea(source) == expected_ea
+        # Conversion and copying are distinct operations. Construct an already
+        # encrypted file with EA even if Windows EncryptFile discarded old EA.
+        expected_ea = ea(source, b"opaque EA bytes\0\xff")
+        require(expected_ea, "could not construct encrypted EA fixture")
 
         target = private / "copied.bin"
         ok, error = copy(source, target)
