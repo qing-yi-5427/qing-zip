@@ -57,7 +57,7 @@ try:
   receipt['cases']=[]
   for d in [False,True]:
    for old in ['none','ea','ads']:
-    for level in ([7] if not d else [7,5]):
+    for level in ([7] if not d else [7,3]):
      receipt['cases'].append(run(Path(tmp)/f'{d}-{old}-{level}',d,old,level))
  receipt['status']='observed'
 finally:out.write_text(json.dumps(receipt,indent=2),encoding='utf-8')
