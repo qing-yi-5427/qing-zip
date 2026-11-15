@@ -34,3 +34,6 @@ pub mod motw;
 
 #[cfg(windows)]
 mod private_stage;
+
+#[cfg(feature = "output-phase-profile")]
+pub mod output_profile;

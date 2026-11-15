@@ -4070,6 +4070,8 @@ pub fn copy_archive_file(source: &Path, destination: &Path) -> Result<(), String
 }
 
 fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("output_temp");
     #[cfg(windows)] {
         use std::os::windows::fs::OpenOptionsExt;
         guards.check_prepared(parent)?;

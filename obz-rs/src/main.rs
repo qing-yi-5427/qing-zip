@@ -39,6 +39,8 @@ Options: --method NAME, --encryption NAME, --dictionary-bytes N,
 ";
 
 fn main() -> ExitCode {
+    #[cfg(feature = "output-phase-profile")]
+    let _output_report = obz_core::output_profile::Report;
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(nana_selected_worker)]
     if args.as_slice() == ["--internal-create-worker"] {

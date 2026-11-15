@@ -43,6 +43,8 @@ fn mode(flags: u32) -> Result<Mode, String> {
     }
 }
 fn volume_mode(parent: &File) -> Result<Mode, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("volume_mode");
     let mut flags = 0;
     if unsafe {
         GetVolumeInformationByHandleW(
@@ -62,6 +64,8 @@ fn volume_mode(parent: &File) -> Result<Mode, String> {
     mode(flags)
 }
 fn effective_token() -> Result<Token, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("effective_token");
     let mut result = std::ptr::null_mut();
     if unsafe { OpenThreadToken(-2isize as Handle, 8, 1, &mut result) } != 0 {
         return Ok(Token(result));
@@ -98,6 +102,8 @@ fn verify_private_permissions(
     expected: &Allocation,
     user_sid: &str,
 ) -> Result<bool, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("verify_private_permissions");
     let (mut owner, mut raw) = (std::ptr::null_mut(), std::ptr::null_mut());
     let result = unsafe {
         GetSecurityInfo(
@@ -151,6 +157,8 @@ fn private_permissions_match(
 }
 fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
 fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Result<PrivateDescriptor, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("ordinary_permissions_kind");
 
     let policy = descriptor(parent)?;
     ordinary_permissions_from_descriptor(policy.0, token, directory)
@@ -158,6 +166,8 @@ fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Res
 // Let callers qualify and derive one captured descriptor, without a second
 // parent read between those operations. They still re-read before publication.
 pub(super) fn ordinary_permissions_from_descriptor(policy: Handle, token: &Token, directory: bool) -> Result<PrivateDescriptor, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("ordinary_permissions_from_descriptor");
     let automatic = control(policy)? & 0x400 != 0;
     // Windows interprets conditional, no-propagate, creator-owner and default
     // token ACEs. Request the parent's actual inheritance model at derivation,
@@ -214,6 +224,8 @@ fn acl_entries(bytes: &[u8]) -> Result<&[u8], String> {
     Ok(&bytes[8..end])
 }
 pub(super) fn same_file_permissions(a: Handle, b: Handle) -> Result<bool, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("same_file_permissions");
     // Allocation slack after the last ACE has no access semantics. Keep every
     // ACE byte, their order, and all protection/inheritance control flags.
     Ok((control(a)? ^ control(b)?) & 0x1400 == 0
@@ -291,6 +303,8 @@ fn only_default_stream(file: &File) -> Result<bool, String> {
     Ok(ordinary_streams(file)? == Some(false))
 }
 pub(super) fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("output_marker");
     match ordinary_streams(file)? {
         Some(false) => Ok(None),
         Some(true) => crate::motw::output_marker(file)?
@@ -303,6 +317,8 @@ pub(super) fn metadata_handle(file: &File, share: u32) -> Result<File, String> {
     reopen(file, 0x20180, share)
 }
 pub(super) fn reopen(file: &File, access: u32, share: u32) -> Result<File, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("reopen");
     // Metadata access is independent of default-stream read/write sharing.
     // Keep this precise identity available for metadata after closing the
     // exclusive writer. The ordinary publisher's callers never read its data.
@@ -314,6 +330,8 @@ pub(super) fn reopen(file: &File, access: u32, share: u32) -> Result<File, Strin
 }
 
 fn private_permissions(sid: &str) -> Result<Allocation, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("private_permissions");
     let text: Vec<u16> = format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)")
         .encode_utf16()
         .chain(Some(0))
@@ -333,6 +351,8 @@ fn private_permissions(sid: &str) -> Result<Allocation, String> {
     Ok(Allocation(raw))
 }
 pub(super) fn info(file: &File) -> Result<[u32; 13], String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("info");
     let mut value = [0; 13];
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), value.as_mut_ptr()) } == 0 {
         return Err(error("query private output identity"));
@@ -359,6 +379,8 @@ struct RenameInformation {
     name: [u16; 1],
 }
 fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("rename");
     let offset = std::mem::offset_of!(RenameInformation, name);
     let length = offset + (name.len() + 1) * 2;
     let mut buffer = vec![0usize; length.div_ceil(std::mem::size_of::<usize>())];
@@ -481,6 +503,8 @@ impl PrivateOutputFile {
         step: &mut dyn FnMut(Step) -> Result<(), String>,
         local_proof: Option<&crate::engine::file_workspace::LocalStreamProof>,
     ) -> Result<File, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("commit_journaled");
         if self.directory && local_proof.is_none() {return Err("directory output requires local stream proof".into());}
         if self.directory {verify_empty_directory(self.as_file())?;}
         let mut pending = None;
@@ -694,6 +718,8 @@ pub(super) fn create_archive_file(
     create_exclusive(parent_path, parent)
 }
 pub(super) fn private_name() -> Result<String, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("private_name");
     let mut random = [0u8; 16];
     if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 16, 2) } < 0 {
         return Err("cannot generate private output name".into());
@@ -711,6 +737,8 @@ fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFi
     create_exclusive_kind(parent_path,parent,false)
 }
 fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Result<PrivateOutputFile, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("create_exclusive_kind");
     if info(parent)?[0] & 0x410 != 0x10 {
         return Err("invalid private output parent".into());
     }
@@ -751,7 +779,10 @@ fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Re
             information: 0,
         };
         let mut handle = std::ptr::null_mut();
-        let result = unsafe {
+        let result = {
+            #[cfg(feature = "output-phase-profile")]
+            let _phase = crate::output_profile::Span::new("NtCreateFile.output");
+            unsafe {
             NtCreateFile(
                 &mut handle,
                 0x17019f,
@@ -765,7 +796,7 @@ fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Re
                 std::ptr::null_mut(),
                 0,
             )
-        };
+        } };
         if result < 0 {
             let code = unsafe { RtlNtStatusToDosError(result) };
             if matches!(code, 80 | 183) {

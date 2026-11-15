@@ -185,6 +185,8 @@ fn token() -> Result<Token, String> {
     Ok(Token(result))
 }
 fn current_sid(token: &Token) -> Result<String, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("current_sid");
     let mut size = 0;
     unsafe {
         GetTokenInformation(token.0, 1, std::ptr::null_mut(), 0, &mut size);
@@ -500,6 +502,8 @@ fn descriptor(file: &File) -> Result<Allocation, String> {
     security_descriptor(file, 4)
 }
 fn security_descriptor(file: &File, mask: u32) -> Result<Allocation, String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("security_descriptor");
     let mut descriptor = std::ptr::null_mut();
     let result = unsafe {
         GetSecurityInfo(
@@ -631,6 +635,8 @@ fn apply(root: &File, computed: &PrivateDescriptor) -> Result<(), String> {
 // The complete descriptor (including AR/AI control bits) is already derived.
 // Set it through the pinned handle without Win32's recursive inheritance pass.
 fn apply_native(root: &File, computed: &PrivateDescriptor) -> Result<(), String> {
+    #[cfg(feature = "output-phase-profile")]
+    let _phase = crate::output_profile::Span::new("apply_native");
     let (mut present, mut defaulted, mut dacl) = (0, 0, std::ptr::null_mut());
     if unsafe { GetSecurityDescriptorDacl(computed.0, &mut present, &mut dacl, &mut defaulted) }
         == 0
