@@ -780,6 +780,7 @@ pub(super) struct PreparedDirectory{
 }
 impl PreparedDirectory{
     pub(super) fn source(&self)->&File{&self.source}
+    pub(super) fn digest(&self)->[u8;32]{self.expected.digest}
     pub(super) fn publish(mut self,target:&Path,ctl:&JobControl)->Result<File,String>{
         struct Proof<'a>{source:&'a File,digest:[u8;32],ctl:&'a JobControl}
         impl crate::private_stage::LocalOutputProof for Proof<'_>{
@@ -793,8 +794,21 @@ impl PreparedDirectory{
         let proof=Proof{source:&self.source,digest:self.expected.digest,ctl};
         let result=self.output.commit_local_streams(target,false,&proof);
         let cleanup=self.output.abort();
-        match (result,cleanup){(Ok(file),Ok(()))=>Ok(file),(Err(e),Ok(()))=>Err(e),(Ok(_),Err(e))=>Err(e),(Err(e),Err(c))=>Err(format!("{e}; {c}"))}
+        let output=match (result,cleanup){(Ok(file),Ok(()))=>file,(Err(e),Ok(()))=>return Err(e),(Ok(_),Err(e))=>return Err(e),(Err(e),Err(c))=>return Err(format!("{e}; {c}"))};
+        let pin=File::options().access_mode(0x120188).share_mode(3).custom_flags(0x02200000)
+            .open(path(&output)?).map_err(|e|e.to_string())?;
+        if identity_kind(pin.as_raw_handle(),true)?!=identity_kind(output.as_raw_handle(),true)?{return Err("published EFS directory identity changed".into());}
+        Ok(pin)
     }
+}
+pub(super) fn validate_directory(file:&File,ctl:&JobControl)->Result<(),String>{snapshot(file,ctl).map(|_|())}
+pub(super) fn restore_directory_metadata(source:&File,target:&File)->Result<(),String>{
+    identity_kind(source.as_raw_handle(),true)?;identity_kind(target.as_raw_handle(),true)?;
+    if target.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000==0{return Err("EFS directory policy was lost".into());}
+    let meta=source.metadata().map_err(|e|e.to_string())?;let attrs=meta.file_attributes()&0x3127;
+    let basic=[meta.creation_time(),meta.last_access_time(),meta.last_write_time(),0,u64::from(if attrs==0{0x80}else{attrs})];
+    if unsafe{SetFileInformationByHandle(target.as_raw_handle(),0,basic.as_ptr().cast(),40)}==0{return Err(error("restore EFS directory metadata"));}
+    Ok(())
 }
 pub(super) fn prepare_directory(source_path:&Path,expected_id:Option<[u32;3]>,parent_path:&Path,parent:&File,ctl:&JobControl)->Result<PreparedDirectory,String>{
     use std::io::{Seek,SeekFrom};
@@ -892,6 +906,75 @@ mod tests {
             "{}",
             error("CI EFS unsupported")
         );
+    }
+    fn directory_fixture(root:&Path)->PathBuf{
+        let source=root.join("encrypted-dir");std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("plain.txt"),b"plaintext existing child").unwrap();
+        std::fs::create_dir(source.join("plain-empty")).unwrap();
+        encrypt_ci_fixture(&source);
+        std::fs::write(source.join("secret.txt"),b"encrypted child").unwrap();
+        std::fs::write(format!("{}:alpha",source.display()),b"directory ADS").unwrap();
+        let file=File::options().access_mode(0x20098).share_mode(7).custom_flags(0x02200000).open(&source).unwrap();
+        set_ea(&file,&[0,0,0,0,0x80,1,3,0,b'A',0,1,2,3]).unwrap();source
+    }
+    #[test]
+    #[ignore = "real EFS directory transfer only in disposable hosted runner"]
+    fn ci_efs_directory_transfer_tree_and_cross_volume_retention(){
+        for moving in [false,true]{
+            let root=tempfile::tempdir().unwrap();let source=directory_fixture(root.path());
+            let dest=tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+            if moving{
+                let src=File::options().read(true).custom_flags(0x02200000).open(&source).unwrap();
+                let mut info=[0u32;13];assert_ne!(unsafe{GetFileInformationByHandle(parent(dest.path()).as_raw_handle(),info.as_mut_ptr())},0);
+                assert_ne!(identity_kind(src.as_raw_handle(),true).unwrap()[0],info[7],"actual cross-volume fixture required");
+            }
+            let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.path().to_str().unwrap(),moving,&super::super::EngineOptions::default()).unwrap();
+            let target=dest.path().join("encrypted-dir");
+            assert_eq!(std::fs::read(target.join("plain.txt")).unwrap(),b"plaintext existing child");
+            assert_eq!(std::fs::read(target.join("secret.txt")).unwrap(),b"encrypted child");
+            assert_eq!(std::fs::read(format!("{}:alpha",target.display())).unwrap(),b"directory ADS");
+            assert_ne!(std::fs::metadata(&target).unwrap().file_attributes()&0x4000,0);
+            assert_ne!(std::fs::metadata(target.join("plain.txt")).unwrap().file_attributes()&0x4000,0);
+            assert!(source.join("plain-empty").is_dir());assert!(source.join("plain.txt").exists());assert!(source.join("secret.txt").exists());
+            if moving{assert_eq!(result.moved,0);assert!(!result.retained_sources.is_empty());}
+        }
+    }
+    #[test]
+    #[ignore = "real EFS directory merges only in disposable hosted runner"]
+    fn ci_efs_existing_directory_keeps_policy_and_honors_child_conflicts(){
+        for mode in ["error","skip","rename","overwrite"]{
+            let root=tempfile::tempdir().unwrap();let source=directory_fixture(root.path());
+            let dest=root.path().join("dest");let target=dest.join("encrypted-dir");std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("secret.txt"),b"original target").unwrap();
+            std::fs::write(format!("{}:alpha",target.display()),b"target ADS").unwrap();
+            let opts=super::super::EngineOptions{overwrite:mode.into(),..Default::default()};
+            let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&opts);
+            if mode=="error"{assert!(result.is_err());}else{assert!(!result.unwrap().metadata_not_merged.is_empty());}
+            assert_eq!(std::fs::metadata(&target).unwrap().file_attributes()&0x4000,0);
+            assert_eq!(std::fs::read(format!("{}:alpha",target.display())).unwrap(),b"target ADS");
+            assert_eq!(std::fs::read(target.join("secret.txt")).unwrap(),if mode=="overwrite"{b"encrypted child".as_slice()}else{b"original target".as_slice()});
+            if mode=="rename"{assert_eq!(std::fs::read(target.join("secret (1).txt")).unwrap(),b"encrypted child");}
+            assert!(source.join("secret.txt").exists());
+        }
+    }
+    #[test]
+    #[ignore = "real EFS directory proof rejection only in disposable hosted runner"]
+    fn ci_efs_directory_publication_rejects_cancel_new_stream_and_ea_change(){
+        for mode in ["cancel","stream","ea"]{
+            let root=tempfile::tempdir().unwrap();let source=directory_fixture(root.path());
+            let dest=root.path().join("dest");std::fs::create_dir(&dest).unwrap();let ctl=JobControl::new();
+            let prepared=prepare_directory(&source,None,&dest,&parent(&dest),&ctl).unwrap();
+            match mode{
+                "cancel"=>ctl.cancel(),
+                "stream"=>std::fs::write(format!("{}:new",source.display()),b"late source stream").unwrap(),
+                _=>{
+                    let writer=File::options().access_mode(0x18).share_mode(7).custom_flags(0x02200000).open(&source).unwrap();
+                    set_ea(&writer,&[0,0,0,0,0x80,1,1,0,b'B',0,9]).unwrap();
+                }
+            }
+            assert!(prepared.publish(&dest.join("copied"),&ctl).is_err());
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);assert!(source.is_dir());
+        }
     }
     #[test]
     #[ignore = "creates an EFS certificate only in disposable GitHub-hosted CI"]
