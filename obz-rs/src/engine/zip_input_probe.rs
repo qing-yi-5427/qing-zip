@@ -12,6 +12,32 @@ fn read_at(file: &mut File, offset: u64, size: usize) -> Result<Vec<u8>, String>
     Ok(bytes)
 }
 
+#[derive(Default)]
+struct DirectoryWindow {
+    start: u64,
+    bytes: Vec<u8>,
+}
+impl DirectoryWindow {
+    fn range<'a>(&'a mut self, file: &mut File, offset: u64, size: usize, end: u64)
+        -> Result<Option<&'a [u8]>, String>
+    {
+        let Some(stop) = offset.checked_add(size as u64).filter(|n| *n <= end) else {
+            return Ok(None);
+        };
+        let cached_end = self.start.checked_add(self.bytes.len() as u64);
+        if offset < self.start || cached_end.is_none_or(|cached| stop > cached) {
+            // A record is at most 46 + 3 * u16::MAX bytes. Cache complete
+            // records across 128 KiB boundaries without allocating the CD or
+            // an array sized by the untrusted record count.
+            let amount = (end - offset).min((128 * 1024usize).max(size) as u64) as usize;
+            self.bytes = read_at(file, offset, amount)?;
+            self.start = offset;
+        }
+        let begin = (offset - self.start) as usize;
+        Ok(Some(&self.bytes[begin..begin + size]))
+    }
+}
+
 fn vint(bytes: &[u8], position: &mut usize) -> Option<u64> {
     let mut value = 0u64;
     for shift in (0..=63).step_by(7) {
@@ -65,8 +91,8 @@ pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String>
 }
 
 // A single, structurally complete, single-disk directory authorizes a bounded
-// ZIP search. A false/ambiguous EOCD, multi-disk record, unsupported ZIP64
-// layout or excessive directory falls back to the captured-volume path.
+// ZIP search. A false/ambiguous EOCD, multi-disk record or unsupported ZIP64
+// layout falls back to the captured-volume path.
 pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
     let result = probe(file, ctl, deep);
     file.rewind().map_err(|e| e.to_string())?;
@@ -75,7 +101,6 @@ pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) ->
 fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
     const TAIL_LIMIT: u64 = 1024 * 1024;
     const SEARCH_BUDGET: u64 = 16 * 1024 * 1024;
-    const DIRECTORY_LIMIT: u64 = 8 * 1024 * 1024;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     // Search from the end in fixed windows, not by growing an allocation or
     // copying the archive. The 21-byte overlap includes boundary EOCD headers.
@@ -145,20 +170,25 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, S
             || (zip_u32(end, 12) != u32::MAX && u64::from(zip_u32(end, 12)) != directory_size)
             || (zip_u32(end, 16) != u32::MAX && u64::from(zip_u32(end, 16)) != directory_offset) { return Ok(None); }
     } else if count == u16::MAX as u64 || directory_size == u32::MAX as u64 || directory_offset == u32::MAX as u64 { return Ok(None); }
-    if count == 0 || count > 65536 || directory_size > DIRECTORY_LIMIT || directory_size < count * 46 { return Ok(None); }
+    if count == 0 || count > directory_size / 46 { return Ok(None); }
     let Some(directory_start) = directory_end.checked_sub(directory_size) else { return Ok(None) };
     let Some(base) = directory_start.checked_sub(directory_offset) else { return Ok(None) };
     if locator_offset.is_some_and(|offset| offset.checked_add(base) != Some(directory_end)) { return Ok(None); }
-    let directory = read_at(file, directory_start, directory_size as usize)?;
-    let mut records = directory.as_slice();
+    let mut directory = DirectoryWindow::default();
+    let mut position = directory_start;
     let mut first_local = u64::MAX;
-    for _ in 0..count {
+    for index in 0..count {
         ctl.check()?;
-        if records.len() < 46 || !records.starts_with(b"PK\x01\x02") { return Ok(None); }
-        let name_end = 46 + usize::from(zip_u16(records, 28));
-        let extra_end = name_end + usize::from(zip_u16(records, 30));
-        let record_end = extra_end + usize::from(zip_u16(records, 32));
-        if record_end > records.len() { return Ok(None); }
+        if index % 256 == 0 {
+            ctl.set("listing", Some(((u128::from(index) * 100 / u128::from(count)) as u8).min(99)),
+                "Reading archive directory");
+        }
+        let Some(header) = directory.range(file, position, 46, directory_end)? else { return Ok(None) };
+        if !header.starts_with(b"PK\x01\x02") { return Ok(None); }
+        let name_end = 46 + usize::from(zip_u16(header, 28));
+        let extra_end = name_end + usize::from(zip_u16(header, 30));
+        let record_end = extra_end + usize::from(zip_u16(header, 32));
+        let Some(records) = directory.range(file, position, record_end, directory_end)? else { return Ok(None) };
         let mut packed_size = u64::from(zip_u32(records, 20));
         let mut offset = u64::from(zip_u32(records, 42));
         let mut disk = u32::from(zip_u16(records, 34));
@@ -192,20 +222,23 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, S
         }
         if disk != 0 || offset == u32::MAX as u64 { return Ok(None); }
         let Some(local) = offset.checked_add(base) else { return Ok(None) };
-        if local.checked_add(30).is_none_or(|end| end > directory_start) { return Ok(None); }
+        let local_name_size = 30 + name_end - 46;
+        if local.checked_add(local_name_size as u64).is_none_or(|end| end > directory_start) { return Ok(None); }
         first_local = first_local.min(local);
         // Every central record must point at a real local header in this file.
-        let local_header = read_at(file, local, 30)?;
+        let local_header = read_at(file, local, local_name_size)?;
         if !local_header.starts_with(b"PK\x03\x04") || zip_u16(&local_header, 26) != zip_u16(records, 28)
             || zip_u16(&local_header, 8) != zip_u16(records, 10)
             || zip_u16(&local_header, 6) != zip_u16(records, 8) { return Ok(None); }
-        let payload = local + 30 + u64::from(zip_u16(&local_header, 26)) + u64::from(zip_u16(&local_header, 28));
+        let Some(payload) = local.checked_add(30)
+            .and_then(|n| n.checked_add(u64::from(zip_u16(&local_header, 26))))
+            .and_then(|n| n.checked_add(u64::from(zip_u16(&local_header, 28)))) else { return Ok(None) };
         if packed_size == u32::MAX as u64 || payload.checked_add(packed_size).is_none_or(|end| end > directory_start) { return Ok(None); }
-        let name = read_at(file, local + 30, name_end - 46)?;
-        if name != records[46..name_end] { return Ok(None); }
-        records = &records[record_end..];
+        if local_header[30..] != records[46..name_end] { return Ok(None); }
+        let Some(next) = position.checked_add(record_end as u64) else { return Ok(None) };
+        position = next;
     }
-    if !records.is_empty() { return Ok(None); }
+    if position != directory_end { return Ok(None); }
     Ok(first_local.checked_add(1))
 }
 
@@ -283,6 +316,45 @@ mod tests {
             if disk { data[central + 34] = 1; }
             else { data[central + 20..central + 24].copy_from_slice(&0xfffffffeu32.to_le_bytes()); }
             input.seek(SeekFrom::Start(0)).unwrap(); input.write_all(&data).unwrap();
+            assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn directory_window_crosses_cache_boundary_and_refuses_out_of_range_records() {
+        let mut input = tempfile::NamedTempFile::new().unwrap();
+        let data: Vec<u8> = (0..400_000).map(|i| (i % 251) as u8).collect();
+        input.write_all(&data).unwrap();
+        let mut window = DirectoryWindow::default();
+        assert_eq!(window.range(input.as_file_mut(), 0, 46, data.len() as u64).unwrap().unwrap(), &data[..46]);
+        assert_eq!(window.bytes.len(), 128 * 1024);
+        let offset = 128 * 1024 - 17;
+        let size = 46 + 3 * usize::from(u16::MAX);
+        assert_eq!(window.range(input.as_file_mut(), offset as u64, size, data.len() as u64).unwrap().unwrap(), &data[offset..offset + size]);
+        assert_eq!(window.bytes.len(), size);
+        assert!(window.range(input.as_file_mut(), data.len() as u64 - 1, 46, data.len() as u64).unwrap().is_none());
+        assert!(window.range(input.as_file_mut(), u64::MAX - 1, 46, u64::MAX).unwrap().is_none());
+    }
+
+    #[test]
+    fn streamed_directory_rejects_duplicate_zip64_fields_and_inconsistent_counts() {
+        for duplicate in [true, false] {
+            let mut input = fixture(8192, b"tail");
+            let mut data = fs::read(input.path()).unwrap();
+            let central = data.windows(4).position(|p| p == b"PK\x01\x02").unwrap();
+            let end = data.windows(4).position(|p| p == b"PK\x05\x06").unwrap();
+            if duplicate {
+                let name_end = central + 46 + usize::from(zip_u16(&data, central + 28));
+                let size = zip_u32(&data, end + 12) + 8;
+                let extra = zip_u16(&data, central + 30) + 8;
+                data[central + 30..central + 32].copy_from_slice(&extra.to_le_bytes());
+                data[end + 12..end + 16].copy_from_slice(&size.to_le_bytes());
+                data.splice(name_end..name_end, [1, 0, 0, 0, 1, 0, 0, 0]);
+            } else {
+                // Counts agree with each other but not with the actual CD.
+                data[end + 8..end + 12].copy_from_slice(&[2, 0, 2, 0]);
+            }
+            input.rewind().unwrap();input.write_all(&data).unwrap();
             assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), None);
         }
     }
