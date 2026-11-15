@@ -77,10 +77,8 @@ for component, source, manifest in sources:
     expected_members[source.name] = source.read_bytes()
     expected_members[f'{component}-provenance.json'] = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
 # Include the exact locally modified crate, with its original license/credits.
-modified = root / 'obz-rs/vendor/lzma-rust2'
-for source in sorted(modified.rglob('*')):
-    if source.is_file():
-        expected_members['lzma-rust2-modified-0.23.0/' + source.relative_to(modified).as_posix()] = source.read_bytes()
+from modified_crate_sources import source_members
+expected_members.update(source_members(root))
 if output.exists():
     # A previously prepared exact source asset is safe to reuse. Never replace
     # an existing release file or accept extra/mismatched archive members.
@@ -94,10 +92,8 @@ if output.exists():
     print(f'Verified existing source asset: {output}')
     raise SystemExit(0)
 with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_STORED) as archive:
-    for component, source, manifest in sources:
-        archive.write(source, source.name)
-        archive.writestr(f'{component}-provenance.json', json.dumps(manifest, indent=2) + '\n')
-    archive.writestr('README.txt', readme)
+    for name, content in expected_members.items():
+        archive.writestr(name, content)
 print(output)
 
 if args.arm64_runtime:
