@@ -43,7 +43,7 @@ A.WriteEncryptedFileRaw.restype=W.DWORD
 A.CloseEncryptedFileRaw.argtypes=[C.c_void_p]
 A.CloseEncryptedFileRaw.restype=None
 
-def raw_directory(source,target,precreate=False):
+def raw_directory(source,target,precreate=False,lock_target=False):
     result={"flags_export":0,"flags_import":3,"precreated":precreate}
     exported=bytearray();context=C.c_void_p()
     @EXPORT
@@ -64,8 +64,15 @@ def raw_directory(source,target,precreate=False):
             if secret:require(A.EncryptFileW(str(p)),"encrypt sentinel failed")
             sentinel_before[name]={"digest":digest(p),"encrypted":encrypted(p),"keys":[b.hex() for b in keys(p)] if secret else []}
     result["sentinel_before"]=sentinel_before
+    locked=None
+    if lock_target:
+        if not target.exists():target.mkdir()
+        locked=K.CreateFileW(str(target),0x1f0199,0,None,3,0x02200000,None)
+        require(locked not in (None,C.c_void_p(-1).value),"exclusive directory fixture open failed")
     context=C.c_void_p();code=A.OpenEncryptedFileRawW(str(target),3,C.byref(context));result["open_import"]=code
-    if code:return result
+    if code:
+        if locked is not None:K.CloseHandle(locked)
+        return result
     offset=0
     @IMPORT
     def supply(data,unused,size):
@@ -74,7 +81,9 @@ def raw_directory(source,target,precreate=False):
         if count:C.memmove(data,bytes(exported[offset:offset+count]),count)
         offset+=count;size[0]=count;return 0
     try:result["write_raw"]=A.WriteEncryptedFileRaw(supply,None,context)
-    finally:A.CloseEncryptedFileRaw(context)
+    finally:
+        A.CloseEncryptedFileRaw(context)
+        if locked is not None:K.CloseHandle(locked)
     result["consumed_bytes"]=offset
     if result["write_raw"]:return result
     result["native_directory"]=state(target)
@@ -99,6 +108,12 @@ def raw_directory(source,target,precreate=False):
     plain=target/"existing-plain.txt";plain.write_bytes(b"test")
     result["new_child_encrypted"]=encrypted(plain)
     return result
+
+def raw_pinned(source,target,lock_target=False):
+    pin=K.CreateFileW(str(source),0x80000000,1,None,3,0x02200000,None)
+    require(pin not in (None,C.c_void_p(-1).value),"source directory read pin failed")
+    try:return raw_directory(source,target,False,lock_target)
+    finally:K.CloseHandle(pin)
 
 def state(path):
     value={"encrypted":encrypted(path),"attributes":K.GetFileAttributesW(str(path)),"backup":backup_records(path),"ea":ea(path).hex()}
@@ -138,6 +153,8 @@ try:
         receipt["raw_directory_new"]=raw_directory(src,base/"raw-new")
         receipt["raw_directory_existing"]=raw_directory(src,base/"raw-existing",True)
         receipt["raw_directory_nonempty"]=raw_directory(src,base/"raw-nonempty","nonempty")
+        receipt["raw_source_pinned"]=raw_pinned(src,base/"raw-source-pinned")
+        receipt["raw_exclusive_target"]=raw_pinned(src,base/"raw-exclusive-target",True)
         receipt["source_after_raw"]=state(src)
         receipt["raw_checks"]={label:bool(item.get("checks")) and all(item["checks"].values()) and item.get("new_child_encrypted") is True
             for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"]),("nonempty",receipt["raw_directory_nonempty"])]}
