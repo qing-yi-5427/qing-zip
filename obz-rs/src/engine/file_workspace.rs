@@ -188,7 +188,7 @@ impl Backup<'_> {
         Ok(())
     }
 }
-// Copy and verify main data and the supported Windows zone stream. Other backup
+// Copy and verify main data and named $DATA streams. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
 fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     let mut input = Backup {
@@ -225,8 +225,17 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
                 .map(|v| u16::from_le_bytes([v[0], v[1]]))
                 .collect::<Vec<_>>();
             let value = String::from_utf16(&units).map_err(|_| "无效的数据流名称")?;
-            if !value.eq_ignore_ascii_case(":Zone.Identifier:$DATA") {
-                return Err("暂不支持复制自定义备用数据流，源文件保持不变".into());
+            let Some(inner) = value
+                .strip_prefix(':')
+                .and_then(|v| v.get(..v.len().checked_sub(6)?))
+            else {
+                return Err("无效的数据流名称".into());
+            };
+            if !value.to_ascii_uppercase().ends_with(":$DATA")
+                || inner.is_empty()
+                || inner.chars().any(|c| matches!(c, ':' | '/' | '\\' | '\0'))
+            {
+                return Err("无效的数据流名称".into());
             }
         }
         hash.update(header);
@@ -255,24 +264,58 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     Err("文件数据流过多".into())
 }
 
-fn check_directory_streams(file: &File) -> Result<(), String> {
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if metadata.file_attributes() & (0x400 | 0x4000 | 0x200) != 0 {
-        return Err("文件夹含不支持的链接、加密或稀疏属性，源文件夹保持不变".into());
+/// Only this module can construct a proof, after source and private target have
+/// matching complete main/named data streams. Archive publication never uses it.
+pub(crate) struct LocalStreamProof {
+    digest: [u8; 32],
+    control: JobControl,
+}
+impl LocalStreamProof {
+    pub(crate) fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
+        let actual = streams(file, None, &self.control)?;
+        if actual != self.digest {
+            return Err("本地文件的数据流在发布前发生变化".into());
+        }
+        Ok(actual.to_vec())
     }
-    let mut backup = Backup {
-        file,
-        context: std::ptr::null_mut(),
-        writing: false,
-    };
-    let mut header = [0u8; 20];
-    if backup.read(&mut header)? != 0 {
-        return Err(
-            "暂不支持带备用数据流或特殊元数据的文件夹（包括Zone.Identifier），源文件夹保持不变"
-                .into(),
-        );
+}
+fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(
+            file: Handle,
+            class: i32,
+            data: *const c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let info = source.metadata().map_err(|e| e.to_string())?;
+    // Reparse, EFS, sparse and compressed storage need their own native pipeline.
+    if info.file_attributes() & (0x400 | 0x4000 | 0x200 | 0x800) != 0 {
+        return Err("此存储属性需要专用复制，源文件保持不变".into());
+    }
+    let attrs = info.file_attributes() & 0x3127;
+    let basic = [
+        info.creation_time(),
+        info.last_access_time(),
+        info.last_write_time(),
+        0,
+        u64::from(if attrs == 0 { 0x80 } else { attrs }),
+    ];
+    if unsafe { SetFileInformationByHandle(target.as_raw_handle(), 0, basic.as_ptr().cast(), 40) }
+        == 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
     }
     Ok(())
+}
+
+fn check_directory_streams(file: &File, ctl: &JobControl) -> Result<(), String> {
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if metadata.file_attributes() & (0x400 | 0x4000 | 0x200 | 0x800) != 0 {
+        return Err("文件夹含不支持的链接、加密、压缩或稀疏属性，源文件夹保持不变".into());
+    }
+    streams(file, None, ctl).map(|_| ())
 }
 
 struct Source {
@@ -308,7 +351,7 @@ fn collect(
     }
     let directory = meta.is_dir();
     if directory {
-        check_directory_streams(&handle)?;
+        check_directory_streams(&handle, ctl)?;
     }
     nodes.push(Source {
         path: path.to_owned(),
@@ -469,7 +512,7 @@ pub fn transfer(
                     // retaining the original root handle, then copy without deletion.
                     nodes.retain(|n| n.path == *path || !n.path.starts_with(path));
                     let root = nodes.iter().find(|n| n.path == *path).unwrap();
-                    check_directory_streams(root.handle.as_ref().unwrap())?;
+                    check_directory_streams(root.handle.as_ref().unwrap(), &ctl)?;
                     let relative = root.relative.clone();
                     for child in fs::read_dir(path).map_err(|e| e.to_string())? {
                         let child = child.map_err(|e| e.to_string())?;
@@ -493,6 +536,7 @@ pub fn transfer(
         }
     }
     let mut published = Vec::new();
+    let mut copied_directories: Vec<(File, usize)> = Vec::new();
     #[cfg(test)]
     BEFORE_COPY.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() {
@@ -500,14 +544,40 @@ pub fn transfer(
         }
     });
     let operation = (|| -> Result<(), String> {
-        for node in &mut nodes {
+        for (node_index, node) in nodes.iter_mut().enumerate() {
             ctl.check()?;
             let mut target = dest.join(&node.relative);
             if path_key(&target) == path_key(&node.path) {
                 return Err("源与目标是同一位置".into());
             }
             if node.directory {
-                guards.create_dirs(&target)?;
+                let parent = target.parent().ok_or("缺少目标父目录")?;
+                guards.create_dirs(parent)?;
+                guards.allow_publication(parent)?;
+                let source = node.handle.as_ref().unwrap();
+                if target.exists() {
+                    guards.check(&target)?;
+                    if !target.is_dir() {
+                        return Err("目标名称已被文件占用".into());
+                    }
+                    if streams(source, None, &ctl)? != <[u8; 32]>::from(Sha256::digest([])) {
+                        return Err(
+                            "目标文件夹已存在，未覆盖其备用数据流；请选择新目标文件夹".into()
+                        );
+                    }
+                } else {
+                    let parent_pin = &guards.held.get(parent).ok_or("缺少目标父目录锁")?.0;
+                    let output = crate::private_stage::create_local_copy_directory(
+                        parent_pin,
+                        target.file_name().ok_or("缺少文件夹名称")?,
+                    )?;
+                    let expected = streams(source, Some(&output), &ctl)?;
+                    if streams(&output, None, &ctl)? != expected {
+                        return Err("目标文件夹数据流验证失败，源保持不变".into());
+                    }
+                    copied_directories.push((output, node_index));
+                    guards.check(&target)?;
+                }
                 continue;
             }
             let Some(chosen) =
@@ -529,17 +599,14 @@ pub fn transfer(
                 if streams(temp.as_file(), None, &ctl)? != expected {
                     return Err("目标文件验证失败，源文件保持不变".into());
                 }
-                let info = input.metadata().map_err(|e| e.to_string())?;
-                let mut times = fs::FileTimes::new();
-                if let Ok(t) = info.modified() {
-                    times = times.set_modified(t);
-                }
-                if let Ok(t) = info.accessed() {
-                    times = times.set_accessed(t);
-                }
-                temp.as_file().set_times(times).map_err(|e| e.to_string())?;
+                copy_basic_metadata(input, temp.as_file())?;
                 ctl.check()?;
-                publish_output(temp, &target, opts.overwrite == "overwrite")
+                let proof = LocalStreamProof {
+                    digest: expected,
+                    control: ctl.clone(),
+                };
+                temp.inner
+                    .commit_local_streams(&target, opts.overwrite == "overwrite", &proof)
                     .map(|file| (file, expected))
             })?;
             drop(output);
@@ -549,6 +616,10 @@ pub fn transfer(
             }
             published.push(published_pin);
             result.copied += 1;
+        }
+        for (directory, index) in copied_directories.iter().rev() {
+            ctl.check()?;
+            copy_basic_metadata(nodes[*index].handle.as_ref().unwrap(), directory)?;
         }
         ctl.check()?;
         Ok(())
@@ -783,22 +854,92 @@ mod tests {
         assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"competitor");
     }
     #[test]
-    fn custom_ads_is_rejected_without_removing_source_or_publishing_file() {
+    fn custom_ads_and_basic_attributes_are_copied_without_removing_source() {
         let (_t, source, dest) = setup();
         let file = source.join("a.txt");
-        fs::write(format!("{}:custom", file.display()), b"must survive").unwrap();
-        assert!(transfer(
+        for name in ["custom", "中文数据", "empty"] {
+            fs::write(
+                format!("{}:{name}", file.display()),
+                if name == "empty" {
+                    b"".as_slice()
+                } else {
+                    b"must survive".as_slice()
+                },
+            )
+            .unwrap();
+        }
+        let input = File::options().read(true).write(true).open(&file).unwrap();
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1600000000);
+        input
+            .set_times(fs::FileTimes::new().set_accessed(old).set_modified(old))
+            .unwrap();
+        drop(input);
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&file, perms).unwrap();
+        let original = fs::metadata(&file).unwrap();
+        let result = transfer(
             &[file.display().to_string()],
             dest.to_str().unwrap(),
             false,
-            &EngineOptions::default()
+            &EngineOptions::default(),
         )
-        .is_err());
-        assert_eq!(
-            fs::read(format!("{}:custom", file.display())).unwrap(),
-            b"must survive"
+        .unwrap();
+        assert_eq!(result.copied, 1);
+        assert!(file.exists());
+        let target = dest.join("a.txt");
+        for name in ["custom", "中文数据", "empty"] {
+            assert_eq!(
+                fs::read(format!("{}:{name}", file.display())).unwrap(),
+                fs::read(format!("{}:{name}", target.display())).unwrap()
+            );
+        }
+        let copied = fs::metadata(&target).unwrap();
+        assert_eq!(copied.creation_time(), original.creation_time());
+        assert_eq!(copied.last_write_time(), original.last_write_time());
+        assert_eq!(copied.file_attributes(), original.file_attributes());
+        for path in [&file, &target] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+    #[test]
+    fn custom_ads_requires_local_proof_and_tampering_is_not_published() {
+        let (_t, source, dest) = setup();
+        let file = source.join("a.txt");
+        fs::write(format!("{}:custom", file.display()), b"known").unwrap();
+        let input = crate::engine_stream::pin(&file).unwrap();
+        let ctl = JobControl::new();
+        let mut guards = CheckedDirectories::default();
+        guards.check(&dest).unwrap();
+        guards.allow_publication(&dest).unwrap();
+        let target = dest.join("output.txt");
+        let error = with_output_temp(&dest, &guards, |temp| {
+            streams(&input, Some(temp.as_file()), &ctl)?;
+            publish_output(temp, &target, false)
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("unexpected private output stream"),
+            "{error}"
         );
-        assert!(!dest.join("a.txt").exists());
+        assert!(!target.exists());
+        let error = with_output_temp(&dest, &guards, |temp| {
+            let expected = streams(&input, Some(temp.as_file()), &ctl)?;
+            let proof = LocalStreamProof {
+                digest: expected,
+                control: ctl.clone(),
+            };
+            use std::io::{Seek, SeekFrom};
+            temp.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+            temp.as_file_mut().write_all(b"modified").unwrap();
+            temp.inner.commit_local_streams(&target, false, &proof)
+        })
+        .unwrap_err();
+        assert!(error.contains("数据流在发布前发生变化"), "{error}");
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
     }
     #[test]
     fn cancellation_after_written_chunk_discards_private_output_and_keeps_source() {
@@ -826,37 +967,48 @@ mod tests {
     }
 
     #[test]
-    fn directories_with_any_ads_never_lose_empty_or_nonempty_sources() {
+    fn directory_ads_and_times_survive_copy_and_atomic_move() {
         for empty in [false, true] {
-            for stream in ["custom", "Zone.Identifier"] {
-                let temp = tempfile::tempdir().unwrap();
-                let source = temp.path().join("source");
-                let target = temp.path().join("target");
-                fs::create_dir(&source).unwrap();
-                fs::create_dir(&target).unwrap();
-                if !empty {
-                    fs::write(source.join("child.txt"), b"child survives").unwrap();
-                }
-                let ads = format!("{}:{stream}", source.display());
-                fs::write(&ads, b"directory stream survives").unwrap();
-                for moving in [false, true] {
-                    let failure = transfer(
+            for moving in [false, true] {
+                for stream in ["custom", "Zone.Identifier"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let source = temp.path().join("source");
+                    let target = temp.path().join("target");
+                    fs::create_dir(&source).unwrap();
+                    fs::create_dir(&target).unwrap();
+                    if !empty {
+                        fs::write(source.join("child.txt"), b"child survives").unwrap();
+                    }
+                    fs::write(
+                        format!("{}:{stream}", source.display()),
+                        b"directory stream survives",
+                    )
+                    .unwrap();
+                    let before = fs::metadata(&source).unwrap();
+                    let result = transfer(
                         &[source.display().to_string()],
                         target.to_str().unwrap(),
                         moving,
                         &EngineOptions::default(),
                     )
-                    .unwrap_err();
-                    assert!(failure.contains("备用数据流"), "{failure}");
-                    assert!(source.is_dir());
-                    assert_eq!(fs::read(&ads).unwrap(), b"directory stream survives");
+                    .unwrap();
+                    assert!(result.retained_sources.is_empty());
+                    assert_eq!(source.exists(), !moving);
+                    let copied = target.join("source");
+                    assert_eq!(
+                        fs::read(format!("{}:{stream}", copied.display())).unwrap(),
+                        b"directory stream survives"
+                    );
+                    assert_eq!(
+                        fs::metadata(&copied).unwrap().last_write_time(),
+                        before.last_write_time()
+                    );
                     if !empty {
                         assert_eq!(
-                            fs::read(source.join("child.txt")).unwrap(),
+                            fs::read(copied.join("child.txt")).unwrap(),
                             b"child survives"
                         );
                     }
-                    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
                 }
             }
         }
@@ -965,5 +1117,99 @@ mod tests {
             assert!(dest.join("a.txt").exists());
             assert_eq!(fs::read(&b).unwrap(), b"second");
         }
+    }
+    #[test]
+    fn custom_ads_conflicts_and_cancel_preserve_existing_sources() {
+        for mode in ["error", "skip", "rename", "overwrite"] {
+            let (_t, source, dest) = setup();
+            let file = source.join("a.txt");
+            let target = dest.join("a.txt");
+            fs::write(format!("{}:custom", file.display()), b"new stream").unwrap();
+            fs::write(&target, b"old file").unwrap();
+            fs::write(format!("{}:custom", target.display()), b"old stream").unwrap();
+            let opts = EngineOptions {
+                overwrite: mode.into(),
+                ..Default::default()
+            };
+            let result = transfer(
+                &[file.display().to_string()],
+                dest.to_str().unwrap(),
+                false,
+                &opts,
+            );
+            if mode == "error" {
+                assert!(result.is_err());
+            } else {
+                assert!(result.is_ok());
+            }
+            assert!(file.exists());
+            if mode == "overwrite" {
+                assert_eq!(
+                    fs::read(format!("{}:custom", target.display())).unwrap(),
+                    b"new stream"
+                );
+            } else {
+                assert_eq!(
+                    fs::read(format!("{}:custom", target.display())).unwrap(),
+                    b"old stream"
+                );
+            }
+            if mode == "rename" {
+                assert_eq!(
+                    fs::read(format!("{}:custom", dest.join("a (1).txt").display())).unwrap(),
+                    b"new stream"
+                );
+            }
+        }
+        let (_t, source, dest) = setup();
+        let file = source.join("a.txt");
+        fs::write(&file, b"").unwrap();
+        let data = vec![9; 2 * 1024 * 1024];
+        fs::write(format!("{}:custom", file.display()), &data).unwrap();
+        let ctl = JobControl::new();
+        let cancel = ctl.clone();
+        AFTER_CHUNK.with(|h| *h.borrow_mut() = Some(Box::new(move || cancel.cancel())));
+        let opts = EngineOptions {
+            control: Some(ctl),
+            ..Default::default()
+        };
+        assert!(transfer(
+            &[file.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &opts
+        )
+        .unwrap_err()
+        .contains("cancelled"));
+        assert_eq!(
+            fs::read(format!("{}:custom", file.display())).unwrap(),
+            data
+        );
+        assert_eq!(fs::read_dir(dest).unwrap().count(), 0);
+    }
+    #[test]
+    fn directory_stream_conflict_never_overwrites_existing_directory_streams() {
+        let (_t, source, dest) = setup();
+        fs::write(format!("{}:custom", source.display()), b"source stream").unwrap();
+        let existing = dest.join("source");
+        fs::create_dir(&existing).unwrap();
+        fs::write(format!("{}:custom", existing.display()), b"existing stream").unwrap();
+        let error = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("未覆盖其备用数据流"), "{error}");
+        assert_eq!(
+            fs::read(format!("{}:custom", existing.display())).unwrap(),
+            b"existing stream"
+        );
+        assert!(!existing.join("a.txt").exists());
+        assert_eq!(
+            fs::read(format!("{}:custom", source.display())).unwrap(),
+            b"source stream"
+        );
     }
 }

@@ -421,14 +421,19 @@ impl PrivateOutputFile {
         replace: bool,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
     ) -> Result<File, String> {
-        self.commit_journaled(target, replace, None, step)
+        self.commit_journaled(target, replace, None, step, None)
     }
     pub(crate) fn commit_owned(
         &mut self,
         target: &Path,
         journal: &crate::engine::PublicationJournal,
     ) -> Result<File, String> {
-        self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()))
+        self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None)
+    }
+    /// Explicit local-file mode; default/archive output still rejects custom ADS.
+    pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&crate::engine::file_workspace::LocalStreamProof)->Result<File,String>{
+        proof.verify(self.as_file())?;
+        self.commit_journaled(target,replace,None,&mut |_|Ok(()),Some(proof))
     }
     fn commit_journaled(
         &mut self,
@@ -436,6 +441,7 @@ impl PrivateOutputFile {
         replace: bool,
         journal: Option<&crate::engine::PublicationJournal>,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
+        local_proof: Option<&crate::engine::file_workspace::LocalStreamProof>,
     ) -> Result<File, String> {
         let mut pending = None;
         if self.state != State::Private {
@@ -460,7 +466,7 @@ impl PrivateOutputFile {
                 return Err("destination permissions changed; output was not published".into());
             }
             let committed_handle = metadata_handle(self.as_file(), 7)?;
-            let marker = output_marker(self.as_file())?;
+            let marker = match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?};
             let private = descriptor(self.as_file())?;
             step(Step::ApplyPermissions)?;
             let transition = (|| {
@@ -469,7 +475,7 @@ impl PrivateOutputFile {
                 if !same_file_permissions(live.0, fresh.0)? {
                     return Err("destination permissions changed; output was not published".into());
                 }
-                if info(self.as_file())?[10] != 1 || output_marker(self.as_file())? != marker {
+                if info(self.as_file())?[10] != 1 || (match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?}) != marker {
                     return Err("private output links or streams changed".into());
                 }
                 pending = journal
