@@ -143,7 +143,7 @@ function rows() {
     if (!listingWindow) listingWindow = new ArchiveRowWindow(body, main, list, fileRow, () => positions.get(s.cursor) ?? -1, columns.filter(c=>c.visible).length+1, JSON.stringify(columns));
     else listingWindow.paint();
   } else {
-    body.innerHTML = list.map(fileRow).join('') || `<tr><td colspan="${columns.filter(c=>c.visible).length+1}" class="qa-empty">没有匹配的文件</td></tr>`;
+    body.innerHTML = list.map(fileRow).join('') || `<tr><td colspan="${columns.filter(c=>c.visible).length+1}" class="qa-empty">${s.search ? '没有匹配的文件' : s.entries.length ? '此文件夹为空' : '此压缩包为空'}</td></tr>`;
   }
   refreshSelection();
   if (s.listStyle !== 'icons') stopThumbnailObserver(); else if (!windowed) observeThumbnails();
