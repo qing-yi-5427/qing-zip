@@ -115,7 +115,10 @@ pub(super) fn selected_layout(file: &mut File, ctl: &JobControl) -> Result<Optio
 // Identification proof for positioned read-only listing, including AES and
 // non-contiguous layouts. This never authorizes payload publication.
 pub(super) fn list_layout(file: &mut File, ctl: &JobControl) -> Result<Option<SelectedLayout>, String> {
-    let result = probe(file, ctl, false, false);
+    // The caller only takes this route inside an already proved large-prefix
+    // ZIP scope. Re-prove the same source, including bounded long-tail layouts,
+    // with the existing 16 MiB total read budget and cancellation per window.
+    let result = probe(file, ctl, true, false);
     file.rewind().map_err(|e| e.to_string())?;
     result
 }
@@ -331,6 +334,7 @@ mod tests {
         let mut input = fixture(8192, &vec![b'T'; 17 * 1024 * 1024]);
         let ctl = JobControl::new();
         assert_eq!(zip_search_limit(input.as_file_mut(), &ctl, true).unwrap(), None);
+        assert!(list_layout(input.as_file_mut(), &ctl).unwrap().is_none());
         assert_eq!(ctl.snapshot().phase, "listing");
         assert_eq!(ctl.snapshot().percent, None);
         assert_eq!(ctl.snapshot().message, "Checking archive with its format handler");

@@ -509,7 +509,7 @@ mod tests {
     }
     #[test]
     fn positioned_zip_metadata_matches_console() {
-        for mode in 0..5 {
+        for mode in 0..6 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("embedded.zip");
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -563,6 +563,9 @@ mod tests {
             file.write_all(&vec![0x5a; 9 * 1024 * 1024]).unwrap();
             file.write_all(&bytes).unwrap();
             file.write_all(b"harmless trailing data").unwrap();
+            if mode == 5 {
+                file.write_all(&vec![b'T'; 3 * 1024 * 1024]).unwrap();
+            }
             drop(file);
             let opts = EngineOptions::default();
             let ctl = JobControl::new();
@@ -584,7 +587,7 @@ mod tests {
             let mut source = crate::engine_stream::pin(&path).unwrap();
             let actual = try_list(&mut source, &opts, &ctl)
                 .unwrap()
-                .expect("native route must run");
+                .unwrap_or_else(|| panic!("native route must run for mode {mode}"));
             assert_eq!(
                 serde_json::to_value(actual).unwrap(),
                 serde_json::to_value(expected).unwrap(),
