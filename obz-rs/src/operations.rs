@@ -133,6 +133,10 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
     match r.operation.as_str() {
         "benchmark" => serde_json::to_value(engine::benchmark::execute(r.benchmark.unwrap_or_default(), &r.options)?).map_err(|e|e.to_string()),
         "archive-properties" => Ok(json!(engine::archive_properties::read(&r.path, &r.options)?)),
+        #[cfg(windows)]
+        "fs-list" => Ok(serde_json::to_value(engine::file_workspace::browse(&r.path)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
+        "fs-copy" | "fs-move" => Ok(serde_json::to_value(engine::file_workspace::transfer(&r.inputs, &r.dest, r.operation == "fs-move", &r.options)?).map_err(|e|e.to_string())?),
         "capabilities" => {
             if restricted {
                 let mut caps = engine::capabilities();
