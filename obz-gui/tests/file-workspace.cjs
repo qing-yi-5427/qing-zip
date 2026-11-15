@@ -61,7 +61,8 @@ test('unknown archive sizes stay unknown and folders use selection then explicit
 
 test('workspace archive refresh invalidates previews and removes only missing selections',async()=>{
  const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
- const code=source.match(/ updated:(async\(path,entries\)=>\{[^\n]+\})\n/)[1];
+ for(const newline of ['\n','\r\n']){
+ const code=source.replace(/\r?\n/g,newline).match(/ updated:(async\(path,entries\)=>\{[^\r\n]+\})\r?\n/)[1];
  const tab={archive:'C:/a.zip',entries:[],selected:new Set(['folder/','folder\\nested/','old.txt']),anchor:'old.txt',cursor:'old.txt',focusFile:'old.txt'};
  const state={...tab,selected:new Set(tab.selected)};const calls=[];let finish;
  const updated=Function('archiveTabs','s','archiveKey','resetPreviewState','invoke','return '+code)([tab],state,p=>p.toLowerCase(),()=>calls.push('reset'),name=>{calls.push(name);return new Promise(r=>finish=r)});
@@ -69,4 +70,5 @@ test('workspace archive refresh invalidates previews and removes only missing se
  assert.deepEqual(calls,['reset','clear_preview_cache']);assert.notEqual(tab.entries,entries);
  finish();await pending;
  for(const value of [tab,state]){assert.equal(value.entries,entries);assert.deepEqual([...value.selected],['folder/','folder\\nested/']);assert.equal(value.anchor,null);assert.equal(value.cursor,null);assert.equal(value.focusFile,null);}
+ }
 });
