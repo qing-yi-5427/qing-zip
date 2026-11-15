@@ -63,7 +63,10 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
     if probe.read_exact(&mut magic).is_err(){return Ok(None);}
     let mode:u32=if magic==*b"PK\x03\x04" || magic==*b"PK\x05\x06" {
         let Some(layout)=zip_input_probe::list_layout(&mut probe,ctl)? else{return Ok(None)};
-        if layout.first_local!=0 || layout.count==0 || layout.count>MAX_ITEMS as u64 {return Ok(None);}
+        // This is a decline-only hint, never authority to publish. Counts include
+        // directories; conservative declines retain the complete original listing
+        // and CRC-verified decoder. Do not spawn a child we cannot grant outputs to.
+        if layout.first_local!=0 || layout.count==0 || layout.count>MAX_OUTPUT_HANDLES as u64 {return Ok(None);}
         2
     } else if zip_input_probe::signature(&mut probe)?==Some("7z") {1}else{return Ok(None)};
     // Existing positioned ZIP listing handles SFX/extension aliases; preserve it.
@@ -188,8 +191,8 @@ mod tests {
         let mut zip=zip::ZipWriter::new(File::create(&many).unwrap());
         for i in 0..513 {zip.start_file(format!("{i}.txt"),zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();zip.write_all(b"abc").unwrap();}
         zip.finish().unwrap();let many_pin=crate::engine_stream::pin(&many).unwrap();
-        let (entries,pending)=prepare(many.to_str().unwrap(),&many_pin,&opts,&ctl).unwrap().unwrap();
-        assert_eq!(entries.len(),513);assert!(pending.is_none());reap_proof();
+        assert!(prepare(many.to_str().unwrap(),&many_pin,&opts,&ctl).unwrap().is_none());
+        assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()),"over-limit ZIP must not spawn a worker");
     }
     #[test]
     fn approved_decode_checks_crc_and_password_route_stays_original() {
