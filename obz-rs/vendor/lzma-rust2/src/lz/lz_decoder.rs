@@ -101,6 +101,17 @@ impl LzDecoder {
         Ok(())
     }
 
+    // The complete output length is known only on the bounded owned route.
+    // Reserve once, but leave len/grow_to/history accounting unchanged.
+    pub(crate) fn reserve_owned_capacity(&mut self) -> crate::Result<()> {
+        self.ensure_capacity()?;
+        if !self.buf.is_empty() || self.pos != 0 || self.full != 0 {
+            return Err(error_other("owned output must start with empty history"));
+        }
+        self.buf.try_reserve_exact(self.buf_size)
+            .map_err(|_| error_out_of_memory("owned output allocation too large"))
+    }
+
     // Used only when no flush/reset/wrap has discarded any decoded prefix.
     pub(crate) fn into_owned_prefix(mut self, expected: usize) -> crate::Result<Vec<u8>> {
         if self.start != 0 || self.pos != expected || self.full != expected || self.has_pending() {

@@ -768,9 +768,9 @@ pub(crate) mod tests {
         stream.push(0);
         let mut calls=0;
         let error=lzma_rust2::Lzma2Reader::decode_owned(Cursor::new(&stream),1<<20,bytes.len(),|| {
-            calls+=1;if calls==3 {Err(std::io::Error::other("cancelled at 128KiB"))}else{Ok(())}
+            calls+=1;if calls==4 {Err(std::io::Error::other("cancelled at 128KiB"))}else{Ok(())}
         }).unwrap_err();
-        assert!(error.to_string().contains("cancelled at 128KiB"));assert_eq!(calls,3);
+        assert!(error.to_string().contains("cancelled at 128KiB"));assert_eq!(calls,4);
         assert_eq!(decode_owned(&stream,1<<20,bytes.len()).unwrap(),bytes);
     }
 

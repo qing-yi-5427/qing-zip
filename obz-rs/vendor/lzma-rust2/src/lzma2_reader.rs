@@ -154,9 +154,10 @@ impl<R: Read> Lzma2Reader<R> {
         if expected > 64 * 1024 * 1024 || (declared_dict as usize) < expected {
             return Err(error_invalid_input("owned output bounds"));
         }
+        check()?;
         // Retain the existing 65 MiB decoder budget, including model/range overhead.
         let mut reader = Self::new_mem_limit(inner, expected.max(4096) as u32, 65 * 1024, None)?;
-        reader.lz.ensure_capacity()?;
+        reader.lz.reserve_owned_capacity()?;
         loop {
             check()?;
             if reader.uncompressed_size == 0 {
