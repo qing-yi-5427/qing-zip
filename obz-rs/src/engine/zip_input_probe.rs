@@ -22,6 +22,14 @@ fn vint(bytes: &[u8], position: &mut usize) -> Option<u64> {
     }
     None
 }
+// Knowing the family is weaker than proving a complete standalone archive.
+// A volume, encrypted RAR header or damaged start header must retain the old
+// handler/volume policy, but none needs a full-file search for an unrelated ZIP.
+pub(super) fn known_native_family(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"7z\xbc\xaf\x27\x1c")
+        || bytes.starts_with(b"Rar!\x1a\x07\x00")
+        || bytes.starts_with(b"Rar!\x1a\x07\x01\x00")
+}
 pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String> {
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let bytes = read_at(file, 0, length.min(64) as usize)?;
@@ -66,16 +74,30 @@ pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) ->
 }
 fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
     const TAIL_LIMIT: u64 = 1024 * 1024;
+    const SEARCH_BUDGET: u64 = 16 * 1024 * 1024;
     const DIRECTORY_LIMIT: u64 = 8 * 1024 * 1024;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     // Search from the end in fixed windows, not by growing an allocation or
     // copying the archive. The 21-byte overlap includes boundary EOCD headers.
     // Only archive-like extensions authorize looking beyond the first window.
+    // This is identification, not an exhaustive recovery scan: malformed or
+    // unrelated multi-gigabyte files must reach their normal handler promptly.
+    // Count overlap reads too, so the actual search I/O has a fixed bound.
+    let budget = length.min(if deep { SEARCH_BUDGET } else { TAIL_LIMIT });
+    let mut searched = 0u64;
     let mut window_end = length;
     let (tail_start, tail) = loop {
         ctl.check()?;
-        let start = window_end.saturating_sub(TAIL_LIMIT);
+        let remaining = budget - searched;
+        if remaining < 22 {
+            ctl.set("listing", None, "Checking archive with its format handler");
+            return Ok(None);
+        }
+        let start = window_end.saturating_sub(TAIL_LIMIT.min(remaining));
         let window = read_at(file, start, (window_end - start) as usize)?;
+        searched += window_end - start;
+        ctl.set("listing", Some((searched * 100 / budget.max(1)).min(99) as u8),
+            "Identifying archive directory");
         let ends: Vec<usize> = window.windows(22).enumerate().filter_map(|(at, bytes)| {
             (bytes.starts_with(b"PK\x05\x06")
                 && start + at as u64 + 22 + u64::from(zip_u16(bytes, 20)) <= length).then_some(at)
@@ -218,6 +240,30 @@ mod tests {
         assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), Some(8193));
         let cancelled = JobControl::new(); cancelled.cancel();
         assert!(zip_search_limit(input.as_file_mut(), &cancelled, true).unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn identification_budget_defers_longer_tail_to_handler_without_completing_job() {
+        let mut input = fixture(8192, &vec![b'T'; 17 * 1024 * 1024]);
+        let ctl = JobControl::new();
+        assert_eq!(zip_search_limit(input.as_file_mut(), &ctl, true).unwrap(), None);
+        assert_eq!(ctl.snapshot().phase, "listing");
+        assert_eq!(ctl.snapshot().percent, None);
+        assert_eq!(ctl.snapshot().message, "Checking archive with its format handler");
+    }
+
+    #[test]
+    fn family_magic_does_not_imply_valid_standalone_or_hide_tail_zip() {
+        for magic in [&b"7z\xbc\xaf\x27\x1c"[..], &b"Rar!\x1a\x07\x00"[..], &b"Rar!\x1a\x07\x01\x00"[..]] {
+            assert!(known_native_family(magic));
+            let mut input = fixture(8192, b"tail");
+            input.rewind().unwrap();
+            input.write_all(magic).unwrap();
+            assert_eq!(signature(input.as_file_mut()).unwrap(), None);
+            // A misleading prefix only suppresses deep search, not the bounded
+            // tail-based proof that can still identify an embedded ZIP.
+            assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), false).unwrap(), Some(8193));
+        }
     }
 
     #[test]

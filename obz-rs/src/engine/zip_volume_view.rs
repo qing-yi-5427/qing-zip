@@ -151,16 +151,17 @@ pub(crate) fn with_source<T>(
         if let Some(format) = zip_input_probe::signature(&mut anchor)? {
             return with_hint(input, format!("-t{format}"), || action(path));
         }
-        let mut head = [0u8; 4];
+        let mut head = [0u8; 8];
         let read = anchor.read(&mut head).map_err(|e| e.to_string())?;
         anchor.rewind().map_err(|e| e.to_string())?;
-        if read == 4 && &head == b"PK\x03\x04" && single_disk(&mut anchor)? {
+        if read >= 4 && &head[..4] == b"PK\x03\x04" && single_disk(&mut anchor)? {
             ACTIVE.with(|paths| paths.borrow_mut().push(input));
             let _scope = Scope;
             return action(path);
         }
-        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl,
-            ["zip", "zipx", "7z", "rar", "exe"].iter().any(|value| ext.eq_ignore_ascii_case(value)))? {
+        let deep = !zip_input_probe::known_native_family(&head[..read])
+            && ["zip", "zipx", "7z", "rar", "exe"].iter().any(|value| ext.eq_ignore_ascii_case(value));
+        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl, deep)? {
             return with_hint(input, format!("-tzip:s{limit}"), || action(path));
         }
         if !ext.eq_ignore_ascii_case("zip") { return action(path); }
