@@ -758,6 +758,8 @@ struct RawIo<'a>{file:&'a mut File,ctl:&'a JobControl,failed:Option<String>}
 unsafe extern "system" fn raw_export(data:*const u8,arg:Handle,len:u32)->u32{
     use std::io::Write;
     let ctx=unsafe{&mut *arg.cast::<RawIo<'_>>()};
+    #[cfg(test)]
+    if CANCEL_RAW.with(|v|if v.get()==1{v.set(0);true}else{false}){ctx.ctl.cancel();}
     let result=(||{ctx.ctl.check()?;if data.is_null()&&len!=0{return Err("invalid EFS raw buffer".into());}
         if len!=0 {ctx.file.write_all(unsafe{std::slice::from_raw_parts(data,len as usize)}).map_err(|e|e.to_string())?;}Ok(())})();
     match result{Ok(())=>0,Err(e)=>{ctx.failed=Some(e);995}}
@@ -765,6 +767,8 @@ unsafe extern "system" fn raw_export(data:*const u8,arg:Handle,len:u32)->u32{
 unsafe extern "system" fn raw_import(data:*mut u8,arg:Handle,len:*mut u32)->u32{
     use std::io::Read;
     let ctx=unsafe{&mut *arg.cast::<RawIo<'_>>()};
+    #[cfg(test)]
+    if CANCEL_RAW.with(|v|if v.get()==2{v.set(0);true}else{false}){ctx.ctl.cancel();}
     let result=(||{ctx.ctl.check()?;if len.is_null(){return Err("invalid EFS raw count".into());}
         let count=unsafe{*len} as usize;if data.is_null()&&count!=0{return Err("invalid EFS raw buffer".into());}
         let actual=if count==0{0}else{ctx.file.read(unsafe{std::slice::from_raw_parts_mut(data,count)}).map_err(|e|e.to_string())?};
@@ -801,7 +805,12 @@ impl PreparedDirectory{
         Ok(pin)
     }
 }
-pub(super) fn validate_directory(file:&File,ctl:&JobControl)->Result<(),String>{snapshot(file,ctl).map(|_|())}
+pub(super) fn validate_directory(file:&File,ctl:&JobControl)->Result<(),String>{
+    // Collection may own DELETE for a same-volume atomic move. ADS readers
+    // share that existing right but still never share writes. The later Raw
+    // source pin does not own DELETE and uses the original read-only sharing.
+    snapshot_with_share(file,ctl,5).map(|_|())
+}
 pub(super) fn restore_directory_metadata(source:&File,target:&File)->Result<(),String>{
     identity_kind(source.as_raw_handle(),true)?;identity_kind(target.as_raw_handle(),true)?;
     if target.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000==0{return Err("EFS directory policy was lost".into());}
@@ -809,6 +818,10 @@ pub(super) fn restore_directory_metadata(source:&File,target:&File)->Result<(),S
     let basic=[meta.creation_time(),meta.last_access_time(),meta.last_write_time(),0,u64::from(if attrs==0{0x80}else{attrs})];
     if unsafe{SetFileInformationByHandle(target.as_raw_handle(),0,basic.as_ptr().cast(),40)}==0{return Err(error("restore EFS directory metadata"));}
     Ok(())
+}
+fn raw_spool(directory:&Path)->Result<File,String>{
+    File::options().read(true).write(true).create_new(true).share_mode(0)
+        .custom_flags(0x00200000).open(directory.join("directory.raw")).map_err(|e|e.to_string())
 }
 pub(super) fn prepare_directory(source_path:&Path,expected_id:Option<[u32;3]>,parent_path:&Path,parent:&File,ctl:&JobControl)->Result<PreparedDirectory,String>{
     use std::io::{Seek,SeekFrom};
@@ -822,8 +835,7 @@ pub(super) fn prepare_directory(source_path:&Path,expected_id:Option<[u32;3]>,pa
     // every stream afterwards, rejecting new streams, EA or policy changes.
     expected._pins.clear();
     let stage=crate::private_stage::create(parent_path,parent)?;
-    let mut spool=File::options().read(true).write(true).create_new(true)
-        .open(stage.path().join("directory.raw")).map_err(|e|e.to_string())?;
+    let mut spool=raw_spool(stage.path())?;
     {
         let lease=raw_open(source_path,0)?;
         let mut io=RawIo{file:&mut spool,ctl,failed:None};
@@ -858,6 +870,7 @@ pub(super) fn prepare_directory(source_path:&Path,expected_id:Option<[u32;3]>,pa
 #[cfg(test)]
 thread_local! {
     static CANCEL_NATIVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
+    static CANCEL_RAW:std::cell::Cell<u8>=const{std::cell::Cell::new(0)};
     static TARGET_STATE_FAULT:std::cell::Cell<u8>=const{std::cell::Cell::new(0)};
     static NO_PROGRESS:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
 }
@@ -871,6 +884,17 @@ mod tests {
             .custom_flags(0x02200000)
             .open(path)
             .unwrap()
+    }
+    #[test]
+    fn raw_directory_spool_denies_external_writer_and_name_changes(){
+        let root=tempfile::tempdir().unwrap();let parent=parent(root.path());
+        let stage=crate::private_stage::create(root.path(),&parent).unwrap();
+        let spool=raw_spool(stage.path()).unwrap();let path=stage.path().join("directory.raw");
+        assert!(File::options().write(true).share_mode(7).open(&path).is_err());
+        assert!(std::fs::remove_file(&path).is_err());
+        assert!(std::fs::rename(&path,stage.path().join("changed")).is_err());
+        assert!(spool.metadata().unwrap().is_file());
+        drop(spool);drop(stage);
     }
     #[test]
     fn plaintext_is_not_routed_to_efs_candidate() {
@@ -955,6 +979,20 @@ mod tests {
             assert_eq!(std::fs::read(target.join("secret.txt")).unwrap(),if mode=="overwrite"{b"encrypted child".as_slice()}else{b"original target".as_slice()});
             if mode=="rename"{assert_eq!(std::fs::read(target.join("secret (1).txt")).unwrap(),b"encrypted child");}
             assert!(source.join("secret.txt").exists());
+        }
+    }
+    #[test]
+    #[ignore = "real EFS directory native callback cancellation only in disposable hosted runner"]
+    fn ci_efs_directory_raw_callbacks_cancel_without_public_output(){
+        for phase in [1,2]{
+            let root=tempfile::tempdir().unwrap();let source=directory_fixture(root.path());
+            let dest=root.path().join("dest");std::fs::create_dir(&dest).unwrap();let ctl=JobControl::new();
+            CANCEL_RAW.with(|v|v.set(phase));
+            let result=prepare_directory(&source,None,&dest,&parent(&dest),&ctl);
+            assert!(result.is_err());assert_eq!(CANCEL_RAW.with(|v|v.replace(0)),0,"native raw callback must run");
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(),0);
+            assert_eq!(std::fs::read(format!("{}:alpha",source.display())).unwrap(),b"directory ADS");
+            assert!(source.join("plain.txt").exists());
         }
     }
     #[test]
