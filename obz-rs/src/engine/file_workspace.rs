@@ -209,7 +209,15 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     ctl.check()?;
     let main_compression = compression::get(source)?;
     let main_sparse = sparse::query(source, ctl)?;
-    if let Some(target) = target { compression::set(target, main_compression)?; }
+    if let Some(target) = target {
+        compression::set(target, main_compression)?;
+        // Older Windows can omit BACKUP_DATA entirely for an empty sparse
+        // main stream. Its independent FSCTL layout is still part of the
+        // complete proof and must be restored even without a record group.
+        if let Some(layout)=main_sparse.as_ref().filter(|layout|layout.eof==0){
+            sparse::restore(target,layout,ctl)?;
+        }
+    }
     let mut input = Backup {
         file: source,
         context: std::ptr::null_mut(),

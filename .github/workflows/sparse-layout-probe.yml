@@ -19,15 +19,17 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace --no-run
+          cargo build --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --bin obz
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib file_workspace --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           1..20 | ForEach-Object {
             "ROUND $_" | Tee-Object -Append sparse-layout.log
-            cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
+            cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib file_workspace -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
             if ($LASTEXITCODE -ne 0) { $failed = $true }
           }
           "FULL CORE PARALLEL LOAD" | Tee-Object -Append sparse-layout.log
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
           if ($LASTEXITCODE -ne 0) { $failed = $true }
           @{ commit=$env:GITHUB_SHA; run=$env:GITHUB_RUN_ID; failed=$failed; os=[System.Environment]::OSVersion.VersionString; image=$env:ImageOS } | ConvertTo-Json | Set-Content sparse-layout-identity.json
           if ($failed) { exit 1 }
