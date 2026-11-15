@@ -480,6 +480,28 @@ pub(crate) struct PrivateOutputFile {
     permissions: Option<PrivateDescriptor>,
     state: State,
 }
+/// EFS candidate only: verify native-created children still inherit exclusively
+/// from our protected stage, rather than trusting the copy API's ACL behavior.
+pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),String>{
+    let token=effective_token()?;let sid=current_sid(&token)?;
+    let text:Vec<u16>=format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+        .encode_utf16().chain(Some(0)).collect();
+    let mut raw=std::ptr::null_mut();
+    if unsafe{ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(),1,&mut raw,std::ptr::null_mut())}==0{return Err(error("derive private native stage"));}
+    let expected_parent=Allocation(raw);
+    if !verify_private_permissions(parent,&expected_parent,&sid)?{return Err("native stage permissions changed".into());}
+    let expected=ordinary_permissions(parent,&token)?;let actual=descriptor(file)?;
+    if !same_file_permissions(expected.0,actual.0)?{return Err("native output did not retain private inherited permissions".into());}
+    let (mut owner,mut raw)=(std::ptr::null_mut(),std::ptr::null_mut());
+    let status=unsafe{GetSecurityInfo(file.as_raw_handle(),1,1,&mut owner,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),&mut raw)};
+    if status!=0{return Err(format!("native output owner query failed: {status}"));}
+    let _owner=Allocation(raw);let mut text=std::ptr::null_mut();
+    if owner.is_null() || unsafe{ConvertSidToStringSidW(owner,&mut text)}==0{return Err(error("read native output owner"));}
+    let _text=Allocation(text.cast());let mut length=0;
+    unsafe{while *text.add(length)!=0{length+=1;}}
+    if String::from_utf16(unsafe{std::slice::from_raw_parts(text,length)}).map_err(|e|e.to_string())?!=sid{return Err("native output owner changed".into());}
+    Ok(())
+}
 impl PrivateOutputFile {
     pub(crate) fn as_file(&self) -> &File {
         self.file.as_ref().expect("owned output handle")

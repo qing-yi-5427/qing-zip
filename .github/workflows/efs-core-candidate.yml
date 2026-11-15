@@ -1,0 +1,29 @@
+name: Isolated EFS core candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/file-workspace-efs]
+permissions:
+  contents: read
+jobs:
+  disposable-windows-efs:
+    if: github.ref == 'refs/heads/codex/file-workspace-efs'
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Compile and execute explicit disposable-runner EFS tests
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace_efs -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object efs-core-candidate.log
+          $code = $LASTEXITCODE
+          @{ commit=$env:GITHUB_SHA; run=$env:GITHUB_RUN_ID; exit=$code; certificate_scope='disposable github-hosted runner only' } | ConvertTo-Json | Set-Content efs-core-identity.json
+          exit $code
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: efs-core-candidate-${{ github.run_id }}
+          path: |
+            efs-core-candidate.log
+            efs-core-identity.json
+          if-no-files-found: error
