@@ -42,6 +42,7 @@ type Progress =
 unsafe extern "system" {
     fn GetFileInformationByHandle(file: Handle, info: *mut u32) -> i32;
     fn GetFileInformationByHandleEx(file: Handle, class: i32, data: *mut u32, size: u32) -> i32;
+    fn SetFileInformationByHandle(file: Handle, class: i32, data: *const c_void, size: u32) -> i32;
     fn GetFinalPathNameByHandleW(file: Handle, path: *mut u16, size: u32, flags: u32) -> u32;
     fn ReOpenFile(file: Handle, access: u32, share: u32, flags: u32) -> Handle;
     fn CopyFileExW(
@@ -160,7 +161,7 @@ fn keys(path: &Path, recovery: bool) -> Result<Vec<Vec<u8>>, String> {
     Ok(result)
 }
 fn ea(file: &File) -> Result<Vec<u8>, String> {
-    let mut words = vec![0u64; file_workspace_ea::MAX_EA_BYTES/8];
+    let mut words = vec![0u64; file_workspace_ea::MAX_EA_BYTES / 8];
     let mut status = Status {
         status: 0,
         information: 0,
@@ -170,7 +171,7 @@ fn ea(file: &File) -> Result<Vec<u8>, String> {
             file.as_raw_handle(),
             &mut status,
             words.as_mut_ptr().cast(),
-            (words.len()*8) as u32,
+            (words.len() * 8) as u32,
             0,
             std::ptr::null(),
             0,
@@ -181,20 +182,41 @@ fn ea(file: &File) -> Result<Vec<u8>, String> {
     if code as u32 == 0xc0000052 {
         return Ok(Vec::new());
     }
-    if code != 0 || status.information > words.len()*8 {
+    if code != 0 || status.information > words.len() * 8 {
         return Err(format!("读取EFS扩展属性失败：{code:#x}"));
     }
-    let bytes=unsafe{std::slice::from_raw_parts(words.as_ptr().cast::<u8>(),status.information)}.to_vec();
+    let bytes =
+        unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), status.information) }
+            .to_vec();
     file_workspace_ea::validate(0, 0, &bytes, || Ok(()))?;
     Ok(bytes)
 }
-fn set_ea(file:&File,bytes:&[u8])->Result<(),String>{
-    file_workspace_ea::validate(0,0,bytes,||Ok(()))?;
-    let mut aligned=vec![0u32;bytes.len().div_ceil(4)];
-    unsafe{std::ptr::copy_nonoverlapping(bytes.as_ptr(),aligned.as_mut_ptr().cast::<u8>(),bytes.len());}
-    let mut status=Status{status:0,information:0};
-    let code=unsafe{NtSetEaFile(file.as_raw_handle(),&mut status,aligned.as_ptr().cast(),bytes.len() as u32)};
-    if code!=0{return Err(format!("EFS私有目标扩展属性恢复失败：{code:#x}"));}Ok(())
+fn set_ea(file: &File, bytes: &[u8]) -> Result<(), String> {
+    file_workspace_ea::validate(0, 0, bytes, || Ok(()))?;
+    let mut aligned = vec![0u32; bytes.len().div_ceil(4)];
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            aligned.as_mut_ptr().cast::<u8>(),
+            bytes.len(),
+        );
+    }
+    let mut status = Status {
+        status: 0,
+        information: 0,
+    };
+    let code = unsafe {
+        NtSetEaFile(
+            file.as_raw_handle(),
+            &mut status,
+            aligned.as_ptr().cast(),
+            bytes.len() as u32,
+        )
+    };
+    if code != 0 {
+        return Err(format!("EFS私有目标扩展属性恢复失败：{code:#x}"));
+    }
+    Ok(())
 }
 fn stream_names(file: &File) -> Result<Vec<(Vec<u16>, u64)>, String> {
     let mut words = vec![0u64; 512];
@@ -409,11 +431,44 @@ unsafe extern "system" fn progress(
 }
 
 /// Prepared object stays within its protected stage. No publication API yet.
+struct NativeFile(File);
+impl std::ops::Deref for NativeFile {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+impl Drop for NativeFile {
+    fn drop(&mut self) {
+        // This handle belongs exclusively to our native-created private output.
+        // Never apply this cleanup to the source or a path-resolved replacement.
+        if let Ok(metadata) = self.0.metadata() {
+            if metadata.file_attributes() & 1 != 0 {
+                let attrs = (metadata.file_attributes() & !1) as u64;
+                let basic = [0u64, 0, 0, 0, if attrs == 0 { 0x80 } else { attrs }];
+                unsafe {
+                    SetFileInformationByHandle(
+                        self.0.as_raw_handle(),
+                        0,
+                        basic.as_ptr().cast(),
+                        40,
+                    );
+                }
+            }
+        }
+        let delete = 1u8;
+        unsafe {
+            SetFileInformationByHandle(self.0.as_raw_handle(), 4, (&delete as *const u8).cast(), 1);
+        }
+    }
+}
 pub(crate) struct Prepared {
-    file: File,
+    file: NativeFile,
     stage: crate::private_stage::PrivateStage,
     source: crate::engine_stream::PinnedSource,
     expected: Snapshot,
+    #[cfg(test)]
+    callback_seen: bool,
 }
 impl Prepared {
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
@@ -436,6 +491,13 @@ pub(crate) fn prepare(
     let source = crate::engine_stream::pin(source)?;
     let expected = snapshot(&source, ctl)?;
     let mut flags = 0;
+    let callback = Some(progress as Progress);
+    #[cfg(test)]
+    let callback = if NO_PROGRESS.with(|v| v.get()) {
+        None
+    } else {
+        callback
+    };
     if unsafe {
         GetVolumeInformationByHandleW(
             parent_pin.as_raw_handle(),
@@ -468,7 +530,7 @@ pub(crate) fn prepare(
         CopyFileExW(
             source_path.as_ptr(),
             target_path.as_ptr(),
-            Some(progress),
+            callback,
             (&mut state as *mut CopyContext<'_>).cast(),
             &mut cancelled,
             1,
@@ -481,12 +543,14 @@ pub(crate) fn prepare(
             .unwrap_or_else(|| error("EFS原生复制失败，源保持不变")));
     }
     ctl.check()?;
-    let file = File::options()
-        .access_mode(0x17019f)
-        .share_mode(0)
-        .custom_flags(0x02200000)
-        .open(&target)
-        .map_err(|e| e.to_string())?;
+    let file = NativeFile(
+        File::options()
+            .access_mode(0x170199)
+            .share_mode(0)
+            .custom_flags(0x02200000)
+            .open(&target)
+            .map_err(|e| e.to_string())?,
+    );
     crate::private_stage::verify_native_private_child(stage.root(), &file)?;
     if state
         .destination
@@ -495,13 +559,17 @@ pub(crate) fn prepare(
         return Err("EFS原生目标身份变化".into());
     }
     if !expected.ea.is_empty() {
-        set_ea(&file,&expected.ea)?;
+        set_ea(&file, &expected.ea)?;
     }
+    #[cfg(test)]
+    let callback_seen=state.destination.is_some();
     let prepared = Prepared {
         file,
         stage,
         source,
         expected,
+        #[cfg(test)]
+        callback_seen,
     };
     prepared.verify(ctl)?;
     Ok(prepared)
@@ -511,6 +579,7 @@ pub(crate) fn prepare(
 thread_local! {
     static CANCEL_NATIVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
     static TARGET_STATE_FAULT:std::cell::Cell<u8>=const{std::cell::Cell::new(0)};
+    static NO_PROGRESS:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
 }
 #[cfg(test)]
 mod tests {
@@ -578,7 +647,7 @@ mod tests {
                     .open(&source)
                     .unwrap();
                 let payload = [0, 0, 0, 0, 0x80, 1, 3, 0, b'A', 0, 1, 2, 3];
-                set_ea(&file,&payload).unwrap();
+                set_ea(&file, &payload).unwrap();
                 ea(&file).unwrap()
             };
             let prepared = prepare(&source, &dest, &parent(&dest), &JobControl::new()).unwrap();
@@ -637,6 +706,61 @@ mod tests {
             );
             assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
             assert_eq!(std::fs::read(source).unwrap(), b"real encrypted source");
+        }
+    }
+    #[test]
+    #[ignore = "creates EFS only in disposable CI; verifies readonly and no-callback ownership"]
+    fn ci_efs_readonly_and_completely_empty_copy_without_progress() {
+        for (readonly, disable_callback) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            let dest = temp.path().join("dest");
+            let contents = if readonly {
+                b"readonly encrypted source".as_slice()
+            } else {
+                b"".as_slice()
+            };
+            std::fs::write(&source, contents).unwrap();
+            std::fs::create_dir(&dest).unwrap();
+            if readonly {
+                std::fs::write(format!("{}:custom", source.display()), b"readonly ADS").unwrap();
+            }
+            encrypt_ci_fixture(&source);
+            if readonly {
+                let mut permissions = std::fs::metadata(&source).unwrap().permissions();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(&source, permissions).unwrap();
+            }
+            NO_PROGRESS.with(|value| value.set(disable_callback));
+            let result = prepare(&source, &dest, &parent(&dest), &JobControl::new());
+            NO_PROGRESS.with(|value| value.set(false));
+            let prepared = result.unwrap();
+            prepared.verify(&JobControl::new()).unwrap();
+            if disable_callback {
+                assert!(
+                    !prepared.callback_seen,
+                    "test must genuinely omit native callbacks"
+                );
+            }
+            assert_eq!(
+                prepared.file.metadata().unwrap().permissions().readonly(),
+                readonly
+            );
+            let private = prepared.stage.path().to_owned();
+            drop(prepared);
+            assert!(!private.exists());
+            assert_eq!(std::fs::read(&source).unwrap(), contents);
+            assert_eq!(
+                std::fs::metadata(&source).unwrap().permissions().readonly(),
+                readonly
+            );
+            if readonly {
+                let mut permissions = std::fs::metadata(&source).unwrap().permissions();
+                permissions.set_readonly(false);
+                std::fs::set_permissions(&source, permissions).unwrap();
+            }
         }
     }
 }
