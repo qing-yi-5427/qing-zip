@@ -328,7 +328,7 @@ mod windows {
             }
             context.exact(&mut header[n..])?;
             let id = u32::from_le_bytes(header[0..4].try_into().unwrap());
-            let size = u64::from_le_bytes(header[8..16].try_into().unwrap());
+            let mut size = u64::from_le_bytes(header[8..16].try_into().unwrap());
             let name_len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
             if name_len > MAX_ZONE_BYTES || name_len % 2 != 0 {
                 return Err("invalid named stream metadata".into());
@@ -349,6 +349,15 @@ mod windows {
                 let mut bytes = vec![0; size as usize];
                 context.exact(&mut bytes)?;
                 return ZoneIdentifier::parse(bytes).map(Some);
+            }
+            if id == 9 {
+                // BACKUP_SPARSE_BLOCK starts with an eight-byte logical file
+                // offset. BackupSeek skips the extent data only, so consume
+                // this prefix through BackupRead before seeking the payload.
+                // https://learn.microsoft.com/openspecs/windows_protocols/ms-bkup/6be866e6-6d1f-4183-8b78-b10c2941228a
+                size = size.checked_sub(8).ok_or("invalid sparse backup stream")?;
+                let mut offset = [0; 8];
+                context.exact(&mut offset)?;
             }
             if size > 0 {
                 let (mut low, mut high) = (0, 0);
@@ -490,5 +499,45 @@ mod tests {
         assert_eq!(std::fs::read(&source).unwrap(), b"stable archive");
         drop(clone);
         std::fs::write(&source, b"released").unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sparse_archive_extents_preserve_zone_and_source_lock() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn DeviceIoControl(handle: *mut std::ffi::c_void, code: u32,
+                input: *const u8, input_size: u32,
+                output: *mut u8, output_size: u32,
+                returned: *mut u32, overlapped: *mut std::ffi::c_void) -> i32;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("sparse.zip");
+        let mut file = File::options().read(true).write(true).create_new(true).open(&source).unwrap();
+        let mut returned = 0;
+        assert_ne!(unsafe { DeviceIoControl(file.as_raw_handle(), 0x900c4,
+            std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut returned, std::ptr::null_mut()) }, 0,
+            "{}", std::io::Error::last_os_error());
+        let length = 5u64 * 1024 * 1024 * 1024;
+        file.set_len(length).unwrap();
+        file.write_all(b"first extent").unwrap();
+        file.seek(SeekFrom::Start(length - 12)).unwrap();
+        file.write_all(b"final extent").unwrap();
+        drop(file);
+        assert!(from_archive(&source).unwrap().is_none());
+        let zone = b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/sparse.zip\r\n";
+        std::fs::write(format!("{}:Zone.Identifier", source.display()), zone).unwrap();
+        let context = archive_context(&source).unwrap();
+        assert_eq!(context.bytes, zone);
+        assert!(std::fs::write(&source, b"changed").is_err());
+        assert!(std::fs::rename(&source, dir.path().join("moved.zip")).is_err());
+        let mut file = File::open(&source).unwrap();
+        let mut bytes = [0; 12];
+        file.read_exact(&mut bytes).unwrap();assert_eq!(&bytes,b"first extent");
+        file.seek(SeekFrom::Start(length - 12)).unwrap();
+        file.read_exact(&mut bytes).unwrap();assert_eq!(&bytes,b"final extent");
+        assert_eq!(file.metadata().unwrap().len(), length);
     }
 }
