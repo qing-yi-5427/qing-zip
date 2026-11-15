@@ -59,17 +59,37 @@ pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String>
 // A single, structurally complete, single-disk directory authorizes a bounded
 // ZIP search. A false/ambiguous EOCD, multi-disk record, unsupported ZIP64
 // layout or excessive directory falls back to the captured-volume path.
-pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl) -> Result<Option<u64>, String> {
-    let result = probe(file, ctl);
+pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
+    let result = probe(file, ctl, deep);
     file.rewind().map_err(|e| e.to_string())?;
     result
 }
-fn probe(file: &mut File, ctl: &JobControl) -> Result<Option<u64>, String> {
+fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
     const TAIL_LIMIT: u64 = 1024 * 1024;
     const DIRECTORY_LIMIT: u64 = 8 * 1024 * 1024;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
-    let tail_start = length.saturating_sub(TAIL_LIMIT);
-    let tail = read_at(file, tail_start, (length - tail_start) as usize)?;
+    // Search from the end in fixed windows, not by growing an allocation or
+    // copying the archive. The 21-byte overlap includes boundary EOCD headers.
+    // Only archive-like extensions authorize looking beyond the first window.
+    let mut window_end = length;
+    let (tail_start, tail) = loop {
+        ctl.check()?;
+        let start = window_end.saturating_sub(TAIL_LIMIT);
+        let window = read_at(file, start, (window_end - start) as usize)?;
+        let ends: Vec<usize> = window.windows(22).enumerate().filter_map(|(at, bytes)| {
+            (bytes.starts_with(b"PK\x05\x06")
+                && start + at as u64 + 22 + u64::from(zip_u16(bytes, 20)) <= length).then_some(at)
+        }).collect();
+        if ends.len() > 1 { return Ok(None); }
+        if let Some(&at) = ends.first() {
+            let absolute = start + at as u64;
+            let context_start = absolute.saturating_sub(TAIL_LIMIT);
+            let context_end = length.min(absolute + 22 + 65535);
+            break (context_start, read_at(file, context_start, (context_end - context_start) as usize)?);
+        }
+        if start == 0 || !deep { return Ok(None); }
+        window_end = start + 21;
+    };
     let ends: Vec<usize> = tail.windows(22).enumerate().filter_map(|(at, bytes)| {
         (bytes.starts_with(b"PK\x05\x06") && at + 22 + usize::from(zip_u16(bytes, 20)) <= tail.len()).then_some(at)
     }).collect();
@@ -185,12 +205,29 @@ mod tests {
     #[test]
     fn zip_prefix_tail_is_bounded_and_ambiguous_eocd_is_not_accepted() {
         let mut input = fixture(8192, b"trailing bytes");
-        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new()).unwrap(), Some(8193));
+        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), Some(8193));
         input.seek(SeekFrom::End(0)).unwrap();
         let mut fake = [0u8; 22]; fake[..4].copy_from_slice(b"PK\x05\x06");
         input.write_all(&fake).unwrap();
-        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new()).unwrap(), None);
+        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), None);
     }
+    #[test]
+    fn long_tail_uses_bounded_progressive_windows_and_honors_cancel() {
+        let mut input = fixture(8192, &vec![b'T'; 3 * 1024 * 1024]);
+        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), false).unwrap(), None);
+        assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), Some(8193));
+        let cancelled = JobControl::new(); cancelled.cancel();
+        assert!(zip_search_limit(input.as_file_mut(), &cancelled, true).unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn progressive_search_keeps_end_records_across_window_boundaries() {
+        for suffix in [1024 * 1024 - 10, 1024 * 1024 - 21, 2 * 1024 * 1024 - 32] {
+            let mut input = fixture(8192, &vec![b'T'; suffix]);
+            assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), Some(8193));
+        }
+    }
+
     #[test]
     fn central_disk_or_payload_crossing_directory_cannot_authorize_search() {
         for disk in [true, false] {
@@ -200,7 +237,7 @@ mod tests {
             if disk { data[central + 34] = 1; }
             else { data[central + 20..central + 24].copy_from_slice(&0xfffffffeu32.to_le_bytes()); }
             input.seek(SeekFrom::Start(0)).unwrap(); input.write_all(&data).unwrap();
-            assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new()).unwrap(), None);
+            assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new(), true).unwrap(), None);
         }
     }
     #[test]

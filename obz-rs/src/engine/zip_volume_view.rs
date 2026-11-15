@@ -159,7 +159,8 @@ pub(crate) fn with_source<T>(
             let _scope = Scope;
             return action(path);
         }
-        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl)? {
+        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl,
+            ["zip", "zipx", "7z", "rar", "exe"].iter().any(|value| ext.eq_ignore_ascii_case(value)))? {
             return with_hint(input, format!("-tzip:s{limit}"), || action(path));
         }
         if !ext.eq_ignore_ascii_case("zip") { return action(path); }
