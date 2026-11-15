@@ -1,0 +1,23 @@
+name: Receipt security layout diagnostic
+on:
+  workflow_dispatch:
+jobs:
+  read-security:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compare fresh mask7 descriptors on synthetic objects
+        run: python scripts/diagnose-receipt-security.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: receipt-security-${{ matrix.os }}
+          path: receipt-security-diagnostic.json
+          if-no-files-found: error
