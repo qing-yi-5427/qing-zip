@@ -43,7 +43,41 @@ A.WriteEncryptedFileRaw.restype=W.DWORD
 A.CloseEncryptedFileRaw.argtypes=[C.c_void_p]
 A.CloseEncryptedFileRaw.restype=None
 
-def raw_directory(source,target,precreate=False,lock_target=False):
+class FileIdDescriptor(C.Structure):
+    _fields_=[("size",W.DWORD),("kind",W.DWORD),("data",C.c_ubyte*16)]
+K.OpenFileById.argtypes=[W.HANDLE,C.POINTER(FileIdDescriptor),W.DWORD,W.DWORD,C.c_void_p,W.DWORD]
+K.OpenFileById.restype=W.HANDLE
+K.GetFileInformationByHandle.argtypes=[W.HANDLE,C.c_void_p];K.GetFileInformationByHandle.restype=W.BOOL
+K.GetFinalPathNameByHandleW.argtypes=[W.HANDLE,W.LPWSTR,W.DWORD,W.DWORD];K.GetFinalPathNameByHandleW.restype=W.DWORD
+
+def raw_takeover(pin,target,replace):
+    info=(W.DWORD*13)();require(K.GetFileInformationByHandle(pin,info),"read original target ID")
+    fid=FileIdDescriptor();fid.size=C.sizeof(fid);fid.kind=0
+    for i,b in enumerate(((info[11]<<32)|info[12]).to_bytes(8,"little")):fid.data[i]=b
+    old=target.with_name(target.name+"-moved")
+    if replace:
+        target.rename(old);target.mkdir();(target/"competitor.txt").write_bytes(b"must retain replacement")
+    parent=handle(target.parent);strong=None
+    try:
+        # The original metadata handle remains alive, preventing ID recycling.
+        strong=K.OpenFileById(parent,C.byref(fid),0x17019f,0,None,0x02200000)
+        opened=strong not in (None,C.c_void_p(-1).value)
+        result={"old_pin_retained":True,"opened":opened,"error":C.get_last_error() if not opened else 0}
+        if not opened:return result
+        current=(W.DWORD*13)();require(K.GetFileInformationByHandle(strong,current),"read takeover ID")
+        text=C.create_unicode_buffer(32768);count=K.GetFinalPathNameByHandleW(strong,text,len(text),0)
+        require(0<count<len(text),"read takeover path")
+        expected="\\\\?\\"+str(target.resolve())
+        result["identity_equal"]=list(current)[7:8]+list(current)[11:13]==list(info)[7:8]+list(info)[11:13]
+        result["path_equal"]=text.value.casefold()==expected.casefold()
+        result["accept"]=result["identity_equal"] and result["path_equal"]
+        if replace:result["replacement_preserved"]=(target/"competitor.txt").read_bytes()==b"must retain replacement"
+        return result
+    finally:
+        if strong not in (None,C.c_void_p(-1).value):K.CloseHandle(strong)
+        K.CloseHandle(parent)
+
+def raw_directory(source,target,precreate=False,lock_target=False,takeover=None):
     result={"flags_export":0,"flags_import":3,"precreated":precreate}
     exported=bytearray();context=C.c_void_p()
     @EXPORT
@@ -85,7 +119,11 @@ def raw_directory(source,target,precreate=False,lock_target=False):
     try:result["write_raw"]=A.WriteEncryptedFileRaw(supply,None,context)
     finally:
         A.CloseEncryptedFileRaw(context)
-        if locked is not None:K.CloseHandle(locked)
+        if locked is not None:
+            try:
+                if takeover is not None:result["takeover"]=raw_takeover(locked,target,takeover=="replace")
+            finally:K.CloseHandle(locked)
+    if takeover=="replace":return result
     result["consumed_bytes"]=offset
     if result["write_raw"]:return result
     result["native_directory"]=state(target)
@@ -249,6 +287,10 @@ try:
         receipt["target_metadata_pins"]={str(share):raw_directory(src,base/("target-meta-"+str(share)),False,(0x20088,share)) for share in [1,3,7]}
         receipt["target_extended_metadata_pins"]={hex(access)+"/"+str(share):raw_directory(src,base/("target-meta-"+str(access)+"-"+str(share)),False,(access,share))
             for access in [0x30088,0x1f0198,0x1f0199] for share in [1,3,7]}
+        receipt["takeover_cases"]={mode:raw_directory(src,base/("raw-takeover-"+mode),False,(0x20088,5),mode) for mode in ["normal","replace"]}
+        require(receipt["takeover_cases"]["normal"].get("takeover",{}).get("accept"),"overlapping target takeover failed")
+        replaced=receipt["takeover_cases"]["replace"].get("takeover",{})
+        require(replaced.get("identity_equal") and not replaced.get("accept") and replaced.get("replacement_preserved"),"replacement not safely rejected")
         receipt["source_pin_matrix"]=pin_matrix(src)
         receipt["guarded_nonempty"]=guarded_export(src)
         empty=base/"guarded-empty";empty.mkdir();require(A.EncryptFileW(str(empty)),"encrypt empty directory failed")
