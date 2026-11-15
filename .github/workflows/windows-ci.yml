@@ -39,7 +39,12 @@ jobs:
           cargo build --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --bins
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           foreach ($name in 'obz.exe','obz-worker.exe') {
-            Copy-Item -LiteralPath "obz-gui/target/debug/$name" -Destination "obz-gui/target/debug/deps/$name" -Force
+            $source = "obz-gui/target/debug/$name"
+            $destination = "obz-gui/target/debug/deps/$name"
+            # Cargo may hard-link these paths; copying identical files fails on Windows.
+            if (!(Test-Path -LiteralPath $destination) -or (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
+              Copy-Item -LiteralPath $source -Destination $destination -Force
+            }
           }
           cargo test --locked --manifest-path obz-rs/Cargo.toml --target-dir obz-gui/target --lib --test archive_comment --test creation_safety --test engine_staging --test envelopes --test korean --test operations_integration --test native_hardening --test rare_formats --test motw_propagation --test extraction_threads --test engine_password_transport --test encrypted_split_selection --test zpaq_password_transport --test advanced_compression --test raw_streams --test verified_zip_create
           exit $LASTEXITCODE
