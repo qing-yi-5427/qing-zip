@@ -413,15 +413,22 @@ unsafe extern "system" fn progress(
         state.failed = Some("EFS复制取消或源身份变化".into());
         return 1;
     }
-    let id = match identity(target) {
+    // CopyFileEx ADS callback handles can omit FILE_READ_ATTRIBUTES. Reopen
+    // the exact stream object, never its pathname, for metadata-only checks.
+    let metadata = unsafe { ReOpenFile(target, 0x20080, 7, 0x00200000) };
+    if metadata as isize == -1 {
+        state.failed = Some(error("EFS callback metadata reopen"));
+        return 1;
+    }
+    let metadata = unsafe { File::from_raw_handle(metadata) };
+    let id = match identity(metadata.as_raw_handle()) {
         Ok(id) => id,
         Err(error) => {
             state.failed = Some(format!("EFS native target identity stream={_n} reason={_reason}: {error}"));
             return 1;
         }
     };
-    let borrowed = std::mem::ManuallyDrop::new(unsafe { File::from_raw_handle(target) });
-    if let Err(error) = crate::private_stage::verify_native_private_child(state.parent, &borrowed) {
+    if let Err(error) = crate::private_stage::verify_native_private_child(state.parent, &metadata) {
         state.failed = Some(error);
         return 1;
     }
