@@ -2985,6 +2985,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             &ctl,
             &mut output_guards,
             opts.zone_identifier.as_ref(), journal.as_ref(), conflict_policy,
+            opts.threads,
         )?
     } else {
         let mut count = 0;
@@ -4133,7 +4134,21 @@ fn publish_small_files_parallel(
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
 ) -> Result<usize, String> {
-    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None, None, "error")
+    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None, None, "error", None)
+}
+fn publication_workers(requested: Option<u32>, available: usize, files: usize) -> usize {
+    // Keep the measured four-worker ceiling and honor a lower user limit.
+    4.min(requested.unwrap_or(4) as usize).min(available).min(files).max(1)
+}
+#[test]
+fn publication_respects_explicit_limits_without_raising_the_default() {
+    assert_eq!(publication_workers(None, 32, 6000), 4);
+    assert_eq!(publication_workers(Some(32), 32, 6000), 4);
+    assert_eq!(publication_workers(Some(1), 32, 6000), 1);
+    assert_eq!(publication_workers(Some(2), 32, 6000), 2);
+    assert_eq!(publication_workers(Some(3), 32, 6000), 3);
+    assert_eq!(publication_workers(None, 2, 6000), 2);
+    assert_eq!(publication_workers(None, 32, 1), 1);
 }
 fn publish_staged_files_parallel(
     entries: &[&Entry],
@@ -4142,6 +4157,7 @@ fn publish_staged_files_parallel(
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
     zone: Option<&crate::motw::ZoneIdentifier>,journal:Option<&PublicationJournal>, policy: &str,
+    requested_threads: Option<u32>,
 ) -> Result<usize, String> {
     use std::sync::atomic::AtomicUsize;
     for e in entries.iter().filter(|e| e.is_dir) {
@@ -4178,10 +4194,8 @@ fn publish_staged_files_parallel(
     };
     let stopped = AtomicBool::new(false);
     let first_error = Mutex::new(None::<String>);
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(4);
+    let workers = publication_workers(requested_threads,
+        std::thread::available_parallelism().map_or(1, |n| n.get()), files.len());
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
         for _ in 0..workers {
@@ -7372,7 +7386,7 @@ mod staging_tests {
         let out = tempfile::tempdir().unwrap();
         assert_eq!(publish_staged_files_parallel(&entries.iter().collect::<Vec<_>>(), out.path(),
             StagedContents::Memory(&files), &JobControl::new(), &mut CheckedDirectories::default(),
-            None, None, "error").unwrap(), 160);
+            None, None, "error", Some(1)).unwrap(), 160);
         for (i, entry) in entries.iter().filter(|e| !e.is_dir).enumerate() {
             assert_eq!(fs::read(out.path().join(&entry.name)).unwrap(),
                 if i == 0 { vec![] } else { vec![i as u8; 128 * 1024] });
@@ -7461,7 +7475,7 @@ mod staging_tests {
                 StagedContents::Memory(&contents),
                 &JobControl::new(),
                 &mut guard,
-                None, None, "error"
+                None, None, "error", Some(2)
             )
             .unwrap(),
             160
