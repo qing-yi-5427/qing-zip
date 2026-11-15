@@ -24,3 +24,16 @@ test('closing all or exiting includes every nested session for confirmation and 
  assert.deepEqual(selection('all','deep'),tabs.map(t=>t.id));
  assert.deepEqual(selection('exit','deep'),tabs.map(t=>t.id));
 });
+
+// Explicit archive opening must not rely on filename extensions.
+test('open as archive accepts any single visible file but rejects folders, stale or multiple selection and busy jobs',()=>{
+ const context={s:{archive:'outer.zip',selected:new Set(['payload'])},tabBusy:()=>false,visibleEntries:()=>[{name:'payload',is_dir:false},{name:'directory/',is_dir:true}]};
+ vm.createContext(context);
+ vm.runInContext(source.split('\n').find(line=>line.startsWith('function selectedNestedMember(')),context);
+ assert.equal(context.selectedNestedMember(),'payload');
+ for(const names of [[],['missing'],['directory/'],['payload','directory/']]){
+  context.s.selected=new Set(names);assert.equal(context.selectedNestedMember(),null);
+ }
+ context.s.selected=new Set(['payload']);context.tabBusy=()=>true;assert.equal(context.selectedNestedMember(),null);
+ context.tabBusy=()=>false;context.s.archive='';assert.equal(context.selectedNestedMember(),null);
+});
