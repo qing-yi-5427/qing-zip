@@ -6,7 +6,7 @@ on:
     paths:
       - scripts/efs-ci-probe.py
       - scripts/efs-directory-ci-probe.py
-      - scripts/efs-oplock-keys-ci-probe.py
+      - scripts/efs-oplock-key-change-ci-probe.py
       - .github/workflows/efs-native-probe.yml
 permissions:
   contents: read
@@ -19,10 +19,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Probe native EFS in disposable runner only
         shell: pwsh
-        run: python scripts/efs-oplock-keys-ci-probe.py
+        run: python scripts/efs-oplock-key-change-ci-probe.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: efs-native-probe-${{ github.run_id }}
-          path: efs-oplock-keys-result.json
+          path: efs-oplock-key-change-result.json
           if-no-files-found: error
