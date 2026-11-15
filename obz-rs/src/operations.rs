@@ -193,6 +193,10 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             let mime = image_type(&bytes).ok_or("preview supports PNG, JPEG, GIF, WebP, BMP and AVIF images only")?;
             Ok(json!({"name":r.name,"mime":mime,"data_url": format!("data:{mime};base64,{}", base64(&bytes))}))
         },
+        #[cfg(windows)]
+        "file-split" => engine::file_parts::split(&r.path, &r.dest, r.max_bytes.ok_or("请填写分块大小")?, &r.options),
+        #[cfg(windows)]
+        "file-combine" => engine::file_parts::combine(&r.path, &r.dest, r.max_bytes, &r.options),
         "repair" => Ok(json!(services::repair_zip_with_options(&r.path, &r.dest, r.max_bytes.unwrap_or(512 * 1024 * 1024), r.options.password.as_deref(), r.options.codepage)?)),
         "checksum-files" => crate::checksum::checksum_files(&r.inputs, &r.hashes, &r.options),
         "checksum" => crate::checksum::checksum_selected(&r.path, &r.hashes, &r.options),

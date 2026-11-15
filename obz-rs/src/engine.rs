@@ -6,6 +6,8 @@ pub mod selected_worker;
 mod created_directories;
 #[cfg(windows)]
 pub mod nested;
+#[cfg(windows)]
+pub mod file_parts;
 mod bounded_archive_stage;
 pub mod benchmark;
 mod zip_volume_view;

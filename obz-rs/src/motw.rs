@@ -8,6 +8,7 @@ const MAX_ZONE_BYTES: usize = 64 * 1024;
 #[derive(Clone, Debug)]
 pub struct ZoneIdentifier {
     bytes: Vec<u8>,
+    zone_id: u8,
     // Keeps the checked source identity and its streams stable until publication.
     // Private and serde-skipped through EngineOptions; never supplied by JSON.
     _source: Option<Arc<File>>,
@@ -19,11 +20,16 @@ impl ZoneIdentifier {
     pub(crate) fn unmarked() -> Self {
         Self {
             bytes: Vec::new(),
+            zone_id: 0,
             _source: None,
         }
     }
     pub(crate) fn is_marked(&self) -> bool {
         !self.bytes.is_empty()
+    }
+
+    pub(crate) fn more_restrictive_than(&self, other: &Self) -> bool {
+        self.is_marked() && (!other.is_marked() || self.zone_id > other.zone_id)
     }
 
     fn parse(bytes: Vec<u8>) -> Result<Self, String> {
@@ -71,8 +77,10 @@ impl ZoneIdentifier {
         if zone.is_none() {
             return Err("Internet zone metadata has no valid ZoneId".into());
         }
+        let zone_id = zone.unwrap().parse::<u8>().map_err(|_| "invalid Internet zone")?;
         Ok(Self {
             bytes,
+            zone_id,
             _source: None,
         })
     }
