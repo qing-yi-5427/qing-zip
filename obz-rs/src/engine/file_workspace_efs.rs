@@ -289,6 +289,9 @@ struct Snapshot {
     #[cfg(test)]
     basic: [u64; 3],
     digest: [u8; 32],
+    logical: [u8; 32],
+    encrypted: bool,
+    certificates: [Vec<Vec<u8>>;2],
     ea: Vec<u8>,
     _pins: Vec<File>,
 }
@@ -296,6 +299,11 @@ fn snapshot(file: &File, ctl: &JobControl) -> Result<Snapshot, String> {
     snapshot_with_share(file, ctl, 1)
 }
 fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snapshot, String> {
+    let value=snapshot_any(file,ctl,share)?;
+    if !value.encrypted{return Err("目标未保持EFS加密，拒绝发布".into());}
+    Ok(value)
+}
+fn snapshot_any(file: &File, ctl: &JobControl, share: u32) -> Result<Snapshot, String> {
     ctl.check()?;
     identity(file.as_raw_handle())?;
     let encrypted = file
@@ -310,9 +318,6 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
             && path(file)?
                 .file_name()
                 .is_some_and(|n| n == "encrypted-native-output"));
-    if !encrypted {
-        return Err("目标未保持EFS加密，拒绝发布".into());
-    }
     let names = stream_names(file)?;
     let mut pins = Vec::new();
     let mut hash = Sha256::new();
@@ -367,9 +372,12 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
     let ea = ea(file)?;
     hash.update((ea.len() as u64).to_le_bytes());
     hash.update(&ea);
+    let logical=hash.clone().finalize().into();
+    hash.update([u8::from(encrypted)]);
+    let mut certificates=[Vec::new(),Vec::new()];
     let path = path(file)?;
     for recovery in [false, true] {
-        let keys = keys(&path, recovery)?;
+        let keys = if encrypted {keys(&path, recovery)?} else {Vec::new()};
         #[cfg(test)]
         let keys = if !recovery
             && TARGET_STATE_FAULT.with(|v| v.get()) == 2
@@ -381,9 +389,10 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
         } else {
             keys
         };
-        if !recovery && keys.is_empty() {
+        if encrypted && !recovery && keys.is_empty() {
             return Err("EFS缺少授权用户证书".into());
         }
+        certificates[usize::from(recovery)]=keys.clone();
         hash.update([u8::from(recovery)]);
         hash.update((keys.len() as u64).to_le_bytes());
         for key in keys {
@@ -399,6 +408,7 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
             u64::from(basic.file_attributes() & 0x3127),
         ],
         digest: hash.finalize().into(),
+        logical,encrypted,certificates,
         ea,
         _pins: pins,
     })
@@ -508,21 +518,23 @@ pub(crate) struct Prepared {
     stage: crate::private_stage::PrivateStage,
     source: crate::engine_stream::PinnedSource,
     expected: Snapshot,
+    target_digest: [u8;32],
     #[cfg(test)]
     callback_seen: bool,
 }
 struct EfsProof<'a> {
     source: &'a File,
     digest: [u8; 32],
+    target_digest: [u8;32],
     control: JobControl,
 }
 impl crate::private_stage::LocalOutputProof for EfsProof<'_> {
     fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
-        if snapshot(self.source, &self.control)?.digest != self.digest {
+        if snapshot_any(self.source, &self.control,1)?.digest != self.digest {
             return Err("EFS source changed before publication".into());
         }
         let actual = snapshot_with_share(file, &self.control, 5)?.digest;
-        if actual != self.digest {
+        if actual != self.target_digest {
             return Err("EFS complete stream/certificate proof changed".into());
         }
         Ok(actual.to_vec())
@@ -533,7 +545,7 @@ impl Prepared {
         &self.source
     }
     pub(super) fn digest(&self) -> [u8; 32] {
-        self.expected.digest
+        self.target_digest
     }
     pub(crate) fn publish(
         mut self,
@@ -545,6 +557,7 @@ impl Prepared {
         let proof = EfsProof {
             source: &self.source,
             digest: self.expected.digest,
+            target_digest:self.target_digest,
             control: ctl.clone(),
         };
         let old_path = path(&self.file)?;
@@ -559,16 +572,16 @@ impl Prepared {
     }
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
         crate::private_stage::verify_native_private_child(self.stage.root(), &self.file)?;
-        let source = snapshot(&self.source, ctl)?;
+        let source = snapshot_any(&self.source, ctl,1)?;
         // Private target main handle owns DELETE for identity-bound cleanup.
         // Its ADS reads must share that existing right, never share WRITE.
         let target = snapshot_with_share(&self.file, ctl, 5)?;
-        if source.digest != self.expected.digest || target.digest != self.expected.digest {
+        if source.digest != self.expected.digest || target.digest != self.target_digest {
             #[cfg(test)]
             eprintln!(
                 "EFS proof mismatch source_same={} target_same={} basic expected={:?} source={:?} target={:?}",
                 source.digest == self.expected.digest,
-                target.digest == self.expected.digest,
+                target.digest == self.target_digest,
                 self.expected.basic,
                 source.basic,
                 target.basic
@@ -604,7 +617,10 @@ pub(super) fn prepare_bound(
     }) {
         return Err("EFS source identity changed before copy".into());
     }
-    let expected = snapshot(&source, ctl)?;
+    let expected = snapshot_any(&source, ctl,1)?;
+    if !expected.encrypted && parent_pin.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000==0 {
+        return Err("EFS copy requires encrypted source or encrypted destination policy".into());
+    }
     let mut flags = 0;
     let callback = Some(progress as Progress);
     #[cfg(test)]
@@ -693,7 +709,12 @@ pub(super) fn prepare_bound(
     }
     #[cfg(test)]
     let callback_seen = state.destination.is_some();
+    let target_state=snapshot_with_share(&file,ctl,5)?;
+    if target_state.logical!=expected.logical || (expected.encrypted && target_state.certificates!=expected.certificates) {
+        return Err("EFS native copy content or source certificate policy changed".into());
+    }
     let prepared = Prepared {
+        target_digest:target_state.digest,
         file,
         reservation: Some(reservation),
         stage,
@@ -1116,4 +1137,30 @@ mod tests {
             assert_eq!(std::fs::read_dir(dest).unwrap().count(), 1);
         }
     }
+    #[test]
+    #[ignore = "plaintext to EFS policy requires disposable hosted runner"]
+    fn ci_efs_plain_source_respects_encrypted_target_policy_and_keeps_source_plain() {
+        for mode in ["error","skip","rename","overwrite"] {
+            let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source.txt");let dest=temp.path().join("dest");
+            std::fs::write(&source,b"plain source content").unwrap();std::fs::write(format!("{}:named",source.display()),b"plain named stream").unwrap();
+            {let file=File::options().read(true).write(true).open(&source).unwrap();set_ea(&file,&[0,0,0,0,0x80,1,1,0,b'A',0,7]).unwrap();}
+            std::fs::create_dir(&dest).unwrap();encrypt_ci_fixture(&dest);
+            let old=dest.join("source.txt");std::fs::write(&old,b"old destination").unwrap();
+            let before=snapshot_any(&File::open(&source).unwrap(),&JobControl::new(),1).unwrap();assert!(!before.encrypted);
+            let options=super::super::EngineOptions{overwrite:mode.into(),..Default::default()};
+            let copied=super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&options);
+            if mode=="error"{assert!(copied.is_err());}
+            else if mode=="skip"{assert_eq!(copied.unwrap().skipped,1);}
+            else{
+                assert_eq!(copied.unwrap().copied,1);
+                let target=dest.join(if mode=="rename"{"source (1).txt"}else{"source.txt"});
+                let actual=snapshot(&File::open(target).unwrap(),&JobControl::new()).unwrap();
+                assert!(actual.encrypted);assert!(!actual.certificates[0].is_empty());assert_eq!(actual.logical,before.logical);
+                assert_ne!(actual.digest,before.digest,"encryption-state difference must remain explicit");
+            }
+            if mode!="overwrite"{assert_eq!(std::fs::read(old).unwrap(),b"old destination");}
+            assert_eq!(snapshot_any(&File::open(&source).unwrap(),&JobControl::new(),1).unwrap().digest,before.digest);
+        }
+    }
+
 }
