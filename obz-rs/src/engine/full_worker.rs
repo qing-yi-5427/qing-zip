@@ -47,7 +47,7 @@ fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
 
 pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
-    if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() ||
+    if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() || opts.threads.is_some() ||
         crate::machine_policy::scope().restricted() {return Ok(None);}
     let mut probe=source.try_clone().map_err(|e|e.to_string())?;
     let mut magic=[0u8;4];probe.rewind().map_err(|e|e.to_string())?;
@@ -64,6 +64,8 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
     let exe=std::env::current_exe().map_err(|e|e.to_string())?.with_file_name("obz.exe");
     #[cfg(test)]
     let exe=if exe.is_file(){exe}else{exe.parent().unwrap().parent().unwrap().join("obz.exe")};
+    let helper=exe.with_file_name("obz-worker.exe");
+    let exe=if helper.is_file(){helper}else{exe};
     if !exe.is_file(){return Ok(None);}
     let runtime_pins=pin_runtime(&runtime,ctl)?;let image=crate::engine_stream::pin(&exe)?;
     let mut nonce=[0u8;16];if unsafe{BCryptGenRandom(std::ptr::null_mut(),nonce.as_mut_ptr(),16,2)}<0{return Err("full worker nonce failed".into());}
@@ -209,6 +211,35 @@ mod tests {
         File::options().append(true).open(&archive).unwrap().write_all(b"trailing data").unwrap();
         let source=crate::engine_stream::pin(&archive).unwrap();
         assert!(prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).unwrap().is_none());reap_proof();
+    }
+
+    #[test]
+    fn dedicated_image_is_pinned_and_still_waits_for_host_approval() {
+        #[link(name="kernel32")]
+        extern "system" { fn QueryFullProcessImageNameW(process:std::os::windows::io::RawHandle,flags:u32,name:*mut u16,length:*mut u32)->i32; }
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        let (_,pending)=prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).unwrap().unwrap();
+        let pending=pending.unwrap();let mut image=vec![0u16;32768];let mut length=image.len() as u32;
+        assert_ne!(unsafe{QueryFullProcessImageNameW(pending.session.child.as_raw_handle(),0,image.as_mut_ptr(),&mut length)},0);
+        let image=PathBuf::from(String::from_utf16(&image[..length as usize]).unwrap());
+        assert_eq!(image.file_name().unwrap(),"obz-worker.exe");
+        assert!(File::options().write(true).open(&image).is_err());
+        assert!(pending.session.exit_code().unwrap().is_none());
+        drop(pending);reap_proof();
+        let result=std::process::Command::new(&image).args(["--full-archive-worker","unapproved-path"]).output().unwrap();
+        assert_eq!(result.status.code(),Some(3));assert!(result.stdout.is_empty());
+    }
+
+    #[test]
+    fn explicit_thread_limits_keep_original_route_until_protocol_supports_them() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        for threads in [1,4,8] {
+            let opts=EngineOptions{threads:Some(threads),..Default::default()};
+            assert!(prepare(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).unwrap().is_none());
+        }
+        assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
     }
 
 }

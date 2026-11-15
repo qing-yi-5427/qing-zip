@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "obz"
 path = "src/main.rs"
 
+[[bin]]
+name = "obz-worker"
+path = "src/worker_main.rs"
+
 [dependencies]
 lzma-rs = "0.3"
 miniz_oxide = "0.8"
