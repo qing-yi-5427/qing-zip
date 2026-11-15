@@ -5,6 +5,7 @@ use std::{
 };
 
 thread_local! {
+    static HINTS: RefCell<Vec<(PathBuf, String)>> = const { RefCell::new(Vec::new()) };
     static ACTIVE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -15,6 +16,30 @@ impl Drop for Scope {
             paths.borrow_mut().pop();
         });
     }
+}
+
+struct HintScope;
+impl Drop for HintScope {
+    fn drop(&mut self) { HINTS.with(|hints| { hints.borrow_mut().pop(); }); }
+}
+pub(super) fn apply_read_hint(args: &mut Vec<String>) {
+    if !matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) { return; }
+    HINTS.with(|hints| {
+        for (path, hint) in hints.borrow().iter().rev() {
+            let Some(separator) = args.iter().position(|arg| arg == "--") else { break; };
+            if args.get(separator + 1).is_some_and(|arg| Path::new(arg) == path) {
+                if !args[..separator].iter().any(|arg| arg.starts_with("-t")) { args.insert(1, hint.clone()); }
+                break;
+            }
+        }
+    });
+}
+fn with_hint<T>(input: PathBuf, hint: String, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    HINTS.with(|hints| hints.borrow_mut().push((input.clone(), hint)));
+    let _hint = HintScope;
+    ACTIVE.with(|paths| paths.borrow_mut().push(input));
+    let _scope = Scope;
+    action()
 }
 
 fn numeric_zip(path: &Path, extension: &str) -> bool {
@@ -117,14 +142,28 @@ pub(crate) fn with_source<T>(
     let input = Path::new(path);
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
     let numeric = numeric_zip(input, ext);
-    if !numeric && !disk_part(ext) && !ext.eq_ignore_ascii_case("zip") {
-        return action(path);
-    }
     let input = absolute(path)?;
     if ACTIVE.with(|paths| paths.borrow().contains(&input)) {
         return action(path);
     }
     let mut anchor = crate::engine_stream::pin(&input)?;
+    if !numeric && !disk_part(ext) {
+        if let Some(format) = zip_input_probe::signature(&mut anchor)? {
+            return with_hint(input, format!("-t{format}"), || action(path));
+        }
+        let mut head = [0u8; 4];
+        let read = anchor.read(&mut head).map_err(|e| e.to_string())?;
+        anchor.rewind().map_err(|e| e.to_string())?;
+        if read == 4 && &head == b"PK\x03\x04" && single_disk(&mut anchor)? {
+            ACTIVE.with(|paths| paths.borrow_mut().push(input));
+            let _scope = Scope;
+            return action(path);
+        }
+        if let Some(limit) = zip_input_probe::zip_search_limit(&mut anchor, &ctl)? {
+            return with_hint(input, format!("-tzip:s{limit}"), || action(path));
+        }
+        if !ext.eq_ignore_ascii_case("zip") { return action(path); }
+    }
     if ext.eq_ignore_ascii_case("zip") && single_disk(&mut anchor)? {
         ACTIVE.with(|paths| paths.borrow_mut().push(input));
         let _scope = Scope;
@@ -242,6 +281,23 @@ fn private_family(
 #[cfg(windows)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_hint_does_not_interpret_literal_member_names_as_switches() {
+        let path = PathBuf::from("C:/archive.zip");
+        with_hint(path.clone(), "-tzip:s20000000".into(), || {
+            let mut args = vec!["x".into(), "--".into(), path.display().to_string(), "-test.txt".into()];
+            apply_read_hint(&mut args);
+            assert_eq!(args[1], "-tzip:s20000000");
+            let mut other = vec!["x".into(), "--".into(), "C:/other.zip".into(), path.display().to_string()];
+            apply_read_hint(&mut other);
+            assert_eq!(other[1], "--");
+            let mut explicit = vec!["l".into(), "-t7z".into(), "--".into(), path.display().to_string()];
+            apply_read_hint(&mut explicit);
+            assert_eq!(explicit.len(), 4);
+            Ok(())
+        }).unwrap();
+    }
 
     fn fixture(numeric: bool, readonly: bool) {
         let dir = tempfile::tempdir().unwrap();

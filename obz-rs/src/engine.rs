@@ -6,6 +6,7 @@ pub mod selected_worker;
 mod created_directories;
 mod bounded_archive_stage;
 mod zip_volume_view;
+mod zip_input_probe;
 #[cfg(windows)]
 pub(crate) mod edit_source;
 #[cfg(windows)]
@@ -431,6 +432,7 @@ fn run_program_log_with_directory(
         (stdout, None)
     };
     let mut guarded_args = args.to_vec();
+    zip_volume_view::apply_read_hint(&mut guarded_args);
     if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
         && matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) {
         guarded_args.insert(1, "-stxZealFS".into());
