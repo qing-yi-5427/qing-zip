@@ -9,6 +9,50 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The exact filesystem objects on both sides of one successful archive edit.
+#[derive(Debug)]
+pub struct ArchiveRevision {
+    before: File,
+    after: File,
+}
+
+fn metadata_reference(path: &Path) -> Result<File, String> {
+    File::options()
+        .access_mode(0x80)
+        .share_mode(7)
+        .custom_flags(0x00200000)
+        .open(path)
+        .map_err(|error| error.to_string())
+}
+
+impl ArchiveRevision {
+    pub(super) fn new(before: &Path, after: &Path) -> Result<Self, String> {
+        Ok(Self {
+            before: metadata_reference(before)?,
+            after: metadata_reference(after)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EditReceipt(std::sync::Arc<std::sync::Mutex<Option<ArchiveRevision>>>);
+impl EditReceipt {
+    pub fn capture(options: &mut EngineOptions) -> Self {
+        let receipt = Self::default();
+        options.edit_receipt = Some(receipt.clone());
+        receipt
+    }
+    pub fn take(&self) -> Option<ArchiveRevision> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+    pub(super) fn record(&self, revision: ArchiveRevision) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(revision);
+    }
+}
+
 pub struct NestedArchive {
     directory: ShellDragDirectory,
     path: PathBuf,
@@ -46,12 +90,7 @@ impl NestedArchive {
         // While extracting, deny replacement. After opening, keep only a
         // metadata reference so other applications may edit the outer archive.
         let source = engine_stream::pin(&parent)?;
-        let parent_identity = File::options()
-            .access_mode(0x80)
-            .share_mode(7)
-            .custom_flags(0x00200000)
-            .open(&parent)
-            .map_err(|e| e.to_string())?;
+        let parent_identity = metadata_reference(&parent)?;
         if super::directory_identity(&parent_identity)? != super::directory_identity(&source)? {
             return Err("parent archive changed while opening member".into());
         }
@@ -83,6 +122,30 @@ impl NestedArchive {
         &self.path
     }
 
+    /// Follow a known successful edit by this process only if this same member
+    /// survived unchanged. Other writers and stale receipts cannot rebind a tab.
+    pub fn rebind_after_commit(
+        &mut self,
+        revision: &ArchiveRevision,
+        options: &EngineOptions,
+    ) -> Result<bool, String> {
+        if super::directory_identity(&self.parent_identity)?
+            != super::directory_identity(&revision.before)?
+        {
+            return Ok(false);
+        }
+        let current = engine_stream::pin(&self.parent)?;
+        if super::directory_identity(&current)? != super::directory_identity(&revision.after)? {
+            return Ok(false);
+        }
+        let now = Self::open(utf8(&self.parent)?, &self.member, options)?;
+        if now.original_hash != self.original_hash {
+            return Ok(false);
+        }
+        self.parent_identity = now.parent_identity;
+        Ok(true)
+    }
+
     /// Commit only if the same parent still contains the bytes originally opened.
     /// Any error leaves the working copy available for retry or Save As.
     pub fn save(&mut self, options: &EngineOptions) -> Result<(), String> {
@@ -95,7 +158,7 @@ impl NestedArchive {
         let _policy = crate::machine_policy::scope();
         let _lock = super::update_lock(&self.parent, &job)?;
         super::zip_volume_view::require_editable(&self.parent)?;
-        let edit = EditSource::open(&self.parent)?;
+        let edit = EditSource::open_controlled(&self.parent, &job)?;
         let verify = Self::open(utf8(&self.parent)?, &self.member, options)?;
         if super::directory_identity(&verify.parent_identity)?
             != super::directory_identity(&self.parent_identity)?
@@ -127,13 +190,9 @@ impl NestedArchive {
             return Err("nested archive write-back verification failed".into());
         }
         drop(verified);
-        let next_identity = File::options()
-            .access_mode(0x80)
-            .share_mode(7)
-            .open(staged)
-            .map_err(|e| e.to_string())?;
+        let next_identity = metadata_reference(staged)?;
         job.check()?;
-        edit.commit(output)?;
+        edit.commit_tracked(output, options)?;
         self.parent_identity = next_identity;
         self.original_hash = next_hash;
         Ok(())
@@ -312,5 +371,55 @@ mod tests {
         assert!(NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &wrong).is_err());
         let valid = NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &credentials).unwrap();
         assert_eq!(member(valid.path(), "note"), b"updated");
+    }
+    #[test]
+    fn siblings_can_follow_a_verified_edit_but_never_a_replacement_after_that_edit() {
+        let original = zip(&[("note", b"original")]);
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent.zip");
+        fs::write(&parent, zip(&[("a.zip", &original), ("b.zip", &original)])).unwrap();
+        let base = EngineOptions::default();
+        let mut first = NestedArchive::open(utf8(&parent).unwrap(), "a.zip", &base).unwrap();
+        let mut sibling = NestedArchive::open(utf8(&parent).unwrap(), "b.zip", &base).unwrap();
+        let mut stale = NestedArchive::open(utf8(&parent).unwrap(), "b.zip", &base).unwrap();
+        let mut options = EngineOptions::default();
+        let receipt = EditReceipt::capture(&mut options);
+        fs::write(first.path(), zip(&[("note", b"first edit")])).unwrap();
+        first.save(&options).unwrap();
+        let revision = receipt.take().unwrap();
+        assert!(sibling.rebind_after_commit(&revision, &base).unwrap());
+        let second = zip(&[("note", b"second edit")]);
+        fs::write(sibling.path(), &second).unwrap();
+        sibling.save(&base).unwrap();
+        assert_eq!(member(&parent, "b.zip"), second);
+        let foreign = temp.path().join("foreign.zip");
+        fs::write(
+            &foreign,
+            zip(&[("b.zip", &original), ("foreign", b"new owner")]),
+        )
+        .unwrap();
+        fs::rename(foreign, &parent).unwrap();
+        assert!(!stale.rebind_after_commit(&revision, &base).unwrap());
+    }
+
+    #[test]
+    fn ordinary_parent_comment_receipt_preserves_open_member_binding() {
+        let original = zip(&[("note", b"old")]);
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent.zip");
+        fs::write(&parent, zip(&[("a.zip", &original)])).unwrap();
+        let mut opts = EngineOptions::default();
+        let mut tab = NestedArchive::open(utf8(&parent).unwrap(), "a.zip", &opts).unwrap();
+        let receipt = EditReceipt::capture(&mut opts);
+        crate::archive_comment::set(utf8(&parent).unwrap(), "parent change", &opts).unwrap();
+        assert!(tab
+            .rebind_after_commit(&receipt.take().unwrap(), &opts)
+            .unwrap());
+        fs::write(tab.path(), zip(&[("note", b"new")])).unwrap();
+        tab.save(&opts).unwrap();
+        assert_eq!(
+            crate::archive_comment::get(utf8(&parent).unwrap()).unwrap(),
+            "parent change"
+        );
     }
 }

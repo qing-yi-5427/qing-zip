@@ -219,7 +219,7 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     #[cfg(windows)]
     {
         drop(writer);
-        edit.commit(output)?;
+        edit.commit_tracked(output, opts)?;
     }
     #[cfg(not(windows))]
     temp.persist(&path).map_err(|e| e.error.to_string())?;

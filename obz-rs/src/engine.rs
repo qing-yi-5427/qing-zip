@@ -104,6 +104,9 @@ pub struct EngineOptions {
     pub control: Option<JobControl>,
     #[serde(skip)]
     pub zone_identifier: Option<crate::motw::ZoneIdentifier>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub edit_receipt: Option<nested::EditReceipt>,
 }
 impl Default for EngineOptions {
     fn default() -> Self {
@@ -122,6 +125,8 @@ impl Default for EngineOptions {
             overwrite: "error".into(),
             control: None,
             zone_identifier: None,
+            #[cfg(windows)]
+            edit_receipt: None,
         }
     }
 }
@@ -4800,7 +4805,7 @@ pub fn update(
     ctl.check()?;
     no_links(&path)?;
     #[cfg(windows)]
-    source.commit(output)?;
+    source.commit_tracked(output, opts)?;
     #[cfg(not(windows))]
     fs::rename(&staged, &path).map_err(|e| e.to_string())?;
     ctl.set("complete", Some(100), "Archive updated");

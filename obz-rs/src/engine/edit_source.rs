@@ -303,6 +303,15 @@ impl EditSource {
         Ok(count == 4 && matches!(&magic, b"PK\x03\x04" | b"PK\x05\x06"))
     }
 
+    pub(crate) fn commit_tracked(self, output: EditOutput, options: &super::EngineOptions) -> Result<(), String> {
+        let Some(receipt) = &options.edit_receipt else { return self.commit(output) };
+        // Both references are acquired while the original edit guard and private
+        // output still exist. Never recapture a public pathname after releasing them.
+        let revision = super::nested::ArchiveRevision::new(&self.path, output.path())?;
+        self.commit(output)?;
+        receipt.record(revision);
+        Ok(())
+    }
     pub(crate) fn commit(self, output: EditOutput) -> Result<(), String> {
         self.commit_with(output, || {}, || {})
     }
