@@ -149,7 +149,7 @@ fn private_permissions_match(
         .map_err(|e| e.to_string())?;
     Ok(sid == user_sid || matches!(sid.as_str(), "S-1-5-18" | "S-1-5-32-544"))
 }
-fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
+pub(super) fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
 fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Result<PrivateDescriptor, String> {
 
     let policy = descriptor(parent)?;

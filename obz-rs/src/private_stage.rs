@@ -1433,10 +1433,14 @@ mod file_publication {
             Ok(policy) => policy,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
-        if !supports_descriptor(policy.0)? {
+        // Keep the bounded ACE qualification, but derive the actual parent's
+        // legacy/automatic inheritance model exactly as private copy publication
+        // does. Missing AI is not evidence that a verified same-volume file needs
+        // copying. Re-derive from the live parent before and after finalization.
+        if !ordinary_aces(policy.0)? {
             return Ok(FilePublication::Unavailable);
         }
-        let permissions = match token().and_then(|token| derive(policy.0, false, &token)) {
+        let permissions = match token().and_then(|token| output::ordinary_permissions(target_parent, &token)) {
             Ok(value) => value,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
@@ -1475,13 +1479,13 @@ mod file_publication {
         let mut pending = None;
         let transition = (|| -> Result<Result<(),String>,String> {
             let current = descriptor(target_parent)?;
-            if !supports_descriptor(current.0)? || !output::same_file_permissions(permissions.0, derive(current.0, false, &token()?)?.0)? {
+            if !ordinary_aces(current.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions(target_parent, &token()?)?.0)? {
                 return Err("destination permissions changed; verified file was not published".into());
             }
             step(Step::ApplyTarget)?;
             apply_native(&file, &permissions)?;
             let fresh=descriptor(target_parent)?;
-            if !supports_descriptor(fresh.0)? || !output::same_file_permissions(permissions.0, derive(fresh.0, false, &token()?)?.0)? {
+            if !ordinary_aces(fresh.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions(target_parent, &token()?)?.0)? {
                 return Err("destination permissions changed; verified file was not published".into());
             }
             if info(&file)?[10] != 1 || output::output_marker(&file)? != marker {
@@ -1668,6 +1672,16 @@ mod file_publication {
                     readonly,
                 }
             }
+            fn legacy_parent(&mut self) {
+                let parent = open(self.target.parent().unwrap(), 0x60081, 3);
+                let sd = descriptor(&parent).unwrap();
+                assert_ne!(unsafe { SetSecurityDescriptorControl(sd.0, 0x500, 0) }, 0);
+                assert!(unsafe { NtSetSecurityObject(parent.as_raw_handle(), 4 | 0x2000_0000, sd.0) } >= 0);
+                assert_eq!(output::control(descriptor(&parent).unwrap().0).unwrap() & 0x400, 0);
+                let control = self.target.parent().unwrap().join("legacy-control");
+                fs::write(&control, b"ordinary legacy creation").unwrap();
+                self.expected_security = security(&open(&control, 0x20080, 7));
+            }
             fn run(
                 &self,
                 replace: bool,
@@ -1762,6 +1776,46 @@ mod file_publication {
                     .is_err());
                 f.archive_intact();
                 drop(file);
+            }
+        }
+
+        #[test]
+        fn file_publication_legacy_parent_matches_native_creation_without_data_copy() {
+            for readonly in [false, true] {
+                let mut f = Fixture::new(readonly); f.legacy_parent();
+                let FilePublication::Committed(file) = f.run(false, &mut || Ok(()), &mut |_| Ok(())).unwrap()
+                    else { panic!("legacy destination must retain verified move"); };
+                assert!(!f.source.exists());
+                assert_eq!(security(&file), f.expected_security);
+                let after = info(&file).unwrap();
+                for index in [7,11,12] { assert_eq!(after[index], f.identity[index]); }
+                assert_eq!(fs::read(&f.target).unwrap(), b"verified bytes");
+                assert_eq!(fs::read(format!("{}:Zone.Identifier",f.target.display())).unwrap(), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+                assert_eq!(file.metadata().unwrap().modified().unwrap(), f.modified);
+                f.archive_intact();
+            }
+        }
+
+        #[test]
+        fn file_publication_legacy_parent_cancellation_and_policy_change_preserve_data() {
+            for mode in 0..3 {
+                let mut f=Fixture::new(false); f.legacy_parent();
+                let mut changed=None;
+                let result=f.run(false,&mut || if mode==0 {Err("cancelled".into())} else {Ok(())},&mut |step| {
+                    if step==Step::BeforeCommit && mode==1 { fs::write(&f.target,b"competitor").unwrap(); }
+                    if step==Step::ApplyTarget && mode==2 {
+                        let parent=open(f.target.parent().unwrap(),0x60081,3);
+                        policy(&parent,true); changed=Some(security(&parent));
+                    }
+                    Ok(())
+                });
+                if mode==1 {
+                    assert!(matches!(&result,Ok(FilePublication::Unavailable)) || matches!(&result,Err(e) if e.contains("private parked copy discarded")));
+                    assert_eq!(fs::read(&f.target).unwrap(),b"competitor");
+                } else { assert!(result.is_err()); assert!(!f.target.exists()); }
+                if mode==0 || f.source.exists() { f.unchanged(); } else { f.archive_intact(); }
+                if let Some(sd)=changed {assert_eq!(security(&open(f.target.parent().unwrap(),0x20080,7)),sd);}
+                assert!(!fs::read_dir(f.target.parent().unwrap()).unwrap().any(|e|e.unwrap().file_name().to_string_lossy().starts_with(".qing-zip-output-")));
             }
         }
 
