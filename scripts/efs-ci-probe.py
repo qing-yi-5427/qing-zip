@@ -123,10 +123,16 @@ try:
         require(ok, f"CopyFileEx without plaintext fallback failed: {error}")
         require(encrypted(target), "copy silently lost EFS")
         require(digest(target) == original and digest(source) == original, "primary content changed")
-        require(ea(target) == expected_ea, "copy lost EA")
+        native_ea_preserved = ea(target) == expected_ea
+        receipt["native_copy_preserved_ea"] = native_ea_preserved
         for stream in ["custom", "Zone.Identifier"]:
             require(Path(str(source)+":"+stream).read_bytes() == Path(str(target)+":"+stream).read_bytes(), "copy lost ADS")
-        receipt["checks"]["copy_preserves_efs_primary_ea_ads"] = True
+        receipt["checks"]["copy_preserves_efs_primary_ads"] = True
+        # Probe the necessary extra private-output step without hiding a native
+        # metadata loss. Final result remains failed if native copying lost EA.
+        require(ea(target, b"opaque EA bytes\0\xff") == expected_ea, "explicit EA restore failed")
+        require(encrypted(target) and digest(target) == original, "EA restore changed encryption/content")
+        receipt["checks"]["explicit_private_ea_restore_preserves_efs"] = True
 
         existing = private / "existing.bin"
         existing.write_bytes(b"existing target must survive")
@@ -142,6 +148,7 @@ try:
         require(not cancelled_target.exists(), "cancel left partial target")
         require(digest(source) == original and encrypted(source) and ea(source) == expected_ea, "cancel changed source")
         receipt["checks"]["cancel_removes_partial_preserves_source"] = True
+        require(native_ea_preserved, "CopyFileEx EFS path lost EA; explicit private EA restore works, native-only parity is incomplete")
         receipt["status"] = "passed"
 except Exception as error:
     receipt["error"] = str(error)
