@@ -40,6 +40,60 @@ def center(rect):
 def find(win,name,kind):
     hits=[a for a in win.descendants(control_type=kind) if a.element_info.name==name and a.is_visible()]
     return hits[0] if hits else None
+def finish_hosted_privacy(point, expected, blocked):
+    assert os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
+    assert os.environ.get('RUNNER_ARCH')=='ARM64'
+    pages=[];report['hosted_privacy_pages']=pages
+    def controls():
+        return [a for a in Desktop(backend='uia').window(handle=blocked).wrapper_object().descendants() if a.is_visible()]
+    def toggle_state(button):
+        evidence={'name':button.element_info.name,'rectangle':str(button.rectangle())}
+        try:
+            state=int(button.iface_toggle.CurrentToggleState);evidence['toggle_state']=state
+            return state,evidence
+        except Exception as exc:evidence['toggle_pattern_error']=type(exc).__name__
+        try:
+            aria=button.element_info.element.GetCurrentPropertyValue(30102);evidence['aria']=str(aria)
+            values=dict(p.split('=',1) for p in str(aria).split(';') if '=' in p)
+            if values.get('checked') in ('true','false'):return int(values['checked']=='true'),evidence
+        except Exception as exc:evidence['aria_error']=type(exc).__name__
+        try:evidence['legacy']=button.legacy_properties()
+        except Exception as exc:evidence['legacy_error']=type(exc).__name__
+        return None,evidence
+    for page_index in range(6):
+        all_controls=controls();names=[a.element_info.name for a in all_controls]
+        text=' '.join(names).lower()
+        if 'choose privacy settings for your device' not in text:raise RuntimeError('Outside approved hosted privacy page; stopped')
+        buttons=[a for a in all_controls if a.element_info.control_type=='Button']
+        page={'index':page_index,'controls':names,'choices':[]};pages.append(page);save('privacy-%d-before'%page_index)
+        navigation=[]
+        for button in buttons:
+            name=button.element_info.name;lower=name.lower()
+            if lower in ['learn more','accessibility']:continue
+            if lower.startswith('next') or lower in ['accept','agree']:
+                navigation.append(button);continue
+            state,evidence=toggle_state(button);page['choices'].append(evidence)
+            if state not in [0,1]:raise RuntimeError('Cannot establish privacy switch state: '+name)
+            if not any(word in lower for word in ['location','find','device','diagnostic','inking','typing','tailored','personaliz','advertis','optional']):raise RuntimeError('Unrecognized optional privacy choice: '+name)
+            if state==1:
+                coords=center(button.rectangle());assert owner(coords)==blocked
+                mouse.click(coords=coords)
+                wait(lambda:toggle_state(button)[0]==0,'privacy switch explicitly off: '+name,5)
+            evidence['confirmed_off']=toggle_state(button)[0]==0
+            assert evidence['confirmed_off']
+        assert page['choices'],'No verified optional switches on privacy page'
+        save('privacy-%d-all-optional-off'%page_index)
+        assert len(navigation)==1,[a.element_info.name for a in navigation]
+        nav=navigation[0];page['navigation']=nav.element_info.name
+        coords=center(nav.rectangle());assert owner(coords)==blocked;mouse.click(coords=coords)
+        if nav.element_info.name.lower() in ['accept','agree']:
+            wait(lambda:owner(point)!=blocked,'approved privacy page closed',15)
+            u.SetForegroundWindow(expected);wait(lambda:owner(point)==expected,'application foreground after privacy setup',10)
+            report['hosted_privacy_all_optional_off']=True;return
+        previous=names
+        wait(lambda:[a.element_info.name for a in controls()]!=previous,'next privacy choices',10)
+    raise RuntimeError('Privacy page count exceeds approved bounded flow')
+
 def dismiss_initialization_overlay(point, expected):
     blocked=owner(point)
     if blocked==expected:return
@@ -59,7 +113,7 @@ def dismiss_initialization_overlay(point, expected):
         time.sleep(.2)
         report['desktop_obstruction']['attempts'].append({'key':label,'owner_after':owner(point)})
     save('host-overlay-after-dismissal')
-    if owner(point)!=expected:raise RuntimeError('Hosted privacy initialization has no usable normal dismissal; settings left unchanged')
+    if owner(point)!=expected:finish_hosted_privacy(point,expected,blocked)
 
 def manifest(p):
     return {f.relative_to(p).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file()}
