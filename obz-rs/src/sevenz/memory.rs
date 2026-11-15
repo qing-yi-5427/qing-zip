@@ -338,7 +338,13 @@ fn decode(
         CODEC_LZMA2 => {
             strict_lzma2(packed, expected, check)?;
             let p = c.props[0];
-            let dict = (2u32 | (p as u32 & 1)) << (p / 2 + 11);
+            let declared = (2u32 | (p as u32 & 1)) << (p / 2 + 11);
+            // There is no preset dictionary. A valid match cannot reach before
+            // the produced prefix (or the last dictionary reset), so history
+            // beyond the complete declared output is never addressable. Keep
+            // the declared dictionary when smaller, including its wrap rules.
+            // strict_lzma2 has already bounded every chunk and the exact EOF.
+            let dict = declared.min(expected.max(4096) as u32);
             let mut reader =
                 lzma_rust2::Lzma2Reader::new_mem_limit(Cursor::new(packed), dict, 65 * 1024, None)
                     .map_err(|e| e.to_string())?;
@@ -717,6 +723,97 @@ pub(crate) mod tests {
         } else {
             wrap(&payload, &h)
         }
+    }
+    fn bounded_lzma2_folder(size:usize,crc:u32)->Folder {
+        Folder{coders:vec![Coder{codec:CODEC_LZMA2.to_vec(),num_in:1,num_out:1,props:vec![28]}],
+            bind_pairs:vec![],packed_indices:vec![0],unpack_sizes:vec![size as u64],unpack_crc:Some(crc)}
+    }
+    #[test]
+    fn bounded_lzma2_history_preserves_reset_size_crc_and_cancel_boundaries() {
+        for size in [0,1,4095,4096,4097,65535,65536,65537,131073] {
+            let bytes=(0..size).map(|i|(i%251) as u8).collect::<Vec<_>>();
+            for reset in [false,true] {
+                let mut stream=Vec::new();
+                for (index,chunk) in bytes.chunks(65536).enumerate() {
+                    stream.push(if index==0 || reset {1}else{2});
+                    stream.extend(((chunk.len()-1) as u16).to_be_bytes());stream.extend(chunk);
+                }
+                stream.push(0);
+                let folder=bounded_lzma2_folder(size,crc32fast::hash(&bytes));
+                assert_eq!(decode(&folder,&stream,LIMIT,&||Ok(())).unwrap(),bytes);
+                // Preserve the declared small dictionary and its circular wrap.
+                let mut small=bounded_lzma2_folder(size,crc32fast::hash(&bytes));
+                small.coders[0].props[0]=0;
+                assert_eq!(decode(&small,&stream,LIMIT,&||Ok(())).unwrap(),bytes);
+                if size>131072 {
+                    let checks=std::cell::Cell::new(0);
+                    assert!(decode(&folder,&stream,LIMIT,&|| {
+                        checks.set(checks.get()+1);
+                        if checks.get()==7 {Err("cancelled during decode".into())}else{Ok(())}
+                    }).unwrap_err().contains("cancelled during decode"));
+                }
+                let mut reference=lzma_rust2::Lzma2Reader::new_mem_limit(Cursor::new(&stream),64*1024*1024,65*1024,None).unwrap();
+                let mut original=Vec::new();reference.read_to_end(&mut original).unwrap();assert_eq!(original,bytes);
+                let mut trailing=stream.clone();trailing.push(0);
+                assert!(decode(&folder,&trailing,LIMIT,&||Ok(())).is_err());
+                let mut truncated=stream.clone();truncated.pop();
+                assert!(decode(&folder,&truncated,LIMIT,&||Ok(())).is_err());
+                let wrong=bounded_lzma2_folder(size,crc32fast::hash(&bytes)^1);
+                assert!(decode(&wrong,&stream,LIMIT,&||Ok(())).is_err());
+                assert!(decode(&folder,&stream,LIMIT,&||Err("cancelled".into())).unwrap_err().contains("cancelled"));
+                if size>0 {
+                    let shorter=bounded_lzma2_folder(size-1,0);
+                    assert!(decode(&shorter,&stream,LIMIT,&||Ok(())).is_err());
+                }
+            }
+        }
+        assert!(decode(&bounded_lzma2_folder(1,0),&[3,0],LIMIT,&||Ok(())).is_err());
+        // No preset history exists: first chunk cannot continue an absent dictionary.
+        assert!(decode(&bounded_lzma2_folder(1,0),&[2,0,0,42,0],LIMIT,&||Ok(())).is_err());
+    }
+    #[test]
+    fn bounded_lzma2_real_large_dictionary_archive_matches_official_sha() {
+        use sha2::{Digest,Sha256};
+        let temp=tempfile::tempdir().unwrap();let input=temp.path().join("input");std::fs::create_dir(&input).unwrap();
+        let mut state=0x12345678u32;let mut history=vec![0u8;8*16384];
+        for value in &mut history {state^=state<<13;state^=state>>17;state^=state<<5;*value=state as u8;}
+        for index in 0..160 {std::fs::write(input.join(format!("file-{index:03}.bin")),&history[(index%8)*16384..(index%8+1)*16384]).unwrap();}
+        let archive=temp.path().join("large-dictionary.7z");let exe=crate::engine::executable().unwrap();
+        let made=std::process::Command::new(&exe).args(["a","-t7z","-m0=lzma2","-md=64m","-mx=5","-mmt=1","-ms=on","-mhc=off","--"])
+            .arg(&archive).arg(".").current_dir(&input).output().unwrap();
+        assert!(made.status.success(),"{}",String::from_utf8_lossy(&made.stderr));
+        let data=std::fs::read(&archive).unwrap();let parsed=parse_memory_archive(&data,&||Ok(())).unwrap().unwrap();
+        let start=parsed.archive.header_offset as usize;let mut header=data[start..].to_vec();
+        // A compressor may shrink its declared dictionary for small inputs.
+        // Widen only that declaration, retaining the original distance stream;
+        // rebuild both header CRCs and verify with the official decoder below.
+        let old=parsed.archive.folders[0].coders[0].props[0];
+        let matches=header.windows(4).enumerate().filter(|(_,v)|*v==[0x21,0x21,1,old]).map(|(i,_)|i).collect::<Vec<_>>();
+        assert_eq!(matches.len(),1);header[matches[0]+3]=28;
+        let data=wrap(&data[32..start],&header);std::fs::write(&archive,&data).unwrap();
+        let parsed=parse_memory_archive(&data,&||Ok(())).unwrap().unwrap();
+        assert_eq!(parsed.archive.folders[0].coders[0].props,[28]);
+        assert_eq!(parsed.archive.folders[0].unpack_size(),160*16384);
+        let ours=temp.path().join("ours");let official=temp.path().join("official");
+        crate::engine::extract(archive.to_str().unwrap(),ours.to_str().unwrap(),&crate::engine::EngineOptions::default()).unwrap();
+        let native=std::process::Command::new(&exe).args(["x","-y","-bsp0"])
+            .arg(format!("-o{}",official.display())).arg(&archive).output().unwrap();
+        assert!(native.status.success(),"{}",String::from_utf8_lossy(&native.stderr));
+        for index in 0..160 {
+            let name=format!("file-{index:03}.bin");let expected=Sha256::digest(std::fs::read(input.join(&name)).unwrap());
+            assert_eq!(Sha256::digest(std::fs::read(ours.join(&name)).unwrap()),expected);
+            assert_eq!(Sha256::digest(std::fs::read(official.join(&name)).unwrap()),expected);
+        }
+        let cancelled=crate::engine::JobControl::new();cancelled.cancel();
+        assert!(parsed.decode(&data,&||cancelled.check()).unwrap_err().contains("cancelled"));
+        let mut damaged=data.clone();damaged[40]^=0x80;
+        // This archive can omit a folder CRC: the engine must still reject
+        // its per-member CRC mismatch before publishing any selected output.
+        let bad_archive=temp.path().join("bad.7z");std::fs::write(&bad_archive,damaged).unwrap();
+        let bad_dest=temp.path().join("bad-output");
+        assert!(crate::engine::extract(bad_archive.to_str().unwrap(),bad_dest.to_str().unwrap(),
+            &crate::engine::EngineOptions::default()).is_err());
+        assert!(!bad_dest.exists(),"corruption must fail before destination creation");
     }
     #[test]
     fn streamed_output_requires_exact_eof_and_declared_folder_crc() {
