@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+from contextlib import contextmanager
 
 K = C.WinDLL("kernel32", use_last_error=True)
 A = C.WinDLL("advapi32", use_last_error=True)
@@ -22,6 +23,8 @@ K.CreateFileW.restype = W.HANDLE
 K.CloseHandle.argtypes = [W.HANDLE]
 K.GetFileAttributesW.argtypes = [W.LPCWSTR]
 K.GetFileAttributesW.restype = W.DWORD
+K.GetVolumeInformationW.argtypes = [W.LPCWSTR, W.LPWSTR, W.DWORD, C.c_void_p,
+    C.c_void_p, C.c_void_p, W.LPWSTR, W.DWORD]
 A.EncryptFileW.argtypes = [W.LPCWSTR]
 A.EncryptionDisable.argtypes = [W.LPCWSTR, W.BOOL]
 A.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
@@ -113,6 +116,33 @@ def copy(source, target, cancel=False):
     result = K.CopyFileExW(str(source), str(target), callback, None, C.byref(cancelled), 1)
     return bool(result), C.get_last_error() if not result else 0
 
+@contextmanager
+def non_efs_volume(base):
+    # Only a new, explicitly selected VHD under our fixture directory is touched.
+    image = (base / "non-efs.vhd").resolve()
+    require(image.parent == base.resolve() and not image.exists(), "unsafe VHD target")
+    letter = next((v for v in "ZYXWVUTSRQPONMLKJIH" if not Path(v+":/").exists()), None)
+    require(letter, "no unused fixture drive letter")
+    setup = base / "attach-vhd.txt"
+    setup.write_text(f'create vdisk file="{image}" maximum=64 type=expandable\n'
+        f'select vdisk file="{image}"\nattach vdisk\ncreate partition primary\n'
+        f'format fs=fat32 quick label=QZ_EFS_CI\nassign letter={letter}\n', encoding="utf-8")
+    try:
+        result = subprocess.run(["diskpart", "/s", str(setup)], capture_output=True, text=True)
+        require(result.returncode == 0, "isolated VHD preparation failed: "+result.stdout[-2000:])
+        root = Path(letter+":/")
+        filesystem = C.create_unicode_buffer(64)
+        require(K.GetVolumeInformationW(str(root), None, 0, None, None, None, filesystem, 64),
+                "cannot query isolated VHD filesystem")
+        require(filesystem.value.upper() == "FAT32", "fixture destination is not FAT32")
+        yield root
+    finally:
+        if image.exists():
+            detach = base / "detach-vhd.txt"
+            detach.write_text(f'select vdisk file="{image}"\ndetach vdisk\n', encoding="utf-8")
+            result = subprocess.run(["diskpart", "/s", str(detach)], capture_output=True, text=True)
+            require(result.returncode == 0, "isolated VHD detach failed")
+
 try:
     with tempfile.TemporaryDirectory(prefix="qing-efs-ci-", dir=os.environ["RUNNER_TEMP"]) as directory:
         base = Path(directory)
@@ -174,12 +204,17 @@ try:
         require(A.EncryptionDisable(str(disabled), True), f"could not disable encryption for own test directory: {C.get_last_error()}")
         plaintext_target = disabled / "must-not-decrypt.bin"
         ok, error = copy(source, plaintext_target)
-        require(not ok, "encrypted copy unexpectedly accepted encryption-disabled destination")
-        require(not plaintext_target.exists(), "failed encrypted copy left a destination object")
+        receipt["encryption_disabled_directory_copy"] = {"succeeded": ok, "encrypted": encrypted(plaintext_target) if ok else None, "error": error}
+        require(not ok or encrypted(plaintext_target), "encryption-disabled directory accepted plaintext fallback")
+        with non_efs_volume(base) as non_efs:
+            plaintext_target = non_efs / "must-not-decrypt.bin"
+            ok, error = copy(source, plaintext_target)
+            require(not ok, "encrypted copy unexpectedly accepted FAT32 destination")
+            require(not plaintext_target.exists(), "failed encrypted copy left FAT32 destination object")
         require(digest(source) == original and encrypted(source) and keys(source) == source_keys,
                 "refused plaintext fallback changed source")
         receipt["plaintext_fallback_rejection_error"] = error
-        receipt["checks"]["encryption_disabled_target_rejects_plaintext_fallback"] = True
+        receipt["checks"]["fat32_target_rejects_plaintext_fallback"] = True
 
         existing = private / "existing.bin"
         existing.write_bytes(b"existing target must survive")
