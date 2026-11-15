@@ -139,8 +139,9 @@ def pin_matrix(source):
             finally:K.CloseHandle(pin)
     return results
 
-def guarded_export(source):
-    result={};pins=[];context=C.c_void_p()
+def guarded_export(source,inject_new=False):
+    before=state(source)
+    result={"injected_new_stream":inject_new};pins=[];context=C.c_void_p()
     K.MoveFileExW.argtypes=[W.LPCWSTR,W.LPCWSTR,W.DWORD];K.MoveFileExW.restype=W.BOOL
     K.DeviceIoControl.argtypes=[W.HANDLE,W.DWORD,C.c_void_p,W.DWORD,C.c_void_p,W.DWORD,C.POINTER(W.DWORD),C.c_void_p];K.DeviceIoControl.restype=W.BOOL
     try:
@@ -178,16 +179,28 @@ def guarded_export(source):
         writer=K.CreateFileW(str(source)+":meta",0x40000000,7,None,3,0,None)
         result["ads_write_after_read_blocked"]=writer in (None,C.c_void_p(-1).value)
         if not result["ads_write_after_read_blocked"]:K.CloseHandle(writer)
-        writer=K.CreateFileW(str(source)+":new-during-raw",0x40000000,7,None,1,0,None)
-        result["new_ads_blocked"]=writer in (None,C.c_void_p(-1).value)
-        if not result["new_ads_blocked"]:K.CloseHandle(writer)
+        if inject_new:
+            writer=K.CreateFileW(str(source)+":new-during-raw",0x40000000,7,None,1,0,None)
+            result["new_ads_blocked"]=writer in (None,C.c_void_p(-1).value)
+            if not result["new_ads_blocked"]:K.CloseHandle(writer)
         result["crypto_queries_during_raw"]={}
         for recovery in [False,True]:
             try:result["crypto_queries_during_raw"][str(recovery)]=[v.hex() for v in keys(source,recovery)]
             except Exception as e:result["crypto_queries_during_raw"][str(recovery)]=str(e)
         info=IOSB();buffer=C.create_string_buffer(65536)
         result["ea_query_during_raw"]=N.NtQueryEaFile(pins[0],C.byref(info),buffer,len(buffer),False,None,0,None,True)
-        result["safe_export_available"]=result["rename_blocked"] and result["ads_write_blocked"] and result["reparse_blocked"] and result["read_raw"]==0 and result["ads_write_after_read_blocked"] and result["new_ads_blocked"]
+        # Raw owns existing stream data locks, but does not freeze stream enumeration.
+        # Reacquire read locks and compare the entire source after closing its lease.
+        A.CloseEncryptedFileRaw(context);context=C.c_void_p()
+        for entry in before["backup"]["records"]:
+            if entry["kind"]!=4:continue
+            h=K.CreateFileW(str(source)+entry["name"],0x80000000,1,None,3,0,None)
+            require(h not in (None,C.c_void_p(-1).value),"source ADS repin failed")
+            pins.append(h)
+        after=state(source)
+        result["source_equal_after_repin"]=before==after
+        result["copy_eligible"]=all(result[k] for k in ["rename_blocked","ads_write_blocked","reparse_blocked","ads_write_after_read_blocked","source_equal_after_repin"]) and result["read_raw"]==0
+        result["source_retained"]=source.is_dir()
         return result
     finally:
         if context.value:A.CloseEncryptedFileRaw(context)
@@ -239,6 +252,13 @@ try:
         empty=base/"guarded-empty";empty.mkdir();require(A.EncryptFileW(str(empty)),"encrypt empty directory failed")
         Path(str(empty)+":meta").write_bytes(b"empty directory ads")
         receipt["guarded_empty"]=guarded_export(empty)
+        injected=base/"guarded-injected";injected.mkdir()
+        require(A.EncryptFileW(str(injected)),"encrypt injected directory failed")
+        Path(str(injected)+":meta").write_bytes(b"injected fixture existing ADS")
+        receipt["guarded_injected"]=guarded_export(injected,True)
+        require(receipt["guarded_nonempty"].get("copy_eligible"),"clean nonempty handoff failed")
+        require(receipt["guarded_empty"].get("copy_eligible"),"clean empty handoff failed")
+        require(receipt["guarded_injected"].get("source_retained") and not receipt["guarded_injected"].get("copy_eligible"),"changed stream inventory not rejected")
         receipt["source_after_raw"]=state(src)
         receipt["raw_checks"]={label:bool(item.get("checks")) and all(item["checks"].values()) and item.get("new_child_encrypted") is True
             for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"]),("nonempty",receipt["raw_directory_nonempty"])]}
