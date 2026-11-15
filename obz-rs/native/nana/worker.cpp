@@ -90,6 +90,7 @@ struct Worker {
     if (received != nonce) throw std::runtime_error("worker job identity mismatch");
   }
   uint32_t single_mode = 0;
+  uint32_t thread_limit = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
     auto r = channel.read(kind); r.take(nonce.data(), nonce.size());
     if (r.wide() != runtime) throw std::runtime_error("runtime directory mismatch");
@@ -110,7 +111,7 @@ struct Worker {
       volumes.push_back({leaves.back().c_str(), uint32_t(leaves.back().size()), 0, size});
     }
     auto units = r.get<uint32_t>();
-    if (kind == 11) { single_mode = r.get<uint32_t>(); if (single_mode < 1 || single_mode > 2) throw std::runtime_error("invalid single archive mode"); }
+    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode < 1 || single_mode > 2) throw std::runtime_error("invalid single archive mode"); }
     if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
     if (units) {
@@ -195,8 +196,14 @@ void __stdcall progress(void *p, uint64_t decoded, uint64_t total) {
     Bytes msg = w.message(); put(msg, decoded); put(msg, total); w.channel.send(4, msg); return S_OK;
   });
 }
-HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t result, uint64_t) {
+HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t result, uint64_t value) {
   auto &w = *static_cast<Worker *>(p);
+  if (event == QZ_TRACE_THREADS_APPLIED) {
+    return guarded(w, [&]() -> HRESULT {
+      if (!w.single_mode || !w.thread_limit || value != w.thread_limit || result != S_OK) return E_FAIL;
+      auto msg = w.message(); put(msg, w.thread_limit); w.channel.send(8, msg); return S_OK;
+    });
+  }
   if (event == QZ_TRACE_ENCRYPTED_HEADER && !w.header_notified.exchange(true)) {
     return guarded(w, [&]() -> HRESULT {
       auto msg = w.message(); w.channel.send(7, msg); return S_OK;
@@ -214,7 +221,7 @@ static int selected_worker_main(const wchar_t *runtime, bool single) noexcept {
                         open_output, write_output, close_output, cancelled, progress, observe};
     QzSelectedRequest req{1, sizeof(QzSelectedRequest), runtime, w.volumes.data(),
                           uint32_t(w.volumes.size()), w.single_mode, &host};
-    QzSelectedReceipt result{}; HRESULT hr = qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
+    QzSelectedReceipt result{}; HRESULT hr = single ? qz_extract_single_with_threads(&req, &result, w.thread_limit) : qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
     Bytes msg = w.message(); put(msg, uint32_t(hr)); put(msg, result.outcome); put(msg, result.item_count);
     put(msg, result.completion_count); put(msg, result.item_errors); put(msg, result.block_errors);
     put(msg, result.streams_open); put(msg, result.decoded_bytes); put(msg, result.selected_bytes);

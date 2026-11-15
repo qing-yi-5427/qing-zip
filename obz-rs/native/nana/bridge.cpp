@@ -644,7 +644,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
+static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -685,6 +685,14 @@ extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedR
     if (request->reserved) {
       if (units) throw UnsupportedLayout{"password on single archive"};
       runtime.handler(request->reserved == 1 ? L"7z" : L"zip", request->reserved == 1 ? "7z" : "zip", inner.put());
+      if (thread_limit) {
+        Ref<ISetProperties> properties;
+        exact(inner->QueryInterface(IID_ISetProperties, reinterpret_cast<void **>(properties.put())), "decoder thread property interface");
+        const wchar_t *names[] = {L"mt"};
+        Variant value; value.v.vt = VT_UI4; value.v.ulVal = thread_limit;
+        exact(properties->SetProperties(names, &value.v, 1), "decoder thread limit rejected");
+        exact(host.trace(host.context, QZ_TRACE_THREADS_APPLIED, 0, 0, S_OK, thread_limit), "thread limit acknowledgement failed");
+      }
       exact(inner->Open(first.get(), &start, inner_callback.get()), "single archive Open failed");
     } else {
     runtime.handler(L"Split", "Split", split.put());
@@ -738,6 +746,13 @@ extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedR
     receipt->decoded_bytes = state->decoded; receipt->selected_bytes = state->selected_bytes;
   }
   return receipt->result;
+}
+
+extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
+  return extract_selected_impl(request, receipt, password, units, 0);
+}
+extern "C" HRESULT __stdcall qz_extract_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads) {
+  return extract_selected_impl(request, receipt, nullptr, 0, threads);
 }
 
 extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *request, QzSelectedReceipt *receipt) {

@@ -45,9 +45,18 @@ fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
     Ok(entries)
 }
 
+fn acknowledge_threads(body:&[u8],nonce:&[u8;16],requested:Option<u32>,already_applied:bool)->Result<(),String> {
+    let mut data=Fields(body);
+    if data.take(16)?!=nonce {return Err("worker thread acknowledgement identity mismatch".into());}
+    let applied=data.u32()?;data.end()?;
+    if already_applied || applied==0 || requested!=Some(applied) {return Err("worker thread limit mismatch".into());}
+    Ok(())
+}
+
 pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
-    if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() || opts.threads.is_some() ||
+    if opts.threads==Some(0) {return Err("invalid compression settings".into());}
+    if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() ||
         crate::machine_policy::scope().restricted() {return Ok(None);}
     let mut probe=source.try_clone().map_err(|e|e.to_string())?;
     let mut magic=[0u8;4];probe.rewind().map_err(|e|e.to_string())?;
@@ -77,19 +86,26 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
     request.extend_from_slice(&1u32.to_le_bytes());request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081)?.to_le_bytes());
     request.extend_from_slice(&source.metadata().map_err(|e|e.to_string())?.len().to_le_bytes());
     wide(&mut request,OsStr::new(if mode==1{"input.7z"}else{"input.zip"}))?;
-    request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&mode.to_le_bytes());session.send(11,request,ctl)?;
+    request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&mode.to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());session.send(11,request,ctl)?;
     let mut encrypted_header=false;
+    let mut threads_applied=opts.threads.is_none();
     loop {
         let frame=session.next(ctl)?.ok_or("full worker ended before manifest")?;
         if frame.1.get(..16)!=Some(nonce.as_slice()){return Err("full worker response identity mismatch".into());}
         match frame.0 {
             2=> {
+                if !threads_applied {return Err("worker did not confirm decoder thread limit".into());}
                 let entries=manifest_entries(&frame.1,&nonce)?;
                 if entries.iter().filter(|e|!e.is_dir).count()>MAX_OUTPUT_HANDLES {
                     // No output capability was granted. Session Drop reaps the waiting child.
                     return Ok(Some((entries,None)));
                 }
                 return Ok(Some((entries,Some(Pending{session,_runtime:runtime_pins,_image:image,nonce,manifest:frame}))));
+            },
+            8=> {
+                acknowledge_threads(&frame.1,&nonce,opts.threads,threads_applied)?;
+                threads_applied=true;
+                if PhaseTimer::enabled(){eprintln!("OA_FULL_WORKER threads_applied={}",opts.threads.unwrap());}
             },
             7=> {let mut f=Fields(&frame.1);f.take(16)?;f.end()?;encrypted_header=true;},
             5=> {
@@ -232,14 +248,30 @@ mod tests {
     }
 
     #[test]
-    fn explicit_thread_limits_keep_original_route_until_protocol_supports_them() {
+    fn explicit_thread_limits_are_acknowledged_before_real_decode() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
         let source=crate::engine_stream::pin(&archive).unwrap();
         for threads in [1,4,8] {
             let opts=EngineOptions{threads:Some(threads),..Default::default()};
-            assert!(prepare(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).unwrap().is_none());
+            let ctl=JobControl::new();
+            let (entries,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+            let stage=temp.path().join(format!("threads-{threads}"));fs::create_dir(&stage).unwrap();
+            pending.unwrap().decode(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl).unwrap();
+            assert_eq!(fs::read(stage.join("a.txt")).unwrap(),b"abc");reap_proof();
         }
+        let opts=EngineOptions{threads:Some(0),..Default::default()};
+        assert!(prepare(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).err().unwrap().contains("invalid compression settings"));
         assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
+    }
+
+    #[test]
+    fn decoder_thread_ack_cannot_change_job_limit_or_repeat() {
+        let mut frame=vec![42;16];frame.extend_from_slice(&4u32.to_le_bytes());
+        acknowledge_threads(&frame,&[42;16],Some(4),false).unwrap();
+        assert!(acknowledge_threads(&frame,&[41;16],Some(4),false).is_err());
+        for requested in [None,Some(1),Some(8)] {assert!(acknowledge_threads(&frame,&[42;16],requested,false).is_err());}
+        assert!(acknowledge_threads(&frame,&[42;16],Some(4),true).is_err());
+        frame.push(0);assert!(acknowledge_threads(&frame,&[42;16],Some(4),false).is_err());
     }
 
 }
