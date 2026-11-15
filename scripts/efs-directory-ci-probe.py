@@ -70,6 +70,14 @@ def raw_directory(source,target,precreate=False):
     finally:A.CloseEncryptedFileRaw(context)
     result["consumed_bytes"]=offset
     if result["write_raw"]:return result
+    result["native_directory"]=state(target)
+    source_ea=ea(source)
+    h=handle(target)
+    try:
+        io=IOSB();data=C.create_string_buffer(source_ea)
+        code=N.NtSetEaFile(h,C.byref(io),data,len(source_ea));result["restore_ea"]=code
+        require(code==0,"raw directory EA restore failed")
+    finally:K.CloseHandle(h)
     result["directory"]=state(target)
     result["children_before_explicit_copy"]=[p.name for p in target.iterdir()]
     result["checks"]={"empty_import_no_recursive_surprise":not any(target.iterdir()),
@@ -119,6 +127,10 @@ try:
         receipt["raw_directory_new"]=raw_directory(src,base/"raw-new")
         receipt["raw_directory_existing"]=raw_directory(src,base/"raw-existing",True)
         receipt["source_after_raw"]=state(src)
+        receipt["raw_checks"]={label:bool(item.get("checks")) and all(item["checks"].values()) and item.get("new_child_encrypted") is True
+            for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"])]}
+        require(all(receipt["raw_checks"].values()),"raw directory full preservation failed")
+        require(receipt["source_after_raw"]==receipt["encrypted_source"]["directory"],"source directory changed")
         receipt["status"]="passed"
 except Exception as error:receipt["error"]=str(error)
 finally:out.write_text(json.dumps(receipt,ensure_ascii=False,indent=2),encoding="utf-8")
