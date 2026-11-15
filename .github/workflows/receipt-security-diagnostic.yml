@@ -1,5 +1,7 @@
 name: Receipt security layout diagnostic
 on:
+  push:
+    branches: [codex/receipt-security-hosted-diagnostic]
   workflow_dispatch:
 jobs:
   read-security:
