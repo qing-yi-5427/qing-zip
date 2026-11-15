@@ -160,6 +160,24 @@ fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Res
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("ordinary_permissions_kind");
 
+    // Read the live DACL on every call. Most descriptors fit in one query;
+    // oversized descriptors retain the existing unbounded Win32 implementation.
+    // u32 alignment is required for the self-relative security descriptor.
+    let mut storage = [0u32; 1024];
+    let mut required = 0u32;
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQuerySecurityObject(handle: Handle, information: u32, descriptor: Handle,
+            length: u32, required: *mut u32) -> i32;
+    }
+    let status = unsafe { NtQuerySecurityObject(parent.as_raw_handle(), 4,
+        storage.as_mut_ptr().cast(), std::mem::size_of_val(&storage) as u32, &mut required) };
+    if status >= 0 {
+        return ordinary_permissions_from_descriptor(storage.as_mut_ptr().cast(), token, directory);
+    }
+    if !matches!(status as u32, 0xc0000023 | 0x80000005) {
+        return Err(nt_error("read live destination permissions", status));
+    }
     let policy = descriptor(parent)?;
     ordinary_permissions_from_descriptor(policy.0, token, directory)
 }
@@ -996,6 +1014,33 @@ mod tests {
                 "{label}"
             );
         }
+    }
+    #[test]
+    fn live_parent_query_matches_win32_for_large_and_changed_dacls() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = open_parent(root.path());
+        let token = effective_token().unwrap();
+        let user = current_sid(&token).unwrap();
+        for large in [false, true, false] {
+            let mut acl = format!("D:PAI(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)");
+            if large {
+                for index in 1000..1300 {
+                    acl.push_str(&format!("(A;OICI;GR;;;S-1-5-21-123-456-789-{index})"));
+                }
+            }
+            policy(&parent, &acl);
+            let original = descriptor(&parent).unwrap();
+            if large { assert!(acl_bytes(original.0).unwrap().len() > 4096); }
+            for directory in [false, true] {
+                let expected = ordinary_permissions_from_descriptor(original.0, &token, directory).unwrap();
+                let actual = ordinary_permissions_kind(&parent, &token, directory).unwrap();
+                assert!(same_file_permissions(expected.0, actual.0).unwrap());
+            }
+        }
+        let limited = fs::OpenOptions::new().access_mode(0x80).share_mode(3)
+            .custom_flags(0x02200000).open(root.path()).unwrap();
+        assert!(ordinary_permissions_kind(&limited, &token, false).is_err(),
+            "missing READ_CONTROL must not be bypassed by fallback");
     }
     #[test]
     fn private_output_reads_changed_parent_permissions_for_each_file() {
