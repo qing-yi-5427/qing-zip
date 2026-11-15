@@ -19,3 +19,10 @@ test('aggregate sizes remain exact beyond Number precision and distinguish unkno
   assert.equal(rows['已知文件大小'],'18,014,398,509,481,982 字节');
   assert.equal(rows['大小未知的文件'],'1');
 });
+
+test('technical properties keep wrapper layers, large integers and unknown solid flags distinct',()=>{
+ const {technical}=require('../frontend/archive-properties.js');
+ const rows=Object.fromEntries(technical({source_bytes:'9007199254740993',layers:[{fields:{Type:'Split',Volumes:'3'}},{fields:{Type:'7z',Solid:'+',Offset:'-1'}}]}));
+ assert.equal(rows['当前打开文件大小'],'9,007,199,254,740,993 字节');
+ assert.equal(rows['第 1 层 · 固实压缩'],'未提供');assert.equal(rows['第 2 层 · 固实压缩'],'是');assert.equal(rows['第 2 层 · 起始偏移'],'-1 字节');
+});

@@ -116,7 +116,7 @@ pub fn execute(r: Request) -> Result<Value, String> {
 
 /// No shell commands or arbitrary application execution are accepted here.
 pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
-    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
+    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
@@ -132,6 +132,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
 fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
     match r.operation.as_str() {
         "benchmark" => serde_json::to_value(engine::benchmark::execute(r.benchmark.unwrap_or_default(), &r.options)?).map_err(|e|e.to_string()),
+        "archive-properties" => Ok(json!(engine::archive_properties::read(&r.path, &r.options)?)),
         "capabilities" => {
             if restricted {
                 let mut caps = engine::capabilities();

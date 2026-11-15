@@ -33,7 +33,21 @@
     rows.push(['加密文件', String(files.filter(e => e.encrypted).length)]);
     return { title: names.length ? '所选项目属性' : '压缩包内容属性', rows };
   }
-  const api = { describe };
+  function technical(properties) {
+    const definitions=[['Type','实际格式'],['Solid','固实压缩'],['Multivolume','多卷归档'],['Volumes','卷数'],['Physical Size','归档物理大小'],['Total Physical Size','总物理大小'],['Offset','起始偏移'],['Tail Size','尾部数据'],['Headers Size','头部大小'],['Method','压缩方法'],['Blocks','数据块'],['Encrypted','加密'],['Characteristics','格式特征']];
+    const rows=[['当前打开文件大小',`${BigInt(properties.source_bytes).toLocaleString('zh-CN')} 字节`]];
+    properties.layers.forEach((layer,index)=>{
+      const prefix=properties.layers.length>1?`第 ${index+1} 层 · `:'';
+      for(const [key,label] of definitions){let value=layer.fields[key];
+        if(value===undefined)value=missing;
+        else if(['Solid','Multivolume','Encrypted'].includes(key))value=value==='+'?'是':'否';
+        else if(['Physical Size','Total Physical Size','Offset','Tail Size','Headers Size'].includes(key))value=BigInt(value).toLocaleString('zh-CN')+' 字节';
+        rows.push([prefix+label,value]);
+      }
+    });
+    return rows;
+  }
+  const api = { describe, technical };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.QingArchiveProperties = api;
 })(globalThis);
