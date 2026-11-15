@@ -2599,6 +2599,8 @@ impl PublicationJournal {
     }
 }
 
+#[cfg(test)]
+thread_local! { static BEFORE_VERIFIED_MEMORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)}; }
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     let policy = crate::machine_policy::scope();
     let ctl = control(opts);
@@ -2758,7 +2760,13 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     // Counts exist only for the explicit diagnostic run; formal timing keeps
     // profiling disabled. Never include paths, archive names or passwords.
     let mut publication_receipt = (file_publication_stage && PhaseTimer::enabled()).then(|| [0usize; 2]);
-    if defer_preflight && transaction.is_none() {
+    // This exact full-memory route must atomically create an absent root below.
+    // Preflighting every nonexistent descendant cannot establish additional
+    // safety: collisions/links are checked at claim and again at each publication.
+    let verified_memory_claim = cfg!(windows) && memory_attempted && memory.is_some()
+        && defer_preflight && opts.selected.is_empty() && expected.len() <= 65_536;
+    if defer_preflight && transaction.is_none() && !verified_memory_claim {
+        let _timer=PhaseTimer::new("deferred-target-preflight");
         preflight_output_targets(&entries, &dest, &opts.overwrite, &mut output_guards)?;
     }
     let mut stage_guards = stage
@@ -2881,6 +2889,10 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     #[cfg(not(windows))]
     let claim_destination = transaction.is_some();
     let journal=claim_destination.then(PublicationJournal::default);
+    #[cfg(test)]
+    if verified_memory_claim { BEFORE_VERIFIED_MEMORY_CLAIM.with(|hook| {
+        if let Some(run)=hook.borrow_mut().take() {run();}
+    }); }
     let publication=(|| -> Result<usize,String> {
     policy.validate_output()?;
     if claim_destination {
@@ -7018,6 +7030,50 @@ mod staging_tests {
         zip.finish().unwrap();
         (temp, path, entries)
     }
+    #[cfg(windows)]
+    #[test]
+    fn verified_memory_claim_preserves_competitors_links_cancel_and_rolls_back_bad_names() {
+        use std::io::Write;
+        use std::os::windows::process::CommandExt;
+        for mode in 0..5 {
+            let (temp,archive,_)=memory_zip_fixture();
+            if mode==3 {
+                let mut writer=zip::ZipWriter::new(File::create(&archive).unwrap());
+                let options=zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                for i in 0..128 {writer.start_file(format!("folder/file-{i:03}.txt"),options).unwrap();writer.write_all(b"safe payload").unwrap();}
+                writer.start_file("z".repeat(256),options).unwrap();writer.write_all(b"invalid component length").unwrap();writer.finish().unwrap();
+            }
+            let original=fs::read(&archive).unwrap();let dest=temp.path().join("output");
+            let foreign=temp.path().join("foreign");fs::create_dir(&foreign).unwrap();fs::write(foreign.join("sentinel"),b"foreign preserved").unwrap();
+            let ctl=JobControl::new();let cancel=ctl.clone();let target=dest.clone();let outside=foreign.clone();
+            let reached=std::rc::Rc::new(std::cell::Cell::new(false));let flag=reached.clone();
+            BEFORE_VERIFIED_MEMORY_CLAIM.with(|hook|*hook.borrow_mut()=Some(Box::new(move || {
+                flag.set(true);
+                match mode {
+                    0=>{fs::create_dir(&target).unwrap();fs::write(target.join("sentinel"),b"competitor preserved").unwrap();},
+                    1=>{let status=std::process::Command::new("cmd.exe").args(["/c","mklink","/J"]).arg(&target).arg(&outside).creation_flags(0x08000000).output().unwrap();assert!(status.status.success(),"junction fixture failed");},
+                    2=>cancel.cancel(),
+                    _=>{},
+                }
+            })));
+            let result=extract_with_control(archive.to_str().unwrap(),dest.to_str().unwrap(),&EngineOptions::default(),&ctl);
+            BEFORE_VERIFIED_MEMORY_CLAIM.with(|hook|hook.borrow_mut().take());
+            assert!(reached.get(),"must exercise verified full-memory claim");
+            if mode==4 {assert_eq!(result.unwrap(),160);assert_eq!(fs::read(dest.join("folder/file-001.txt")).unwrap(),vec![1;3073]);}
+            else {
+                assert!(result.is_err());
+                match mode {
+                    0=>{assert_eq!(fs::read(dest.join("sentinel")).unwrap(),b"competitor preserved");assert_eq!(fs::read_dir(&dest).unwrap().count(),1);},
+                    1=>{assert_eq!(fs::read(dest.join("sentinel")).unwrap(),b"foreign preserved");fs::remove_dir(&dest).unwrap();},
+                    _=>assert!(!dest.exists(),"failed owned claim must roll back its outputs"),
+                }
+            }
+            assert_eq!(fs::read(&archive).unwrap(),original);
+            assert_eq!(fs::read(foreign.join("sentinel")).unwrap(),b"foreign preserved");
+            assert_eq!(fs::read_dir(&foreign).unwrap().count(),1);
+        }
+    }
+
     #[cfg(all(windows, target_pointer_width = "64"))]
     #[test]
     fn selected_zip_directory_commit_verifies_unselected_files_and_preserves_zone() {
