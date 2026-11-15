@@ -2,7 +2,7 @@
 No invoke mocking, direct operation calls, or DOM mutation: only CDP input and observation.
 """
 from pathlib import Path
-import argparse,base64,ctypes,hashlib,json,os,struct,subprocess,tempfile,time,traceback,urllib.request,zipfile
+import argparse,base64,socket,ctypes,hashlib,json,os,struct,subprocess,tempfile,time,traceback,urllib.request,zipfile
 from ctypes import wintypes as w
 from websockets.sync.client import connect
 
@@ -38,7 +38,9 @@ def main():
  with big.open('wb') as f:
   for _ in range(128):f.write(os.urandom(1024*1024))
  bigsha=sha(big);profile=root/'webview';local=root/'local';local.mkdir()
- env=dict(os.environ,LOCALAPPDATA=str(local),WEBVIEW2_USER_DATA_FOLDER=str(profile),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0 --remote-debugging-address=127.0.0.1')
+ with socket.socket() as port_socket:
+  port_socket.bind(('127.0.0.1',0));debug_port=port_socket.getsockname()[1]
+ env=dict(os.environ,LOCALAPPDATA=str(local),WEBVIEW2_USER_DATA_FOLDER=str(profile),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={debug_port} --remote-debugging-address=127.0.0.1')
  startup=subprocess.STARTUPINFO();startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW;startup.wShowWindow=0
  proc=subprocess.Popen([str(exe)],cwd=root,env=env,startupinfo=startup,stdout=(out/'process.stdout.log').open('wb'),stderr=(out/'process.stderr.log').open('wb'))
  evidence['pid']=proc.pid
@@ -47,12 +49,15 @@ def main():
   until=time.monotonic()+60
   while time.monotonic()<until:
    assert proc.poll() is None,proc.returncode
-   pf=next(profile.rglob('DevToolsActivePort'),None)
-   if pf:
-    port=int(pf.read_text().splitlines()[0]);tabs=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=5));tab=next((t for t in tabs if t.get('type')=='page' and 'tauri.localhost' in t['url']),None)
+   try:
+    tabs=json.load(urllib.request.urlopen(f'http://127.0.0.1:{debug_port}/json/list',timeout=2));evidence['debug_targets']=tabs;tab=next((t for t in tabs if t.get('type')=='page' and 'tauri.localhost' in t['url']),None)
     if tab:break
+   except OSError as error:evidence['debug_connection_error']=str(error)
    time.sleep(.2)
-  else:raise RuntimeError('Native WebView did not expose a document')
+  else:
+   evidence['profile_files']=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()][:150]
+   evidence['process_diagnostics']=subprocess.check_output(['pwsh','-NoProfile','-Command',"Get-CimInstance Win32_Process | Where-Object {$_.Name -in 'qing-zip.exe','msedgewebview2.exe'} | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Depth 3"],encoding='utf-8-sig')
+   raise RuntimeError('Native WebView did not expose a document: '+str(evidence))
   # Confirm actual WebView process descendants, not an unrelated installed browser.
   command='Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath | ConvertTo-Json -Compress'
   processes=json.loads(subprocess.check_output(['pwsh','-NoProfile','-Command',command],encoding='utf-8-sig'));byid={p['ProcessId']:p for p in processes};web=[]
