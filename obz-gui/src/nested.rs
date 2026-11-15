@@ -351,7 +351,7 @@ fn save_impl(
 pub fn track(request: &mut Request) -> Option<EditReceipt> {
     if !matches!(
         request.operation.as_str(),
-        "add" | "archive-add" | "delete" | "rename" | "comment-set"
+        "add" | "archive-add" | "archive-copy" | "delete" | "rename" | "comment-set"
     ) {
         return None;
     }

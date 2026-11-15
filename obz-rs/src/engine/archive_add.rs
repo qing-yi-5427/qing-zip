@@ -4,7 +4,8 @@ use std::io::Write;
 
 pub(super) struct Prepared {
     pub names: Vec<String>,
-    pub directory: ShellDragDirectory,
+    pub cwd: PathBuf,
+    _directory: ShellDragDirectory,
 }
 
 fn key(name: &str) -> String {
@@ -314,6 +315,28 @@ pub(super) fn prepare(
     {
         return Err("cannot add an archive to itself".into());
     }
+    let occupied = target_inventory(archive, &folder, opts)?;
+    let directory = ShellDragDirectory::create_named("qing-zip-archive-add-")?;
+    let dest = directory.path().join(&folder);
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let mut parents = CheckedDirectories::default();
+    for path in &paths {
+        snapshot(
+            path,
+            &dest.join(path.file_name().ok_or("missing input name")?),
+            &ctl,
+            &mut parents,
+        )?;
+    }
+    let cwd = directory.path().to_owned();
+    finish_projection(directory, cwd, &folder, occupied, opts)
+}
+
+fn target_inventory(
+    archive: &Path,
+    folder: &str,
+    opts: &EngineOptions,
+) -> Result<BTreeMap<String, bool>, String> {
     let mut listing_options = opts.clone();
     listing_options.selected.clear();
     let mut occupied = inventory(list(
@@ -330,18 +353,58 @@ pub(super) fn prepare(
             return Err(format!("目标目录被文件占用：{prefix}"));
         }
     }
-    let directory = ShellDragDirectory::create_named("qing-zip-archive-add-")?;
-    let dest = directory.path().join(&folder);
-    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-    let mut parents = CheckedDirectories::default();
-    for path in &paths {
-        snapshot(
-            path,
-            &dest.join(path.file_name().ok_or("missing input name")?),
-            &ctl,
-            &mut parents,
-        )?;
+    Ok(occupied)
+}
+
+pub(super) fn prepare_export(
+    archive: &Path,
+    export: archive_export::Export,
+    folder: &str,
+    opts: &EngineOptions,
+) -> Result<Prepared, String> {
+    let ctl = control(opts);
+    ctl.check()?;
+    if !["error", "skip", "rename", "overwrite"].contains(&opts.overwrite.as_str()) {
+        return Err("无效的冲突处理方式".into());
     }
+    let folder = if folder.is_empty() {
+        String::new()
+    } else {
+        member(folder)?
+    };
+    let occupied = target_inventory(archive, &folder, opts)?;
+    let (directory, roots) = export.into_parts();
+    let cwd = directory.path().join("import");
+    let dest = cwd.join(&folder);
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    for root in roots {
+        ctl.check()?;
+        let root = Path::new(&root);
+        no_links(root)?;
+        // These roots are exclusively owned by the verified Export. Moving
+        // inside its same private root retains object identity and metadata;
+        // there is no second payload copy or source-archive mutation.
+        if !root.starts_with(directory.path().join("data")) {
+            return Err("invalid private export provenance".into());
+        }
+        let target = dest.join(root.file_name().ok_or("invalid export root")?);
+        if target.try_exists().map_err(|e| e.to_string())? {
+            return Err("导出项目重名".into());
+        }
+        fs::rename(root, &target).map_err(|e| e.to_string())?;
+    }
+    finish_projection(directory, cwd, &folder, occupied, opts)
+}
+
+fn finish_projection(
+    directory: ShellDragDirectory,
+    cwd: PathBuf,
+    folder: &str,
+    mut occupied: BTreeMap<String, bool>,
+    opts: &EngineOptions,
+) -> Result<Prepared, String> {
+    let ctl = control(opts);
+    let dest = cwd.join(folder);
     let mut roots = fs::read_dir(&dest)
         .map_err(|e| e.to_string())?
         .map(|e| e.map(|e| e.file_name()))
@@ -357,7 +420,7 @@ pub(super) fn prepare(
             format!("{folder}/{root}")
         };
         plan(
-            directory.path(),
+            &cwd,
             &relative,
             &mut occupied,
             &opts.overwrite,
@@ -372,7 +435,11 @@ pub(super) fn prepare(
         }
     });
     ctl.check()?;
-    Ok(Prepared { names, directory })
+    Ok(Prepared {
+        names,
+        cwd,
+        _directory: directory,
+    })
 }
 
 #[cfg(test)]

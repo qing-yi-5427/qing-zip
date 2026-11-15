@@ -25,6 +25,8 @@ pub struct Request {
     pub smart: bool,
     pub hashes: Vec<String>,
     pub benchmark: Option<engine::benchmark::Options>,
+    #[cfg(windows)]
+    pub source_archive: Option<engine::archive_export::Source>,
 }
 
 pub fn vault_path() -> Result<PathBuf, String> {
@@ -59,16 +61,26 @@ pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     if crate::korean::is_supported(path){crate::korean::test(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::test(path,opts)}else{engine::test(path,opts)}
 }
 pub fn extract_archive(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
+    extract_archive_inner(path,dest,opts,false)
+}
+#[cfg(windows)]
+pub(crate) fn extract_archive_for_export(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
+    extract_archive_inner(path,dest,opts,true)
+}
+fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool)->Result<usize,String>{
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return engine::extract(path, dest, opts); }
     let mut inherited = opts.clone();
     if inherited.zone_identifier.is_none() { inherited.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(path))?); }
     let opts = &inherited;
-    if crate::rare::supports(path){return crate::rare::extract(path,dest,opts);}
-    if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,opts);}
-    if crate::stream_formats::is_supported(path){return crate::stream_formats::extract(path,dest,opts);}
-    if let Some(data)=crate::installer::recognize(path)? {return crate::installer::extract(&data,dest,opts);}
-    if crate::korean::is_supported(path){crate::korean::extract(path,dest,opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,opts)}else{engine::extract(path,dest,opts)}
+    let mut complete = inherited.clone();
+    if export { complete.selected.clear(); }
+    let adapter_opts = &complete;
+    if crate::rare::supports(path){return crate::rare::extract(path,dest,adapter_opts);}
+    if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,adapter_opts);}
+    if crate::stream_formats::is_supported(path){return crate::stream_formats::extract(path,dest,adapter_opts);}
+    if let Some(data)=crate::installer::recognize(path)? {return crate::installer::extract(&data,dest,adapter_opts);}
+    if crate::korean::is_supported(path){crate::korean::extract(path,dest,adapter_opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,adapter_opts)}else{engine::extract(path,dest,opts)}
 }
 pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,String>{
     let policy = crate::machine_policy::scope();
@@ -119,7 +131,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
         return Err("更新模式仅适用于添加文件".into());
     }
-    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "archive-add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
+    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "archive-add" | "archive-copy" | "archive-export" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
@@ -190,11 +202,21 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             }
             Ok(json!({"outputs": engine::create(&r.path, &r.inputs, format, &r.options)?}))
         },
-        "add" | "archive-add" | "delete" | "rename" => {
+        #[cfg(windows)]
+        "archive-export" => {
+            let source = r.source_archive.as_ref().ok_or("缺少源压缩包参数")?;
+            Ok(serde_json::to_value(engine::archive_export_local::copy(&r.path,source,&r.dest,&r.options)?).map_err(|e|e.to_string())?)
+        },
+        "add" | "archive-add" | "archive-copy" | "delete" | "rename" => {
             if !restricted && (crate::installer::recognize(&r.path)?.is_some() || crate::korean::is_supported(&r.path) || crate::legacy::is_supported(&r.path) || crate::stream_formats::is_supported(&r.path) || crate::envelopes::is_supported(&r.path) || crate::rare::supports(&r.path)) {
                 return Err("this archive type is read-only; extract its files and create a new archive".into());
             }
-            if r.operation == "archive-add" {
+            if r.operation == "archive-copy" {
+                #[cfg(windows)]
+                engine::archive_export::copy(r.source_archive.as_ref().ok_or("缺少源压缩包参数")?, &r.path, &r.dest, &r.options)?;
+                #[cfg(not(windows))]
+                return Err("文件管理复制仅支持 Windows".into());
+            } else if r.operation == "archive-add" {
                 #[cfg(windows)]
                 engine::archive_add(&r.path, &r.inputs, &r.dest, &r.options)?;
                 #[cfg(not(windows))]

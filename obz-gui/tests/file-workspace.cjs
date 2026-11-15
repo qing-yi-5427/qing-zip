@@ -5,13 +5,13 @@ const archive=(selected=[])=>({kind:'archive',archive:'C:\\sample.zip',path:'fol
 test('local transfer and archive handoffs retain explicit selections and conflict choices',()=>{
  assert.deepEqual(request(local('C:\\left',['C:\\left\\a']),local('D:\\right'),true,'rename'),{operation:'fs-move',inputs:['C:\\left\\a'],dest:'D:\\right',options:{overwrite:'rename'}});
  const add=request(local('C:\\left',['C:\\left\\a']),archive(),false,'error');assert.equal(add.operation,'archive-add');assert.equal(add.dest,'folder/');assert.equal(add.options.overwrite,'error');assert.equal(add.path,'C:\\sample.zip');assert.equal(add.options.password,'secret');
- const extract=request(archive(['folder/a']),local('D:\\right'),false,'skip');assert.equal(extract.smart,false);assert.deepEqual(extract.options.selected,['folder/a']);assert.equal(extract.options.overwrite,'skip');
+ const extract=request(archive(['folder/a']),local('D:\\right'),false,'skip');assert.equal(extract.operation,'archive-export');assert.deepEqual(extract.source_archive.selected,['folder/a']);assert.equal(extract.source_archive.folder,'folder/');assert.equal(extract.options.password,undefined);assert.equal(extract.options.overwrite,'skip');
 });
 test('empty targets, in-flight navigation and unsupported archive moves cannot start a job',()=>{
  assert.throws(()=>request(local('C:\\left',['x']),local(''),false,'error'));
  assert.throws(()=>request({...local('C:\\left',['x']),pending:true},local('D:\\right'),false,'error'));
  assert.throws(()=>request(archive(['x']),local('D:\\right'),true,'error'));
- assert.throws(()=>request(archive(['x']),archive(),false,'error'));
+ assert.equal(request(archive(['folder/x']),archive(),false,'error').operation,'archive-copy');
 });
 test('archive directory browsing does not include adjacent folder prefixes and preserves raw member selections',()=>{
  const entries=[{name:'folder\\a.txt',size:1,is_dir:false},{name:'folder/deep/b',size:2,is_dir:false},{name:'folder2/no',size:3,is_dir:false}];
@@ -71,4 +71,28 @@ test('workspace archive refresh invalidates previews and removes only missing se
  finish();await pending;
  for(const value of [tab,state]){assert.equal(value.entries,entries);assert.deepEqual([...value.selected],['folder/','folder\\nested/']);assert.equal(value.anchor,null);assert.equal(value.cursor,null);assert.equal(value.focusFile,null);}
  }
+});
+
+
+test('archive copy credentials are independent and visible password inputs remain session-only',()=>{
+ const source={...archive(['folder/a']),password:'SOURCE-SECRET',codepage:936};
+ const target={...archive(),archive:'C:/target.7z',path:'backup/',password:'TARGET-SECRET',codepage:65001};
+ const copy=request(source,target,false,'rename');assert.equal(copy.operation,'archive-copy');assert.equal(copy.path,target.archive);assert.equal(copy.dest,'backup/');assert.equal(copy.source_archive.password,'SOURCE-SECRET');assert.equal(copy.options.password,'TARGET-SECRET');assert.equal(copy.source_archive.codepage,936);assert.equal(copy.options.codepage,65001);
+ const handlers={},inputs=[{dataset:{fmPassword:'0'},value:''},{dataset:{fmPassword:'1'},value:''}];
+ const workspace=create({esc:String,icon:()=>'',render(){}});
+ Object.assign(workspace.state.panes[0],source,{loaded:true});Object.assign(workspace.state.panes[1],target,{loaded:true});
+ assert.ok(workspace.page().includes('左侧压缩包密码'));assert.ok(workspace.page().includes('右侧压缩包密码'));assert.ok(!workspace.page().includes('SOURCE-SECRET'));assert.ok(!workspace.page().includes('TARGET-SECRET'));
+ workspace.mount({querySelector:()=>({querySelectorAll:()=>inputs,addEventListener:(kind,fn)=>handlers[kind]=fn})});
+ assert.equal(inputs[0].value,'SOURCE-SECRET');assert.equal(inputs[1].value,'TARGET-SECRET');
+ inputs[0].value='FIXED-SOURCE';handlers.input({target:inputs[0]});assert.equal(workspace.state.panes[0].password,'FIXED-SOURCE');assert.equal(workspace.state.panes[1].password,'TARGET-SECRET');
+ const add=request(local('C:/local',['C:/local/a']),workspace.state.panes[1],false,'overwrite');assert.equal(add.options.password,'TARGET-SECRET');
+});
+
+
+test('nested workspace locations display logical ancestry without private working directories',()=>{
+ const {displayArchivePath}=require('../frontend/file-workspace.js');
+ const tabs=[{archive:'C:/archives/outer.zip'},{archive:'C:/Temp/qing-zip-member-a/inner.zip',nestedId:1,parentArchive:'C:/archives/outer.zip',nestedMember:'docs/inner.zip'},{archive:'C:/Temp/qing-zip-member-b/deep.7z',nestedId:2,parentArchive:'C:/Temp/qing-zip-member-a/inner.zip',nestedMember:'deep.7z'}];
+ assert.equal(displayArchivePath(tabs[0].archive,tabs),'C:/archives/outer.zip');
+ assert.equal(displayArchivePath(tabs[2].archive,tabs),'outer.zip / docs/inner.zip / deep.7z');
+ assert.ok(!displayArchivePath(tabs[2].archive,tabs.slice(1)).includes('qing-zip-member'));
 });

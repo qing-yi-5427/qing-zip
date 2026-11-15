@@ -13,6 +13,10 @@ pub mod archive_properties;
 pub mod file_workspace;
 #[cfg(windows)]
 mod archive_add;
+#[cfg(windows)]
+pub mod archive_export;
+#[cfg(windows)]
+pub mod archive_export_local;
 pub(crate) mod compression_parameters;
 mod bounded_archive_stage;
 pub mod benchmark;
@@ -4846,12 +4850,23 @@ pub fn update(
 pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<(), String> {
     let mut options = opts.clone();
     options.selected.clear();
-    update_impl(path, "add", inputs, &options, Some(folder))
+    update_impl(path, "add", inputs, &options, Some(WorkspaceAdd { folder, export: None }))
+}
+struct WorkspaceAdd<'a> {
+    folder: &'a str,
+    #[cfg(windows)]
+    export: Option<archive_export::Export>,
+}
+#[cfg(windows)]
+fn archive_import(path: &str, export: archive_export::Export, folder: &str, opts: &EngineOptions) -> Result<(), String> {
+    let roots=export.roots().to_vec();
+    let mut options=opts.clone(); options.selected.clear();
+    update_impl(path,"add",&roots,&options,Some(WorkspaceAdd {folder,export:Some(export)}))
 }
 
-fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, folder: Option<&str>) -> Result<(), String> {
+fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
-    if folder.is_some() && opts.update_mode != UpdateMode::Add {
+    if workspace.is_some() && opts.update_mode != UpdateMode::Add {
         return Err("文件管理添加仅支持保留其他成员的添加模式".into());
     }
     if opts.volume_bytes.is_some() {
@@ -4889,7 +4904,10 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     }
     let parent = path.parent().ok_or("missing archive parent")?;
     #[cfg(windows)]
-    let prepared = folder.map(|folder| archive_add::prepare(&path, inputs, folder, opts)).transpose()?;
+    let prepared = workspace.map(|workspace| match workspace.export {
+        Some(export) => archive_add::prepare_export(&path, export, workspace.folder, opts),
+        None => archive_add::prepare(&path, inputs, workspace.folder, opts),
+    }).transpose()?;
     #[cfg(windows)]
     if prepared.as_ref().is_some_and(|p| p.names.is_empty()) {
         control(opts).check()?;
@@ -4918,7 +4936,7 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
         fs::copy(&path, &staged).map_err(|e| e.to_string())?;
         if !actions.is_empty() { a.push(format!("-u{actions}")); }
     }
-    let names = if action == "add" {
+    let ordinary_names = || -> Result<Vec<String>,String> { Ok(if action == "add" {
         {
             let paths = input_paths(inputs)?;
             reject_output_in_inputs(parent, &paths)?;
@@ -4942,9 +4960,11 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
             return Err("rename requires old/new pairs".into());
         }
         inputs.to_vec()
-    };
+    }) };
     #[cfg(windows)]
-    let names = match &prepared { Some(p) => p.names.clone(), None => names };
+    let names = match &prepared { Some(p) => p.names.clone(), None => ordinary_names()? };
+    #[cfg(not(windows))]
+    let names = ordinary_names()?;
     #[cfg(windows)]
     let _list = update_list::append(&mut a, if direct { &path } else { &staged }, names)?;
     #[cfg(not(windows))]
@@ -4956,7 +4976,7 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
     #[cfg(windows)]
-    let cwd = prepared.as_ref().map(|p| p.directory.path());
+    let cwd = prepared.as_ref().map(|p| p.cwd.as_path());
     #[cfg(not(windows))]
     let cwd = None;
     run(&a, cwd, opts, None)?;
