@@ -94,5 +94,8 @@ test('partial moves retain counts and the backend reason in task history', async
     vm.runInContext(source.split('\n').find(line=>line.startsWith('function jobs()')),context);
     const card=context.jobs();assert.match(card,/部分完成/);assert.ok(!card.includes('已完成'));
     if(reason)assert.ok(card.includes(reason));
+    vm.runInContext(source.split('\n').find(line=>line.startsWith('function historyPage()')),context);
+    const history=context.historyPage();assert.match(history,/部分完成/);assert.ok(!history.includes('已完成'));
+    if(reason)assert.ok(history.includes(reason));
   }
 });
