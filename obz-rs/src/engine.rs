@@ -1830,6 +1830,12 @@ fn ordinary_zip_layout(bytes: &[u8], entries: &[Entry]) -> bool {
 #[derive(Debug)]
 enum MemoryChunk {
     Owned(Vec<u8>),
+    VerifiedDeflate {
+        archive: Arc<Vec<u8>>,
+        range: std::ops::Range<usize>,
+        size: usize,
+        crc: u32,
+    },
     Shared {
         bytes: Arc<Vec<u8>>,
         start: usize,
@@ -1837,21 +1843,31 @@ enum MemoryChunk {
     },
 }
 impl MemoryChunk {
-    fn as_slice(&self) -> &[u8] {
+    fn decoded(&self) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+        use std::borrow::Cow;
         match self {
-            Self::Owned(bytes) => bytes,
-            Self::Shared { bytes, start, end } => &bytes[*start..*end],
+            Self::Owned(bytes) => Ok(Cow::Borrowed(bytes)),
+            Self::Shared { bytes, start, end } => Ok(Cow::Borrowed(&bytes[*start..*end])),
+            Self::VerifiedDeflate { archive, range, size, crc } => {
+                let bytes = miniz_oxide::inflate::decompress_to_vec_with_limit(&archive[range.clone()], (*size).max(1))
+                    .map_err(|_| "invalid verified ZIP payload")?;
+                if bytes.len() != *size || crc32fast::hash(&bytes) != *crc {
+                    return Err("verified ZIP payload size or CRC changed".into());
+                }
+                Ok(Cow::Owned(bytes))
+            }
         }
     }
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.as_slice().is_empty()
+        self.decoded().unwrap().is_empty()
     }
     #[cfg(test)]
     fn capacity(&self) -> usize {
         match self {
             Self::Owned(bytes) => bytes.capacity(),
             Self::Shared { bytes, .. } => bytes.capacity(),
+            Self::VerifiedDeflate { archive, .. } => archive.capacity(),
         }
     }
 }
@@ -2173,7 +2189,13 @@ fn decode_memory_zip(
     {
         return Ok(None);
     }
-    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
+    // Keep compact compressed members after the full integrity pass. Only
+    // bounded small members qualify, so publication needs at most one member
+    // of scratch per worker. Other ZIP layouts keep the normal decoded cache.
+    let keep_packed = opts.selected.is_empty() && size.is_some_and(|total| total >= 16 * 1024 * 1024 && length <= total / 2)
+        && entries.iter().all(|entry| entry.size <= 256 * 1024);
+    let packed = Arc::new(bytes);
+    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(packed.as_slice())) {
         Ok(a) => a,
         Err(_) => return Ok(None),
     };
@@ -2188,7 +2210,7 @@ fn decode_memory_zip(
     let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
     let selection = Selection::new(&opts.selected);
     let mut discard = Vec::new();
-    let mut allocated = 0u64;
+    let mut allocated = if keep_packed { packed.capacity() as u64 } else { 0 };
     for (i, index) in names.into_iter().enumerate() {
         ctl.check()?;
         let entry = &entries[index];
@@ -2196,7 +2218,7 @@ fn decode_memory_zip(
             .by_index(i)
             .map_err(|e| format!("ZIP decode: {e}"))?;
         let keep = !entry.is_dir && selection.contains(&entry.name);
-        let mut data = if keep { Vec::new() } else { std::mem::take(&mut discard) };
+        let mut data = if keep && !keep_packed { Vec::new() } else { std::mem::take(&mut discard) };
         data.clear();
         data.try_reserve_exact(entry.size as usize).map_err(|e| e.to_string())?;
         // Count retained payloads plus the largest reusable discard buffer.
@@ -2229,7 +2251,18 @@ fn decode_memory_zip(
         {
             return Err("ZIP size or CRC mismatch".into());
         }
-        if keep {
+        if keep && keep_packed {
+            let start = member.data_start().and_then(|v| usize::try_from(v).ok()).ok_or("missing ZIP payload offset")?;
+            let length = usize::try_from(member.compressed_size()).map_err(|_| "invalid ZIP payload length")?;
+            let end = start.checked_add(length).filter(|&n| n <= packed.len()).ok_or("invalid ZIP payload range")?;
+            let chunk = match member.compression() {
+                zip::CompressionMethod::Stored if length == data.len() => MemoryChunk::Shared { bytes: packed.clone(), start, end },
+                zip::CompressionMethod::Deflated => MemoryChunk::VerifiedDeflate { archive: packed.clone(), range: start..end, size: data.len(), crc: member.crc32() },
+                _ => return Err("unexpected ZIP method after verification".into()),
+            };
+            contents.insert(path_key(&validate_name(&entry.name)?), chunk);
+            discard = data;
+        } else if keep {
             allocated += data.capacity() as u64;
             contents.insert(path_key(&validate_name(&entry.name)?), MemoryChunk::Owned(data));
         } else {
@@ -2396,7 +2429,7 @@ impl StagedContents<'_> {
         match self {
             Self::Memory(files) => {
                 let content = files.get(&path_key(relative)).ok_or("verified memory entry missing")?;
-                for chunk in content.as_slice().chunks(MAX_CHUNK) {
+                for chunk in content.decoded()?.chunks(MAX_CHUNK) {
                     if !running()? { return Ok(false); }
                     output.write_all(chunk).map_err(|err| err.to_string())?;
                 }
@@ -3248,7 +3281,7 @@ fn create_staged_output(target: &Path, guards: &mut CheckedDirectories) -> Resul
 struct MemoryOutput<'a> {
     entry: &'a Entry,
     target: PathBuf,
-    bytes: &'a [u8],
+    bytes: &'a MemoryChunk,
 }
 
 fn open_prepared_stage_output(target: &Path, guards: &CheckedDirectories) -> Result<File, String> {
@@ -3318,7 +3351,7 @@ fn stage_verified_memory(
             directories.insert(directory.to_path_buf());
         }
         if !entry.is_dir {
-            let bytes = files.get(&path_key(&relative)).ok_or("verified memory entry missing")?.as_slice();
+            let bytes = files.get(&path_key(&relative)).ok_or("verified memory entry missing")?;
             jobs.push(MemoryOutput { entry, target, bytes });
         }
     }
@@ -3331,7 +3364,9 @@ fn stage_verified_memory(
     let consume = || -> Result<(), String> {
         while !stopped.load(Ordering::Acquire) {
             let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
-            if let Err(error) = write_verified_bytes(job.entry, &job.target, job.bytes, guards, ctl) {
+            if let Err(error) = ctl.check().and_then(|()| job.bytes.decoded()).and_then(|bytes| {
+                write_verified_bytes(job.entry, &job.target, &bytes, guards, ctl)
+            }) {
                 stopped.store(true, Ordering::Release);
                 return Err(error);
             }
@@ -5837,7 +5872,7 @@ mod staging_tests {
         assert_eq!(contents.len(), 160);
         let mut first = None;
         for chunk in contents.values() {
-            assert_eq!(chunk.as_slice(), vec![42; 1024]);
+            assert_eq!(chunk.decoded().unwrap().as_ref(), vec![42; 1024]);
             match chunk {
                 MemoryChunk::Shared { bytes, .. } => {
                     if let Some(previous) = first {
@@ -6613,7 +6648,7 @@ mod staging_tests {
         for entry in entries.iter().filter(|entry| !entry.is_dir) {
             let relative = validate_name(&entry.name).unwrap();
             let output = destination.join(&relative);
-            assert_eq!(fs::read(&output).unwrap(), files[&path_key(&relative)].as_slice());
+            assert_eq!(fs::read(&output).unwrap(), files[&path_key(&relative)].decoded().unwrap().as_ref());
             assert_eq!(fs::read(format!("{}:Zone.Identifier", output.display())).unwrap(), zone_bytes);
         }
         let empty_file = destination.join(&entries[0].name);
@@ -6932,6 +6967,110 @@ mod staging_tests {
             &entries,&opts,stage.path(),&mut CheckedDirectories::owned_root(stage.path()),&JobControl::new()).unwrap());
         assert_eq!(fs::read_dir(stage.path()).unwrap().count(),0);
     }
+    fn packed_zip_fixture() -> (tempfile::TempDir, PathBuf, Vec<Entry>) {
+        use std::io::Write;
+        let (temp, path, mut entries) = memory_zip_fixture();
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (i, entry) in entries.iter_mut().enumerate() {
+            if entry.is_dir {
+                zip.add_directory(&entry.name, options).unwrap();
+                continue;
+            }
+            let data = if i == 0 { vec![] } else { vec![i as u8; 128 * 1024] };
+            zip.start_file(&entry.name, options).unwrap();
+            zip.write_all(&data).unwrap();
+            entry.size = data.len() as u64;
+            entry.crc = format!("{:08X}", crc32fast::hash(&data));
+            entry.method = "Deflate".into();
+        }
+        zip.finish().unwrap();
+        (temp, path, entries)
+    }
+
+    #[test]
+    fn packed_zip_retains_one_compact_snapshot_and_publishes_exact_members() {
+        let (_temp, path, entries) = packed_zip_fixture();
+        let opts = EngineOptions::default();
+        let files = decode_memory_zip(memory_archive_source(path.to_str().unwrap(), &opts),
+            &entries, &opts, &JobControl::new()).unwrap().unwrap();
+        let mut backing = None;
+        for (i, entry) in entries.iter().filter(|e| !e.is_dir).enumerate() {
+            let chunk = &files[&path_key(&validate_name(&entry.name).unwrap())];
+            let MemoryChunk::VerifiedDeflate { archive, .. } = chunk else { panic!("packed branch not used") };
+            assert!(archive.capacity() < 1024 * 1024);
+            if let Some(previous) = backing { assert!(Arc::ptr_eq(previous, archive)); }
+            backing = Some(archive);
+            assert_eq!(chunk.decoded().unwrap().as_ref(), if i == 0 { vec![] } else { vec![i as u8; 128 * 1024] });
+        }
+        let out = tempfile::tempdir().unwrap();
+        assert_eq!(publish_staged_files_parallel(&entries.iter().collect::<Vec<_>>(), out.path(),
+            StagedContents::Memory(&files), &JobControl::new(), &mut CheckedDirectories::default(),
+            None, None, "error").unwrap(), 160);
+        for (i, entry) in entries.iter().filter(|e| !e.is_dir).enumerate() {
+            assert_eq!(fs::read(out.path().join(&entry.name)).unwrap(),
+                if i == 0 { vec![] } else { vec![i as u8; 128 * 1024] });
+        }
+        assert!(out.path().join("empty").is_dir());
+        // Already-cancelled work must not decode or materialize any member.
+        let cancelled = JobControl::new();
+        cancelled.cancel();
+        let stage = tempfile::tempdir().unwrap();
+        assert!(stage_verified_memory(&files, &entries, stage.path(),
+            &mut CheckedDirectories::owned_root(stage.path()), &cancelled, Some(4)).is_err());
+        assert_eq!(fs::read_dir(stage.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn packed_zip_real_extract_cancellation_rolls_back_published_members() {
+        let (fixture, archive, _) = packed_zip_fixture();
+        let parent = fixture.path().join("ordinary");
+        let _parent = memory_test_parent(&parent);
+        let destination = parent.join("cancelled");
+        let ctl = JobControl::new();
+        let opts = EngineOptions { control: Some(ctl.clone()), ..Default::default() };
+        let mut saw_published = false;
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| extract(archive.to_str().unwrap(), destination.to_str().unwrap(), &opts));
+            while !worker.is_finished() {
+                if fs::read_dir(destination.join("folder")).is_ok_and(|items|
+                    items.filter_map(Result::ok).any(|item| item.file_name().to_string_lossy().starts_with("file-"))) {
+                    saw_published = true;
+                    ctl.cancel();
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+        });
+        assert!(saw_published, "must cancel after public file creation");
+        assert!(!destination.exists(), "unchanged partial target must be removed");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0, "no private scratch remains");
+    }
+
+    #[test]
+    fn packed_zip_rejects_late_corruption_before_any_output() {
+        let (_temp, path, entries) = packed_zip_fixture();
+        let mut bytes = fs::read(&path).unwrap();
+        let mut cursor = 0;
+        for i in 0..160 {
+            assert_eq!(&bytes[cursor..cursor + 4], b"PK\x03\x04");
+            let data = cursor + 30 + zip_u16(&bytes, cursor + 26) as usize
+                + zip_u16(&bytes, cursor + 28) as usize;
+            if i == 159 { bytes[data] ^= 1; break; }
+            cursor = data + zip_u32(&bytes, cursor + 18) as usize;
+        }
+        fs::write(&path, bytes).unwrap();
+        let opts = EngineOptions::default();
+        assert!(decode_memory_zip(memory_archive_source(path.to_str().unwrap(), &opts),
+            &entries, &opts, &JobControl::new()).is_err());
+        let out = path.parent().unwrap().join("must-not-exist");
+        assert!(extract(path.to_str().unwrap(), out.to_str().unwrap(), &opts).is_err());
+        assert!(!out.exists());
+    }
+
     #[test]
     fn bounded_zip_memory_verifies_all_bytes_and_preserves_empty_entries() {
         let (_temp, path, entries) = memory_zip_fixture();
@@ -6945,7 +7084,7 @@ mod staging_tests {
         .unwrap();
         assert_eq!(contents.len(), 160);
         assert!(contents["folder/file-000.txt"].is_empty());
-        assert_eq!(contents["folder/file-159.txt"].as_slice(), vec![159; 3073]);
+        assert_eq!(contents["folder/file-159.txt"].decoded().unwrap().as_ref(), vec![159; 3073]);
         assert!(contents.values().map(|v| v.capacity() as u64).sum::<u64>() <= MEMORY_ZIP_LIMIT);
         let out = tempfile::tempdir().unwrap();
         let refs = entries.iter().collect::<Vec<_>>();
@@ -6977,7 +7116,7 @@ mod staging_tests {
             &entries, &opts, &JobControl::new(),
         ).unwrap().unwrap();
         assert_eq!(contents.len(), 1);
-        assert_eq!(contents["folder/file-031.txt"].as_slice(), vec![31; 3073]);
+        assert_eq!(contents["folder/file-031.txt"].decoded().unwrap().as_ref(), vec![31; 3073]);
     }
     #[test]
     fn bounded_zip_memory_crc_failure_is_error_not_fallback_even_when_unselected() {
