@@ -622,6 +622,9 @@ mod tests {
         let run = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("QING_TEST_ACL", path)
+            // A pwsh-hosted CI inherits PowerShell 7 module paths. Windows
+            // PowerShell must resolve its own built-in Security module.
+            .env_remove("PSModulePath")
             .output()
             .unwrap();
         assert!(
