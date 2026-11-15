@@ -10,8 +10,22 @@ pub(super) fn ordinary_zip(path: &Path, opts: &EngineOptions) -> Result<bool, St
     let ctl = control(opts);
     ctl.check()?;
     let mut source = crate::engine_stream::pin(path)?;
+    // Bound this optimization to small proposals. Larger files retain the
+    // native verifier without an additional header-by-header disk pass.
+    let length = source.metadata().map_err(|e| e.to_string())?.len();
+    if length > 8 * 1024 * 1024 { return Ok(false); }
+    let mut bytes = Vec::with_capacity(length as usize);
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        ctl.check()?;
+        let n = source.read(&mut chunk).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        if bytes.len() + n > length as usize { return Err("ZIP proposal changed".into()); }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    if bytes.len() != length as usize { return Err("ZIP proposal changed".into()); }
     let count = {
-        let archive = match zip::ZipArchive::new(&mut *source) {
+        let archive = match zip::ZipArchive::new(std::io::Cursor::new(&bytes)) {
             Ok(archive) => archive,
             Err(_) => return Ok(false),
         };
@@ -20,11 +34,10 @@ pub(super) fn ordinary_zip(path: &Path, opts: &EngineOptions) -> Result<bool, St
         }
         archive.len()
     };
-    if !ordinary_zip_file_layout_count(&mut source, count, &ctl)? {
+    if !ordinary_zip_layout_count(&bytes, count) {
         return Ok(false);
     }
-    source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(&mut *source).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).map_err(|e| e.to_string())?;
     if archive.validate_header_consistency().is_err() {
         return Ok(false);
     }
@@ -131,6 +144,18 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         bytes.extend_from_slice(b"trailing bytes");
         fs::write(&path, bytes).unwrap();
+        assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
+    }
+
+    #[test]
+    fn edited_zip_large_proposals_keep_native_verification() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        writer.start_file("large.bin", zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)).unwrap();
+        writer.write_all(&vec![17; 8 * 1024 * 1024]).unwrap();
+        writer.finish().unwrap();
         assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
     }
 

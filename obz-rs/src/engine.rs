@@ -1745,7 +1745,10 @@ fn ordinary_zip_extra(mut bytes: &[u8]) -> bool {
 // Deliberately narrower than ZIP validity. Unknown layouts are not rejected;
 // they simply use the existing engine. This check precedes ZipArchive allocation.
 fn ordinary_zip_layout(bytes: &[u8], entries: &[Entry]) -> bool {
-    if bytes.len() < 22 || entries.len() > MEMORY_ZIP_ENTRY_LIMIT {
+    ordinary_zip_layout_count(bytes, entries.len())
+}
+fn ordinary_zip_layout_count(bytes: &[u8], entry_count: usize) -> bool {
+    if bytes.len() < 22 || entry_count > MEMORY_ZIP_ENTRY_LIMIT {
         return false;
     }
     let Some(end) = (bytes.len().saturating_sub(65557)..=bytes.len() - 22)
@@ -1760,8 +1763,8 @@ fn ordinary_zip_layout(bytes: &[u8], entries: &[Entry]) -> bool {
     let eocd = &bytes[end..];
     if zip_u16(eocd, 4) != 0
         || zip_u16(eocd, 6) != 0
-        || zip_u16(eocd, 8) as usize != entries.len()
-        || zip_u16(eocd, 10) as usize != entries.len()
+        || zip_u16(eocd, 8) as usize != entry_count
+        || zip_u16(eocd, 10) as usize != entry_count
     {
         return false;
     }
@@ -1772,7 +1775,7 @@ fn ordinary_zip_layout(bytes: &[u8], entries: &[Entry]) -> bool {
     }
     let mut cursor = central;
     let mut ranges = Vec::new();
-    for _ in entries {
+    for _ in 0..entry_count {
         if cursor + 46 > end || bytes[cursor..cursor + 4] != *b"PK\x01\x02" {
             return false;
         }
