@@ -33,9 +33,10 @@ pub struct Vault {
 impl Vault {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        safe_ancestors(&path)?;
+        safe_ancestors(&path).map_err(|e|format!("vault open path check: {e}"))?;
         Ok(Self { path })
     }
+
     pub fn default_path() -> Result<PathBuf, String> {
         Ok(
             PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA unavailable")?)
@@ -48,26 +49,26 @@ impl Vault {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        safe_ancestors(parent)?;
+        safe_ancestors(parent).map_err(|e|format!("vault parent check: {e}"))?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let lock_path = self.path.with_extension("lock");
-        safe_ancestors(&lock_path)?;
+        safe_ancestors(&lock_path).map_err(|e|format!("vault lock path check: {e}"))?;
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(lock_path)
-            .map_err(|e| e.to_string())?;
-        lock.lock().map_err(|e| e.to_string())?;
+            .map_err(|e| format!("vault lock open: {e}"))?;
+        lock.lock().map_err(|e| format!("vault lock acquire: {e}"))?;
         Ok(lock)
     }
     fn load(&self) -> Result<VaultData, String> {
-        safe_ancestors(&self.path)?;
+        safe_ancestors(&self.path).map_err(|e|format!("vault data path check: {e}"))?;
         let bytes = match fs::read(&self.path) {
             Ok(v) => v,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(VaultData::default()),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(format!("vault read: {e}")),
         };
         if !bytes.starts_with(b"OBZV1\0") {
             return Err("unrecognized vault format".into());
@@ -88,15 +89,34 @@ impl Vault {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        safe_ancestors(parent)?;
+        safe_ancestors(parent).map_err(|e|format!("vault parent check: {e}"))?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-        temp.write_all(b"OBZV1\0")
-            .and_then(|_| temp.write_all(&encrypted))
-            .map_err(|e| e.to_string())?;
-        temp.as_file().sync_all().map_err(|e| e.to_string())?;
-        safe_ancestors(&self.path)?;
-        temp.persist(&self.path).map_err(|e| e.error.to_string())?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let canonical = crate::engine::canonical_input_path(parent, true)
+                .map_err(|e|format!("vault parent identity: {e}"))?;
+            let pin = fs::File::options().access_mode(0x120089).share_mode(3)
+                .custom_flags(0x02200000).open(&canonical)
+                .map_err(|e|format!("vault parent pin: {e}"))?;
+            let mut temp = crate::private_stage::create_output(&canonical, &pin)
+                .map_err(|e|format!("vault private output: {e}"))?;
+            temp.as_file().write_all(b"OBZV1\0")
+                .and_then(|_|temp.as_file().write_all(&encrypted))
+                .map_err(|e|format!("vault encrypted write: {e}"))?;
+            temp.as_file().sync_all().map_err(|e|format!("vault encrypted flush: {e}"))?;
+            safe_ancestors(&self.path)?;
+            let target=canonical.join(self.path.file_name().ok_or("invalid vault filename")?);
+            publish_vault(&mut temp, &target, &pin, &mut |temp| temp.commit(&target, true))?;
+        }
+        #[cfg(not(windows))]
+        {
+            let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
+            temp.write_all(b"OBZV1\0").and_then(|_|temp.write_all(&encrypted)).map_err(|e|e.to_string())?;
+            temp.as_file().sync_all().map_err(|e|e.to_string())?;
+            safe_ancestors(&self.path)?;
+            temp.persist(&self.path).map_err(|e|e.error.to_string())?;
+        }
         Ok(())
     }
     pub fn list(&self) -> Result<Vec<VaultLabel>, String> {
@@ -143,6 +163,83 @@ impl Vault {
         self.save(&data)?;
         Ok(true)
     }
+}
+
+// Vault-only publication retry. Do not retry arbitrary archive commits or weaken
+// their checks. The DELETE-authorized target identity/attributes/DACL,
+// and the pinned parent must remain unchanged between attempts.
+// This retains the original cooperating .lock protocol; it does not promise a
+// compare-and-swap against external writers that bypass that lock after checks.
+#[cfg(windows)]
+struct VaultObject {
+    identity: [u32; 7],
+    attributes: u32,
+    security: Vec<u8>,
+}
+#[cfg(windows)]
+impl VaultObject {
+    fn inspect(file: fs::File) -> Result<Self, String> {
+        use std::os::windows::io::AsRawHandle;
+        type Handle = *mut std::ffi::c_void;
+        #[link(name="kernel32")]
+        extern "system" {fn GetFileInformationByHandle(h:Handle,p:*mut u32)->i32;}
+        #[link(name="advapi32")]
+        extern "system" {fn GetKernelObjectSecurity(h:Handle,info:u32,p:*mut u8,len:u32,needed:*mut u32)->i32;}
+        let mut info=[0u32;13];
+        if unsafe{GetFileInformationByHandle(file.as_raw_handle(),info.as_mut_ptr())}==0{return Err(format!("vault object identity: {}",std::io::Error::last_os_error()));}
+        if info[0]&0x400!=0{return Err("linked vault object is not permitted".into());}
+        let mut needed=0;
+        unsafe{GetKernelObjectSecurity(file.as_raw_handle(),7,std::ptr::null_mut(),0,&mut needed);}
+        if needed==0||needed>1024*1024{return Err("invalid vault security descriptor size".into());}
+        let mut security=vec![0;needed as usize];
+        if unsafe{GetKernelObjectSecurity(file.as_raw_handle(),7,security.as_mut_ptr(),needed,&mut needed)}==0{return Err(format!("vault object security: {}",std::io::Error::last_os_error()));}
+        security.truncate(needed as usize);
+        Ok(Self{identity:[info[7],info[11],info[12],info[5],info[6],info[8],info[9]],attributes:info[0],security})
+    }
+    fn open(path:&Path,directory:bool)->Result<Self,String>{
+        use std::os::windows::fs::OpenOptionsExt;
+        let file=fs::File::options().access_mode(if directory{0x20080}else{0x30080})
+            .share_mode(if directory{3}else{7}).custom_flags(0x02200000).open(path)
+            .map_err(|e|format!("vault retry authorization: {e}"))?;
+        let object=Self::inspect(file)?;
+        if !directory && object.attributes&0x11!=0{return Err("vault destination is read-only or not a regular file".into());}
+        Ok(object)
+    }
+    fn matches(&self,other:&Self)->bool{
+        self.identity==other.identity && self.attributes==other.attributes && self.security==other.security
+    }
+}
+#[cfg(windows)]
+fn publish_vault(
+    temp:&mut crate::private_stage::PrivateOutputFile,target:&Path,parent:&fs::File,
+    commit:&mut dyn FnMut(&mut crate::private_stage::PrivateOutputFile)->Result<fs::File,String>,
+)->Result<(),String>{
+    let parent_before=VaultObject::inspect(parent.try_clone().map_err(|e|e.to_string())?)?;
+    let target_before=match fs::symlink_metadata(target){
+        Ok(_)=>Some(VaultObject::open(target,false)?),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>None,
+        Err(e)=>return Err(format!("vault destination inspection: {e}")),
+    };
+    for attempt in 0..4 {
+        match commit(temp){
+            Ok(file)=>{drop(file);return Ok(());},
+            Err(error)=>{
+                // This is specifically the final native rename; permission
+                // derivation, stream checks and all other failures propagate.
+                if attempt==3 || !error.starts_with("commit private output:") || !error.contains("(os error 5)") || target_before.is_none(){return Err(format!("vault publish: {error}"));}
+                std::thread::sleep(Duration::from_millis(10u64<<attempt));
+                safe_ancestors(target)?;
+                let parent_now=VaultObject::open(target.parent().ok_or("invalid vault parent")?,true)?;
+                let target_now=VaultObject::open(target,false)?;
+                let expected=target_before.as_ref().unwrap();
+                // Reopen the current name for DELETE authorization and identity.
+                // Do not hold that target handle during legacy Windows replace:
+                // it deterministically causes ACCESS_DENIED on some filesystems.
+                if !parent_before.matches(&parent_now)||!expected.matches(&target_now){return Err("vault destination identity, attributes or permissions changed; not retried".into());}
+            }
+        }
+    }
+    unreachable!()
 }
 
 fn safe_ancestors(path: &Path) -> Result<(), String> {
@@ -1455,6 +1552,38 @@ mod tests {
         assert!(vault.remove("example").unwrap());
         assert!(vault.get("example").is_err());
     }
+    #[cfg(windows)]
+    #[test]
+    fn vault_publish_retries_only_unchanged_authorized_target() {
+        use std::os::windows::fs::OpenOptionsExt;
+        for mode in ["transient", "persistent", "replaced", "readonly", "permissions-changed", "parent-permissions-changed", "other-error"] {
+            let root=tempfile::tempdir().unwrap();
+            let canonical=crate::engine::canonical_input_path(root.path(),true).unwrap();
+            let target=canonical.join("vault.dat");fs::write(&target,b"old encrypted fixture").unwrap();
+            let parent=fs::File::options().access_mode(0x120089).share_mode(3).custom_flags(0x02200000).open(&canonical).unwrap();
+            let mut temp=crate::private_stage::create_output(&canonical,&parent).unwrap();
+            temp.as_file().write_all(b"new encrypted fixture").unwrap();
+            if mode=="readonly" {let mut p=fs::metadata(&target).unwrap().permissions();p.set_readonly(true);fs::set_permissions(&target,p).unwrap();}
+            let mut calls=0;
+            let result=publish_vault(&mut temp,&target,&parent,&mut |temp|{
+                calls+=1;
+                if mode=="transient"&&calls==2{return temp.commit(&target,true);}
+                if mode=="permissions-changed"||mode=="parent-permissions-changed" {
+                    use std::os::windows::process::CommandExt;
+                    let output=Command::new("icacls.exe").arg(if mode=="permissions-changed"{&target}else{&canonical}).arg("/inheritance:d").creation_flags(0x08000000).output().unwrap();
+                    assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+                }
+                if mode=="replaced" {fs::rename(&target,canonical.join("saved.dat")).unwrap();fs::write(&target,b"competitor").unwrap();}
+                Err(if mode=="other-error" {"private output links or streams changed"}else{"commit private output: Access is denied. (os error 5)"}.into())
+            });
+            if mode=="transient" {assert!(result.is_ok(),"{result:?}");assert_eq!(calls,2);assert_eq!(fs::read(&target).unwrap(),b"new encrypted fixture");}
+            else {assert!(result.is_err(),"{mode}");assert_eq!(calls,match mode{"readonly"=>0,"persistent"=>4,_=>1});assert_eq!(fs::read(&target).unwrap(),if mode=="replaced" {b"competitor".as_slice()}else{b"old encrypted fixture".as_slice()});}
+            if mode=="readonly" {let mut p=fs::metadata(&target).unwrap().permissions();p.set_readonly(false);fs::set_permissions(&target,p).unwrap();}
+            drop(temp);
+            assert_eq!(fs::read_dir(&canonical).unwrap().count(),if mode=="replaced"{2}else{1},"{mode}");
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn concurrent_vault_writes_keep_all_entries() {
