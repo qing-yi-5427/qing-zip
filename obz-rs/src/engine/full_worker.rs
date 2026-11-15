@@ -268,6 +268,19 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_header_without_password_declines_and_reaps_before_output() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("encrypted.7z");
+        fs::write(temp.path().join("a.txt"),b"abc").unwrap();
+        let engine=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+        let result=std::process::Command::new(engine).current_dir(temp.path())
+            .args(["a","-t7z","-mhe=on","-pfixture-password","encrypted.7z","a.txt"])
+            .output().unwrap();assert!(result.status.success());
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        assert!(prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).unwrap().is_none());
+        reap_proof();
+    }
+    #[test]
     fn decoder_thread_ack_cannot_change_job_limit_or_repeat() {
         let mut frame=vec![42;16];frame.extend_from_slice(&4u32.to_le_bytes());
         acknowledge_threads(&frame,&[42;16],Some(4),false).unwrap();

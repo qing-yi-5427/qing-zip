@@ -247,16 +247,16 @@ struct VolumeMap {
 
 class OpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolumeCallback, public ICryptoGetTextPassword {
   std::atomic<ULONG> refs_{1};
-  const VolumeMap &map_; bool volume_requests_;
+  const VolumeMap &map_; bool volume_requests_; bool detect_password_;
 public:
-  OpenCallback(const VolumeMap &m, bool allow) : map_(m), volume_requests_(allow) {}
+  OpenCallback(const VolumeMap &m, bool allow, bool detect_password = false) : map_(m), volume_requests_(allow), detect_password_(detect_password) {}
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **p) noexcept override {
     if (!p) return E_POINTER; *p = nullptr;
     if (iid == IID_IUnknown || iid == IID_IArchiveOpenCallback)
       *p = static_cast<IArchiveOpenCallback *>(this);
     else if (iid == IID_IArchiveOpenVolumeCallback)
       *p = static_cast<IArchiveOpenVolumeCallback *>(this);
-    else if (iid == IID_ICryptoGetTextPassword && !volume_requests_ && !map_.operation->password.empty())
+    else if (iid == IID_ICryptoGetTextPassword && !volume_requests_ && (detect_password_ || !map_.operation->password.empty()))
       *p = static_cast<ICryptoGetTextPassword *>(this);
     else return E_NOINTERFACE;
     AddRef(); return S_OK;
@@ -676,7 +676,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     Ref<IInArchive> split;
     Ref<IInArchive> inner;
     Ref<IInStream> first(new VolumeStream(operation, 0, map.sizes[0]));
-    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, false));
+    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, false, request->reserved != 0));
     Ref<IArchiveOpenCallback> outer_callback;
     Ref<IInArchiveGetStream> joined_provider;
     Ref<ISequentialInStream> joined_sequential;
