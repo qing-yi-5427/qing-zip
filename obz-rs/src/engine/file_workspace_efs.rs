@@ -97,7 +97,7 @@ fn identity(handle: Handle) -> Result<[u32; 3], String> {
         return Err(error("读取EFS对象身份"));
     }
     if info[0] & 0x410 != 0 || info[10] != 1 {
-        return Err("EFS候选仅支持无链接普通文件".into());
+        return Err(format!("EFS ordinary-file identity required: attrs={:#x} links={}", info[0], info[10]));
     }
     Ok([info[7], info[11], info[12]])
 }
@@ -413,9 +413,12 @@ unsafe extern "system" fn progress(
         state.failed = Some("EFS复制取消或源身份变化".into());
         return 1;
     }
-    let Ok(id) = identity(target) else {
-        state.failed = Some("EFS原生目标身份无效".into());
-        return 1;
+    let id = match identity(target) {
+        Ok(id) => id,
+        Err(error) => {
+            state.failed = Some(format!("EFS native target identity stream={_n} reason={_reason}: {error}"));
+            return 1;
+        }
     };
     let borrowed = std::mem::ManuallyDrop::new(unsafe { File::from_raw_handle(target) });
     if let Err(error) = crate::private_stage::verify_native_private_child(state.parent, &borrowed) {
