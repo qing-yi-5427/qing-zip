@@ -471,6 +471,50 @@ fn verify_empty_directory(file:&File)->Result<(),String>{
     Err("private directory contains unexpected entries".into())
 }
 
+/// Only local copy producers supply complete stream proofs. Archive publishers
+/// retain their ordinary single-stream validation path.
+pub(crate) trait LocalOutputProof {
+    fn verify(&self, file: &File) -> Result<Vec<u8>, String>;
+}
+pub(crate) struct NativeOutputReservation {
+    parent: File,
+    path: PathBuf,
+    permissions: PrivateDescriptor,
+}
+pub(crate) fn reserve_native_output(path: &Path, parent: &File) -> Result<NativeOutputReservation,String> {
+    if info(parent)?[0]&0x410 != 0x10 || volume_mode(parent)? != Mode::PrivateAcl {
+        return Err("native encrypted output requires a protected ordinary parent".into());
+    }
+    Ok(NativeOutputReservation { parent:parent.try_clone().map_err(|e|e.to_string())?,
+        path:path.to_owned(), permissions:ordinary_permissions(parent,&effective_token()?)? })
+}
+impl NativeOutputReservation {
+    // Ownership transfers immediately into a guard: every error removes only
+    // this exact owned object, including failures after the private rename.
+    pub(crate) fn adopt(self, file:File, private_parent:&File, old_path:&Path) -> Result<PrivateOutputFile,String> {
+        let mut output=PrivateOutputFile {direct:false,directory:false,file:Some(file),
+            parent:self.parent,path:old_path.to_owned(),permissions:Some(self.permissions),state:State::Private};
+        verify_native_private_child(private_parent,output.as_file())?;
+        let token=effective_token()?;let sid=current_sid(&token)?;
+        let live=ordinary_permissions(&output.parent,&token)?;
+        if !same_file_permissions(output.permissions.as_ref().unwrap().0,live.0)? {
+            return Err("destination permissions changed during native copy".into());
+        }
+        let wide:Vec<u16>=format!("O:{sid}D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)").encode_utf16().chain(Some(0)).collect();
+        let mut raw=std::ptr::null_mut();
+        if unsafe{ConvertStringSecurityDescriptorToSecurityDescriptorW(wide.as_ptr(),1,&mut raw,std::ptr::null_mut())}==0{return Err(error("protect adopted encrypted output"));}
+        let private=Allocation(raw);
+        let status=unsafe{NtSetSecurityObject(output.as_file().as_raw_handle(),0x80000005,private.0)};
+        if status<0{return Err(nt_error("protect adopted encrypted output",status));}
+        if !verify_private_permissions(output.as_file(),&private_permissions(&sid)?,&sid)? {
+            return Err("adopted encrypted output permissions were not retained".into());
+        }
+        let name=private_name()?;
+        rename(output.as_file(),&output.parent,&leaf(OsStr::new(&name))?,false)?;
+        output.path=self.path.join(name);
+        Ok(output)
+    }
+}
 pub(crate) struct PrivateOutputFile {
     direct: bool,
     directory:bool,
@@ -572,7 +616,7 @@ impl PrivateOutputFile {
         self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None)
     }
     /// Explicit local-file mode; default/archive output still rejects custom ADS.
-    pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&crate::engine::file_workspace::LocalStreamProof)->Result<File,String>{
+    pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&dyn LocalOutputProof)->Result<File,String>{
         proof.verify(self.as_file())?;
         self.commit_journaled(target,replace,None,&mut |_|Ok(()),Some(proof))
     }
@@ -582,7 +626,7 @@ impl PrivateOutputFile {
         replace: bool,
         journal: Option<&crate::engine::PublicationJournal>,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
-        local_proof: Option<&crate::engine::file_workspace::LocalStreamProof>,
+        local_proof: Option<&dyn LocalOutputProof>,
     ) -> Result<File, String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("commit_journaled");

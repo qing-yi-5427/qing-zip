@@ -444,24 +444,25 @@ unsafe extern "system" fn progress(
 }
 
 /// Prepared object stays within its protected stage. No publication API yet.
-struct NativeFile(File);
+struct NativeFile(Option<File>);
 impl std::ops::Deref for NativeFile {
     type Target = File;
     fn deref(&self) -> &File {
-        &self.0
+        self.0.as_ref().expect("owned native EFS file")
     }
 }
 impl Drop for NativeFile {
     fn drop(&mut self) {
         // This handle belongs exclusively to our native-created private output.
         // Never apply this cleanup to the source or a path-resolved replacement.
-        if let Ok(metadata) = self.0.metadata() {
+        let Some(file) = self.0.as_ref() else { return; };
+        if let Ok(metadata) = file.metadata() {
             if metadata.file_attributes() & 1 != 0 {
                 let attrs = (metadata.file_attributes() & !1) as u64;
                 let basic = [0u64, 0, 0, 0, if attrs == 0 { 0x80 } else { attrs }];
                 unsafe {
                     SetFileInformationByHandle(
-                        self.0.as_raw_handle(),
+                        file.as_raw_handle(),
                         0,
                         basic.as_ptr().cast(),
                         40,
@@ -471,19 +472,40 @@ impl Drop for NativeFile {
         }
         let delete = 1u8;
         unsafe {
-            SetFileInformationByHandle(self.0.as_raw_handle(), 4, (&delete as *const u8).cast(), 1);
+            SetFileInformationByHandle(file.as_raw_handle(), 4, (&delete as *const u8).cast(), 1);
         }
     }
 }
 pub(crate) struct Prepared {
     file: NativeFile,
+    reservation: Option<crate::private_stage::NativeOutputReservation>,
     stage: crate::private_stage::PrivateStage,
     source: crate::engine_stream::PinnedSource,
     expected: Snapshot,
     #[cfg(test)]
     callback_seen: bool,
 }
+struct EfsProof<'a> { source:&'a File, digest:[u8;32], control:JobControl }
+impl crate::private_stage::LocalOutputProof for EfsProof<'_> {
+    fn verify(&self,file:&File)->Result<Vec<u8>,String> {
+        if snapshot(self.source,&self.control)?.digest != self.digest {return Err("EFS source changed before publication".into());}
+        let actual=snapshot_with_share(file,&self.control,5)?.digest;
+        if actual!=self.digest{return Err("EFS complete stream/certificate proof changed".into());}
+        Ok(actual.to_vec())
+    }
+}
 impl Prepared {
+    pub(super) fn source(&self)->&File { &self.source }
+    pub(crate) fn publish(mut self,target:&Path,replace:bool,ctl:&JobControl)->Result<File,String>{
+        self.verify(ctl)?;
+        let proof=EfsProof{source:&self.source,digest:self.expected.digest,control:ctl.clone()};
+        let old_path=path(&self.file)?;
+        let file=self.file.0.take().ok_or("EFS output ownership lost")?;
+        let mut output=self.reservation.take().ok_or("EFS target policy lost")?
+            .adopt(file,self.stage.root(),&old_path)?;
+        ctl.check()?;
+        output.commit_local_streams(target,replace,&proof)
+    }
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
         crate::private_stage::verify_native_private_child(self.stage.root(), &self.file)?;
         if snapshot(&self.source, ctl)?.digest != self.expected.digest
@@ -529,6 +551,7 @@ pub(crate) fn prepare(
     {
         return Err("目标卷不支持EFS加密，源保持不变".into());
     }
+    let reservation = crate::private_stage::reserve_native_output(parent, parent_pin)?;
     let stage = crate::private_stage::create(parent, parent_pin)?;
     let target = stage.path().join("encrypted-native-output");
     let source_path = wide(&path(&source)?);
@@ -558,14 +581,14 @@ pub(crate) fn prepare(
             .unwrap_or_else(|| error("EFS原生复制失败，源保持不变")));
     }
     ctl.check()?;
-    let file = NativeFile(
+    let file = NativeFile(Some(
         File::options()
             .access_mode(0x170199)
             .share_mode(0)
             .custom_flags(0x02200000)
             .open(&target)
             .map_err(|e| e.to_string())?,
-    );
+    ));
     crate::private_stage::verify_native_private_child(stage.root(), &file)?;
     if state
         .destination
@@ -580,6 +603,7 @@ pub(crate) fn prepare(
     let callback_seen=state.destination.is_some();
     let prepared = Prepared {
         file,
+        reservation: Some(reservation),
         stage,
         source,
         expected,
@@ -669,6 +693,10 @@ mod tests {
             prepared.verify(&JobControl::new()).unwrap();
             assert_eq!(ea(&prepared.file).unwrap(), expected_ea);
             assert_eq!(stream_names(&prepared.file).unwrap().len(), 5);
+            let held_path = path(&prepared.file).unwrap();
+            assert!(std::fs::rename(&held_path, prepared.stage.path().join("replaced")).is_err());
+            assert!(std::fs::write(&held_path,b"replacement").is_err());
+            prepared.verify(&JobControl::new()).unwrap();
             let private_path = prepared.stage.path().to_owned();
             assert!(private_path.is_dir());
             drop(prepared);
@@ -778,4 +806,56 @@ mod tests {
             }
         }
     }
+    #[test]
+    #[ignore = "real EFS transfer only on disposable hosted runner"]
+    fn ci_efs_transfer_conflicts_complete_proof_and_native_cancel() {
+        for mode in ["error","skip","rename","overwrite"] {
+            let temp=tempfile::tempdir().unwrap();
+            let source=temp.path().join("source.txt");let dest=temp.path().join("dest");
+            std::fs::write(&source,b"efs content").unwrap();
+            std::fs::write(format!("{}:custom",source.display()),b"all ads bytes").unwrap();
+            encrypt_ci_fixture(&source);
+            {let file=File::options().read(true).write(true).open(&source).unwrap();
+             set_ea(&file,&[0,0,0,0,0x80,1,3,0,b'A',0,1,2,3]).unwrap();}
+            let before=snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest;
+            std::fs::create_dir(&dest).unwrap();std::fs::write(dest.join("source.txt"),b"old").unwrap();
+            let opts=super::super::EngineOptions{overwrite:mode.into(),..Default::default()};
+            let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&opts);
+            if mode=="error" {assert!(result.is_err());}
+            else if mode=="skip" {assert_eq!(result.unwrap().skipped,1);}
+            else {
+                assert_eq!(result.unwrap().copied,1);
+                let target=dest.join(if mode=="rename"{"source (1).txt"}else{"source.txt"});
+                assert_eq!(snapshot(&File::open(&target).unwrap(),&JobControl::new()).unwrap().digest,before);
+            }
+            if mode!="overwrite"{assert_eq!(std::fs::read(dest.join("source.txt")).unwrap(),b"old");}
+            assert_eq!(snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest,before);
+            assert!(std::fs::read_dir(&dest).unwrap().all(|p|!p.unwrap().file_name().to_string_lossy().starts_with(".qing")));
+        }
+        let temp=tempfile::tempdir().unwrap();let source=temp.path().join("cancel");let dest=temp.path().join("dest");
+        std::fs::write(&source,vec![1;1024*1024]).unwrap();encrypt_ci_fixture(&source);
+        std::fs::create_dir(&dest).unwrap();std::fs::write(dest.join("cancel"),b"old").unwrap();
+        CANCEL_NATIVE.with(|v|v.set(true));
+        let opts=super::super::EngineOptions{overwrite:"overwrite".into(),..Default::default()};
+        assert!(super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&opts).is_err());
+        assert_eq!(std::fs::read(dest.join("cancel")).unwrap(),b"old");
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(),1);
+        assert_eq!(std::fs::metadata(source).unwrap().len(),1024*1024);
+    }
+    #[test]
+    #[ignore = "real EFS cross-volume copy only on disposable hosted runner"]
+    fn ci_efs_cross_volume_move_keeps_source_and_reports_boundary() {
+        let source_dir=tempfile::tempdir().unwrap();
+        let dest=tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source=source_dir.path().join("encrypted.txt");std::fs::write(&source,b"source retained").unwrap();
+        encrypt_ci_fixture(&source);
+        assert_ne!(identity(File::open(&source).unwrap().as_raw_handle()).unwrap()[0],
+            {let mut info=[0u32;13];assert_ne!(unsafe{GetFileInformationByHandle(parent(dest.path()).as_raw_handle(),info.as_mut_ptr())},0);info[7]},"test requires actual distinct volumes");
+        let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.path().to_str().unwrap(),true,&super::super::EngineOptions::default()).unwrap();
+        assert_eq!(result.copied,1);assert_eq!(result.moved,0);assert!(!result.retained_sources.is_empty());assert!(!result.retained_reasons.is_empty());
+        assert!(source.exists());
+        assert_eq!(snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest,
+            snapshot(&File::open(dest.path().join("encrypted.txt")).unwrap(),&JobControl::new()).unwrap().digest);
+    }
+
 }
