@@ -187,6 +187,7 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
     let Some(base) = directory_start.checked_sub(directory_offset) else { return Ok(None) };
     if locator_offset.is_some_and(|offset| offset.checked_add(base) != Some(directory_end)) { return Ok(None); }
     let mut directory = DirectoryWindow::default();
+    let mut local_window = DirectoryWindow::default();
     let mut position = directory_start;
     let mut first_local = u64::MAX;
     let mut ranges = Vec::new();
@@ -243,7 +244,10 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
         if local.checked_add(local_name_size as u64).is_none_or(|end| end > directory_start) { return Ok(None); }
         first_local = first_local.min(local);
         // Every central record must point at a real local header in this file.
-        let local_header = read_at(file, local, local_name_size)?;
+        let local_header = if strict {
+            let Some(bytes) = local_window.range(file, local, local_name_size, directory_start)? else { return Ok(None); };
+            bytes.to_vec()
+        } else { read_at(file, local, local_name_size)? };
         if !local_header.starts_with(b"PK\x03\x04") || zip_u16(&local_header, 26) != zip_u16(records, 28)
             || zip_u16(&local_header, 8) != zip_u16(records, 10)
             || zip_u16(&local_header, 6) != zip_u16(records, 8) { return Ok(None); }
@@ -256,8 +260,8 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
             if records[6..28] != local_header[4..26] { return Ok(None); }
             let extra_length = usize::from(zip_u16(&local_header, 28));
             if extra_length != 0 {
-                let extra = read_at(file, local + local_name_size as u64, extra_length)?;
-                if !ordinary_zip_extra(&extra) { return Ok(None); }
+                let Some(extra) = local_window.range(file, local + local_name_size as u64, extra_length, directory_start)? else { return Ok(None); };
+                if !ordinary_zip_extra(extra) { return Ok(None); }
             }
             ranges.push((local, payload + packed_size));
         }

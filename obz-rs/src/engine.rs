@@ -1992,23 +1992,32 @@ fn ordinary_zip_file_layout_count(
 }
 
 // A locked bounded view hides only the prefix/tail proven by the strict walk.
-struct SelectedZipView { source: File, start: u64, length: u64, position: u64, physical_position: Option<u64> }
+struct SelectedZipView {
+    source: File, start: u64, length: u64, position: u64,
+    cache_start: u64, cache: Vec<u8>,
+}
 impl Read for SelectedZipView {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let amount = self.length.saturating_sub(self.position).min(bytes.len() as u64) as usize;
         if amount == 0 { return Ok(0); }
-        let absolute = self.start + self.position;
-        if self.physical_position != Some(absolute) {
-            self.physical_position = None;
-            self.source.seek(SeekFrom::Start(absolute))?;
+        if self.position < self.cache_start || self.position >= self.cache_start + self.cache.len() as u64 {
+            // Publish the cache only after a complete successful read. A failed
+            // refill cannot leave stale bytes addressable under a new offset.
+            self.cache.clear();
+            let size = (self.length - self.position).min(128 * 1024) as usize;
+            self.source.seek(SeekFrom::Start(self.start + self.position))?;
+            self.cache.resize(size, 0);
+            if let Err(error) = self.source.read_exact(&mut self.cache) {
+                self.cache.clear();
+                return Err(error);
+            }
+            self.cache_start = self.position;
         }
-        // An I/O error may leave the OS cursor unspecified. Re-seek on retry;
-        // only a successful read proves the next physical position.
-        self.physical_position = None;
-        let read = self.source.read(&mut bytes[..amount])?;
-        self.physical_position = Some(absolute + read as u64);
-        self.position += read as u64;
-        Ok(read)
+        let offset = (self.position - self.cache_start) as usize;
+        let count = amount.min(self.cache.len() - offset);
+        bytes[..count].copy_from_slice(&self.cache[offset..offset + count]);
+        self.position += count as u64;
+        Ok(count)
     }
 }
 impl Seek for SelectedZipView {
@@ -2045,7 +2054,7 @@ fn decode_selected_zip(
     } else if let Some(layout) = zip_input_probe::selected_layout(&mut source, ctl)? {
         (layout.start, layout.end)
     } else { return Ok(false); };
-    let view = SelectedZipView { source, start, length: end - start, position: 0, physical_position: None };
+    let view = SelectedZipView { source, start, length: end - start, position: 0, cache_start: 0, cache: Vec::with_capacity(128 * 1024) };
     let mut archive = match zip::ZipArchive::new(view) {
         Ok(a) => a,
         Err(_) => return Ok(false),
@@ -7021,7 +7030,7 @@ mod staging_tests {
         let path = temp.path().join("view");
         fs::write(&path, b"prefix0123456789suffix").unwrap();
         let mut view = SelectedZipView { source: File::open(path).unwrap(), start: 6,
-            length: 10, position: 0, physical_position: None };
+            length: 10, position: 0, cache_start: 0, cache: Vec::with_capacity(128 * 1024) };
         let mut bytes = [0; 3];
         view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"012");
         view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"345");
@@ -7036,6 +7045,25 @@ mod staging_tests {
         view.seek(SeekFrom::Start(0)).unwrap();
         assert!(view.seek(SeekFrom::Current(-1)).is_err());
         view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"012");
+    }
+    #[test]
+    fn selected_zip_cache_crosses_windows_and_never_exposes_prefix_or_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cached");
+        let payload: Vec<u8> = (0..300_001).map(|i| (i % 251) as u8).collect();
+        let mut data = b"prefix".to_vec(); data.extend(&payload); data.extend(b"suffix");
+        fs::write(&path, data).unwrap();
+        let mut view = SelectedZipView { source: File::open(path).unwrap(), start: 6,
+            length: payload.len() as u64, position: 0, cache_start: 0, cache: Vec::with_capacity(128 * 1024) };
+        for (offset, size) in [(0, 200_000), (131_070, 17), (8, 10), (299_990, 11), (0, 300_001)] {
+            view.seek(SeekFrom::Start(offset as u64)).unwrap();
+            let mut bytes = vec![0; size]; view.read_exact(&mut bytes).unwrap();
+            assert_eq!(bytes, payload[offset..offset + size]);
+            assert!(view.cache.len() <= 128 * 1024);
+            assert!(view.cache.capacity() <= 128 * 1024);
+        }
+        let mut end = [0; 20]; assert_eq!(view.read(&mut end).unwrap(), 0);
+        assert_eq!(view.read(&mut []).unwrap(), 0);
     }
     #[test]
     fn selected_embedded_zip_keeps_only_selected_and_verifies_every_crc() {
