@@ -2942,8 +2942,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             };
             let created = crate::private_stage::create_journal_directory(parent, leaf)?;
             output_guards.exclusive_claim = true;
-            output_guards.direct_memory_claim = memory.is_some() && opts.selected.is_empty()
-                && using_process_token() && crate::private_stage::direct_output_supported(&created);
+            #[cfg(target_pointer_width = "64")]
+            { output_guards.direct_memory_claim = memory.is_some() && opts.selected.is_empty()
+                && using_process_token() && crate::private_stage::direct_output_supported(&created); }
             let proof = created_directories::Identity::owned(&created)?;
             output_guards.created_output_dirs.push((dest.clone(),proof));
             output_guards.selected_output_root = Some(dest.clone());
