@@ -23,6 +23,7 @@ K.CloseHandle.argtypes = [W.HANDLE]
 K.GetFileAttributesW.argtypes = [W.LPCWSTR]
 K.GetFileAttributesW.restype = W.DWORD
 A.EncryptFileW.argtypes = [W.LPCWSTR]
+A.EncryptionDisable.argtypes = [W.LPCWSTR, W.BOOL]
 A.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
 A.SetFileSecurityW.argtypes = [W.LPCWSTR, W.DWORD, C.c_void_p]
 K.LocalFree.argtypes = [C.c_void_p]
@@ -37,6 +38,18 @@ N.NtSetEaFile.restype = C.c_long
 N.NtQueryEaFile.argtypes = [W.HANDLE, C.POINTER(IOSB), C.c_void_p, W.ULONG,
                            W.BOOLEAN, C.c_void_p, W.ULONG, C.c_void_p, W.BOOLEAN]
 N.NtQueryEaFile.restype = C.c_long
+
+class HashBlob(C.Structure):
+    _fields_ = [("size", W.DWORD), ("data", C.c_void_p)]
+class CertificateHash(C.Structure):
+    _fields_ = [("size", W.DWORD), ("sid", C.c_void_p),
+                ("hash", C.POINTER(HashBlob)), ("display", W.LPWSTR)]
+class HashList(C.Structure):
+    _fields_ = [("count", W.DWORD), ("items", C.POINTER(C.POINTER(CertificateHash)))]
+for name in ["QueryUsersOnEncryptedFile", "QueryRecoveryAgentsOnEncryptedFile"]:
+    getattr(A, name).argtypes = [W.LPCWSTR, C.POINTER(C.POINTER(HashList))]
+    getattr(A, name).restype = W.DWORD
+A.FreeEncryptionCertificateHashList.argtypes = [C.POINTER(HashList)]
 
 receipt = {"commit": os.environ.get("GITHUB_SHA"), "run_id": os.environ.get("GITHUB_RUN_ID"),
            "runner_os": os.environ.get("RUNNER_OS"), "checks": {}, "status": "failed"}
@@ -76,6 +89,22 @@ def digest(path):
 def encrypted(path):
     attributes = K.GetFileAttributesW(str(path))
     return attributes != 0xffffffff and bool(attributes & 0x4000)
+
+def keys(path, recovery=False):
+    pointer = C.POINTER(HashList)()
+    function = A.QueryRecoveryAgentsOnEncryptedFile if recovery else A.QueryUsersOnEncryptedFile
+    status = function(str(path), C.byref(pointer))
+    require(status == 0, f"EFS key query failed: {status}")
+    try:
+        require(bool(pointer) and pointer.contents.count < 1024, "invalid native EFS key list")
+        hashes = []
+        for index in range(pointer.contents.count):
+            blob = pointer.contents.items[index].contents.hash.contents
+            require(0 < blob.size <= 1024, "invalid native EFS certificate hash")
+            hashes.append(C.string_at(blob.data, blob.size))
+        return sorted(hashes)
+    finally:
+        A.FreeEncryptionCertificateHashList(pointer)
 
 def copy(source, target, cancel=False):
     # No ALLOW_DECRYPTED_DESTINATION. This is Nana's ordinary-copy flag.
@@ -117,6 +146,9 @@ try:
         # encrypted file with EA even if Windows EncryptFile discarded old EA.
         expected_ea = ea(source, b"opaque EA bytes\0\xff")
         require(expected_ea, "could not construct encrypted EA fixture")
+        source_keys = keys(source)
+        source_recovery = keys(source, recovery=True)
+        require(source_keys, "encrypted fixture has no authorized user key")
 
         target = private / "copied.bin"
         ok, error = copy(source, target)
@@ -133,6 +165,21 @@ try:
         require(ea(target, b"opaque EA bytes\0\xff") == expected_ea, "explicit EA restore failed")
         require(encrypted(target) and digest(target) == original, "EA restore changed encryption/content")
         receipt["checks"]["explicit_private_ea_restore_preserves_efs"] = True
+        require(keys(target) == source_keys and keys(target, recovery=True) == source_recovery,
+                "native copy/EA repair changed authorized EFS key sets")
+        receipt["checks"]["user_and_recovery_key_sets_preserved"] = True
+
+        disabled = private / "encryption-disabled"
+        disabled.mkdir()
+        require(A.EncryptionDisable(str(disabled), True), f"could not disable encryption for own test directory: {C.get_last_error()}")
+        plaintext_target = disabled / "must-not-decrypt.bin"
+        ok, error = copy(source, plaintext_target)
+        require(not ok, "encrypted copy unexpectedly accepted encryption-disabled destination")
+        require(not plaintext_target.exists(), "failed encrypted copy left a destination object")
+        require(digest(source) == original and encrypted(source) and keys(source) == source_keys,
+                "refused plaintext fallback changed source")
+        receipt["plaintext_fallback_rejection_error"] = error
+        receipt["checks"]["encryption_disabled_target_rejects_plaintext_fallback"] = True
 
         existing = private / "existing.bin"
         existing.write_bytes(b"existing target must survive")
