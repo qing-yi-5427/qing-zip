@@ -89,8 +89,8 @@ struct Worker {
     std::array<uint8_t, 16> received{}; r.take(received.data(), received.size());
     if (received != nonce) throw std::runtime_error("worker job identity mismatch");
   }
-  void start(const wchar_t *runtime) {
-    auto r = channel.read(1); r.take(nonce.data(), nonce.size());
+  void start(const wchar_t *runtime, uint8_t kind = 1) {
+    auto r = channel.read(kind); r.take(nonce.data(), nonce.size());
     if (r.wide() != runtime) throw std::runtime_error("runtime directory mismatch");
     parent = reinterpret_cast<HANDLE>(r.get<uint64_t>());
     if (WaitForSingleObject(parent, 0) != WAIT_TIMEOUT) throw std::runtime_error("parent process unavailable");
@@ -223,3 +223,5 @@ extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {
         && !w.failed ? 0 : 2;
   } catch (...) { return 3; }
 }
+
+#include "zip_list_worker.inc"

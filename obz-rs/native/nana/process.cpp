@@ -18,7 +18,7 @@ struct Attributes {
 }
 
 static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DWORD threads,
-                                 HANDLE *process, HANDLE *input, HANDLE *output, bool create_zip = false) noexcept {
+                                 HANDLE *process, HANDLE *input, HANDLE *output, unsigned mode = 0) noexcept {
   *process = *input = *output = nullptr;
   try {
     Handle child_in, parent_in, child_out, parent_out, child_err;
@@ -64,7 +64,7 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
       if (threads) command += L" -mmt=" + std::to_wstring(threads);
       command += L" -- \"" + std::wstring(file) + L"\"";
     } else {
-      command += create_zip ? L" --internal-create-worker" : L" --internal-selected-worker";
+      command += mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
     }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
@@ -90,4 +90,8 @@ extern "C" DWORD qing_spawn_solid_reader(const wchar_t *exe, const wchar_t *arch
 
 extern "C" DWORD qing_spawn_create_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
   return spawn_archive_worker(exe, nullptr, 0, process, input, output, true);
+}
+
+extern "C" DWORD qing_spawn_zip_list_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output, 2);
 }

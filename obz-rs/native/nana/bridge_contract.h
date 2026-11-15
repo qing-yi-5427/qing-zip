@@ -109,6 +109,31 @@ HRESULT __stdcall qz_extract_selected(
 HRESULT __stdcall qz_extract_selected_with_password(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *, const wchar_t *, uint32_t);
 
+// Read-only ZIP listing. Property ids are stable protocol ordinals, not SDK ids.
+// No output or volume-discovery callback exists in this capability surface.
+struct QzZipListProperty {
+  uint32_t id, type; // 0 empty, 1 number, 2 bool, 3 UTF-16, 4 FILETIME.
+  uint64_t number;
+  const wchar_t *text;
+  uint32_t text_units;
+  uint16_t precision, sub100ns, reserved3, padding;
+};
+struct QzZipListHost {
+  uint32_t abi_version, struct_bytes;
+  void *context;
+  HRESULT (__stdcall *read_at)(void *, uint32_t, uint64_t, void *, uint32_t, uint32_t *);
+  int32_t (__stdcall *cancelled)(void *);
+  // index == UINT32_MAX carries archive diagnostics before item metadata.
+  HRESULT (__stdcall *property)(void *, uint32_t index, const struct QzZipListProperty *);
+};
+struct QzZipListRequest {
+  uint32_t abi_version, struct_bytes;
+  const wchar_t *runtime;
+  uint64_t source_size, local_offset;
+  const struct QzZipListHost *host;
+};
+HRESULT __stdcall qz_list_zip_at(const struct QzZipListRequest *, uint32_t *item_count);
+
 #ifdef __cplusplus
 }
 #endif

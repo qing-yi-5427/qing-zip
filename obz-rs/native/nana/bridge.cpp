@@ -709,3 +709,5 @@ extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *reques
 }
 
 #include "create_zip.inc"
+
+#include "zip_list.inc"
