@@ -1570,6 +1570,54 @@ mod file_publication {
             unsafe { std::slice::from_raw_parts(owned.0.cast::<u8>(), len).to_vec() }
         }
 
+        // Test comparator only: basic inherited ACCESS_ALLOWED ACEs commute.
+        // Keep descriptor/control/owner/group, masks, SIDs, flags and duplicate
+        // multiplicities exact. Deny, object, callback and inherit-only ACEs
+        // never enter this normalization; production checks stay byte-ordered.
+        fn same_legacy_allow_security(left: &[u8], right: &[u8]) -> bool {
+            fn normalized(sd: &[u8]) -> Option<Vec<u8>> {
+                if sd.len() < 20 || sd[0] != 1 { return None; }
+                let control=u16::from_le_bytes(sd[2..4].try_into().ok()?);
+                if control & 0x8004 != 0x8004 { return None; }
+                let start=u32::from_le_bytes(sd[16..20].try_into().ok()?) as usize;
+                let header=sd.get(start..start.checked_add(8)?)?;
+                if start < 20 || header[0] != 2 { return None; }
+                let end=start.checked_add(u16::from_le_bytes(header[2..4].try_into().ok()?) as usize)?;
+                sd.get(start..end)?;
+                let count=u16::from_le_bytes(header[4..6].try_into().ok()?);
+                let mut cursor=start+8;let mut aces=Vec::new();
+                for _ in 0..count {
+                    let h=sd.get(cursor..cursor.checked_add(4)?)?;
+                    let size=u16::from_le_bytes(h[2..4].try_into().ok()?) as usize;
+                    let next=cursor.checked_add(size)?;if next>end {return None;}
+                    let ace=sd.get(cursor..next)?;
+                    if size<16 || ace[0]!=0 || ace[1]!=0x10 || ace[8]!=1 || ace[9]>15 || size!=16+4*ace[9] as usize {return None;}
+                    aces.push(ace.to_vec());cursor=next;
+                }
+                aces.sort();let mut result=sd.to_vec();cursor=start+8;
+                for ace in aces {result[cursor..cursor+ace.len()].copy_from_slice(&ace);cursor+=ace.len();}
+                Some(result)
+            }
+            left==right || normalized(left).zip(normalized(right)).is_some_and(|(a,b)|a==b)
+        }
+
+        #[test]
+        fn legacy_native_allow_comparator_accepts_ci_permutation_but_not_semantic_changes() {
+            let left: Vec<u8> = vec![1, 0, 4, 128, 20, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0, 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 38, 102, 22, 196, 141, 93, 22, 93, 238, 38, 80, 89, 1, 2, 0, 0, 2, 0, 112, 0, 4, 0, 0, 0, 0, 16, 24, 0, 169, 0, 18, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 33, 2, 0, 0, 0, 16, 36, 0, 255, 1, 31, 0, 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 38, 102, 22, 196, 141, 93, 22, 93, 238, 38, 80, 89, 244, 1, 0, 0, 0, 16, 20, 0, 255, 1, 31, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, 0, 16, 24, 0, 255, 1, 31, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0];
+            let right: Vec<u8> = vec![1, 0, 4, 128, 20, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0, 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 38, 102, 22, 196, 141, 93, 22, 93, 238, 38, 80, 89, 1, 2, 0, 0, 2, 0, 112, 0, 4, 0, 0, 0, 0, 16, 36, 0, 255, 1, 31, 0, 1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 38, 102, 22, 196, 141, 93, 22, 93, 238, 38, 80, 89, 244, 1, 0, 0, 0, 16, 20, 0, 255, 1, 31, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, 0, 16, 24, 0, 255, 1, 31, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0, 0, 16, 24, 0, 169, 0, 18, 0, 1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 33, 2, 0, 0];
+            assert_ne!(left,right);assert!(same_legacy_allow_security(&left,&right));
+            let dacl=u32::from_le_bytes(left[16..20].try_into().unwrap()) as usize;
+            for byte in [2,20,36,dacl+8+1,dacl+8+4,dacl+8+12] {
+                let mut changed=right.clone();changed[byte]^=1;
+                assert!(!same_legacy_allow_security(&left,&changed),"must preserve byte {byte}");
+            }
+            let mut deny_left=left.clone();deny_left[dacl+8]=1;
+            // Match the Users ACE after permutation, then turn it into a deny.
+            let mut deny_right=right.clone();let last=deny_right.len()-24;deny_right[last]=1;
+            assert!(!same_legacy_allow_security(&deny_left,&deny_right));
+            assert!(same_legacy_allow_security(&deny_left,&deny_left));
+        }
+
         fn attrs(file: &File, value: u32) {
             let mut basic = [0i64; 5];
             basic[4] = value as i64;
@@ -1786,7 +1834,7 @@ mod file_publication {
                 let FilePublication::Committed(file) = f.run(false, &mut || Ok(()), &mut |_| Ok(())).unwrap()
                     else { panic!("legacy destination must retain verified move"); };
                 assert!(!f.source.exists());
-                assert_eq!(security(&file), f.expected_security);
+                assert!(same_legacy_allow_security(&security(&file), &f.expected_security), "legacy permissions differ: {:?} != {:?}", security(&file), f.expected_security);
                 let after = info(&file).unwrap();
                 for index in [7,11,12] { assert_eq!(after[index], f.identity[index]); }
                 assert_eq!(fs::read(&f.target).unwrap(), b"verified bytes");
