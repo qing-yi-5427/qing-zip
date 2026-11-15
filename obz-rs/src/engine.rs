@@ -11,6 +11,7 @@ pub mod file_parts;
 pub mod archive_properties;
 #[cfg(windows)]
 pub mod file_workspace;
+mod file_workspace_ea;
 #[cfg(windows)]
 mod archive_add;
 #[cfg(windows)]
