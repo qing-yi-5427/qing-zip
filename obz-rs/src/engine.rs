@@ -1086,6 +1086,10 @@ pub(crate) fn no_links(path: &Path) -> Result<(), String> {
 }
 #[cfg(windows)]
 fn directory_identity(file: &File) -> Result<(u32, u64), String> {
+    directory_identity_and_attributes(file).map(|(identity, _)| identity)
+}
+#[cfg(windows)]
+fn directory_identity_and_attributes(file: &File) -> Result<((u32, u64), u32), String> {
     use std::os::windows::io::AsRawHandle;
     #[link(name = "Kernel32")]
     extern "system" {
@@ -1096,7 +1100,7 @@ fn directory_identity(file: &File) -> Result<(u32, u64), String> {
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    Ok((info[7], ((info[11] as u64) << 32) | info[12] as u64))
+    Ok(((info[7], ((info[11] as u64) << 32) | info[12] as u64), info[0]))
 }
 #[cfg(windows)]
 pub(crate) fn directory_attributes(file: &File) -> Result<u32, String> {
@@ -4071,8 +4075,10 @@ fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp,
         let (held, _) = guards.held.get(parent).ok_or("missing output parent guard")?;
         let pin = fs::OpenOptions::new().access_mode(0x200a0).share_mode(3)
             .custom_flags(0x02200000).open(parent).map_err(|e| e.to_string())?;
-        if directory_identity(held)? != directory_identity(&pin)?
-            || directory_attributes(&pin)? & 0x410 != 0x10 {
+        // BY_HANDLE_FILE_INFORMATION already includes current attributes.
+        // Keep the fresh path open/access check and both identity observations.
+        let (identity, attributes) = directory_identity_and_attributes(&pin)?;
+        if directory_identity(held)? != identity || attributes & 0x410 != 0x10 {
             return Err("output parent identity changed".into());
         }
         Ok(OutputTemp { inner: crate::private_stage::create_output(parent, &pin)? })
