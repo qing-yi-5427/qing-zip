@@ -480,6 +480,19 @@ pub(crate) struct PrivateOutputFile {
     permissions: Option<PrivateDescriptor>,
     state: State,
 }
+// A native ordinary-file child marks inherited ACEs with INHERITED_ACE,
+// whereas CreatePrivateObjectSecurity's legacy derivation leaves that marker
+// clear. The marker records provenance, not access; all other bytes remain exact.
+fn native_file_aces(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut entries = acl_entries(bytes)?.to_vec();
+    let mut at = 0;
+    while at < entries.len() {
+        let size = usize::from(u16::from_le_bytes([entries[at+2], entries[at+3]]));
+        entries[at+1] &= !0x10;
+        at += size;
+    }
+    Ok(entries)
+}
 /// EFS candidate only: verify native-created children still inherit exclusively
 /// from our protected stage, rather than trusting the copy API's ACL behavior.
 pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),String>{
@@ -491,7 +504,8 @@ pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),St
     let expected_parent=Allocation(raw);
     if !verify_private_permissions(parent,&expected_parent,&sid)?{return Err("native stage permissions changed".into());}
     let expected=ordinary_permissions(parent,&token)?;let actual=descriptor(file)?;
-    if !same_file_permissions(expected.0,actual.0)?{
+    if control(expected.0)? != control(actual.0)?
+        || native_file_aces(&acl_bytes(expected.0)?)? != native_file_aces(&acl_bytes(actual.0)?)? {
         #[cfg(test)] eprintln!("native private ACL mismatch expected control={:#x} entries={:?}; actual control={:#x} entries={:?}",control(expected.0)?,acl_entries(&acl_bytes(expected.0)?)?,control(actual.0)?,acl_entries(&acl_bytes(actual.0)?)?);
         return Err("native output did not retain private inherited permissions".into());
     }
@@ -915,6 +929,28 @@ fn create_exclusive_named(parent_path: &Path, parent: &File,directory:bool, dire
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_file_ace_equivalence_only_ignores_inherited_marker() {
+        let mut original = vec![2,0,16,0,1,0,0,0,0,0,8,0,1,2,3,4];
+        let expected = super::native_file_aces(&original).unwrap();
+        original[9] = 0x10;
+        assert_eq!(expected, super::native_file_aces(&original).unwrap());
+        for flag in [1,2,4,8,0x40,0x80] {
+            original[9] = 0x10 | flag;
+            assert_ne!(expected, super::native_file_aces(&original).unwrap());
+        }
+        original[9] = 0x10;
+        for offset in [8,12,13,14,15] {
+            original[offset] ^= 1;
+            assert_ne!(expected, super::native_file_aces(&original).unwrap());
+            original[offset] ^= 1;
+        }
+        original[4] = 2;
+        original.extend_from_slice(&[0,0,8,0,5,6,7,8]);
+        original[2] = 24;
+        assert_ne!(expected, super::native_file_aces(&original).unwrap());
+    }
+
     use super::*;
     use std::{
         fs,
@@ -955,6 +991,27 @@ mod tests {
         assert!(
             unsafe { NtSetSecurityObject(parent.as_raw_handle(), 4 | 0x80000000, memory.0) } >= 0
         );
+    }
+    #[test]
+    fn native_private_child_rejects_changed_parent_and_added_principal() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = open_parent(temp.path());
+        let sid = current_sid(&effective_token().unwrap()).unwrap();
+        let private = format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+        policy(&parent, &private);
+        let path = temp.path().join("native-child");
+        let child = fs::OpenOptions::new().write(true).access_mode(0x60003).share_mode(7)
+            .create_new(true).open(&path).unwrap();
+        verify_native_private_child(&parent, &child).unwrap();
+        policy(&child, &format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)(A;;GR;;;WD)"));
+        assert!(verify_native_private_child(&parent, &child).is_err());
+        drop(child);
+        fs::remove_file(&path).unwrap();
+        let child = fs::OpenOptions::new().write(true).access_mode(0x60003).share_mode(7)
+            .create_new(true).open(&path).unwrap();
+        verify_native_private_child(&parent, &child).unwrap();
+        policy(&parent, &format!("{private}(A;OICI;GR;;;WD)"));
+        assert_eq!(verify_native_private_child(&parent, &child).unwrap_err(), "native stage permissions changed");
     }
     fn security(file: &File) -> Vec<u8> {
         let mut raw = std::ptr::null_mut();
