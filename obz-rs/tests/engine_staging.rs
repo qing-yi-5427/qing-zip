@@ -450,7 +450,7 @@ fn set_ordinary_acl(parent: &Path) {
 
 #[cfg(nana_selected_worker)]
 #[test]
-fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies() {
+fn verified_memory_zip_publishes_only_after_the_final_large_member_verifies() {
     use std::{fs::File, io::Write, process::Command};
     let tmp = tempfile::tempdir().unwrap();
     let parent = tmp.path().join("targets");
@@ -493,7 +493,9 @@ fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies(
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("bounded-zip-private-stage"));
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("verify-memory-total") && log.contains("native_directory_claim=1"), "{log}");
+    assert!(!log.contains("bounded-zip-private-stage"), "eligible small ZIP should use verified memory");
     assert!(good.join("empty").is_dir() && fs::read(good.join("zero")).unwrap().is_empty());
     assert_eq!(fs::read(good.join("large.bin")).unwrap(), big);
     assert_eq!(
@@ -521,7 +523,7 @@ fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies(
     let out = extract(&failed);
     let log = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !out.status.success() && log.contains("bounded-zip-private-stage"),
+        !out.status.success() && log.contains("verify-memory-total") && !log.contains("native_directory_claim=1"),
         "{log}"
     );
     assert!(!failed.exists());
@@ -530,7 +532,7 @@ fn bounded_zip_transaction_publishes_only_after_the_final_large_member_verifies(
 
 #[cfg(nana_selected_worker)]
 #[test]
-fn bounded_solid_7z_checks_the_whole_folder_before_publishing() {
+fn verified_memory_solid_7z_checks_the_whole_folder_before_publishing() {
     use std::process::Command;
     let temp = tempfile::tempdir().unwrap();
     let parent = temp.path().join("targets");
@@ -582,9 +584,10 @@ fn bounded_solid_7z_checks_the_whole_folder_before_publishing() {
     let valid = extract(&good);
     let log = String::from_utf8_lossy(&valid.stderr);
     assert!(
-        valid.status.success() && log.contains("bounded-7z-private-stage"),
+        valid.status.success() && log.contains("verify-memory-total") && log.contains("native_directory_claim=1"),
         "{log}"
     );
+    assert!(!log.contains("bounded-7z-private-stage"), "eligible small 7z should use verified memory");
     assert!(good.join("empty-dir").is_dir() && fs::read(good.join("empty")).unwrap().is_empty());
     assert_eq!(fs::read(good.join(utf)).unwrap(), last);
     assert_eq!(
@@ -619,10 +622,9 @@ fn bounded_solid_7z_checks_the_whole_folder_before_publishing() {
     fs::write(&archive, bytes).unwrap();
     let bad = parent.join("bad");
     let failure = extract(&bad);
-    assert!(
-        !failure.status.success()
-            && String::from_utf8_lossy(&failure.stderr).contains("bounded-7z-private-stage")
-    );
+    let log = String::from_utf8_lossy(&failure.stderr);
+    assert!(!failure.status.success() && log.contains("verify-memory-total")
+        && !log.contains("native_directory_claim=1"), "{log}");
     assert!(!bad.exists() && fs::read_dir(&parent).unwrap().count() == 1);
 }
 
