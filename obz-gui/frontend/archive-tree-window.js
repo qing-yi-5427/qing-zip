@@ -78,13 +78,9 @@ class ArchiveTreeWindow {
     let index = Number(row.dataset.treeIndex), toggle = false;
     switch (event.key) {
       case 'Tab': {
-        const atToggle = event.target.hasAttribute('data-tree-toggle');
-        if ((!event.shiftKey && atToggle) || (event.shiftKey && !atToggle && this.rows[index].hasChildren)) return;
         index += event.shiftKey ? -1 : 1;
-        toggle = !event.shiftKey && this.rows[index]?.hasChildren;
         break;
       }
-
       default: return;
     }
     if (index < 0 || index >= this.rows.length) return;

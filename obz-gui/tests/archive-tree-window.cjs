@@ -40,9 +40,8 @@ test('virtual folder tree reveals distant rows before moving keyboard focus', ()
   tree.focusIndex(0);
   assert.deepEqual(focused, [[9999,'[data-tree]'],[9998,'[data-tree]'],[0,'[data-tree]']]);
 
-  assert.equal(press(tree, 0, 'Tab', {toggle:true}), false);
   assert.equal(press(tree, 0, 'Tab', {shift:true}), false);
   assert.equal(press(tree, 1, 'Tab'), true);
-  assert.deepEqual(focused.at(-1), [2,'[data-tree-toggle]']);
+  assert.deepEqual(focused.at(-1), [2,'[data-tree]']);
   assert.equal(press(tree, 9999, 'Tab'), false);
 });
