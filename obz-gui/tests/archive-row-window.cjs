@@ -85,7 +85,7 @@ test('the archive view uses the window only for large details and keeps icon thu
   const table={attributes:{},classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v}};
   const body={closest:()=>table,innerHTML:''};
   const state={selected:new Set(),listStyle:'details'},calls=[];
-  const env={s:state,main:{},document:{activeElement:null},listingWindow:null,
+  const env={ArchiveColumns:require('../frontend/archive-columns.js'),columns:require('../frontend/archive-columns.js').normalize(null),entryType:()=>'PNG',s:state,main:{},document:{activeElement:null},listingWindow:null,
     $:()=>body,positionsFor:l=>new Map(l.map((e,i)=>[e.name,i])),visibleEntries:()=>env.list,
     refreshSelection:()=>calls.push('selection'),stopThumbnailObserver:()=>calls.push('stop'),observeThumbnails:()=>calls.push('observe'),
     icon:()=>'',esc:s=>s,size:()=>'',entrySize:()=>'',displayModified:()=>'',isImage:()=>true,

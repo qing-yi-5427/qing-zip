@@ -33,7 +33,8 @@ class ArchiveRowHeights {
 // A tab restores the previous scroll offset against the same measured listing.
 const measuredArchiveLists = new WeakMap();
 class ArchiveRowWindow {
-  constructor(body, viewport, list, renderRow, cursorIndex) {
+  constructor(body, viewport, list, renderRow, cursorIndex, columnCount=6, layout='default') {
+    this.columnCount=columnCount; this.layoutKey=layout;
     this.body = body;
     this.viewport = viewport;
     this.list = list;
@@ -65,7 +66,7 @@ class ArchiveRowWindow {
       row.className = 'oa-row-gap';
       row.setAttribute('aria-hidden', 'true');
       row.setAttribute('role', 'presentation');
-      row.insertCell().colSpan = 6;
+      row.insertCell().colSpan = this.columnCount;
       this.gaps[slot] = row;
     }
     return this.gaps[slot];
@@ -73,16 +74,17 @@ class ArchiveRowWindow {
   paint() {
     if (!this.body.isConnected) return;
     const width = this.viewport.clientWidth;
+    const layout = this.layoutKey;
     const estimate = parseFloat(getComputedStyle(this.body).getPropertyValue('--qa-row')) || 56;
     let top = this.visibleTop();
-    if (width !== this.width || this.heights?.estimate !== estimate) {
+    if (layout !== this.layout || width !== this.width || this.heights?.estimate !== estimate) {
       const old = this.heights;
       this.measureAgain = true;
-      this.width = width;
+      this.width = width; this.layout = layout;
       const cache = measuredArchiveLists.get(this.list);
-      this.heights = cache?.width === width && cache.heights.estimate === estimate
+      this.heights = cache?.layout === layout && cache.width === width && cache.heights.estimate === estimate
         ? cache.heights : new ArchiveRowHeights(this.list.length, estimate);
-      measuredArchiveLists.set(this.list, {width, heights:this.heights});
+      measuredArchiveLists.set(this.list, {width, layout, heights:this.heights});
       if (old && top > 0) {
         const index = old.at(top);
         top += this.heights.before(index) - old.before(index);

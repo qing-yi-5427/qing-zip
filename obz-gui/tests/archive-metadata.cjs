@@ -4,7 +4,7 @@ const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/ap
 function fixture(){
  const prefixes=['const opts=','const filename=','const entrySize='];
  const code=prefixes.map(prefix=>source.split('\n').find(line=>line.startsWith(prefix))).join('\n')+source.slice(source.indexOf('function entryType('),source.indexOf('function toast('))+source.slice(source.indexOf('const folderViews ='),source.indexOf('function archive()'));
- const context={window:{},s:{entries:[],folder:'',search:'',sort:'size',reverse:false}};
+ const context={ArchiveColumns:require('../frontend/archive-columns.js'),window:{},s:{entries:[],folder:'',search:'',sort:'size',reverse:false}};
  vm.createContext(context);vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../frontend/compression-options.js'),'utf8'),context);vm.runInContext('const compressionLevels=window.qingCompression.levels;\n'+code+'\nthis.api={opts,entrySize,visibleEntries,compressionLevels};',context);
  return context;
 }
@@ -164,4 +164,10 @@ test('flat filenames sort embedded numbers naturally while ordinary browsing kee
  assert.deepEqual(Array.from(api.visibleEntries(),e=>e.name),['item1','item2','item10']);
  s.flatView=false;
  assert.deepEqual(Array.from(api.visibleEntries(),e=>e.name),['item1','item10','item2']);
+});
+
+test('optional metadata sorts and omitted packed sizes remain meaningful in both directions',()=>{
+ const f=fixture();f.s.entries=[{name:'unknown',size:9,packed_size:0,crc:''},{name:'empty',size:0,packed_size:0,crc:'11111111'},{name:'data',size:9,packed_size:4,crc:'FFFFFFFF'}];
+ f.s.sort='packed_size';assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.name),['empty','data','unknown']);f.s.reverse=true;assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.name),['data','empty','unknown']);
+ f.s.sort='crc';assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.name),['data','empty','unknown']);f.s.reverse=false;assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.name),['empty','data','unknown']);
 });
