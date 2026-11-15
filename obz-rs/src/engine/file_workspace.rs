@@ -380,8 +380,8 @@ pub(crate) struct LocalStreamProof {
     digest: [u8; 32],
     control: JobControl,
 }
-impl LocalStreamProof {
-    pub(crate) fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
+impl crate::private_stage::LocalOutputProof for LocalStreamProof {
+    fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
         let actual = streams(file, None, &self.control)?;
         if actual != self.digest {
             return Err("本地文件的数据流在发布前发生变化".into());
@@ -772,6 +772,30 @@ pub fn transfer(
             guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
             guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
             ctl.set("copying", None, "正在复制并验证文件");
+            if node.handle.as_ref().unwrap().metadata().map_err(|e|e.to_string())?.file_attributes() & 0x4000 != 0 {
+                let expected_source = directory_identity(node.handle.as_ref().unwrap())?;
+                // A moving source was collected with DELETE. Native EFS source
+                // pins deny DELETE sharing; release that old access, immediately
+                // pin again and require the identical source before publication.
+                node.handle.take();
+                let parent_pin=&guards.held.get(parent).ok_or("missing EFS destination guard")?.0;
+                let prepared=super::file_workspace_efs::prepare(&node.path,parent,parent_pin,&ctl)?;
+                if directory_identity(prepared.source())? != expected_source {
+                    return Err("EFS source identity changed before copy".into());
+                }
+                node.handle=Some(prepared.source().try_clone().map_err(|e|e.to_string())?);
+                let output=prepared.publish(&target,opts.overwrite=="overwrite",&ctl)?;
+                let id=directory_identity(&output)?;
+                drop(output);
+                let pin=crate::engine_stream::pin(&target)?;
+                if directory_identity(&pin)?!=id{return Err("published EFS target identity changed".into());}
+                published.push(pin);
+                result.copied+=1;
+                if moving {result.retained_reasons.push(format!("{}：EFS副本已验证，跨卷来源保留",node.path.display()));}
+                // EFS key/stream proofs are intentionally not sent to the
+                // ordinary BackupRead cross-volume source deletion finalizer.
+                continue;
+            }
             let input = node.handle.as_ref().unwrap();
             let (output, expected) = with_output_temp(parent, &guards, |temp| {
                 let expected = streams(input, Some(temp.as_file()), &ctl).map_err(|e|format!("复制文件数据流：{e}"))?;
