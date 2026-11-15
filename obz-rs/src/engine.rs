@@ -15,6 +15,8 @@ mod file_workspace_ea;
 mod file_workspace_compression;
 mod file_workspace_sparse;
 #[cfg(windows)]
+mod file_workspace_transaction;
+#[cfg(windows)]
 mod archive_add;
 #[cfg(windows)]
 pub mod archive_export;
