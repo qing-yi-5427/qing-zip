@@ -2,7 +2,7 @@
 No invoke mocking, direct operation calls, or DOM mutation: only CDP input and observation.
 """
 from pathlib import Path
-import argparse,base64,socket,ctypes,hashlib,json,os,struct,subprocess,tempfile,time,traceback,urllib.request,zipfile
+import argparse,base64,socket,winreg,ctypes,hashlib,json,os,struct,subprocess,tempfile,time,traceback,urllib.request,zipfile
 from ctypes import wintypes as w
 from websockets.sync.client import connect
 
@@ -42,6 +42,16 @@ def main():
   port_socket.bind(('127.0.0.1',0));debug_port=port_socket.getsockname()[1]
  env=dict(os.environ,LOCALAPPDATA=str(local),WEBVIEW2_USER_DATA_FOLDER=str(profile),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={debug_port} --remote-debugging-address=127.0.0.1')
  startup=subprocess.STARTUPINFO();startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW;startup.wShowWindow=0
+ # Elevated hosted runner ignores user-scoped WebView debug flags. Use the
+ # documented per-executable HKLM test override only on this disposable runner.
+ # https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security
+ assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ARCH')=='ARM64'
+ policy_path=r'SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+ policy=winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE,policy_path,0,winreg.KEY_QUERY_VALUE|winreg.KEY_SET_VALUE|winreg.KEY_WOW64_64KEY)
+ try:old_policy=winreg.QueryValueEx(policy,exe.name)
+ except FileNotFoundError:old_policy=None
+ winreg.SetValueEx(policy,exe.name,0,winreg.REG_SZ,env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'])
+ evidence['hosted_debug_override']={'scope':'HKLM per executable, restored in finally; disposable hosted ARM runner only','name':exe.name,'port':debug_port,'prior_value_present':old_policy is not None}
  proc=subprocess.Popen([str(exe)],cwd=root,env=env,startupinfo=startup,stdout=(out/'process.stdout.log').open('wb'),stderr=(out/'process.stderr.log').open('wb'))
  evidence['pid']=proc.pid
  try:
@@ -108,6 +118,7 @@ def main():
     wait('window.__TAURI__?.core && document.querySelector("[data-action=app-menu]")')
     evidence['version']=js("window.__TAURI__.core.invoke('app_version')");assert evidence['version']=='0.11.13'
     evidence['current_executable']=js("window.__TAURI__.core.invoke('current_executable')");assert Path(evidence['current_executable']).resolve()==exe
+    time.sleep(.5)
     click('[data-action=app-menu]');click('[data-menu=file]');click('[data-action=open-path]');fill('#qa-open-path',archive);click('[data-action=open-submit]')
     wait('document.querySelectorAll("[data-row]").length===3');shot('01-open');check('real menu path input opens ZIP and lists all three Unicode/empty members')
     click('[data-action=extract]');fill('#qa-destination',dest)
@@ -137,5 +148,8 @@ def main():
  finally:
   if proc.poll() is None:proc.terminate()
   proc.wait(timeout=15);evidence['process_terminal']=proc.returncode
+  if old_policy is None:winreg.DeleteValue(policy,exe.name)
+  else:winreg.SetValueEx(policy,exe.name,0,old_policy[1],old_policy[0])
+  winreg.CloseKey(policy);evidence['debug_override_restored']=True
   (out/'receipt.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
 if __name__=='__main__':main()
