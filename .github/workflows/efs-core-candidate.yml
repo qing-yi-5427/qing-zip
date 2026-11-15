@@ -2,7 +2,7 @@ name: Windows EFS regression
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/nanazip-parity, codex/file-workspace-efs]
+    branches: [main, codex/nanazip-parity, codex/file-workspace-efs, codex/efs-directory]
 permissions:
   contents: read
 jobs:

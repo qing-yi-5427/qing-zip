@@ -792,7 +792,8 @@ pub fn transfer(
             guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
             guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
             ctl.set("copying", None, "正在复制并验证文件");
-            if node.handle.as_ref().unwrap().metadata().map_err(|e|e.to_string())?.file_attributes() & 0x4000 != 0 {
+            if node.handle.as_ref().unwrap().metadata().map_err(|e|e.to_string())?.file_attributes() & 0x4000 != 0
+                || guards.held.get(parent).ok_or("missing destination guard")?.0.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000 != 0 {
                 let expected_source = directory_identity(node.handle.as_ref().unwrap())?;
                 // A moving source was collected with DELETE. Native EFS source
                 // pins deny DELETE sharing; release that old access, immediately
