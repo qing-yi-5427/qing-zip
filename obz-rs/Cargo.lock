@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "obz-rs"
-version = "0.11.9"
+version = "0.11.10"
 dependencies = [
  "aescrypt-rs",
  "brotli",
