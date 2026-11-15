@@ -239,6 +239,11 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
         let id = u32::from_le_bytes(header[..4].try_into().unwrap());
         let mut size = u64::from_le_bytes(header[8..16].try_into().unwrap());
         let namesize = u32::from_le_bytes(header[16..].try_into().unwrap()) as usize;
+        #[cfg(test)]
+        if main_sparse.as_ref().is_some_and(|l|l.eof==0){
+            eprintln!("EMPTY BACKUP object={:?} id={id} flags={} size={size} namesize={namesize} main={main_sparse:?}",directory_identity(source),u32::from_le_bytes(header[4..8].try_into().unwrap()));
+        }
+
         if id!=9 {finish_storage(target,pending.take(),ctl)?;}
         if !matches!(id, 1 | 2 | 4 | 9) || namesize > 65536 || namesize % 2 != 0 {
             return Err("此文件含暂不支持的特殊数据，源文件保持不变".into());
@@ -304,10 +309,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             if (attributes==8)!=main_sparse.is_some() {return Err("主数据流稀疏属性不一致".into());}
             pending=Some(PendingStorage{name:None,pin:None,compression:main_compression,layout:main_sparse.clone(),end:0});
         } else if let Some((name,pin,compression,layout))=alternate {
-            if (attributes==8)!=layout.is_some() {
-                #[cfg(test)] eprintln!("SPARSE backup mismatch name={} attributes={attributes} size={size} layout={layout:?}",String::from_utf16_lossy(&name));
-                return Err("备用数据流稀疏属性不一致".into());
-            }
+            validate_alternate_sparse_header(attributes,size,layout.as_ref())?;
             pending=Some(PendingStorage{name:Some(name),pin:Some(pin),compression,layout,end:0});
         }
         hash.update(header);
@@ -347,6 +349,18 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
         }
     }
     Err("文件数据流过多".into())
+}
+
+fn validate_alternate_sparse_header(attributes:u32,size:u64,layout:Option<&super::file_workspace_sparse::Layout>)->Result<(),String>{
+    // Windows Server 2022 emits a normal, zero-length BackupRead record for an
+    // empty ADS even when FSCTL_QUERY_ALLOCATED_RANGES proves it is sparse.
+    // Accept only that metadata-only case. Nonempty and malformed records
+    // still require the native sparse flag to agree with the independent query.
+    let empty_native=attributes==0 && size==0 && layout.is_some_and(|l|l.eof==0 && l.ranges.is_empty());
+    if !matches!(attributes,0|8) || ((attributes==8)!=layout.is_some() && !empty_native){
+        return Err("备用数据流稀疏属性不一致".into());
+    }
+    Ok(())
 }
 
 struct PendingStorage {
@@ -1295,6 +1309,21 @@ mod tests {
         assert_eq!(fs::read(output).unwrap(),expected);
     }
     #[test]
+    fn empty_native_sparse_ads_exception_never_accepts_fake_empty_or_bad_flags(){
+        use super::super::file_workspace_sparse::Layout;
+        let empty=Layout{eof:0,ranges:Vec::new()};
+        assert!(validate_alternate_sparse_header(0,0,Some(&empty)).is_ok());
+        assert!(validate_alternate_sparse_header(8,0,Some(&empty)).is_ok());
+        assert!(validate_alternate_sparse_header(0,0,None).is_ok());
+        for (flags,size,layout) in [
+            (0,0,Layout{eof:1,ranges:Vec::new()}),
+            (0,0,Layout{eof:1,ranges:vec![(0,1)]}),
+            (0,1,empty.clone()),(4,0,empty.clone()),
+            (0,0,Layout{eof:0,ranges:vec![(0,1)]}),
+        ] {assert!(validate_alternate_sparse_header(flags,size,Some(&layout)).is_err());}
+        assert!(validate_alternate_sparse_header(8,0,None).is_err());
+    }
+    #[test]
     fn sparse_and_regular_alternate_stream_groups_do_not_leak_state() {
         use std::io::{Seek,SeekFrom};
         use super::super::{file_workspace_sparse as sparse,file_workspace_compression as compression};
@@ -1310,27 +1339,30 @@ mod tests {
                     make_sparse(&stream,1024*1024+17,true);
                     stream.seek(SeekFrom::End(-1)).unwrap();stream.write_all(&[0x71]).unwrap();
                 }
-                layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
-                eprintln!("SPARSE fixture before read {name}: {:?}",layouts.last().unwrap());
-                bytes.push(fs::read(path).unwrap());
-                eprintln!("SPARSE fixture after read {name}: {:?}",sparse::query(&stream,&JobControl::new()).unwrap());
+                stream.sync_all().unwrap();
             }
         }
-        let sample=|label:&str,path:&Path|{
-            let main=File::open(path).unwrap();
+        // Finish every stream before recording the fixture's allocation map.
+        // NTFS can materialize a cached zero page when the creation handles
+        // close; an in-construction query is not a stable copy expectation.
+        {
+            let main=File::options().read(true).write(true).share_mode(7).open(&input).unwrap();
             for name in &names{
-                let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
-                eprintln!("SPARSE {label} {name}: {:?}",sparse::query(&stream,&JobControl::new()).unwrap());
+                let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                bytes.push(fs::read(format!("{}:{name}",input.display())).unwrap());
+                stream.sync_all().unwrap();
+                layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
             }
-        };
-        sample("closed source before transfer",&input);
+            main.sync_all().unwrap();
+        }
         transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
-        let output=dest.join("a.txt");
-        sample("closed source after transfer",&input);sample("closed target after transfer",&output);
-        let main=File::open(&output).unwrap();
+        let output=dest.join("a.txt");let main=File::open(&output).unwrap();
         assert!(sparse::query(&main,&JobControl::new()).unwrap().is_none());
+        let source_main=File::open(&input).unwrap();
         for (index,name) in names.iter().enumerate() {
             let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+            let source_stream=compression::stream(&source_main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+            assert_eq!(sparse::query(&source_stream,&JobControl::new()).unwrap(),layouts[index],"source layout changed: {name}");
             assert_eq!(sparse::query(&stream,&JobControl::new()).unwrap(),layouts[index]);
             assert_eq!(fs::read(format!("{}:{name}",output.display())).unwrap(),bytes[index]);
         }
