@@ -115,6 +115,70 @@ def raw_pinned(source,target,lock_target=False):
     try:return raw_directory(source,target,False,lock_target)
     finally:K.CloseHandle(pin)
 
+def pin_matrix(source):
+    results=[]
+    for access in [0x80000000,0x20080]:
+        for share in [1,3,5,7]:
+            pin=K.CreateFileW(str(source),access,share,None,3,0x02200000,None)
+            require(pin not in (None,C.c_void_p(-1).value),"matrix pin failed")
+            context=C.c_void_p()
+            try:
+                code=A.OpenEncryptedFileRawW(str(source),0,C.byref(context))
+                item={"access":hex(access),"share":share,"open_export":code}
+                if code==0:
+                    size=0
+                    @EXPORT
+                    def consume(data,unused,length):
+                        nonlocal size
+                        size+=length;return 0 if size<=4*1024*1024 else 8
+                    try:item["read_raw"]=A.ReadEncryptedFileRaw(consume,None,context);item["bytes"]=size
+                    finally:A.CloseEncryptedFileRaw(context)
+                results.append(item)
+            finally:K.CloseHandle(pin)
+    return results
+
+def guarded_export(source):
+    result={};pins=[];context=C.c_void_p()
+    K.MoveFileExW.argtypes=[W.LPCWSTR,W.LPCWSTR,W.DWORD];K.MoveFileExW.restype=W.BOOL
+    K.DeviceIoControl.argtypes=[W.HANDLE,W.DWORD,C.c_void_p,W.DWORD,C.c_void_p,W.DWORD,C.POINTER(W.DWORD),C.c_void_p];K.DeviceIoControl.restype=W.BOOL
+    try:
+        for p,access,share in [(source,0x20080,3),(Path(str(source)+":meta"),0x80000000,1)]:
+            h=K.CreateFileW(str(p),access,share,None,3,0x02200000,None)
+            require(h not in (None,C.c_void_p(-1).value),"guarded source pin failed")
+            pins.append(h)
+        code=A.OpenEncryptedFileRawW(str(source),0,C.byref(context));result["open_export"]=code
+        if code:return result
+        rename=bool(K.MoveFileExW(str(source),str(source)+"-renamed",0));result["rename_blocked"]=not rename;result["rename_error"]=C.get_last_error() if not rename else 0
+        if rename:require(K.MoveFileExW(str(source)+"-renamed",str(source),0),"restore disposable rename failed")
+        writer=K.CreateFileW(str(source)+":meta",0x40000000,7,None,3,0,None)
+        result["ads_write_blocked"]=writer in (None,C.c_void_p(-1).value);result["ads_write_error"]=C.get_last_error() if result["ads_write_blocked"] else 0
+        if not result["ads_write_blocked"]:K.CloseHandle(writer)
+        # Empty and nonempty directories are tested separately. This mounts only
+        # a sibling disposable target and is removed by its original handle.
+        junction=source.parent/(source.name+"-junction-target");junction.mkdir()
+        writer=K.CreateFileW(str(source),0x40000000,7,None,3,0x02200000,None)
+        if writer in (None,C.c_void_p(-1).value):result["reparse_blocked"]=True;result["reparse_error"]=C.get_last_error()
+        else:
+            substitute=("\\??\\"+str(junction)).encode("utf-16-le");display=str(junction).encode("utf-16-le")
+            names=substitute+b"\0\0"+display+b"\0\0";payload=struct.pack("<HHHH",0,len(substitute),len(substitute)+2,len(display))+names
+            data=C.create_string_buffer(struct.pack("<IHH",0xA0000003,len(payload),0)+payload);returned=W.DWORD()
+            changed=bool(K.DeviceIoControl(writer,0x900a4,data,len(data)-1,None,0,C.byref(returned),None))
+            result["reparse_blocked"]=not changed;result["reparse_error"]=C.get_last_error() if not changed else 0
+            if changed:
+                deletion=C.create_string_buffer(struct.pack("<IHH",0xA0000003,0,0));require(K.DeviceIoControl(writer,0x900ac,deletion,8,None,0,C.byref(returned),None),"remove disposable reparse failed")
+            K.CloseHandle(writer)
+        total=0
+        @EXPORT
+        def consume(data,unused,length):
+            nonlocal total
+            total+=length;return 0 if total<=4*1024*1024 else 8
+        result["read_raw"]=A.ReadEncryptedFileRaw(consume,None,context);result["bytes"]=total
+        result["safe_export_available"]=result["rename_blocked"] and result["ads_write_blocked"] and result["reparse_blocked"] and result["read_raw"]==0
+        return result
+    finally:
+        if context.value:A.CloseEncryptedFileRaw(context)
+        for h in reversed(pins):K.CloseHandle(h)
+
 def state(path):
     value={"encrypted":encrypted(path),"attributes":K.GetFileAttributesW(str(path)),"backup":backup_records(path),"ea":ea(path).hex()}
     for recovery in [False,True]:
@@ -155,6 +219,11 @@ try:
         receipt["raw_directory_nonempty"]=raw_directory(src,base/"raw-nonempty","nonempty")
         receipt["raw_source_pinned"]=raw_pinned(src,base/"raw-source-pinned")
         receipt["raw_exclusive_target"]=raw_pinned(src,base/"raw-exclusive-target",True)
+        receipt["source_pin_matrix"]=pin_matrix(src)
+        receipt["guarded_nonempty"]=guarded_export(src)
+        empty=base/"guarded-empty";empty.mkdir();require(A.EncryptFileW(str(empty)),"encrypt empty directory failed")
+        Path(str(empty)+":meta").write_bytes(b"empty directory ads")
+        receipt["guarded_empty"]=guarded_export(empty)
         receipt["source_after_raw"]=state(src)
         receipt["raw_checks"]={label:bool(item.get("checks")) and all(item["checks"].values()) and item.get("new_child_encrypted") is True
             for label,item in [("new",receipt["raw_directory_new"]),("existing",receipt["raw_directory_existing"]),("nonempty",receipt["raw_directory_nonempty"])]}
