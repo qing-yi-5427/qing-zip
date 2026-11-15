@@ -127,8 +127,11 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         move_selection();save('dragging');mouse.release(coords=drop)
         wait(lambda:manifest(dest)==expected,'exact dropped files',25)
         report['verified']=manifest(dest)
-        time.sleep(.75);report['after_copy_stages']=drag_stages()
-        assert len(report['after_copy_stages'])==1 and next(iter(report['after_copy_stages'].values()))==expected
+        # Current drag_completion.rs releases private exports after Explorer's
+        # acknowledged completion; the older driver expected permanent retention.
+        wait(lambda:not drag_stages(),'private exports released after Explorer completion',8)
+        report['after_copy_stages']=drag_stages()
+        assert report['after_copy_stages']=={}
         save('after')
         assert hashlib.sha256(archive.read_bytes()).hexdigest()==original_archive_sha
         report['archive_sha256_before_and_after']=original_archive_sha
