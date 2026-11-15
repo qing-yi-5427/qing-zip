@@ -893,6 +893,85 @@ mod tests {
         assert!(!sparse::FAIL_RESTORE.with(|failure|failure.replace(false)));
     }
     #[test]
+    fn sparse_non_aligned_eof_last_byte_and_multiple_blocks_roundtrip() {
+        use std::io::{Seek,SeekFrom};
+        use super::super::file_workspace_sparse as sparse;
+        let (_temp,source,dest)=setup();let input=source.join("a.txt");
+        let eof=4*1024*1024+17;
+        let expected_layout={
+            let mut file=File::options().read(true).write(true).open(&input).unwrap();
+            make_sparse(&file,eof,false);
+            for (offset,byte) in [(0,1),(131072,2),(1024*1024,3),(eof-1,255)] {
+                file.seek(SeekFrom::Start(offset)).unwrap();file.write_all(&[byte]).unwrap();
+            }
+            let layout=sparse::query(&file,&JobControl::new()).unwrap().unwrap();
+            assert!(layout.ranges.len()>=4);
+            let last=layout.ranges.last().unwrap();
+            assert_eq!(last.0+last.1,eof,"native allocation query must clip to requested EOF");
+            eprintln!("native sparse EOF={eof}, last allocation offset={} length={}",last.0,last.1);
+            layout
+        };
+        let expected=fs::read(&input).unwrap();
+        transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+        let output=dest.join("a.txt");
+        assert_eq!(sparse::query(&File::open(&output).unwrap(),&JobControl::new()).unwrap(),Some(expected_layout));
+        assert_eq!(fs::read(output).unwrap(),expected);
+    }
+    #[test]
+    fn sparse_query_paginates_over_256_ranges_and_transfers_all_bytes() {
+        use std::io::{Seek,SeekFrom};
+        use super::super::file_workspace_sparse as sparse;
+        let (_temp,source,dest)=setup();let input=source.join("a.txt");
+        let eof=270*131072+17;
+        let expected_layout={
+            let mut file=File::options().read(true).write(true).open(&input).unwrap();
+            make_sparse(&file,eof,false);
+            for index in 0..270 {
+                file.seek(SeekFrom::Start(index*131072)).unwrap();
+                file.write_all(&[(index%251) as u8]).unwrap();
+            }
+            let layout=sparse::query(&file,&JobControl::new()).unwrap().unwrap();
+            assert_eq!(layout.ranges.len(),270,"fixture must exercise native continuation");
+            assert!(layout.ranges.windows(2).all(|v|v[0].0+v[0].1<v[1].0));
+            eprintln!("native sparse continuation returned {} disjoint ranges using 256-range query buffers",layout.ranges.len());
+            layout
+        };
+        let expected=fs::read(&input).unwrap();
+        transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+        let output=dest.join("a.txt");
+        assert_eq!(sparse::query(&File::open(&output).unwrap(),&JobControl::new()).unwrap(),Some(expected_layout));
+        assert_eq!(fs::read(output).unwrap(),expected);
+    }
+    #[test]
+    fn sparse_and_regular_alternate_stream_groups_do_not_leak_state() {
+        use std::io::{Seek,SeekFrom};
+        use super::super::{file_workspace_sparse as sparse,file_workspace_compression as compression};
+        let (_temp,source,dest)=setup();let input=source.join("a.txt");
+        let names=["a-sparse","b-regular","c-sparse","d-regular"];
+        let mut layouts=Vec::new();let mut bytes=Vec::new();
+        {
+            let main=File::options().read(true).write(true).share_mode(7).open(&input).unwrap();
+            for (index,name) in names.iter().enumerate() {
+                let path=format!("{}:{name}",input.display());fs::write(&path,b"ordinary ADS bytes").unwrap();
+                let mut stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                if index%2==0 {
+                    make_sparse(&stream,1024*1024+17,true);
+                    stream.seek(SeekFrom::End(-1)).unwrap();stream.write_all(&[0x71]).unwrap();
+                }
+                layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
+                bytes.push(fs::read(path).unwrap());
+            }
+        }
+        transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+        let output=dest.join("a.txt");let main=File::open(&output).unwrap();
+        assert!(sparse::query(&main,&JobControl::new()).unwrap().is_none());
+        for (index,name) in names.iter().enumerate() {
+            let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+            assert_eq!(sparse::query(&stream,&JobControl::new()).unwrap(),layouts[index]);
+            assert_eq!(fs::read(format!("{}:{name}",output.display())).unwrap(),bytes[index]);
+        }
+    }
+    #[test]
     fn compressed_transfer_preserves_each_stream_ea_and_directory_state() {
         use super::super::file_workspace_compression as compression;
         for directory in [false,true] {
