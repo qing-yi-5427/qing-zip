@@ -31,7 +31,7 @@ $('files').onclick=async()=>{const f=await invoke('pick_files_for_zip');if(f.len
 $('folder').onclick=async()=>{const p=await invoke('pick_folder');if(p)$('inputs').value=[$('inputs').value,p].filter(Boolean).join('\n');};
 function text(content,tag='div'){const el=document.createElement(tag);el.textContent=content;$('result').append(el);return el;}
 function render(op,result){$('result').replaceChildren();if(op==='benchmark'){
- text(`LZMA · ${result.parameters.threads} 线程 · ${(2**result.parameters.dictionary_log/1048576).toLocaleString()} MiB 字典 · ${result.parameters.iterations} 轮`);
+ text(`LZMA · 请求参数：${result.parameters.threads} 线程 · ${(2**result.parameters.dictionary_log/1048576).toLocaleString()} MiB 字典 · ${result.parameters.iterations} 轮`);
  const table=document.createElement('table'),head=document.createElement('tr');
  for(const title of ['项目','速度（KiB/s）','CPU（%）','评分（MIPS）']){const th=document.createElement('th');th.textContent=title;head.append(th);}table.append(head);
  for(const [title,score] of [['压缩',result.compressing],['解压',result.decompressing]]){const row=document.createElement('tr');for(const value of [title,score.speed_kib_s,score.cpu_percent,score.rating_mips]){const td=document.createElement('td');td.textContent=typeof value==='number'?value.toLocaleString():value;row.append(td);}table.append(row);}
