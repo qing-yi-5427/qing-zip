@@ -46,6 +46,16 @@ def finish_hosted_privacy(point, expected, blocked):
     pages=[];report['hosted_privacy_pages']=pages
     def controls():
         return [a for a in Desktop(backend='uia').window(handle=blocked).wrapper_object().descendants() if a.is_visible()]
+    def stable_controls():
+        deadline=time.monotonic()+8;previous=None;stable_since=time.monotonic()
+        while time.monotonic()<deadline:
+            try:
+                current=controls();signature=[(a.element_info.control_type,a.element_info.name,str(a.rectangle())) for a in current]
+                if signature!=previous:previous=signature;stable_since=time.monotonic()
+                elif time.monotonic()-stable_since>=.5:return current
+            except Exception:previous=None;stable_since=time.monotonic()
+            time.sleep(.15)
+        raise RuntimeError('Privacy controls did not settle')
     def toggle_state(button):
         evidence={'name':button.element_info.name,'rectangle':str(button.rectangle())}
         try:
@@ -61,7 +71,7 @@ def finish_hosted_privacy(point, expected, blocked):
         except Exception as exc:evidence['legacy_error']=type(exc).__name__
         return None,evidence
     for page_index in range(6):
-        all_controls=controls();names=[a.element_info.name for a in all_controls]
+        all_controls=stable_controls();names=[a.element_info.name for a in all_controls]
         text=' '.join(names).lower()
         if 'choose privacy settings for your device' not in text:raise RuntimeError('Outside approved hosted privacy page; stopped')
         def current_buttons():return [a for a in controls() if a.element_info.control_type=='Button']
