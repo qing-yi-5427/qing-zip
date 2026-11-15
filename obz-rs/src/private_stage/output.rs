@@ -516,7 +516,11 @@ pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),St
     if owner.is_null() || unsafe{ConvertSidToStringSidW(owner,&mut text)}==0{return Err(error("read native output owner"));}
     let _text=Allocation(text.cast());let mut length=0;
     unsafe{while *text.add(length)!=0{length+=1;}}
-    if String::from_utf16(unsafe{std::slice::from_raw_parts(text,length)}).map_err(|e|e.to_string())?!=sid{return Err("native output owner changed".into());}
+    let owner_sid=String::from_utf16(unsafe{std::slice::from_raw_parts(text,length)}).map_err(|e|e.to_string())?;
+    if owner_sid!=sid{
+        #[cfg(test)] eprintln!("native output owner expected={sid} actual={owner_sid}");
+        return Err("native output owner changed".into());
+    }
     Ok(())
 }
 impl PrivateOutputFile {
