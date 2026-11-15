@@ -28,14 +28,24 @@ K.GetVolumeInformationW.argtypes = [W.LPCWSTR, W.LPWSTR, W.DWORD, C.c_void_p,
 K.GetVolumeInformationByHandleW.argtypes = [W.HANDLE, W.LPWSTR, W.DWORD, C.c_void_p,
     C.c_void_p, C.c_void_p, W.LPWSTR, W.DWORD]
 K.GetFinalPathNameByHandleW.argtypes = [W.HANDLE, W.LPWSTR, W.DWORD, W.DWORD]
+K.GetFinalPathNameByHandleW.restype = W.DWORD
+K.GetVolumeInformationW.restype = W.BOOL
+K.GetVolumeInformationByHandleW.restype = W.BOOL
+K.CloseHandle.restype = W.BOOL
 A.EncryptFileW.argtypes = [W.LPCWSTR]
 A.EncryptionDisable.argtypes = [W.LPCWSTR, W.BOOL]
+A.EncryptFileW.restype = W.BOOL
+A.EncryptionDisable.restype = W.BOOL
 A.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [W.LPCWSTR, W.DWORD, C.POINTER(C.c_void_p), C.c_void_p]
 A.SetFileSecurityW.argtypes = [W.LPCWSTR, W.DWORD, C.c_void_p]
 K.LocalFree.argtypes = [C.c_void_p]
+K.LocalFree.restype = C.c_void_p
+A.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = W.BOOL
+A.SetFileSecurityW.restype = W.BOOL
 PROGRESS = C.WINFUNCTYPE(W.DWORD, C.c_longlong, C.c_longlong, C.c_longlong,
                         C.c_longlong, W.DWORD, W.DWORD, W.HANDLE, W.HANDLE, C.c_void_p)
 K.CopyFileExW.argtypes = [W.LPCWSTR, W.LPCWSTR, PROGRESS, C.c_void_p, C.POINTER(W.BOOL), W.DWORD]
+K.CopyFileExW.restype = W.BOOL
 
 class IOSB(C.Structure):
     _fields_ = [("status", C.c_size_t), ("information", C.c_size_t)]
@@ -56,6 +66,7 @@ for name in ["QueryUsersOnEncryptedFile", "QueryRecoveryAgentsOnEncryptedFile"]:
     getattr(A, name).argtypes = [W.LPCWSTR, C.POINTER(C.POINTER(HashList))]
     getattr(A, name).restype = W.DWORD
 A.FreeEncryptionCertificateHashList.argtypes = [C.POINTER(HashList)]
+A.FreeEncryptionCertificateHashList.restype = None
 
 receipt = {"commit": os.environ.get("GITHUB_SHA"), "run_id": os.environ.get("GITHUB_RUN_ID"),
            "runner_os": os.environ.get("RUNNER_OS"), "checks": {}, "status": "failed"}
@@ -122,7 +133,11 @@ def location(path):
                 f"handle volume query failed: {C.get_last_error()}")
         length = K.GetFinalPathNameByHandleW(h, final, len(final), 0)
         require(0 < length < len(final), "handle path query failed")
+        guid = C.create_unicode_buffer(32768)
+        length = K.GetFinalPathNameByHandleW(h, guid, len(guid), 1)
+        require(0 < length < len(guid), "handle volume-GUID path query failed")
         return {"path": final.value, "filesystem": filesystem.value, "volume_serial": serial.value,
+                "volume_guid_path": guid.value, "raw_volume_flags_hex": hex(flags.value),
                 "volume_supports_encryption": bool(flags.value & 0x20000),
                 "attributes": K.GetFileAttributesW(str(path))}
     finally:
@@ -237,6 +252,12 @@ try:
                 "source_encrypted_before": True}
             if plaintext_target.exists():
                 receipt["fat32_copy"]["actual_location"] = location(plaintext_target)
+                guid_path = receipt["fat32_copy"]["actual_location"]["volume_guid_path"]
+                guid_root = guid_path.split("}\\", 1)[0] + "}\\"
+                volume_info = subprocess.run(["fsutil", "fsinfo", "volumeinfo", guid_root], capture_output=True, text=True)
+                receipt["fat32_copy"]["fsutil_volumeinfo"] = {"exit": volume_info.returncode, "stdout": volume_info.stdout, "stderr": volume_info.stderr}
+                cipher_info = subprocess.run(["cipher", "/c", str(plaintext_target)], capture_output=True, text=True)
+                receipt["fat32_copy"]["cipher_readonly_info"] = {"exit": cipher_info.returncode, "stdout": cipher_info.stdout, "stderr": cipher_info.stderr}
                 try:
                     receipt["fat32_copy"]["same_user_keys"] = keys(plaintext_target) == source_keys
                 except RuntimeError as query_error:
