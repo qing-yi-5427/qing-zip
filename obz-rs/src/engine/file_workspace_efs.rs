@@ -97,7 +97,10 @@ fn identity(handle: Handle) -> Result<[u32; 3], String> {
         return Err(error("读取EFS对象身份"));
     }
     if info[0] & 0x410 != 0 || info[10] != 1 {
-        return Err(format!("EFS ordinary-file identity required: attrs={:#x} links={}", info[0], info[10]));
+        return Err(format!(
+            "EFS ordinary-file identity required: attrs={:#x} links={}",
+            info[0], info[10]
+        ));
     }
     Ok([info[7], info[11], info[12]])
 }
@@ -283,7 +286,8 @@ fn stream_names(file: &File) -> Result<Vec<(Vec<u16>, u64)>, String> {
     Ok(result)
 }
 struct Snapshot {
-    #[cfg(test)] basic: [u64;3],
+    #[cfg(test)]
+    basic: [u64; 3],
     digest: [u8; 32],
     ea: Vec<u8>,
     _pins: Vec<File>,
@@ -356,10 +360,10 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
     }
     // Access time can change because of our own reads and is not a stable
     // verification field. Preserve it when copying, like ordinary local copies.
-    let basic=file.metadata().map_err(|e|e.to_string())?;
+    let basic = file.metadata().map_err(|e| e.to_string())?;
     hash.update(basic.creation_time().to_le_bytes());
     hash.update(basic.last_write_time().to_le_bytes());
-    hash.update((basic.file_attributes()&0x3127).to_le_bytes());
+    hash.update((basic.file_attributes() & 0x3127).to_le_bytes());
     let ea = ea(file)?;
     hash.update((ea.len() as u64).to_le_bytes());
     hash.update(&ea);
@@ -388,15 +392,26 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
         }
     }
     Ok(Snapshot {
-        #[cfg(test)] basic: [basic.creation_time(), basic.last_write_time(), u64::from(basic.file_attributes()&0x3127)],
+        #[cfg(test)]
+        basic: [
+            basic.creation_time(),
+            basic.last_write_time(),
+            u64::from(basic.file_attributes() & 0x3127),
+        ],
         digest: hash.finalize().into(),
         ea,
         _pins: pins,
     })
 }
 
-pub(super) fn verify_published(file:&File,expected:[u8;32],ctl:&JobControl)->Result<(),String>{
-    if snapshot(file,ctl)?.digest!=expected{return Err("published EFS complete proof changed".into());}
+pub(super) fn verify_published(
+    file: &File,
+    expected: [u8; 32],
+    ctl: &JobControl,
+) -> Result<(), String> {
+    if snapshot(file, ctl)?.digest != expected {
+        return Err("published EFS complete proof changed".into());
+    }
     Ok(())
 }
 struct CopyContext<'a> {
@@ -439,7 +454,9 @@ unsafe extern "system" fn progress(
     let id = match identity(metadata.as_raw_handle()) {
         Ok(id) => id,
         Err(error) => {
-            state.failed = Some(format!("EFS native target identity stream={_n} reason={_reason}: {error}"));
+            state.failed = Some(format!(
+                "EFS native target identity stream={_n} reason={_reason}: {error}"
+            ));
             return 1;
         }
     };
@@ -467,18 +484,15 @@ impl Drop for NativeFile {
     fn drop(&mut self) {
         // This handle belongs exclusively to our native-created private output.
         // Never apply this cleanup to the source or a path-resolved replacement.
-        let Some(file) = self.0.as_ref() else { return; };
+        let Some(file) = self.0.as_ref() else {
+            return;
+        };
         if let Ok(metadata) = file.metadata() {
             if metadata.file_attributes() & 1 != 0 {
                 let attrs = (metadata.file_attributes() & !1) as u64;
                 let basic = [0u64, 0, 0, 0, if attrs == 0 { 0x80 } else { attrs }];
                 unsafe {
-                    SetFileInformationByHandle(
-                        file.as_raw_handle(),
-                        0,
-                        basic.as_ptr().cast(),
-                        40,
-                    );
+                    SetFileInformationByHandle(file.as_raw_handle(), 0, basic.as_ptr().cast(), 40);
                 }
             }
         }
@@ -497,36 +511,68 @@ pub(crate) struct Prepared {
     #[cfg(test)]
     callback_seen: bool,
 }
-struct EfsProof<'a> { source:&'a File, digest:[u8;32], control:JobControl }
+struct EfsProof<'a> {
+    source: &'a File,
+    digest: [u8; 32],
+    control: JobControl,
+}
 impl crate::private_stage::LocalOutputProof for EfsProof<'_> {
-    fn verify(&self,file:&File)->Result<Vec<u8>,String> {
-        if snapshot(self.source,&self.control)?.digest != self.digest {return Err("EFS source changed before publication".into());}
-        let actual=snapshot_with_share(file,&self.control,5)?.digest;
-        if actual!=self.digest{return Err("EFS complete stream/certificate proof changed".into());}
+    fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
+        if snapshot(self.source, &self.control)?.digest != self.digest {
+            return Err("EFS source changed before publication".into());
+        }
+        let actual = snapshot_with_share(file, &self.control, 5)?.digest;
+        if actual != self.digest {
+            return Err("EFS complete stream/certificate proof changed".into());
+        }
         Ok(actual.to_vec())
     }
 }
 impl Prepared {
-    pub(super) fn source(&self)->&File { &self.source }
-    pub(super) fn digest(&self)->[u8;32] {self.expected.digest}
-    pub(crate) fn publish(mut self,target:&Path,replace:bool,ctl:&JobControl)->Result<File,String>{
+    pub(super) fn source(&self) -> &File {
+        &self.source
+    }
+    pub(super) fn digest(&self) -> [u8; 32] {
+        self.expected.digest
+    }
+    pub(crate) fn publish(
+        mut self,
+        target: &Path,
+        replace: bool,
+        ctl: &JobControl,
+    ) -> Result<File, String> {
         self.verify(ctl)?;
-        let proof=EfsProof{source:&self.source,digest:self.expected.digest,control:ctl.clone()};
-        let old_path=path(&self.file)?;
-        let file=self.file.0.take().ok_or("EFS output ownership lost")?;
-        let mut output=self.reservation.take().ok_or("EFS target policy lost")?
-            .adopt(file,self.stage.root(),&old_path)?;
+        let proof = EfsProof {
+            source: &self.source,
+            digest: self.expected.digest,
+            control: ctl.clone(),
+        };
+        let old_path = path(&self.file)?;
+        let file = self.file.0.take().ok_or("EFS output ownership lost")?;
+        let mut output = self
+            .reservation
+            .take()
+            .ok_or("EFS target policy lost")?
+            .adopt(file, self.stage.root(), &old_path)?;
         ctl.check()?;
-        output.commit_local_streams(target,replace,&proof)
+        output.commit_local_streams(target, replace, &proof)
     }
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
         crate::private_stage::verify_native_private_child(self.stage.root(), &self.file)?;
-        let source=snapshot(&self.source,ctl)?;
+        let source = snapshot(&self.source, ctl)?;
         // Private target main handle owns DELETE for identity-bound cleanup.
         // Its ADS reads must share that existing right, never share WRITE.
-        let target=snapshot_with_share(&self.file,ctl,5)?;
-        if source.digest!=self.expected.digest || target.digest!=self.expected.digest {
-            #[cfg(test)] eprintln!("EFS proof mismatch source_same={} target_same={} basic expected={:?} source={:?} target={:?}",source.digest==self.expected.digest,target.digest==self.expected.digest,self.expected.basic,source.basic,target.basic);
+        let target = snapshot_with_share(&self.file, ctl, 5)?;
+        if source.digest != self.expected.digest || target.digest != self.expected.digest {
+            #[cfg(test)]
+            eprintln!(
+                "EFS proof mismatch source_same={} target_same={} basic expected={:?} source={:?} target={:?}",
+                source.digest == self.expected.digest,
+                target.digest == self.expected.digest,
+                self.expected.basic,
+                source.basic,
+                target.basic
+            );
             return Err("EFS源或私有目标发生变化".into());
         }
         Ok(())
@@ -537,14 +583,25 @@ pub(crate) fn prepare(
     parent: &Path,
     parent_pin: &File,
     ctl: &JobControl,
- ) -> Result<Prepared, String> {
-    prepare_bound(source,parent,parent_pin,ctl,None)
+) -> Result<Prepared, String> {
+    prepare_bound(source, parent, parent_pin, ctl, None)
 }
-pub(super) fn prepare_bound(source:&Path,parent:&Path,parent_pin:&File,ctl:&JobControl,expected:Option<(u32,u64)>)->Result<Prepared,String>{
+pub(super) fn prepare_bound(
+    source: &Path,
+    parent: &Path,
+    parent_pin: &File,
+    ctl: &JobControl,
+    expected: Option<(u32, u64)>,
+) -> Result<Prepared, String> {
     ctl.check()?;
     let source = crate::engine_stream::pin(source)?;
-    let actual=identity(source.as_raw_handle())?;
-    if expected.is_some_and(|old|old!=(actual[0],(u64::from(actual[1])<<32)|u64::from(actual[2]))) {
+    let actual = identity(source.as_raw_handle())?;
+    if expected.is_some_and(|old| {
+        old != (
+            actual[0],
+            (u64::from(actual[1]) << 32) | u64::from(actual[2]),
+        )
+    }) {
         return Err("EFS source identity changed before copy".into());
     }
     let expected = snapshot(&source, ctl)?;
@@ -619,16 +676,23 @@ pub(super) fn prepare_bound(source:&Path,parent:&Path,parent_pin:&File,ctl:&JobC
     }
     if !expected.ea.is_empty() {
         set_ea(&file, &expected.ea)?;
-    let metadata=source.metadata().map_err(|e|e.to_string())?;
-    let attrs=metadata.file_attributes()&0x3127;
-    let basic=[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time(),0,
-        u64::from(if attrs==0 {0x80}else{attrs})];
-    if unsafe{SetFileInformationByHandle(file.as_raw_handle(),0,basic.as_ptr().cast(),40)}==0 {
+    }
+    let metadata = source.metadata().map_err(|e| e.to_string())?;
+    let attrs = metadata.file_attributes() & 0x3127;
+    let basic = [
+        metadata.creation_time(),
+        metadata.last_access_time(),
+        metadata.last_write_time(),
+        0,
+        u64::from(if attrs == 0 { 0x80 } else { attrs }),
+    ];
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, basic.as_ptr().cast(), 40) }
+        == 0
+    {
         return Err(error("restore encrypted copy basic metadata"));
     }
-    }
     #[cfg(test)]
-    let callback_seen=state.destination.is_some();
+    let callback_seen = state.destination.is_some();
     let prepared = Prepared {
         file,
         reservation: Some(reservation),
@@ -723,7 +787,7 @@ mod tests {
             assert_eq!(stream_names(&prepared.file).unwrap().len(), 5);
             let held_path = path(&prepared.file).unwrap();
             assert!(std::fs::rename(&held_path, prepared.stage.path().join("replaced")).is_err());
-            assert!(std::fs::write(&held_path,b"replacement").is_err());
+            assert!(std::fs::write(&held_path, b"replacement").is_err());
             prepared.verify(&JobControl::new()).unwrap();
             let private_path = prepared.stage.path().to_owned();
             assert!(private_path.is_dir());
@@ -820,14 +884,31 @@ mod tests {
                 readonly
             );
             let private = prepared.stage.path().to_owned();
-            let digest=prepared.digest();
-            let output_path=dest.join("published");
-            let output=prepared.publish(&output_path,false,&JobControl::new()).unwrap();
+            let digest = prepared.digest();
+            let output_path = dest.join("published");
+            let output = prepared
+                .publish(&output_path, false, &JobControl::new())
+                .unwrap();
             drop(output);
             assert!(!private.exists());
-            verify_published(&File::open(&output_path).unwrap(),digest,&JobControl::new()).unwrap();
-            assert_eq!(std::fs::metadata(&output_path).unwrap().permissions().readonly(),readonly);
-            if readonly {let mut p=std::fs::metadata(&output_path).unwrap().permissions();p.set_readonly(false);std::fs::set_permissions(&output_path,p).unwrap();}
+            verify_published(
+                &File::open(&output_path).unwrap(),
+                digest,
+                &JobControl::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::metadata(&output_path)
+                    .unwrap()
+                    .permissions()
+                    .readonly(),
+                readonly
+            );
+            if readonly {
+                let mut p = std::fs::metadata(&output_path).unwrap().permissions();
+                p.set_readonly(false);
+                std::fs::set_permissions(&output_path, p).unwrap();
+            }
             assert_eq!(std::fs::read(&source).unwrap(), contents);
             assert_eq!(
                 std::fs::metadata(&source).unwrap().permissions().readonly(),
@@ -843,83 +924,196 @@ mod tests {
     #[test]
     #[ignore = "real EFS transfer only on disposable hosted runner"]
     fn ci_efs_transfer_conflicts_complete_proof_and_native_cancel() {
-        for mode in ["error","skip","rename","overwrite"] {
-            let temp=tempfile::tempdir().unwrap();
-            let source=temp.path().join("source.txt");let dest=temp.path().join("dest");
-            std::fs::write(&source,b"efs content").unwrap();
-            std::fs::write(format!("{}:custom",source.display()),b"all ads bytes").unwrap();
+        for mode in ["error", "skip", "rename", "overwrite"] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source.txt");
+            let dest = temp.path().join("dest");
+            std::fs::write(&source, b"efs content").unwrap();
+            std::fs::write(format!("{}:custom", source.display()), b"all ads bytes").unwrap();
             encrypt_ci_fixture(&source);
-            {let file=File::options().read(true).write(true).open(&source).unwrap();
-             set_ea(&file,&[0,0,0,0,0x80,1,3,0,b'A',0,1,2,3]).unwrap();}
-            let before=snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest;
-            std::fs::create_dir(&dest).unwrap();std::fs::write(dest.join("source.txt"),b"old").unwrap();
-            let opts=super::super::EngineOptions{overwrite:mode.into(),..Default::default()};
-            let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&opts);
-            if mode=="error" {assert!(result.is_err());}
-            else if mode=="skip" {assert_eq!(result.unwrap().skipped,1);}
-            else {
-                assert_eq!(result.unwrap().copied,1);
-                let target=dest.join(if mode=="rename"{"source (1).txt"}else{"source.txt"});
-                assert_eq!(snapshot(&File::open(&target).unwrap(),&JobControl::new()).unwrap().digest,before);
+            {
+                let file = File::options()
+                    .read(true)
+                    .write(true)
+                    .open(&source)
+                    .unwrap();
+                set_ea(&file, &[0, 0, 0, 0, 0x80, 1, 3, 0, b'A', 0, 1, 2, 3]).unwrap();
             }
-            if mode!="overwrite"{assert_eq!(std::fs::read(dest.join("source.txt")).unwrap(),b"old");}
-            assert_eq!(snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest,before);
-            assert!(std::fs::read_dir(&dest).unwrap().all(|p|!p.unwrap().file_name().to_string_lossy().starts_with(".qing")));
+            let before = snapshot(&File::open(&source).unwrap(), &JobControl::new())
+                .unwrap()
+                .digest;
+            std::fs::create_dir(&dest).unwrap();
+            std::fs::write(dest.join("source.txt"), b"old").unwrap();
+            let opts = super::super::EngineOptions {
+                overwrite: mode.into(),
+                ..Default::default()
+            };
+            let result = super::super::file_workspace::transfer(
+                &[source.display().to_string()],
+                dest.to_str().unwrap(),
+                false,
+                &opts,
+            );
+            if mode == "error" {
+                assert!(result.is_err());
+            } else if mode == "skip" {
+                assert_eq!(result.unwrap().skipped, 1);
+            } else {
+                assert_eq!(result.unwrap().copied, 1);
+                let target = dest.join(if mode == "rename" {
+                    "source (1).txt"
+                } else {
+                    "source.txt"
+                });
+                assert_eq!(
+                    snapshot(&File::open(&target).unwrap(), &JobControl::new())
+                        .unwrap()
+                        .digest,
+                    before
+                );
+            }
+            if mode != "overwrite" {
+                assert_eq!(std::fs::read(dest.join("source.txt")).unwrap(), b"old");
+            }
+            assert_eq!(
+                snapshot(&File::open(&source).unwrap(), &JobControl::new())
+                    .unwrap()
+                    .digest,
+                before
+            );
+            assert!(std::fs::read_dir(&dest).unwrap().all(|p| {
+                !p.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".qing")
+            }));
         }
-        let temp=tempfile::tempdir().unwrap();let source=temp.path().join("cancel");let dest=temp.path().join("dest");
-        std::fs::write(&source,vec![1;1024*1024]).unwrap();encrypt_ci_fixture(&source);
-        std::fs::create_dir(&dest).unwrap();std::fs::write(dest.join("cancel"),b"old").unwrap();
-        CANCEL_NATIVE.with(|v|v.set(true));
-        let opts=super::super::EngineOptions{overwrite:"overwrite".into(),..Default::default()};
-        assert!(super::super::file_workspace::transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&opts).is_err());
-        assert_eq!(std::fs::read(dest.join("cancel")).unwrap(),b"old");
-        assert_eq!(std::fs::read_dir(dest).unwrap().count(),1);
-        assert_eq!(std::fs::metadata(source).unwrap().len(),1024*1024);
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("cancel");
+        let dest = temp.path().join("dest");
+        std::fs::write(&source, vec![1; 1024 * 1024]).unwrap();
+        encrypt_ci_fixture(&source);
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("cancel"), b"old").unwrap();
+        CANCEL_NATIVE.with(|v| v.set(true));
+        let opts = super::super::EngineOptions {
+            overwrite: "overwrite".into(),
+            ..Default::default()
+        };
+        assert!(
+            super::super::file_workspace::transfer(
+                &[source.display().to_string()],
+                dest.to_str().unwrap(),
+                false,
+                &opts
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(dest.join("cancel")).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 1);
+        assert_eq!(std::fs::metadata(source).unwrap().len(), 1024 * 1024);
     }
     #[test]
     #[ignore = "real EFS cross-volume copy only on disposable hosted runner"]
     fn ci_efs_cross_volume_move_keeps_source_and_reports_boundary() {
-        let source_dir=tempfile::tempdir().unwrap();
-        let dest=tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let source=source_dir.path().join("encrypted.txt");std::fs::write(&source,b"source retained").unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = source_dir.path().join("encrypted.txt");
+        std::fs::write(&source, b"source retained").unwrap();
         encrypt_ci_fixture(&source);
-        assert_ne!(identity(File::open(&source).unwrap().as_raw_handle()).unwrap()[0],
-            {let mut info=[0u32;13];assert_ne!(unsafe{GetFileInformationByHandle(parent(dest.path()).as_raw_handle(),info.as_mut_ptr())},0);info[7]},"test requires actual distinct volumes");
-        let result=super::super::file_workspace::transfer(&[source.display().to_string()],dest.path().to_str().unwrap(),true,&super::super::EngineOptions::default()).unwrap();
-        assert_eq!(result.copied,1);assert_eq!(result.moved,0);assert!(!result.retained_sources.is_empty());assert!(!result.retained_reasons.is_empty());
+        assert_ne!(
+            identity(File::open(&source).unwrap().as_raw_handle()).unwrap()[0],
+            {
+                let mut info = [0u32; 13];
+                assert_ne!(
+                    unsafe {
+                        GetFileInformationByHandle(
+                            parent(dest.path()).as_raw_handle(),
+                            info.as_mut_ptr(),
+                        )
+                    },
+                    0
+                );
+                info[7]
+            },
+            "test requires actual distinct volumes"
+        );
+        let result = super::super::file_workspace::transfer(
+            &[source.display().to_string()],
+            dest.path().to_str().unwrap(),
+            true,
+            &super::super::EngineOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(result.copied, 1);
+        assert_eq!(result.moved, 0);
+        assert!(!result.retained_sources.is_empty());
+        assert!(!result.retained_reasons.is_empty());
         assert!(source.exists());
-        assert_eq!(snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest,
-            snapshot(&File::open(dest.path().join("encrypted.txt")).unwrap(),&JobControl::new()).unwrap().digest);
+        assert_eq!(
+            snapshot(&File::open(&source).unwrap(), &JobControl::new())
+                .unwrap()
+                .digest,
+            snapshot(
+                &File::open(dest.path().join("encrypted.txt")).unwrap(),
+                &JobControl::new()
+            )
+            .unwrap()
+            .digest
+        );
     }
 
     #[test]
     #[ignore = "real EFS publication rejection gates only on disposable hosted runner"]
     fn ci_efs_publication_rejects_changed_source_cancel_and_parent_policy() {
-        for gate in ["source","cancel","parent"] {
-            let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source");let dest=temp.path().join("dest");
-            std::fs::write(&source,b"original").unwrap();encrypt_ci_fixture(&source);
-            std::fs::create_dir(&dest).unwrap();let target=dest.join("existing");std::fs::write(&target,b"old target").unwrap();
-            let ctl=JobControl::new();let prepared=prepare(&source,&dest,&parent(&dest),&ctl).unwrap();
-            let private=prepared.stage.path().to_owned();
-            if gate=="source" {
-                let ea_writer=File::options().access_mode(0x18).share_mode(7).open(&source).unwrap();
-                set_ea(&ea_writer,&[0,0,0,0,0,1,1,0,b'B',0,9]).unwrap();
-            } else if gate=="cancel" {ctl.cancel();}
-            else {
+        for gate in ["source", "cancel", "parent"] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            let dest = temp.path().join("dest");
+            std::fs::write(&source, b"original").unwrap();
+            encrypt_ci_fixture(&source);
+            std::fs::create_dir(&dest).unwrap();
+            let target = dest.join("existing");
+            std::fs::write(&target, b"old target").unwrap();
+            let ctl = JobControl::new();
+            let prepared = prepare(&source, &dest, &parent(&dest), &ctl).unwrap();
+            let private = prepared.stage.path().to_owned();
+            if gate == "source" {
+                let ea_writer = File::options()
+                    .access_mode(0x18)
+                    .share_mode(7)
+                    .open(&source)
+                    .unwrap();
+                set_ea(&ea_writer, &[0, 0, 0, 0, 0, 1, 1, 0, b'B', 0, 9]).unwrap();
+            } else if gate == "cancel" {
+                ctl.cancel();
+            } else {
                 // Revoke inherited read on this disposable parent.
                 // The prepared snapshot must be rejected, never replayed.
-                let status=std::process::Command::new("icacls").arg(&dest).args(["/deny","*S-1-1-0:(OI)(CI)R"]).output().unwrap();
-                assert!(status.status.success(),"parent fixture ACL change failed");
+                let status = std::process::Command::new("icacls")
+                    .arg(&dest)
+                    .args(["/deny", "*S-1-1-0:(OI)(CI)R"])
+                    .output()
+                    .unwrap();
+                assert!(status.status.success(), "parent fixture ACL change failed");
             }
-            let refused=prepared.publish(&target,true,&ctl).is_err();
-            if gate=="parent" {
-                let restored=std::process::Command::new("icacls").arg(&dest).args(["/remove:d","*S-1-1-0"]).output().unwrap();
-                assert!(restored.status.success(),"disposable parent ACL restore failed");
+            let refused = prepared.publish(&target, true, &ctl).is_err();
+            if gate == "parent" {
+                let restored = std::process::Command::new("icacls")
+                    .arg(&dest)
+                    .args(["/remove:d", "*S-1-1-0"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    restored.status.success(),
+                    "disposable parent ACL restore failed"
+                );
             }
-            assert!(refused,"{gate}");
-            assert!(!private.exists());assert_eq!(std::fs::read(&target).unwrap(),b"old target");assert!(source.exists());
-            assert_eq!(std::fs::read_dir(dest).unwrap().count(),1);
+            assert!(refused, "{gate}");
+            assert!(!private.exists());
+            assert_eq!(std::fs::read(&target).unwrap(), b"old target");
+            assert!(source.exists());
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 1);
         }
     }
-
 }
