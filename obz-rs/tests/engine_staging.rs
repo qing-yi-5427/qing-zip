@@ -656,14 +656,24 @@ fn new_directory_rolls_back_published_files_and_preserves_foreign_data_on_cancel
         let worker=ctl.clone();
         let a=archive.clone();let target=dest.clone();
         let thread=thread::spawn(move || engine::extract(a.to_str().unwrap(),target.to_str().unwrap(),
-            &EngineOptions{control:Some(worker),..EngineOptions::default()}));
-        let leaf=dest.join("data/file-00000.txt");
+            &EngineOptions{control:Some(worker),threads:Some(1),..EngineOptions::default()}));
         let deadline=Instant::now()+Duration::from_secs(15);
-        while !leaf.is_file(){
+        // Direct output exposes its name while still private. A single publisher
+        // reports this exact member only after commit and journal registration;
+        // observing is_file() alone can race the pre-commit abort contract.
+        let leaf=loop {
+            let progress=ctl.snapshot();
+            let name=progress.message.replace('\\',"/");
+            if progress.phase=="extracting" && progress.percent.is_some()
+                && name.starts_with("data/file-") && name.ends_with(".txt") {
+                let committed=dest.join(&name);
+                assert!(committed.is_file(), "published progress must name a real file");
+                break committed;
+            }
             if thread.is_finished(){panic!("extraction ended before file publication: {:?}", thread.join());}
             assert!(Instant::now()<deadline, "file publication did not start");
             thread::sleep(Duration::from_millis(1));
-        }
+        };
         if foreign {
             use std::{ffi::OsStr,os::windows::ffi::OsStrExt};
             #[link(name="kernel32")] extern "system" { fn SetFileAttributesW(file:*const u16,attrs:u32)->i32; }
