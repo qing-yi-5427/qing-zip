@@ -1,0 +1,40 @@
+name: Sparse layout regression
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/sparse-layout-fix]
+permissions:
+  contents: read
+jobs:
+  layout:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Keep precise assertions and record source and target layouts
+        shell: pwsh
+        run: |
+          $failed = $false
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          1..20 | ForEach-Object {
+            "ROUND $_" | Tee-Object -Append sparse-layout.log
+            cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          "FULL CORE PARALLEL LOAD" | Tee-Object -Append sparse-layout.log
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          @{ commit=$env:GITHUB_SHA; run=$env:GITHUB_RUN_ID; failed=$failed; os=[System.Environment]::OSVersion.VersionString; image=$env:ImageOS } | ConvertTo-Json | Set-Content sparse-layout-identity.json
+          if ($failed) { exit 1 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sparse-layout-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            sparse-layout.log
+            sparse-layout-identity.json
