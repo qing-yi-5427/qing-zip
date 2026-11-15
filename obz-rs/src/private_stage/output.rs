@@ -493,6 +493,24 @@ fn native_file_aces(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     Ok(entries)
 }
+fn native_default_owner(token: &Token, user: &str) -> Result<String, String> {
+    let mut size = 0;
+    unsafe { GetTokenInformation(token.0, 4, std::ptr::null_mut(), 0, &mut size); }
+    if size < std::mem::size_of::<Handle>() as u32 || size > 1024 * 1024 {
+        return Err("invalid native token owner".into());
+    }
+    let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+    if unsafe { GetTokenInformation(token.0, 4, buffer.as_mut_ptr().cast(), size, &mut size) } == 0 {
+        return Err(error("query native token owner"));
+    }
+    let owner = sid_text(unsafe { *(buffer.as_ptr().cast::<Handle>()) })?;
+    // These are already authorized by the independently verified private ACL.
+    // An unusual token owner must not gain implicit WRITE_DAC over our output.
+    if owner != user && owner != "S-1-5-32-544" {
+        return Err("native token owner is outside private principals".into());
+    }
+    Ok(owner)
+}
 /// EFS candidate only: verify native-created children still inherit exclusively
 /// from our protected stage, rather than trusting the copy API's ACL behavior.
 pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),String>{
@@ -517,8 +535,9 @@ pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),St
     let _text=Allocation(text.cast());let mut length=0;
     unsafe{while *text.add(length)!=0{length+=1;}}
     let owner_sid=String::from_utf16(unsafe{std::slice::from_raw_parts(text,length)}).map_err(|e|e.to_string())?;
-    if owner_sid!=sid{
-        #[cfg(test)] eprintln!("native output owner expected={sid} actual={owner_sid}");
+    let expected_owner = native_default_owner(&token, &sid)?;
+    if owner_sid!=expected_owner{
+        #[cfg(test)] eprintln!("native output owner expected={expected_owner} actual={owner_sid}");
         return Err("native output owner changed".into());
     }
     Ok(())
