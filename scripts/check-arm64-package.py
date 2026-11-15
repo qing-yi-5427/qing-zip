@@ -250,8 +250,8 @@ def smoke_desktop(application, archive, scratch):
 def exercise(app, scratch):
     scratch.mkdir()
     verify_layout(app/'runtime')
-    if any(machine(app/n)!=0xaa64 for n in ['obz.exe','qing-zip.exe']):raise ValueError('wrong app architecture')
-    dependencies={name:verify_private_imports(app/name) for name in ['obz.exe','qing-zip.exe']}
+    if any(machine(app/n)!=0xaa64 for n in ['obz.exe','obz-worker.exe','qing-zip.exe']):raise ValueError('wrong app architecture')
+    dependencies={name:verify_private_imports(app/name) for name in ['obz.exe','obz-worker.exe','qing-zip.exe']}
     cli=app/'obz.exe'
     cap=json.loads(run([cli,'capabilities']).stdout)['engine']
     assert Path(cap['engine']).resolve()==(app/'runtime/nanazip-arm64/NanaZip.Universal.Console.exe').resolve()

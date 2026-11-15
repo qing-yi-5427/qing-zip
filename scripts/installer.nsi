@@ -80,6 +80,12 @@ FunctionEnd
 Section "qing-zip（必需）" Main
  SectionIn RO
  SetOutPath "$INSTDIR"
+ ; The portable allowlist supplies this executable on both x64 and ARM64.
+ ; Its generated RemoveShippedFile entry also handles locked-file uninstall errors.
+ !if /FileExists "${STAGING}\obz-worker.exe"
+ !else
+  !error "Missing required archive worker in package staging"
+ !endif
  File /r "${STAGING}\*"
  WriteUninstaller "$INSTDIR\Uninstall.exe"
  CreateDirectory "$SMPROGRAMS\${PRODUCT_KEY}"

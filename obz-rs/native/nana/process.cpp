@@ -64,7 +64,7 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
       if (threads) command += L" -mmt=" + std::to_wstring(threads);
       command += L" -- \"" + std::wstring(file) + L"\"";
     } else {
-      command += mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
+      command += mode == 3 ? L" --full-archive-worker" : mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
     }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
@@ -94,4 +94,8 @@ extern "C" DWORD qing_spawn_create_worker(const wchar_t *exe, HANDLE *process, H
 
 extern "C" DWORD qing_spawn_zip_list_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
   return spawn_archive_worker(exe, nullptr, 0, process, input, output, 2);
+}
+
+extern "C" DWORD qing_spawn_full_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output, 3);
 }

@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-enum { QZ_TRACE_ENCRYPTED_HEADER = 25 };
+enum { QZ_TRACE_ENCRYPTED_HEADER = 25, QZ_TRACE_THREADS_APPLIED = 26 };
 
 enum QzSelectedOutcome {
   QZ_SELECTED_FAILED = 1,         // No CLI retry, publication, recycle, or success.
@@ -104,6 +104,11 @@ struct QzSelectedReceipt {
 // that S_OK authorizes publishing.
 HRESULT __stdcall qz_extract_selected(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *);
+
+// Single archive worker only. 0 keeps the official handler default. The old
+// selected ABI and request struct remain unchanged.
+HRESULT __stdcall qz_extract_single_with_threads(
+    const struct QzSelectedRequest *, struct QzSelectedReceipt *, uint32_t);
 
 // Borrowed only until return. Decoders may request a caller-owned BSTR.
 HRESULT __stdcall qz_extract_selected_with_password(
