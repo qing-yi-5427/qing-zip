@@ -353,6 +353,12 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
     if stream_names(file)? != names {
         return Err("EFS数据流清单变化".into());
     }
+    // Access time can change because of our own reads and is not a stable
+    // verification field. Preserve it when copying, like ordinary local copies.
+    let basic=file.metadata().map_err(|e|e.to_string())?;
+    hash.update(basic.creation_time().to_le_bytes());
+    hash.update(basic.last_write_time().to_le_bytes());
+    hash.update((basic.file_attributes()&0x3127).to_le_bytes());
     let ea = ea(file)?;
     hash.update((ea.len() as u64).to_le_bytes());
     hash.update(&ea);
@@ -610,6 +616,13 @@ pub(super) fn prepare_bound(source:&Path,parent:&Path,parent_pin:&File,ctl:&JobC
     }
     if !expected.ea.is_empty() {
         set_ea(&file, &expected.ea)?;
+    let metadata=source.metadata().map_err(|e|e.to_string())?;
+    let attrs=metadata.file_attributes()&0x3127;
+    let basic=[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time(),0,
+        u64::from(if attrs==0 {0x80}else{attrs})];
+    if unsafe{SetFileInformationByHandle(file.as_raw_handle(),0,basic.as_ptr().cast(),40)}==0 {
+        return Err(error("restore encrypted copy basic metadata"));
+    }
     }
     #[cfg(test)]
     let callback_seen=state.destination.is_some();
@@ -804,8 +817,14 @@ mod tests {
                 readonly
             );
             let private = prepared.stage.path().to_owned();
-            drop(prepared);
+            let digest=prepared.digest();
+            let output_path=dest.join("published");
+            let output=prepared.publish(&output_path,false,&JobControl::new()).unwrap();
+            drop(output);
             assert!(!private.exists());
+            verify_published(&File::open(&output_path).unwrap(),digest,&JobControl::new()).unwrap();
+            assert_eq!(std::fs::metadata(&output_path).unwrap().permissions().readonly(),readonly);
+            if readonly {let mut p=std::fs::metadata(&output_path).unwrap().permissions();p.set_readonly(false);std::fs::set_permissions(&output_path,p).unwrap();}
             assert_eq!(std::fs::read(&source).unwrap(), contents);
             assert_eq!(
                 std::fs::metadata(&source).unwrap().permissions().readonly(),
@@ -868,6 +887,36 @@ mod tests {
         assert!(source.exists());
         assert_eq!(snapshot(&File::open(&source).unwrap(),&JobControl::new()).unwrap().digest,
             snapshot(&File::open(dest.path().join("encrypted.txt")).unwrap(),&JobControl::new()).unwrap().digest);
+    }
+
+    #[test]
+    #[ignore = "real EFS publication rejection gates only on disposable hosted runner"]
+    fn ci_efs_publication_rejects_changed_source_cancel_and_parent_policy() {
+        for gate in ["source","cancel","parent"] {
+            let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source");let dest=temp.path().join("dest");
+            std::fs::write(&source,b"original").unwrap();encrypt_ci_fixture(&source);
+            std::fs::create_dir(&dest).unwrap();let target=dest.join("existing");std::fs::write(&target,b"old target").unwrap();
+            let ctl=JobControl::new();let prepared=prepare(&source,&dest,&parent(&dest),&ctl).unwrap();
+            let private=prepared.stage.path().to_owned();
+            if gate=="source" {
+                let ea_writer=File::options().access_mode(0x18).share_mode(7).open(&source).unwrap();
+                set_ea(&ea_writer,&[0,0,0,0,0,1,1,0,b'B',0,9]).unwrap();
+            } else if gate=="cancel" {ctl.cancel();}
+            else {
+                // Revoke inherited read on this disposable parent.
+                // The prepared snapshot must be rejected, never replayed.
+                let status=std::process::Command::new("icacls").arg(&dest).args(["/deny","*S-1-1-0:(OI)(CI)R"]).output().unwrap();
+                assert!(status.status.success(),"parent fixture ACL change failed");
+            }
+            let refused=prepared.publish(&target,true,&ctl).is_err();
+            if gate=="parent" {
+                let restored=std::process::Command::new("icacls").arg(&dest).args(["/remove:d","*S-1-1-0"]).output().unwrap();
+                assert!(restored.status.success(),"disposable parent ACL restore failed");
+            }
+            assert!(refused,"{gate}");
+            assert!(!private.exists());assert_eq!(std::fs::read(&target).unwrap(),b"old target");assert!(source.exists());
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(),1);
+        }
     }
 
 }
