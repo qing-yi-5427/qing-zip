@@ -7,7 +7,11 @@ permissions:
   contents: read
 jobs:
   layout:
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -22,12 +26,12 @@ jobs:
             cargo test --locked --manifest-path obz-rs/Cargo.toml --lib file_workspace -- --nocapture 2>&1 | Tee-Object -Append sparse-layout.log
             if ($LASTEXITCODE -ne 0) { $failed = $true }
           }
-          @{ commit=$env:GITHUB_SHA; run=$env:GITHUB_RUN_ID; failed=$failed } | ConvertTo-Json | Set-Content sparse-layout-identity.json
+          @{ commit=$env:GITHUB_SHA; run=$env:GITHUB_RUN_ID; failed=$failed; os=[System.Environment]::OSVersion.VersionString; image=$env:ImageOS } | ConvertTo-Json | Set-Content sparse-layout-identity.json
           if ($failed) { exit 1 }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: sparse-layout-${{ github.run_id }}
+          name: sparse-layout-${{ matrix.os }}-${{ github.run_id }}
           path: |
             sparse-layout.log
             sparse-layout-identity.json

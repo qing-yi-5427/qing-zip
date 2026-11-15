@@ -304,7 +304,10 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             if (attributes==8)!=main_sparse.is_some() {return Err("主数据流稀疏属性不一致".into());}
             pending=Some(PendingStorage{name:None,pin:None,compression:main_compression,layout:main_sparse.clone(),end:0});
         } else if let Some((name,pin,compression,layout))=alternate {
-            if (attributes==8)!=layout.is_some() {return Err("备用数据流稀疏属性不一致".into());}
+            if (attributes==8)!=layout.is_some() {
+                #[cfg(test)] eprintln!("SPARSE backup mismatch name={} attributes={attributes} size={size} layout={layout:?}",String::from_utf16_lossy(&name));
+                return Err("备用数据流稀疏属性不一致".into());
+            }
             pending=Some(PendingStorage{name:Some(name),pin:Some(pin),compression,layout,end:0});
         }
         hash.update(header);
