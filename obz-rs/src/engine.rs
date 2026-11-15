@@ -11,6 +11,7 @@ pub mod file_parts;
 pub mod archive_properties;
 #[cfg(windows)]
 pub mod file_workspace;
+pub(crate) mod compression_parameters;
 mod bounded_archive_stage;
 pub mod benchmark;
 mod zip_volume_view;
@@ -122,6 +123,8 @@ pub struct EngineOptions {
     pub method: Option<String>,
     pub encryption: Option<String>,
     pub dictionary_bytes: Option<u64>,
+    pub solid_block_bytes: Option<u64>,
+    pub word_size: Option<u32>,
     pub solid: Option<bool>,
     pub header_encryption: Option<bool>,
     pub volume_bytes: Option<u64>,
@@ -147,6 +150,8 @@ impl Default for EngineOptions {
             method: None,
             encryption: None,
             dictionary_bytes: None,
+            solid_block_bytes: None,
+            word_size: None,
             solid: None,
             header_encryption: None,
             volume_bytes: None,
@@ -4562,8 +4567,11 @@ fn compression(args: &mut Vec<String>, format: &str, opts: &EngineOptions) -> Re
         }
         args.push(format!("-md={bytes}b"));
     }
-    if let Some(solid) = opts.solid {
-        args.push(format!("-ms={}", if solid { "on" } else { "off" }));
+    args.extend(compression_parameters::switches(format, opts)?);
+    if opts.solid_block_bytes.is_none() {
+        if let Some(solid) = opts.solid {
+            args.push(format!("-ms={}", if solid { "on" } else { "off" }));
+        }
     }
     args.push(format!("-t{}", if format == "sfx" { "7z" } else { format }));
     args.push("-sse".into());
@@ -4609,6 +4617,7 @@ pub fn create(
     format: &str,
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    compression_parameters::switches(format, opts)?;
     let policy = crate::machine_policy::scope();
     if policy.restricted() && matches!(format, "zipx" | "sfx" | "iso" | "lzh") {
         return Err(format!("{format} creation uses a separate writer and is unavailable under NanaZip machine format policy"));
@@ -4804,6 +4813,9 @@ pub fn update(
     }
     if inputs.is_empty() {
         return Err("no update entries".into());
+    }
+    if opts.solid_block_bytes.is_some() || opts.word_size.is_some() {
+        return Err("固实块和字长参数仅用于新建压缩包".into());
     }
     if action != "add" && opts.update_mode != UpdateMode::Add {
         return Err("更新模式仅适用于添加文件".into());

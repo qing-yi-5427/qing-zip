@@ -77,6 +77,8 @@ pub(in crate::engine) fn eligible(format: &str, names: &[String], opts: &EngineO
         && opts.codepage.is_none()
         && opts.encryption.is_none()
         && opts.dictionary_bytes.is_none()
+        && opts.word_size.is_none()
+        && opts.solid_block_bytes.is_none()
         && opts.solid.is_none()
         && opts.header_encryption.is_none()
         && opts.volume_bytes.is_none()
@@ -414,6 +416,8 @@ mod tests {
         assert!(!eligible("7z", &inputs, &normal));
         assert!(!eligible("zip", &[], &normal));
         for options in [
+            EngineOptions { word_size: Some(32), ..normal.clone() },
+            EngineOptions { solid_block_bytes: Some(1024), ..normal.clone() },
             EngineOptions {
                 password: Some("secret".into()),
                 ..normal.clone()

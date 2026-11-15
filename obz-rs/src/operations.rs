@@ -181,6 +181,7 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         },
         "create" => {
             let format = if r.format.is_empty() { infer_format(&r.path)? } else { r.format.as_str() };
+            engine::compression_parameters::switches(format, &r.options)?;
             if format=="lzh" {return Ok(json!({"outputs":crate::legacy::create_lzh(&r.path,&r.inputs,&r.options)?}));}
             if format=="iso" {
                 let cancel=r.options.control.as_ref().map(|c|c.cancelled.clone()).unwrap_or_default();
