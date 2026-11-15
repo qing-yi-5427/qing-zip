@@ -9,7 +9,32 @@ pub(crate) struct OutputReceipt {
     file: File,
     evidence: [u8; 32],
 }
+// A new full security snapshot on every call. No cached ACL, owner or group.
+// Typical NTFS descriptors fit in one query; unusual/oversized descriptors keep
+// the established Win32 path and its access checks.
 pub(crate) fn policy_stamp(file: &File) -> Result<[u8; 32], String> {
+    let mut storage=[0u32;1024];
+    match native_policy_stamp(file,&mut storage)? {
+        Some(stamp)=>Ok(stamp),
+        None=>win32_policy_stamp(file),
+    }
+}
+fn native_policy_stamp(file:&File,storage:&mut [u32])->Result<Option<[u8;32]>,String>{
+    #[link(name="ntdll")]
+    extern "system" {fn NtQuerySecurityObject(handle:Handle,information:u32,descriptor:Handle,length:u32,required:*mut u32)->i32;}
+    let capacity=storage.len().checked_mul(4).and_then(|n|u32::try_from(n).ok()).ok_or("security query buffer overflow")?;
+    let mut required=0u32;
+    let status=unsafe{NtQuerySecurityObject(file.as_raw_handle(),7,storage.as_mut_ptr().cast(),capacity,&mut required)};
+    if matches!(status as u32,0xc0000023|0x80000005|0xc0000002|0xc0000003|0xc00000bb){return Ok(None);}
+    if status<0{return Err(format!("cannot record owned output security: NTSTATUS {:#010x}",status as u32));}
+    if required<20 || required>capacity{return Err("invalid owned output security length".into());}
+    let bytes=unsafe{GetSecurityDescriptorLength(storage.as_mut_ptr().cast())};
+    if bytes<20 || bytes>required{return Err("invalid owned output security".into());}
+    let mut hash=Sha256::new();
+    hash.update(unsafe{std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(),bytes as usize)});
+    Ok(Some(hash.finalize().into()))
+}
+fn win32_policy_stamp(file: &File) -> Result<[u8; 32], String> {
     let mut raw = std::ptr::null_mut();
     let rc = unsafe {
         GetSecurityInfo(
@@ -113,5 +138,68 @@ impl OutputReceipt {
         }
         drop(current);
         output::discard_private_handle(&self.file, &self.path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs,os::windows::fs::OpenOptionsExt};
+    fn opened(path:&Path)->File {File::options().access_mode(0xe0080).share_mode(7).custom_flags(0x02000000).open(path).unwrap()}
+    fn set_dacl(file:&File,sddl:&str){
+        let text:Vec<_>=sddl.encode_utf16().chain(Some(0)).collect();let mut sd=std::ptr::null_mut();
+        assert_ne!(unsafe{ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(),1,&mut sd,std::ptr::null_mut())},0);
+        let _owned=Allocation(sd);let(mut present,mut defaulted,mut acl)=(0,0,std::ptr::null_mut());
+        assert_ne!(unsafe{GetSecurityDescriptorDacl(sd,&mut present,&mut acl,&mut defaulted)},0);
+        assert_eq!(unsafe{SetSecurityInfo(file.as_raw_handle(),1,4|0x80000000,std::ptr::null_mut(),std::ptr::null_mut(),acl,std::ptr::null_mut())},0);
+    }
+    #[test]
+    fn receipt_native_full_security_matches_win32_and_preserves_acl_order(){
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");fs::write(&path,b"data").unwrap();
+        for file in [opened(&path),opened(dir.path())] {
+            assert_eq!(policy_stamp(&file).unwrap(),win32_policy_stamp(&file).unwrap());
+            let token=token().unwrap();let sid=current_sid(&token).unwrap();
+            for acl in [format!("D:P(A;;FA;;;{sid})(A;;FR;;;BU)"),format!("D:P(D;;WD;;;BU)(A;;FA;;;{sid})(A;;FR;;;WD)"),format!("D:P(A;;FA;;;{sid})(D;;WD;;;BU)(A;;FR;;;WD)")] {
+                set_dacl(&file,&acl);assert_eq!(policy_stamp(&file).unwrap(),win32_policy_stamp(&file).unwrap());
+            }
+        }
+    }
+    #[test]
+    fn receipt_native_small_buffer_declines_and_group_changes_are_observed(){
+        #[link(name="advapi32")]extern "system"{fn GetSecurityDescriptorGroup(sd:Handle,group:*mut Handle,defaulted:*mut i32)->i32;}
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");fs::write(&path,b"data").unwrap();let file=opened(&path);
+        assert!(native_policy_stamp(&file,&mut [0u32;2]).unwrap().is_none());
+        let before=policy_stamp(&file).unwrap();let text:Vec<_>="G:BU".encode_utf16().chain(Some(0)).collect();let mut sd=std::ptr::null_mut();
+        assert_ne!(unsafe{ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(),1,&mut sd,std::ptr::null_mut())},0);let _owned=Allocation(sd);
+        let(mut group,mut defaulted)=(std::ptr::null_mut(),0);assert_ne!(unsafe{GetSecurityDescriptorGroup(sd,&mut group,&mut defaulted)},0);
+        assert_eq!(unsafe{SetSecurityInfo(file.as_raw_handle(),1,2,std::ptr::null_mut(),group,std::ptr::null_mut(),std::ptr::null_mut())},0);
+        let after=policy_stamp(&file).unwrap();assert_ne!(before,after);assert_eq!(after,win32_policy_stamp(&file).unwrap());
+    }
+    #[test]
+    fn receipt_oversized_security_uses_win32_fallback_without_losing_fields(){
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");fs::write(&path,b"data").unwrap();let file=opened(&path);
+        let sid=current_sid(&token().unwrap()).unwrap();
+        set_dacl(&file,&format!("D:P(A;;FA;;;{sid}){}",(0..300).map(|i|format!("(A;;FR;;;S-1-5-21-111-222-333-{})",10000+i)).collect::<String>()));
+        assert!(native_policy_stamp(&file,&mut [0u32;1024]).unwrap().is_none());
+        assert_eq!(policy_stamp(&file).unwrap(),win32_policy_stamp(&file).unwrap());
+    }
+    #[test]
+    fn receipt_security_and_ads_changes_still_preserve_owned_file(){
+        for ads in [false,true] {
+            let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");fs::write(&path,b"data").unwrap();
+            let file=File::options().access_mode(0xf0080).share_mode(0).open(&path).unwrap();
+            let receipt=OutputReceipt::capture(&path,&file).unwrap();
+            if ads {fs::write(format!("{}:foreign",path.display()),b"keep").unwrap();}
+            else {let sid=current_sid(&token().unwrap()).unwrap();set_dacl(&file,&format!("D:P(A;;FA;;;{sid})(A;;FR;;;BU)"));}
+            let error=receipt.remove().unwrap_err();assert!(error.contains("changed output retained"),"{error}");
+            drop(file);assert_eq!(fs::read(&path).unwrap(),b"data");
+            if ads {assert_eq!(fs::read(format!("{}:foreign",path.display())).unwrap(),b"keep");}
+        }
+    }
+    #[test]
+    fn receipt_native_does_not_hide_missing_read_control(){
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");fs::write(&path,b"data").unwrap();
+        let file=File::options().access_mode(0x80).share_mode(7).open(path).unwrap();
+        assert!(native_policy_stamp(&file,&mut [0u32;1024]).is_err());assert!(win32_policy_stamp(&file).is_err());
     }
 }
