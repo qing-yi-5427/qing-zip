@@ -261,6 +261,14 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         wait(lambda:not drag_stages(),'private exports released after Explorer completion',8)
         report['after_copy_stages']=drag_stages()
         assert report['after_copy_stages']=={}
+        # Ask the real Explorer view to refresh before the final screenshot;
+        # successful OLE completion can precede its visual directory refresh.
+        place(target_hwnd,-1,max(0,width-574),5,750,height-65)
+        u.SetForegroundWindow(target_hwnd);keyboard.send_keys('{F5}')
+        def explorer_items_visible():
+            names=[a.element_info.name for a in xp.descendants() if a.is_visible()]
+            return names if 'nested' in names and any(n in names for n in ['take','take.txt']) else None
+        report['explorer_visible_items']=wait(explorer_items_visible,'Explorer shows copied file and directory',15)
         save('after')
         assert hashlib.sha256(archive.read_bytes()).hexdigest()==original_archive_sha
         report['archive_sha256_before_and_after']=original_archive_sha
