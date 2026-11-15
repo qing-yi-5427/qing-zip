@@ -1353,15 +1353,30 @@ mod tests {
                     make_sparse(&stream,1024*1024+17,true);
                     stream.seek(SeekFrom::End(-1)).unwrap();stream.write_all(&[0x71]).unwrap();
                 }
-                layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
-                bytes.push(fs::read(path).unwrap());
+                stream.sync_all().unwrap();
             }
+        }
+        // Finish every stream before recording the fixture's allocation map.
+        // NTFS can materialize a cached zero page when the creation handles
+        // close; an in-construction query is not a stable copy expectation.
+        {
+            let main=File::options().read(true).write(true).share_mode(7).open(&input).unwrap();
+            for name in &names{
+                let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                bytes.push(fs::read(format!("{}:{name}",input.display())).unwrap());
+                stream.sync_all().unwrap();
+                layouts.push(sparse::query(&stream,&JobControl::new()).unwrap());
+            }
+            main.sync_all().unwrap();
         }
         transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
         let output=dest.join("a.txt");let main=File::open(&output).unwrap();
         assert!(sparse::query(&main,&JobControl::new()).unwrap().is_none());
+        let source_main=File::open(&input).unwrap();
         for (index,name) in names.iter().enumerate() {
             let stream=compression::stream(&main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+            let source_stream=compression::stream(&source_main,&format!(":{name}:$DATA").encode_utf16().collect::<Vec<_>>(),false).unwrap();
+            assert_eq!(sparse::query(&source_stream,&JobControl::new()).unwrap(),layouts[index],"source layout changed: {name}");
             assert_eq!(sparse::query(&stream,&JobControl::new()).unwrap(),layouts[index]);
             assert_eq!(fs::read(format!("{}:{name}",output.display())).unwrap(),bytes[index]);
         }
