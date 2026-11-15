@@ -2675,15 +2675,31 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     ctl.check()?;
     let official_zeal = matches!(payload_source, PayloadSource::OfficialZeal);
+    // Prefer the existing fully verified bounded memory representation for a
+    // complete small archive. Unsupported layouts keep their original decoder.
+    let memory_attempted = matches!(payload_source, PayloadSource::Engine)
+        && opts.selected.is_empty() && defer_preflight && memory_source.is_some()
+        && all_entries.iter().all(|entry| entry.size_known);
+    let verified_memory = if memory_attempted {
+        let _timer = PhaseTimer::new("verify-memory-total");
+        let source=memory_source.as_ref().map(File::try_clone).transpose().map_err(|e|e.to_string())?;
+        let memory=if Path::new(path).extension().is_some_and(|s|s.eq_ignore_ascii_case("7z")) {
+            decode_memory_sevenz(source,&all_entries,&ctl)?
+        } else { decode_memory_zip(source,&all_entries,opts,&ctl)? };
+        // A cloned Windows file shares its cursor. Compatibility qualification
+        // must still start at byte zero after an unsupported memory layout.
+        if let Some(source)=memory_source.as_mut() {source.rewind().map_err(|e|e.to_string())?;}
+        memory
+    } else {None};
     let (mut bounded_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
-        && opts.selected.is_empty() && defer_preflight && expected.len() <= 65_536
+        && opts.selected.is_empty() && defer_preflight && expected.len() <= 65_536 && verified_memory.is_none()
     {
         bounded_archive_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
             .map_or((None, None), |(plan, transaction)| (Some(plan), Some(transaction)))
     } else {
         (None, None)
     };
-    let memory = if bounded_plan.is_some() { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
+    let memory = if verified_memory.is_some() {verified_memory} else if bounded_plan.is_some() || memory_attempted { None } else if let PayloadSource::VerifiedZeal(files) = payload_source {
         Some(files)
     } else if Path::new(path)
         .extension()
@@ -2708,7 +2724,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let safe_projection = opts.selected.is_empty() || projected.is_some();
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
-    let mut transaction = if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
+    let mut transaction = if memory_attempted && memory.is_some() { None }
+    else if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
         new_directory_stage(path, &dest, safe_projection, &mut output_guards,
             projected.as_deref().unwrap_or(&all_entries), projected.is_some() || memory.is_some())?
     } else {
