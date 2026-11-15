@@ -43,10 +43,15 @@ pub(super) fn ordinary_zip(path: &Path, opts: &EngineOptions) -> Result<bool, St
     }
     // Qualify every member before using this decoder. Do not reinterpret
     // encrypted, linked, special, legacy-name, or directory-payload members.
+    let mut decoded_total = 0u64;
     for index in 0..count {
         ctl.check()?;
         let member = archive.by_index_data(index).map_err(|e| e.to_string())?;
         let kind = member.unix_mode().map(|m| m & 0xf000).unwrap_or(0);
+        decoded_total = match decoded_total.checked_add(member.size()) {
+            Some(total) if total <= 64 * 1024 * 1024 => total,
+            _ => return Ok(false),
+        };
         if member.encrypted() || member.is_symlink()
             || !matches!(kind, 0 | 0x4000 | 0x8000)
             || member.external_attributes() & 0x400 != 0
@@ -144,6 +149,20 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         bytes.extend_from_slice(b"trailing bytes");
         fs::write(&path, bytes).unwrap();
+        assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
+    }
+
+    #[test]
+    fn edited_zip_high_expansion_keeps_native_verification() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("high-expansion.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        writer.start_file("data.bin", zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)).unwrap();
+        let block = vec![42; 1024 * 1024];
+        for _ in 0..65 { writer.write_all(&block).unwrap(); }
+        writer.finish().unwrap();
+        assert!(path.metadata().unwrap().len() < 8 * 1024 * 1024);
         assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
     }
 
