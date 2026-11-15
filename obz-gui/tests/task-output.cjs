@@ -12,6 +12,11 @@ test('cancelled tasks use a neutral message without hiding real failure details'
     vm.runInContext(source.split('\n').find(line=>line.startsWith(prefix)),context);
   context.error(Error('operation cancelled'));
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
+  const nested='写回失败，内层工作副本已保留，可重试或另存为：operation cancelled';
+  context.error(Error(nested));
+  assert.equal(notices.at(-1),'任务已取消。内层工作副本已保留，可重试或另存为。');
+  assert.equal(field.textContent,'');
+  assert.equal(context.taskError(nested+'; cleanup failed'),nested+'; cleanup failed');
   context.s.jobs=[{label:'解压',status:'cancelled',error:'operation cancelled'}];
   for(const name of ['jobs','historyPage']) {
     const html=context[name]();assert.match(html,/任务已取消/);assert.doesNotMatch(html,/operation cancelled|Error:/);
