@@ -4,6 +4,25 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+test('cancelled tasks use a neutral message without hiding real failure details', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const field={textContent:''};const notices=[];
+  const context=vm.createContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
+  for(const prefix of ['function taskError(', 'function error(', 'function jobs()', 'function historyPage()'])
+    vm.runInContext(source.split('\n').find(line=>line.startsWith(prefix)),context);
+  context.error(Error('operation cancelled'));
+  assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
+  context.s.jobs=[{label:'解压',status:'cancelled',error:'operation cancelled'}];
+  for(const name of ['jobs','historyPage']) {
+    const html=context[name]();assert.match(html,/任务已取消/);assert.doesNotMatch(html,/operation cancelled|Error:/);
+  }
+  const detail='CRC failed: operation cancelled.txt';
+  context.s.jobs[0]={label:'解压',status:'failed',error:detail};
+  assert.ok(context.jobs().includes(detail));
+  context.error(Error(detail));assert.equal(field.textContent,'Error: '+detail);
+  assert.equal(context.s.jobs[0].error,detail);
+});
+
 test('clicking a task result reveals that task output, including numeric native job IDs', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
   const handler = source.split('\n').find(line => line.startsWith("root.addEventListener('click',async") && line.includes('dataset.jobOutput'));
