@@ -46,6 +46,8 @@ extern "system" {
     fn BCryptGenRandom(algorithm: Handle, data: *mut u8, count: u32, flags: u32) -> i32;
 }
 extern "C" {
+    fn qing_full_worker_main(runtime: *const u16) -> i32;
+    fn qing_spawn_full_worker(exe: *const u16, process: *mut Handle,input:*mut Handle,output:*mut Handle)->u32;
     fn qing_selected_worker_main(runtime: *const u16) -> i32;
     fn qing_zip_list_worker_main(runtime: *const u16) -> i32;
     fn qing_spawn_selected_worker(
@@ -60,6 +62,8 @@ extern "C" {
 pub mod create_zip;
 #[path = "zip_listing.rs"]
 pub mod zip_listing;
+#[path="full_worker.rs"]
+pub(super) mod full_worker;
 
 fn runtime_dir() -> Result<Option<PathBuf>, String> {
     let exe = executable()?;
@@ -409,7 +413,7 @@ impl Session {
             std::ptr::null_mut(),
         );
         let error = unsafe {
-            if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
+            if mode == 3 {qing_spawn_full_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
         };
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
@@ -690,6 +694,13 @@ fn run(
     if let Some(password) = password {
         session.send(6, SecretFrame::new(password), ctl)?;
     }
+    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None)
+}
+#[allow(clippy::too_many_arguments)]
+fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&EngineOptions,
+    root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,stats:&mut Stats,
+    mut initial:Frame)->Result<bool,String> {
+    let password = opts.password.as_deref();
     let full_bytes = entries
         .iter()
         .try_fold(0u64, |n, e| n.checked_add(e.size))
@@ -697,7 +708,9 @@ fn run(
     let mut accepted: Option<Vec<Member>> = None;
     let mut files = BTreeMap::new();
     let mut terminal: Option<Result<bool, String>> = None;
-    while let Some((kind, body)) = session.next(ctl)? {
+    loop {
+        let frame = match initial.take() {Some(frame)=>Some(frame),None=>session.next(ctl)?};
+        let Some((kind,body))=frame else {break};
         let mut data = Fields(&body);
         if data.take(16)? != nonce || terminal.is_some() {
             return Err("invalid selected worker response".into());
@@ -966,4 +979,11 @@ mod tests {
         assert_eq!(session.wait_exit(&JobControl::new()).unwrap(), expected);
     }
 
+}
+
+#[doc(hidden)]
+pub fn run_full_child()->u8 {
+    let Ok(Some(runtime))=runtime_dir() else{return 3};
+    let wide:Vec<_>=runtime.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe{qing_full_worker_main(wide.as_ptr()) as u8}
 }

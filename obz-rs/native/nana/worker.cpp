@@ -89,6 +89,7 @@ struct Worker {
     std::array<uint8_t, 16> received{}; r.take(received.data(), received.size());
     if (received != nonce) throw std::runtime_error("worker job identity mismatch");
   }
+  uint32_t single_mode = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
     auto r = channel.read(kind); r.take(nonce.data(), nonce.size());
     if (r.wide() != runtime) throw std::runtime_error("runtime directory mismatch");
@@ -109,6 +110,7 @@ struct Worker {
       volumes.push_back({leaves.back().c_str(), uint32_t(leaves.back().size()), 0, size});
     }
     auto units = r.get<uint32_t>();
+    if (kind == 11) { single_mode = r.get<uint32_t>(); if (single_mode < 1 || single_mode > 2) throw std::runtime_error("invalid single archive mode"); }
     if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
     if (units) {
@@ -205,13 +207,13 @@ HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t re
 }
 }
 
-extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {
+static int selected_worker_main(const wchar_t *runtime, bool single) noexcept {
   try {
-    Worker w; w.start(runtime);
+    Worker w; w.start(runtime, single ? 11 : 1);
     QzSelectedHost host{1, sizeof(QzSelectedHost), &w, read_at, accept_manifest, prepared,
                         open_output, write_output, close_output, cancelled, progress, observe};
     QzSelectedRequest req{1, sizeof(QzSelectedRequest), runtime, w.volumes.data(),
-                          uint32_t(w.volumes.size()), 0, &host};
+                          uint32_t(w.volumes.size()), w.single_mode, &host};
     QzSelectedReceipt result{}; HRESULT hr = qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
     Bytes msg = w.message(); put(msg, uint32_t(hr)); put(msg, result.outcome); put(msg, result.item_count);
     put(msg, result.completion_count); put(msg, result.item_errors); put(msg, result.block_errors);
@@ -223,5 +225,8 @@ extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {
         && !w.failed ? 0 : 2;
   } catch (...) { return 3; }
 }
+
+extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {return selected_worker_main(runtime, false);}
+extern "C" int qing_full_worker_main(const wchar_t *runtime) noexcept {return selected_worker_main(runtime, true);}
 
 #include "zip_list_worker.inc"

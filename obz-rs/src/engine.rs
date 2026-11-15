@@ -2639,6 +2639,14 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         None
     };
+    #[cfg(nana_selected_worker)]
+    let prefetched = if _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
+    #[cfg(nana_selected_worker)]
+    let (all_entries,payload_source,mut full_worker)=match prefetched {
+        Some((entries,pending))=>(entries,PayloadSource::Engine,pending),
+        None=>{let (entries,payload)=list_raw_with_source(path,opts,&mut source_guard)?;(entries,payload,None)},
+    };
+    #[cfg(not(nana_selected_worker))]
     let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
     #[cfg(windows)]
     if let Some(source) = memory_source.as_ref() {
@@ -2711,7 +2719,11 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         if let Some(source)=memory_source.as_mut() {source.rewind().map_err(|e|e.to_string())?;}
         memory
     } else {None};
-    let (mut bounded_plan, queued_transaction) = if matches!(payload_source, PayloadSource::Engine)
+    #[cfg(nana_selected_worker)]
+    let pending_full = full_worker.is_some();
+    #[cfg(not(nana_selected_worker))]
+    let pending_full = false;
+    let (mut bounded_plan, queued_transaction) = if !pending_full && matches!(payload_source, PayloadSource::Engine)
         && opts.selected.is_empty() && defer_preflight && expected.len() <= 65_536 && verified_memory.is_none()
     {
         bounded_archive_stage::plan_transaction(path, &dest, memory_source.as_mut(), &all_entries, &ctl, &mut output_guards)?
@@ -2729,6 +2741,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     } else {
         decode_memory_zip(memory_source, &all_entries, opts, &ctl)?
     };
+    #[cfg(nana_selected_worker)]
+    if memory.is_some() {drop(full_worker.take());}
     #[cfg(nana_selected_worker)]
     let split_plan = if !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty() {
         selected_worker::plan(path, &source_guard, &_volume_guards, &all_entries, opts)?
@@ -2822,7 +2836,11 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         if !split_streamed {
             ctl.set("decoding", Some(0), "Decoding archive into temporary storage");
         }
-        let streamed = split_streamed || (memory.is_none() && decode_selected_zip(
+        #[cfg(nana_selected_worker)]
+        let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
+        #[cfg(not(nana_selected_worker))]
+        let full_streamed = false;
+        let streamed = full_streamed || split_streamed || (memory.is_none() && decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,

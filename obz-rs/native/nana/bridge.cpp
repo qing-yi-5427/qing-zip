@@ -219,6 +219,12 @@ struct VolumeMap {
   VolumeMap(const QzSelectedRequest &r, std::shared_ptr<OperationStatus> s) : operation(std::move(s)) {
     if (!r.volumes || !r.volume_count || r.volume_count > MAX_VOLUMES)
       fail("invalid captured volume count");
+    if (r.reserved) {
+      if (r.reserved > 2 || r.volume_count != 1 || !r.volumes[0].fixed_size ||
+          r.volumes[0].fixed_size > INT64_MAX) fail("invalid single archive source");
+      names.push_back(r.reserved == 1 ? L"input.7z" : L"input.zip");
+      sizes.push_back(r.volumes[0].fixed_size); total = sizes[0]; return;
+    }
     const auto &v0 = r.volumes[0];
     if (!v0.approved_leaf || !v0.leaf_units || v0.leaf_units > 32767)
       fail("invalid first volume name");
@@ -532,7 +538,7 @@ bool single_lzma_coder(std::wstring_view method) {
   return !method.empty() && std::all_of(method.begin(), method.end(),
       [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
-void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
+void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0) {
   archive_health(arc);
   { Variant v; exact(arc->GetArchiveProperty(kpidOffset, &v.v), "archive offset");
     if (number(v.v, true)) fail("embedded archive is outside supported method set"); }
@@ -540,8 +546,9 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
     if (number(v.v) != source_size) fail("fixed volumes do not exactly contain archive"); }
   bool solid = false, has_copy = false, has_compressed = false;
   { Variant v; exact(arc->GetArchiveProperty(kpidSolid, &v.v), "archive solid flag");
-    solid = boolean(v.v, false); }
+    solid = boolean(v.v, single_mode == 2); }
   UInt32 n = 0; exact(arc->GetNumberOfItems(&n), "manifest item count");
+  if (!n && single_mode) throw UnsupportedLayout{"empty single archive"};
   if (!n || n > MAX_ITEMS) fail("manifest size limit");
   state.items.reserve(n); uint64_t name_units = 0, total = 0;
   for (UInt32 i = 0; i < n; ++i) {
@@ -568,7 +575,11 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
       bool encrypted = boolean(flag.v);
       Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
-      if (encrypted) {
+      if (single_mode && encrypted) throw UnsupportedLayout{"encrypted single archive"};
+      if (single_mode == 2) {
+        if (!method.empty() && method != L"Store" && method != L"Deflate")
+          throw UnsupportedLayout{"unsupported ZIP method"};
+      } else if (encrypted) {
         auto pos = method.find(L" 7zAES:");
         auto rounds = pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
         if (state.operation->password.empty() || rounds.empty() || rounds.size() > 2 ||
@@ -578,7 +589,10 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size) {
       } else if (item.value.size && !state.operation->password.empty()) fail("mixed encrypted item layout");
       else if (method == L"Copy") has_copy = true;
       else if (single_lzma_coder(method)) has_compressed = true;
-      else if (item.value.size || !method.empty()) fail("unexpected 7z item method"); }
+      else if (item.value.size || !method.empty()) {
+        if (single_mode) throw UnsupportedLayout{"unsupported 7z method"};
+        fail("unexpected 7z item method");
+      } }
     { Variant v; exact(arc->GetProperty(i, kpidAttrib, &v.v), "item attributes");
       if (v.v.vt != VT_EMPTY) {
         if (v.v.vt != VT_UI4) fail("invalid attributes type");
@@ -646,28 +660,37 @@ extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedR
       if (host.cancelled(host.context)) fail("cancelled", E_ABORT);
       fail("policy changed before Open: selected worker unavailable", E_ACCESSDENIED);
     }
-    Ref<IInArchive> split; runtime.handler(L"Split", "Split", split.put());
+    Ref<IInArchive> split;
+    Ref<IInArchive> inner;
     Ref<IInStream> first(new VolumeStream(operation, 0, map.sizes[0]));
-    Ref<IArchiveOpenCallback> outer_callback(new OpenCallback(map, true));
+    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, false));
+    Ref<IArchiveOpenCallback> outer_callback;
+    Ref<IInArchiveGetStream> joined_provider;
+    Ref<ISequentialInStream> joined_sequential;
+    Ref<IInStream> joined;
     UInt64 start = 0;
+    if (request->reserved) {
+      if (units) throw UnsupportedLayout{"password on single archive"};
+      runtime.handler(request->reserved == 1 ? L"7z" : L"zip", request->reserved == 1 ? "7z" : "zip", inner.put());
+      exact(inner->Open(first.get(), &start, inner_callback.get()), "single archive Open failed");
+    } else {
+    runtime.handler(L"Split", "Split", split.put());
+    *outer_callback.put() = new OpenCallback(map, true);
     exact(split->Open(first.get(), &start, outer_callback.get()), "Split Open failed");
     archive_health(split.get());
     UInt32 split_items = 0; exact(split->GetNumberOfItems(&split_items), "Split item count");
     if (split_items != 1) fail("unexpected Split root");
     { Variant v; exact(split->GetArchiveProperty(kpidMainSubfile, &v.v), "Split main item");
       if (number(v.v) != 0) fail("unexpected Split main item"); }
-    Ref<IInArchiveGetStream> joined_provider;
     exact(split->QueryInterface(IID_IInArchiveGetStream, reinterpret_cast<void **>(joined_provider.put())), "Split stream interface");
-    Ref<ISequentialInStream> joined_sequential;
     exact(joined_provider->GetStream(0, joined_sequential.put()), "Split joined stream");
     if (!joined_sequential.get()) fail("null Split joined stream");
-    Ref<IInStream> joined;
     exact(joined_sequential->QueryInterface(IID_IInStream, reinterpret_cast<void **>(joined.put())), "Split stream must be seekable");
-    Ref<IInArchive> inner; runtime.handler(L"7z", "7z", inner.put());
-    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, false));
+    runtime.handler(L"7z", "7z", inner.put());
     exact(inner->Open(joined.get(), &start, inner_callback.get()), "7z Open failed");
+    }
     state = std::make_shared<Shared>(operation);
-    manifest(inner.get(), *state, map.total);
+    manifest(inner.get(), *state, map.total, request->reserved);
     exact(state->check(), "cancelled");
     exact(host.prepare_private_tree(host.context), "private selected directory preparation");
     Ref<IArchiveExtractCallback> callback(new ExtractCallback(state));
@@ -677,7 +700,7 @@ extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedR
     if (state->current != NONE || state->streams_open.load() || state->item_errors.load() || state->block_errors.load() ||
         state->decoded.load() != state->total.load() || std::find(state->done.begin(), state->done.end(), 0) != state->done.end())
       fail("incomplete all-item completion ledger");
-    exact(inner->Close(), "7z Close failed"); exact(split->Close(), "Split Close failed");
+    exact(inner->Close(), "archive Close failed"); if (split.get()) exact(split->Close(), "Split Close failed");
     exact(operation->check(), "callback failed or cancelled during Close");
     if (state->streams_open.load()) fail("output streams retained after Close");
     receipt->outcome = QZ_SELECTED_DECODED_PRIVATE; receipt->result = S_OK;

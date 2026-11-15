@@ -43,6 +43,10 @@ fn main() -> ExitCode {
     let _output_report = obz_core::output_profile::Report;
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(nana_selected_worker)]
+    if std::env::args().nth(1).as_deref() == Some("--full-archive-worker") {
+        return ExitCode::from(obz_core::engine::selected_worker::run_full_child());
+    }
+    #[cfg(nana_selected_worker)]
     if args.as_slice() == ["--internal-create-worker"] {
         return ExitCode::from(obz_core::engine::selected_worker::create_zip::worker());
     }
