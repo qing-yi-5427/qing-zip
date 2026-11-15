@@ -1992,13 +1992,21 @@ fn ordinary_zip_file_layout_count(
 }
 
 // A locked bounded view hides only the prefix/tail proven by the strict walk.
-struct SelectedZipView { source: File, start: u64, length: u64, position: u64 }
+struct SelectedZipView { source: File, start: u64, length: u64, position: u64, physical_position: Option<u64> }
 impl Read for SelectedZipView {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let amount = self.length.saturating_sub(self.position).min(bytes.len() as u64) as usize;
         if amount == 0 { return Ok(0); }
-        self.source.seek(SeekFrom::Start(self.start + self.position))?;
+        let absolute = self.start + self.position;
+        if self.physical_position != Some(absolute) {
+            self.physical_position = None;
+            self.source.seek(SeekFrom::Start(absolute))?;
+        }
+        // An I/O error may leave the OS cursor unspecified. Re-seek on retry;
+        // only a successful read proves the next physical position.
+        self.physical_position = None;
         let read = self.source.read(&mut bytes[..amount])?;
+        self.physical_position = Some(absolute + read as u64);
         self.position += read as u64;
         Ok(read)
     }
@@ -2037,7 +2045,7 @@ fn decode_selected_zip(
     } else if let Some(layout) = zip_input_probe::selected_layout(&mut source, ctl)? {
         (layout.start, layout.end)
     } else { return Ok(false); };
-    let view = SelectedZipView { source, start, length: end - start, position: 0 };
+    let view = SelectedZipView { source, start, length: end - start, position: 0, physical_position: None };
     let mut archive = match zip::ZipArchive::new(view) {
         Ok(a) => a,
         Err(_) => return Ok(false),
@@ -7006,6 +7014,28 @@ mod staging_tests {
         let ctl=JobControl::new();ctl.cancelled.store(true,Ordering::Release);
         assert!(decode_selected_zip(locked_archive_source(path.to_str().unwrap(),&opts,u32::MAX as u64-1),
             &entries,&opts,stage.path(),&mut CheckedDirectories::owned_root(stage.path()),&ctl).is_err());
+    }
+    #[test]
+    fn selected_zip_view_sequential_and_random_reads_stay_inside_range() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("view");
+        fs::write(&path, b"prefix0123456789suffix").unwrap();
+        let mut view = SelectedZipView { source: File::open(path).unwrap(), start: 6,
+            length: 10, position: 0, physical_position: None };
+        let mut bytes = [0; 3];
+        view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"012");
+        view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"345");
+        view.seek(SeekFrom::Current(-4)).unwrap();
+        view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"234");
+        view.seek(SeekFrom::End(-2)).unwrap();
+        assert_eq!(view.read(&mut bytes).unwrap(), 2); assert_eq!(&bytes[..2], b"89");
+        assert_eq!(view.read(&mut bytes).unwrap(), 0);
+        assert!(view.seek(SeekFrom::End(1)).is_err());
+        assert!(view.seek(SeekFrom::Start(u64::MAX)).is_err());
+        assert_eq!(view.position, 10);
+        view.seek(SeekFrom::Start(0)).unwrap();
+        assert!(view.seek(SeekFrom::Current(-1)).is_err());
+        view.read_exact(&mut bytes).unwrap(); assert_eq!(&bytes, b"012");
     }
     #[test]
     fn selected_embedded_zip_keeps_only_selected_and_verifies_every_crc() {

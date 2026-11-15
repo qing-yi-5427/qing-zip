@@ -254,8 +254,11 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
         if local_header[30..] != records[46..name_end] { return Ok(None); }
         if strict {
             if records[6..28] != local_header[4..26] { return Ok(None); }
-            let extra = read_at(file, local + local_name_size as u64, usize::from(zip_u16(&local_header, 28)))?;
-            if !ordinary_zip_extra(&extra) { return Ok(None); }
+            let extra_length = usize::from(zip_u16(&local_header, 28));
+            if extra_length != 0 {
+                let extra = read_at(file, local + local_name_size as u64, extra_length)?;
+                if !ordinary_zip_extra(&extra) { return Ok(None); }
+            }
             ranges.push((local, payload + packed_size));
         }
         let Some(next) = position.checked_add(record_end as u64) else { return Ok(None) };
