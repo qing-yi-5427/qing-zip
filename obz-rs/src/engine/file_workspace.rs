@@ -254,11 +254,13 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             }
             size -= amount as u64;
             #[cfg(test)]
-            AFTER_CHUNK.with(|hook| {
-                if let Some(run) = hook.borrow_mut().take() {
-                    run();
-                }
-            });
+            if output.is_some() {
+                AFTER_CHUNK.with(|hook| {
+                    if let Some(run) = hook.borrow_mut().take() {
+                        run();
+                    }
+                });
+            }
         }
     }
     Err("文件数据流过多".into())
@@ -377,6 +379,7 @@ fn collect(
 #[derive(Debug, Serialize)]
 pub struct Transfer {
     pub copied: usize,
+    pub copied_directories: usize,
     pub moved: usize,
     pub skipped: usize,
     pub retained_sources: Vec<String>,
@@ -436,6 +439,7 @@ pub fn transfer(
     }
     let mut result = Transfer {
         copied: 0,
+        copied_directories: 0,
         moved: 0,
         skipped: 0,
         retained_sources: Vec::new(),
@@ -566,17 +570,60 @@ pub fn transfer(
                         );
                     }
                 } else {
-                    let parent_pin = &guards.held.get(parent).ok_or("缺少目标父目录锁")?.0;
-                    let output = crate::private_stage::create_local_copy_directory(
-                        parent_pin,
-                        target.file_name().ok_or("缺少文件夹名称")?,
-                    )?;
-                    let expected = streams(source, Some(&output), &ctl)?;
-                    if streams(&output, None, &ctl)? != expected {
-                        return Err("目标文件夹数据流验证失败，源保持不变".into());
+                    let held = &guards.held.get(parent).ok_or("缺少目标父目录锁")?.0;
+                    let parent_pin = File::options()
+                        .access_mode(0x200a0)
+                        .share_mode(3)
+                        .custom_flags(0x02200000)
+                        .open(parent)
+                        .map_err(|e| e.to_string())?;
+                    if directory_identity(held)? != directory_identity(&parent_pin)? {
+                        return Err("目标父目录已改变".into());
+                    }
+                    let mut temporary =
+                        crate::private_stage::create_local_directory_output(parent, &parent_pin)?;
+                    let attempt = (|| -> Result<File, String> {
+                        let expected = streams(source, Some(temporary.as_file()), &ctl)?;
+                        if streams(temporary.as_file(), None, &ctl)? != expected {
+                            return Err("目标文件夹数据流验证失败，源保持不变".into());
+                        }
+                        copy_basic_metadata(source, temporary.as_file())?;
+                        #[cfg(test)]
+                        BEFORE_DIRECTORY_COMMIT.with(|hook| {
+                            if let Some(run) = hook.borrow_mut().take() {
+                                run();
+                            }
+                        });
+                        ctl.check()?;
+                        let proof = LocalStreamProof {
+                            digest: expected,
+                            control: ctl.clone(),
+                        };
+                        temporary.commit_local_streams(&target, false, &proof)
+                    })();
+                    let cleanup = temporary.abort();
+                    let output = match (attempt, cleanup) {
+                        (Ok(file), Ok(())) => file,
+                        (Err(error), Ok(())) => return Err(error),
+                        (Ok(_), Err(error)) => return Err(error),
+                        (Err(error), Err(cleanup)) => return Err(format!("{error}; {cleanup}")),
+                    };
+                    result.copied_directories += 1;
+                    #[cfg(test)]
+                    AFTER_DIRECTORY_COMMIT.with(|hook| {
+                        if let Some(run) = hook.borrow_mut().take() {
+                            run();
+                        }
+                    });
+                    guards.check(&target)?;
+                    if directory_identity(&output)?
+                        != directory_identity(
+                            &guards.held.get(&target).ok_or("目标文件夹锁缺失")?.0,
+                        )?
+                    {
+                        return Err("已发布文件夹被替换，未继续写入目标".into());
                     }
                     copied_directories.push((output, node_index));
-                    guards.check(&target)?;
                 }
                 continue;
             }
@@ -626,8 +673,8 @@ pub fn transfer(
     })();
     if let Err(error) = operation {
         return Err(format!(
-            "{error}；已复制{}个文件，已原子移动{}项；复制项目的源仍保留",
-            result.copied, result.moved
+            "{error}；已复制{}个文件、{}个目录，已原子移动{}项；复制项目的源仍保留",
+            result.copied, result.copied_directories, result.moved
         ));
     }
     if moving {
@@ -639,8 +686,8 @@ pub fn transfer(
         });
         ctl.check().map_err(|error| {
             format!(
-                "{error}；已复制{}个文件，已原子移动{}项；复制项目的源仍保留",
-                result.copied, result.moved
+                "{error}；已复制{}个文件、{}个目录，已原子移动{}项；复制项目的源仍保留",
+                result.copied, result.copied_directories, result.moved
             )
         })?;
         // New ADS can bypass a main-stream pin. Never dispose copied sources.
@@ -656,6 +703,8 @@ pub fn transfer(
 
 #[cfg(test)]
 thread_local! {
+ static BEFORE_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
+ static AFTER_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_CHUNK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static BEFORE_COPY:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_ATOMIC:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
@@ -1210,6 +1259,376 @@ mod tests {
         assert_eq!(
             fs::read(format!("{}:custom", source.display())).unwrap(),
             b"source stream"
+        );
+    }
+    #[test]
+    fn cancelling_written_directory_ads_leaves_no_final_or_temporary_directory() {
+        let (_t, source, dest) = setup();
+        let data = vec![3; 2 * 1024 * 1024];
+        fs::write(format!("{}:large", source.display()), &data).unwrap();
+        let ctl = JobControl::new();
+        let cancel = ctl.clone();
+        AFTER_CHUNK.with(|h| *h.borrow_mut() = Some(Box::new(move || cancel.cancel())));
+        let options = EngineOptions {
+            control: Some(ctl),
+            ..Default::default()
+        };
+        let error = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &options,
+        )
+        .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(error.contains("0个目录"), "{error}");
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(format!("{}:large", source.display())).unwrap(),
+            data
+        );
+    }
+    #[test]
+    fn directory_publication_never_overwrites_a_late_competitor() {
+        let (_t, source, dest) = setup();
+        fs::write(format!("{}:custom", source.display()), b"source stream").unwrap();
+        let competitor = dest.join("source");
+        let late = competitor.clone();
+        BEFORE_DIRECTORY_COMMIT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                fs::create_dir(&late).unwrap();
+                fs::write(late.join("keep.txt"), b"competitor").unwrap();
+                fs::write(format!("{}:custom", late.display()), b"competitor stream").unwrap();
+            }))
+        });
+        assert!(transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default()
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(competitor.join("keep.txt")).unwrap(),
+            b"competitor"
+        );
+        assert_eq!(
+            fs::read(format!("{}:custom", competitor.display())).unwrap(),
+            b"competitor stream"
+        );
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
+        assert!(source.join("a.txt").exists());
+    }
+    #[test]
+    fn directory_replaced_after_commit_is_not_used_for_child_copies() {
+        let (_t, source, dest) = setup();
+        let target = dest.join("source");
+        let displaced = dest.join("displaced");
+        let late = target.clone();
+        let moved = displaced.clone();
+        AFTER_DIRECTORY_COMMIT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&late, &moved).unwrap();
+                fs::create_dir(&late).unwrap();
+                fs::write(late.join("keep.txt"), b"competitor").unwrap();
+            }))
+        });
+        let error = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("已发布文件夹被替换"), "{error}");
+        assert!(error.contains("1个目录"), "{error}");
+        assert!(!target.join("a.txt").exists());
+        assert!(!displaced.join("a.txt").exists());
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"competitor");
+        assert!(source.join("a.txt").exists());
+    }
+    #[test]
+    fn private_directory_cleanup_retains_unexpected_competitor_child() {
+        let (_t, source, dest) = setup();
+        let scan = dest.clone();
+        BEFORE_DIRECTORY_COMMIT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                let temp = fs::read_dir(scan).unwrap().next().unwrap().unwrap().path();
+                fs::write(temp.join("keep.txt"), b"competitor").unwrap();
+            }))
+        });
+        let error = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("unexpected children"), "{error}");
+        assert!(!dest.join("source").exists());
+        let retained = fs::read_dir(&dest).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(fs::read(retained.join("keep.txt")).unwrap(), b"competitor");
+        assert!(source.join("a.txt").exists());
+    }
+    #[test]
+    fn private_directory_publication_matches_native_directory_inheritance() {
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text: *const u16,
+                revision: u32,
+                result: *mut *mut c_void,
+                size: *mut u32,
+            ) -> i32;
+            fn ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd: *mut c_void,
+                revision: u32,
+                information: u32,
+                text: *mut *mut u16,
+                size: *mut u32,
+            ) -> i32;
+            fn SetKernelObjectSecurity(file: Handle, information: u32, sd: *mut c_void) -> i32;
+            fn GetSecurityInfo(
+                file: Handle,
+                kind: u32,
+                information: u32,
+                owner: *mut Handle,
+                group: *mut Handle,
+                dacl: *mut Handle,
+                sacl: *mut Handle,
+                sd: *mut Handle,
+            ) -> u32;
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LocalFree(pointer: *mut c_void) -> *mut c_void;
+        }
+        fn descriptor(path: &Path) -> String {
+            let file = File::options()
+                .access_mode(0x20080)
+                .share_mode(7)
+                .custom_flags(0x02200000)
+                .open(path)
+                .unwrap();
+            let mut sd = std::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    GetSecurityInfo(
+                        file.as_raw_handle(),
+                        1,
+                        4,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        &mut sd,
+                    )
+                },
+                0
+            );
+            let mut text = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        sd,
+                        1,
+                        4,
+                        &mut text,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            let mut length = 0;
+            unsafe {
+                while *text.add(length) != 0 {
+                    length += 1;
+                }
+            }
+            let result =
+                String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) }).unwrap();
+            unsafe {
+                LocalFree(text.cast());
+                LocalFree(sd);
+            }
+            result
+        }
+        for policy in [
+            "AUTO",
+            "D:PAI(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;CI;GR;;;BU)(A;OI;GW;;;BU)",
+            "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICINP;GR;;;BU)",
+            "D:P(A;;FA;;;OW)(A;OICIIO;FA;;;CO)(A;OICI;FA;;;SY)",
+            "D:P(D;OICI;GW;;;BG)(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;GR;;;BU)",
+        ] {
+            let (_t, source, dest) = setup();
+            let parent = File::options()
+                .access_mode(0x60080)
+                .share_mode(7)
+                .custom_flags(0x02200000)
+                .open(&dest)
+                .unwrap();
+            if policy == "AUTO" {
+                crate::private_stage::ordinary_file_publication_test_parent(&parent);
+            } else {
+                let text: Vec<_> = policy.encode_utf16().chain(Some(0)).collect();
+                let mut sd = std::ptr::null_mut();
+                assert_ne!(
+                    unsafe {
+                        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                            text.as_ptr(),
+                            1,
+                            &mut sd,
+                            std::ptr::null_mut(),
+                        )
+                    },
+                    0
+                );
+                assert_ne!(
+                    unsafe { SetKernelObjectSecurity(parent.as_raw_handle(), 0x80000004, sd) },
+                    0
+                );
+                unsafe {
+                    LocalFree(sd);
+                }
+            }
+            drop(parent);
+            fs::create_dir(dest.join("native")).unwrap();
+            transfer(
+                &[source.display().to_string()],
+                dest.to_str().unwrap(),
+                false,
+                &EngineOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                descriptor(&dest.join("source")),
+                descriptor(&dest.join("native")),
+                "{policy}"
+            );
+            fs::create_dir(dest.join("native/empty")).unwrap();
+            assert_eq!(
+                descriptor(&dest.join("source/empty")),
+                descriptor(&dest.join("native/empty")),
+                "nested {policy}"
+            );
+        }
+    }
+    #[test]
+    fn directory_parent_revocation_is_preserved_and_no_output_is_published() {
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text: *const u16,
+                revision: u32,
+                result: *mut *mut c_void,
+                size: *mut u32,
+            ) -> i32;
+            fn SetKernelObjectSecurity(file: Handle, information: u32, sd: *mut c_void) -> i32;
+            fn GetFileSecurityW(
+                path: *const u16,
+                information: u32,
+                sd: *mut u8,
+                length: u32,
+                needed: *mut u32,
+            ) -> i32;
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LocalFree(pointer: *mut c_void) -> *mut c_void;
+        }
+        fn set(path: &Path, policy: &str) {
+            let parent = File::options()
+                .access_mode(0x40080)
+                .share_mode(7)
+                .custom_flags(0x02200000)
+                .open(path)
+                .unwrap();
+            let text: Vec<_> = policy.encode_utf16().chain(Some(0)).collect();
+            let mut sd = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        text.as_ptr(),
+                        1,
+                        &mut sd,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            assert_ne!(
+                unsafe { SetKernelObjectSecurity(parent.as_raw_handle(), 0x80000004, sd) },
+                0
+            );
+            unsafe {
+                LocalFree(sd);
+            }
+        }
+        fn security(path: &Path) -> Vec<u8> {
+            use std::os::windows::ffi::OsStrExt;
+            let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut size = 0;
+            unsafe {
+                GetFileSecurityW(wide.as_ptr(), 4, std::ptr::null_mut(), 0, &mut size);
+            }
+            assert!(size > 0);
+            let mut data = vec![0u8; size as usize];
+            assert_ne!(
+                unsafe {
+                    GetFileSecurityW(wide.as_ptr(), 4, data.as_mut_ptr().cast(), size, &mut size)
+                },
+                0
+            );
+            data
+        }
+        let (_t, source, dest) = setup();
+        set(&dest, "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;GR;;;BU)");
+        let changed = dest.clone();
+        let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = recorded.clone();
+        BEFORE_DIRECTORY_COMMIT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                set(&changed, "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)");
+                *record.lock().unwrap() = security(&changed);
+            }))
+        });
+        let error = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("destination permissions changed"), "{error}");
+        assert_eq!(security(&dest), *recorded.lock().unwrap());
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+        assert!(source.join("a.txt").exists());
+    }
+    #[test]
+    fn directory_parent_cannot_be_replaced_during_private_copy() {
+        let (_t, source, dest) = setup();
+        let parent = dest.clone();
+        BEFORE_DIRECTORY_COMMIT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(
+                    fs::rename(&parent, parent.with_extension("moved"))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(32)
+                );
+            }))
+        });
+        let result = transfer(
+            &[source.display().to_string()],
+            dest.to_str().unwrap(),
+            false,
+            &EngineOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(result.copied_directories, 2);
+        assert_eq!(
+            fs::read(dest.join("source/a.txt")).unwrap(),
+            b"known local bytes"
         );
     }
 }

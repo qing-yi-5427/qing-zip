@@ -149,13 +149,18 @@ fn private_permissions_match(
         .map_err(|e| e.to_string())?;
     Ok(sid == user_sid || matches!(sid.as_str(), "S-1-5-18" | "S-1-5-32-544"))
 }
-fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {
+fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
+fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Result<PrivateDescriptor, String> {
+
     let policy = descriptor(parent)?;
     let automatic = control(policy.0)? & 0x400 != 0;
     // Windows interprets conditional, no-propagate, creator-owner and default
     // token ACEs. Request the parent's actual inheritance model at derivation,
     // not just in the resulting control bits: requesting AI for a legacy parent
     // changes stored ACE inheritance flags even if AI is subsequently cleared.
+    // Directory creation needs container inheritance even for a legacy parent;
+    // AUTO_INHERIT (the API input) and persisted AR/AI control bits are distinct.
+    // Preserve the existing file policy, verified against its native comparators.
     // Do not replace this with the restricted move eligibility rule.
     let mut raw = std::ptr::null_mut();
     let mut mapping = GenericMapping {
@@ -170,8 +175,8 @@ fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescripto
             std::ptr::null_mut(),
             &mut raw,
             std::ptr::null_mut(),
-            0,
-            u32::from(automatic),
+            i32::from(directory),
+            u32::from(automatic||directory),
             token.0,
             &mut mapping,
         )
@@ -394,7 +399,35 @@ enum Step {
     ApplyPermissions,
 }
 
+fn directory_metadata_handle(file:&File)->Result<File,String>{
+    let mut name=UnicodeString{length:0,maximum_length:0,buffer:std::ptr::null_mut()};
+    let attrs=ObjectAttributes{length:std::mem::size_of::<ObjectAttributes>() as u32,root:file.as_raw_handle(),name:&mut name,attributes:0x40,descriptor:std::ptr::null_mut(),qos:std::ptr::null_mut()};
+    let mut status=IoStatus{status:0,information:0};let mut handle=std::ptr::null_mut();
+    let result=unsafe{NtCreateFile(&mut handle,0x120180,&attrs,&mut status,std::ptr::null(),0,7,1,0x200021,std::ptr::null_mut(),0)};
+    if result<0 {return Err(nt_error("retain directory metadata handle",result));}
+    Ok(unsafe{File::from_raw_handle(handle)})
+}
+
+// A local directory object is published before any children are copied into
+// it. Refuse unexpected children, including competitors introduced mid-commit.
+fn verify_empty_directory(file:&File)->Result<(),String>{
+    #[link(name="ntdll")]
+    extern "system" {fn NtQueryDirectoryFile(handle:Handle,event:Handle,apc:Handle,context:Handle,status:*mut usize,buffer:*mut c_void,length:u32,class:u32,single:u8,name:Handle,restart:u8)->i32;}
+    let mut buffer=[0u32;1024];let mut status=[0usize;2];
+    for attempt in 0..3 {
+        let result=unsafe{NtQueryDirectoryFile(file.as_raw_handle(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),status.as_mut_ptr(),buffer.as_mut_ptr().cast(),4096,12,1,std::ptr::null_mut(),u8::from(attempt==0))};
+        if result as u32==0x80000006{return Ok(())}
+        if result<0{return Err(nt_error("verify private directory",result))}
+        let length=buffer[2] as usize;
+        if length>4084 || length%2!=0 {return Err("invalid private directory entry".into());}
+        let name=unsafe{std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(12).cast::<u16>(),length/2)};
+        if name!=[46] && name!=[46,46] {return Err("private directory contains unexpected children".into());}
+    }
+    Err("private directory contains unexpected entries".into())
+}
+
 pub(crate) struct PrivateOutputFile {
+    directory:bool,
     file: Option<File>,
     parent: File,
     path: PathBuf,
@@ -443,6 +476,8 @@ impl PrivateOutputFile {
         step: &mut dyn FnMut(Step) -> Result<(), String>,
         local_proof: Option<&crate::engine::file_workspace::LocalStreamProof>,
     ) -> Result<File, String> {
+        if self.directory && local_proof.is_none() {return Err("directory output requires local stream proof".into());}
+        if self.directory {verify_empty_directory(self.as_file())?;}
         let mut pending = None;
         if self.state != State::Private {
             return Err("output is no longer private".into());
@@ -452,7 +487,7 @@ impl PrivateOutputFile {
         }
         let name = leaf(target.file_name().ok_or("missing output leaf")?)?;
         let current = info(self.as_file())?;
-        if current[0] & 0x410 != 0 || current[10] != 1 {
+        if current[0] & 0x410 != if self.directory {0x10}else{0} || current[10] != 1 {
             return Err("private output identity changed".into());
         }
         if info(&self.parent)?[0] & 0x410 != 0x10 {
@@ -461,23 +496,24 @@ impl PrivateOutputFile {
         step(Step::BeforeCommit)?;
         if let Some(expected) = &self.permissions {
             let token = effective_token()?;
-            let live = ordinary_permissions(&self.parent, &token)?;
+            let live = ordinary_permissions_kind(&self.parent, &token,self.directory)?;
             if !same_file_permissions(expected.0, live.0)? {
                 return Err("destination permissions changed; output was not published".into());
             }
-            let committed_handle = metadata_handle(self.as_file(), 7)?;
+            let committed_handle = if self.directory {directory_metadata_handle(self.as_file())?}else{metadata_handle(self.as_file(), 7)?};
             let marker = match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?};
             let private = descriptor(self.as_file())?;
             step(Step::ApplyPermissions)?;
             let transition = (|| {
                 apply_native(self.as_file(), &live)?;
-                let fresh = ordinary_permissions(&self.parent, &token)?;
+                let fresh = ordinary_permissions_kind(&self.parent, &token,self.directory)?;
                 if !same_file_permissions(live.0, fresh.0)? {
                     return Err("destination permissions changed; output was not published".into());
                 }
                 if info(self.as_file())?[10] != 1 || (match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?}) != marker {
                     return Err("private output links or streams changed".into());
                 }
+                if self.directory {verify_empty_directory(self.as_file())?;}
                 pending = journal
                     .map(|_| OutputReceipt::capture(target, self.as_file()))
                     .transpose()?;
@@ -663,14 +699,20 @@ pub(super) fn private_name() -> Result<String, String> {
         .collect::<String>();
     Ok(format!(".qing-zip-output-{suffix}"))
 }
+pub(crate) fn create_local_directory_output(parent_path:&Path,parent:&File)->Result<PrivateOutputFile,String>{
+    create_exclusive_kind(parent_path,parent,true)
+}
 fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFile, String> {
+    create_exclusive_kind(parent_path,parent,false)
+}
+fn create_exclusive_kind(parent_path: &Path, parent: &File,directory:bool) -> Result<PrivateOutputFile, String> {
     if info(parent)?[0] & 0x410 != 0x10 {
         return Err("invalid private output parent".into());
     }
     let mode = volume_mode(parent)?;
     let token = effective_token()?;
     let permissions = if mode == Mode::PrivateAcl {
-        Some(ordinary_permissions(parent, &token)?)
+        Some(ordinary_permissions_kind(parent, &token,directory)?)
     } else {
         None
     };
@@ -711,10 +753,10 @@ fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFi
                 &attributes,
                 &mut status,
                 std::ptr::null(),
-                0x80,
+                if directory {0x10}else{0x80},
                 0,
                 2,
-                0x200060,
+                if directory {0x200021}else{0x200060},
                 std::ptr::null_mut(),
                 0,
             )
@@ -727,6 +769,7 @@ fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFi
             return Err(nt_error("create private output", result));
         }
         let mut output = PrivateOutputFile {
+            directory,
             file: Some(unsafe { File::from_raw_handle(handle) }),
             parent: parent_pin,
             path: parent_path.join(name),
@@ -735,7 +778,7 @@ fn create_exclusive(parent_path: &Path, parent: &File) -> Result<PrivateOutputFi
         };
         let validation = (|| {
             let actual = info(output.as_file())?;
-            if actual[0] & 0x410 != 0 || actual[10] != 1 {
+            if actual[0] & 0x410 != if directory {0x10}else{0} || actual[10] != 1 {
                 return Err("invalid private output file".into());
             }
             if volume_mode(output.as_file())? != mode {

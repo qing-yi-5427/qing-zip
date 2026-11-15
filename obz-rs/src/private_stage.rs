@@ -25,7 +25,7 @@ pub(crate) use output_receipt::{directory_stamp,OutputReceipt};
 
 mod archive_output;
 pub(crate) use archive_output::ArchiveOutput;
-pub(crate) use output::{create_output, PrivateOutputFile};
+pub(crate) use output::{create_output, create_local_directory_output, PrivateOutputFile};
 type Handle = *mut c_void;
 #[repr(C)]
 struct UnicodeString {
@@ -375,11 +375,6 @@ pub(crate) fn create_child_file(parent: &File, leaf: &OsStr) -> Result<File, Str
 pub(crate) fn create_journal_directory(parent:&File,leaf:&OsStr)->Result<File,String>{
     open_private_child(parent,leaf,ChildAccess::CreateJournalDirectory)
 }
-/// Claim a fresh local-copy directory with data/attribute access in one call.
-/// Never opens an existing directory and never follows a reparse leaf.
-pub(crate) fn create_local_copy_directory(parent:&File,leaf:&OsStr)->Result<File,String>{
-    open_private_child(parent,leaf,ChildAccess::CreateLocalDirectory)
-}
 pub(crate) fn create_output_directory(parent: &File, leaf: &OsStr) -> Result<File, String> {
     open_private_child(parent, leaf, ChildAccess::CreateDirectory)
 }
@@ -406,7 +401,6 @@ enum ChildAccess {
     CreateFile,
     CreateDirectory,
     CreateJournalDirectory,
-    CreateLocalDirectory,
     #[cfg(target_pointer_width = "64")]
     Witness(bool),
 }
@@ -454,7 +448,6 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         // cannot be opened or truncated.
         ChildAccess::CreateFile => (0x100182, 0x80, 1, 2, 0x200060, "create private stage file"),
         ChildAccess::OpenDirectory => (0x100081, 0, 3, 1, 0x200021, "pin output directory"),
-        ChildAccess::CreateLocalDirectory => (0xc0100000, 0, 3, 2, 0x200021, "create local transfer directory"),
         ChildAccess::CreateJournalDirectory => (0x120180, 0, 7, 2, 0x200021, "create journaled output directory"),
         ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),
     };
