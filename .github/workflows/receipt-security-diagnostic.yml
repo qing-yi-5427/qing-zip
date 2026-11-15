@@ -17,9 +17,13 @@ jobs:
           python-version: '3.12'
       - name: Compare fresh mask7 descriptors on synthetic objects
         run: python scripts/diagnose-receipt-security.py
+      - name: Real Rust receipt security regressions
+        run: python scripts/check-receipt-security-hosted.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: receipt-security-${{ matrix.os }}
-          path: receipt-security-diagnostic.json
+          path: |
+            receipt-security-diagnostic.json
+            receipt-rust-evidence/*
           if-no-files-found: error
