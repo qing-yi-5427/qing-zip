@@ -744,14 +744,6 @@ mod tests {
     use super::*;
     use std::io::Write;
     fn put_ea(path: &Path, flags: u8, value: &[u8]) -> Vec<u8> {
-        #[repr(C)]
-        struct IoStatus { status: usize, information: usize }
-        #[link(name = "ntdll")]
-        unsafe extern "system" {
-            fn NtSetEaFile(file: Handle, status: *mut IoStatus, data: *const u8, size: u32) -> i32;
-        }
-        let file = File::options().access_mode(0x0008 | 0x0010).share_mode(7)
-            .custom_flags(0x02200000).open(path).unwrap();
         let name = b"QING.TEST";
         let mut data = vec![0; 8];
         data[4] = flags;
@@ -760,10 +752,21 @@ mod tests {
         data.extend_from_slice(name);
         data.push(0);
         data.extend_from_slice(value);
-        let mut status = IoStatus { status: 0, information: 0 };
-        assert_eq!(unsafe { NtSetEaFile(file.as_raw_handle(), &mut status,
-            data.as_ptr(), data.len() as u32) }, 0);
+        assert_eq!(put_raw_ea(path, &data), 0);
         data
+    }
+    fn put_raw_ea(path: &Path, data: &[u8]) -> i32 {
+        #[repr(C)]
+        struct IoStatus { status: usize, information: usize }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtSetEaFile(file: Handle, status: *mut IoStatus, data: *const u8, size: u32) -> i32;
+        }
+        let file = File::options().access_mode(0x0008 | 0x0010).share_mode(7)
+            .custom_flags(0x02200000).open(path).unwrap();
+        let mut status = IoStatus { status: 0, information: 0 };
+        unsafe { NtSetEaFile(file.as_raw_handle(), &mut status,
+            data.as_ptr(), data.len() as u32) }
     }
     fn get_ea(path: &Path) -> Vec<u8> {
         let file = File::options().read(true).share_mode(7).custom_flags(0x02200000).open(path).unwrap();
@@ -800,6 +803,67 @@ mod tests {
             for path in [dest.join("source"), dest.join("source/a.txt")] {
                 assert_eq!(fs::read(format!("{}:custom", path.display())).unwrap(), b"ads preserved");
             }
+        }
+    }
+
+    #[test]
+    fn local_ea_native_multi_entry_order_large_values_and_high_bytes() {
+        fn chain(items: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
+            let mut all = Vec::new();
+            for (index, (name, flags, value)) in items.iter().enumerate() {
+                let mut item = vec![0; 8];
+                item[4] = *flags;
+                item[5] = name.len() as u8;
+                item[6..8].copy_from_slice(&(value.len() as u16).to_le_bytes());
+                item.extend_from_slice(name);
+                item.push(0);
+                item.extend_from_slice(value);
+                if index + 1 != items.len() {
+                    item.resize((item.len() + 3) & !3, 0);
+                    let len = item.len() as u32;
+                    item[..4].copy_from_slice(&len.to_le_bytes());
+                }
+                all.extend(item);
+            }
+            all
+        }
+        let large = (0..30001).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        for reversed in [false, true] {
+            for directory in [false, true] {
+                let (_temp, source, dest) = setup();
+                let input = if directory { source.clone() } else { source.join("a.txt") };
+                let mut items = vec![(b"Z-LAST".as_slice(), 0, b"end".as_slice()),
+                    (b"A-FIRST".as_slice(), 0x80, large.as_slice()),
+                    (b"MIDDLE".as_slice(), 0, b"\0\xff\x01".as_slice())];
+                if reversed { items.reverse(); }
+                assert_eq!(put_raw_ea(&input, &chain(&items)), 0);
+                // Compare the complete native snapshot, not our set-buffer: the
+                // filesystem may canonicalize names/padding when accepting EAs.
+                let expected = get_ea(&input);
+                super::super::file_workspace_ea::validate(0, 0, &expected, || Ok(())).unwrap();
+                fs::write(format!("{}:custom", input.display()), b"coexisting ADS").unwrap();
+                transfer(&[input.display().to_string()], dest.to_str().unwrap(), false,
+                    &EngineOptions::default()).unwrap();
+                let output = dest.join(input.file_name().unwrap());
+                assert_eq!(get_ea(&output), expected);
+                assert_eq!(get_ea(&input), expected);
+                assert_eq!(fs::read(format!("{}:custom", output.display())).unwrap(), b"coexisting ADS");
+            }
+        }
+        let (_temp, source, dest) = setup();
+        let input = source.join("a.txt");
+        let high = chain(&[(b"USER.\xe9", 0, b"high-name")]);
+        let status = put_raw_ea(&input, &high);
+        if status == 0 {
+            let expected = get_ea(&input);
+            transfer(&[input.display().to_string()], dest.to_str().unwrap(), false,
+                &EngineOptions::default()).unwrap();
+            assert_eq!(get_ea(&dest.join("a.txt")), expected);
+            eprintln!("native high-byte EA name accepted and copied byte-for-byte");
+        } else {
+            // Only documented invalid-name rejection is an allowed platform result.
+            assert_eq!(status as u32, 0x80000013);
+            eprintln!("native high-byte EA name rejected: {status:#x}");
         }
     }
 
