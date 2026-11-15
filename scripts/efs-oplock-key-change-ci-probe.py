@@ -7,9 +7,10 @@ def stage(name):
 try:
  with tempfile.TemporaryDirectory(prefix='qing-efs-key-mutation-') as tmp:
   base=Path(tmp);cert=base/'additional.cer';p=base/'source';p.write_bytes(b'original');require(A.EncryptFileW(str(p)),'encrypt');before=keys(p)
-  env=os.environ.copy();env['QZ_EFS_PROBE_CERT']=str(cert)
-  script="$c = New-SelfSignedCertificate -Type Custom -Subject 'CN=qing-zip ephemeral EFS probe' -KeyAlgorithm RSA -KeyLength 2048 -KeyUsage KeyEncipherment -KeySpec KeyExchange -CertStoreLocation Cert:\\CurrentUser\\My -TextExtension @('2.5.29.37={text}1.3.6.1.4.1.311.10.3.4'); Export-Certificate -Cert $c -FilePath $env:QZ_EFS_PROBE_CERT | Out-Null"
-  stage('certificate setup');setup=subprocess.run(['pwsh','-NoProfile','-Command',script],env=env,capture_output=True,text=True,timeout=45)
+  import shutil
+  exe=shutil.which('openssl') or 'C:/Program Files/Git/usr/bin/openssl.exe'
+  stage('certificate setup')
+  setup=subprocess.run([exe,'req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(base/'private.pem'),'-out',str(cert),'-outform','DER','-days','1','-subj','/CN=qing-zip ephemeral EFS probe','-addext','extendedKeyUsage=1.3.6.1.4.1.311.10.3.4','-addext','keyUsage=keyEncipherment'],capture_output=True,text=True,timeout=30)
   receipt['certificate_setup']={'exit':setup.returncode,'stderr':setup.stderr};require(setup.returncode==0 and cert.exists(),'hosted fixture certificate failed')
   stage('acquire lease');v,info=lease(p,7);require(v,'RWH unavailable');result={}
   def mutate():
