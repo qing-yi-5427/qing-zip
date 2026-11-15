@@ -70,3 +70,29 @@ test('clipboard export discards incomplete output and publishes only a completed
     assert.equal(notices.length, failure ? 0 : 1);
   }
 });
+
+
+test('partial moves retain counts and the backend reason in task history', async () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const run=source.split('\n').find(line=>line.startsWith('async function run('));
+  for(const reason of [null,'目标的数据流已改变，保留来源']) {
+    const result={moved:2,copied:1,retained_sources:['C:/source/a'],retained_reasons:reason?[reason]:[]};
+    const state={jobs:[]};let forgotten=false;
+    const context=vm.createContext({s:state,invoke:async command=>{
+      if(command==='wait_operation')return {status:'complete',progress:{},result};
+      if(command==='forget_operation')forgotten=true;
+      return 1;
+    }});
+    vm.runInContext(run,context);
+    assert.equal(await context.run({operation:'fs-move'},'移动文件',{silent:true}),result);
+    assert.ok(forgotten);assert.match(state.jobs[0].summary,/已移动 2 项/);
+    assert.match(state.jobs[0].summary,/1 个来源仍保留/);
+    assert.match(state.jobs[0].summary,/目标副本已保留/);
+    if(reason)assert.ok(state.jobs[0].summary.includes(reason));
+    assert.equal(state.jobs[0].partial,true);
+    Object.assign(context,{esc:String,shellQueueStatus:()=>'',btn:()=>''});
+    vm.runInContext(source.split('\n').find(line=>line.startsWith('function jobs()')),context);
+    const card=context.jobs();assert.match(card,/部分完成/);assert.ok(!card.includes('已完成'));
+    if(reason)assert.ok(card.includes(reason));
+  }
+});

@@ -863,11 +863,13 @@ fn finish_transactional_move(
             ctl.check()?;
             let node = &nodes[copy.index];
             let verify = (|| {
-                let source = transaction.lock(&node.path, copy.source_id)?;
-                let target = transaction.lock_target(&copy.path, copy.target_id)?;
-                if streams(source.reader(), None, ctl)? != copy.digest
-                    || streams(target.reader(), None, ctl)? != copy.digest {
-                    return Err("来源或目标的内容、数据流或存储属性已改变，保留来源".to_string());
+                let source = transaction.lock(&node.path, copy.source_id).map_err(|e|format!("固定来源：{e}"))?;
+                let target = transaction.lock_target(&copy.path, copy.target_id).map_err(|e|format!("固定目标：{e}"))?;
+                if streams(source.reader(), None, ctl).map_err(|e|format!("复验来源：{e}"))? != copy.digest {
+                    return Err("来源的内容、数据流或存储属性已改变，保留来源".to_string());
+                }
+                if streams(target.reader(), None, ctl).map_err(|e|format!("复验目标：{e}"))? != copy.digest {
+                    return Err("目标的内容、数据流或存储属性已改变，保留来源".to_string());
                 }
                 let source_meta = source.reader().metadata().map_err(|e| e.to_string())?;
                 let target_meta = target.reader().metadata().map_err(|e| e.to_string())?;
@@ -1000,6 +1002,23 @@ mod tests {
         assert!(dest.join("source/empty").is_dir());
     }
     #[test]
+    fn copied_move_compressed_directory_with_compressed_ads_and_sparse_child() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let input=source.join("empty");
+        put_ea(&input,0x80,b"directory metadata");fs::write(format!("{}:custom",input.display()),b"GUI ADS").unwrap();
+        {
+            let directory=File::options().read(true).write(true).custom_flags(0x02200000).open(&input).unwrap();
+            super::super::file_workspace_compression::set(&directory,2).unwrap();
+            let ads=super::super::file_workspace_compression::stream(&directory,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
+            super::super::file_workspace_compression::set(&ads,2).unwrap();
+        }
+        {let file=File::options().read(true).write(true).create_new(true).open(input.join("sparse.bin")).unwrap();super::super::file_workspace_compression::set(&file,0).unwrap();make_sparse(&file,1024*1024+17,true);let mut writer=&file;std::io::Seek::seek(&mut writer,std::io::SeekFrom::End(-1)).unwrap();writer.write_all(b"!").unwrap();}
+        transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+        let result=transfer(&[input.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"rename".into(),..Default::default()}).unwrap();
+        eprintln!("combined-directory transfer: {result:?}");
+        assert!(result.retained_sources.is_empty(),"{:?}",result.retained_reasons);assert!(!input.exists());assert_eq!(result.moved,2);
+        assert!(dest.join("empty (1)/sparse.bin").exists());
+    }
+    #[test]
     fn copied_move_all_conflict_modes_keep_skipped_sources_and_exact_rename_mapping() {
         for mode in ["error","skip","rename","overwrite"] {
             let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");
@@ -1048,6 +1067,7 @@ mod tests {
             BEFORE_MOVE.with(|h|*h.borrow_mut()=Some(Box::new(move||fs::write(write,b"new data").unwrap())));
             let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
             assert_eq!(result.moved,0);assert_eq!(result.retained_sources.len(),1);assert!(!result.retained_reasons.is_empty());
+            assert!(result.retained_reasons.iter().any(|reason|reason.contains(if change_target{"目标的内容、数据流或存储属性已改变"}else{"来源的内容、数据流或存储属性已改变"})),"{:?}",result.retained_reasons);
             assert_eq!(fs::read(file).unwrap(),b"known bytes");assert_eq!(fs::read(late).unwrap(),b"new data");
         }
     }
