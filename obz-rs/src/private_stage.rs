@@ -26,6 +26,7 @@ pub(crate) use output_receipt::{directory_stamp,OutputReceipt};
 mod archive_output;
 pub(crate) use archive_output::ArchiveOutput;
 pub(crate) use output::{direct_output_supported, create_direct_output, create_output, create_local_directory_output, PrivateOutputFile};
+pub(crate) use output::verify_native_private_child;
 type Handle = *mut c_void;
 #[repr(C)]
 struct UnicodeString {

@@ -12,6 +12,7 @@ pub mod archive_properties;
 #[cfg(windows)]
 pub mod file_workspace;
 mod file_workspace_ea;
+mod file_workspace_efs;
 mod file_workspace_compression;
 mod file_workspace_sparse;
 #[cfg(windows)]
