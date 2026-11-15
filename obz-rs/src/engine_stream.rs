@@ -366,6 +366,20 @@ pub(crate) fn pin(path: &Path) -> Result<PinnedSource, String> {
     })
 }
 
+/// EFS Raw export owns its existing data-stream locks. Retain the entire
+/// source name chain independently with a metadata-only directory handle.
+#[cfg(windows)]
+pub(crate) fn pin_directory_metadata(path:&Path)->Result<PinnedSource,String>{
+    use std::os::windows::fs::{MetadataExt,OpenOptionsExt};
+    engine::no_links(path)?;
+    let parents=pin_parent_names(path).map_err(|e|e.to_string())?;
+    let file=File::options().access_mode(0x20088).share_mode(1)
+        .custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
+    let meta=file.metadata().map_err(|e|e.to_string())?;
+    if !meta.is_dir() || meta.file_attributes()&0x400!=0{return Err("EFS source directory changed".into());}
+    Ok(PinnedSource{file,_parents:parents})
+}
+
 #[cfg(windows)]
 fn open_name(path: &Path, directory: bool) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
