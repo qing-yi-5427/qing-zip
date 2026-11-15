@@ -288,6 +288,9 @@ struct Snapshot {
     _pins: Vec<File>,
 }
 fn snapshot(file: &File, ctl: &JobControl) -> Result<Snapshot, String> {
+    snapshot_with_share(file, ctl, 1)
+}
+fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snapshot, String> {
     ctl.check()?;
     identity(file.as_raw_handle())?;
     let encrypted = file
@@ -315,7 +318,7 @@ fn snapshot(file: &File, ctl: &JobControl) -> Result<Snapshot, String> {
             file.try_clone().map_err(|e| e.to_string())?
         } else {
             let opened = file_workspace_compression::stream(file, name, false)?;
-            let raw = unsafe { ReOpenFile(opened.as_raw_handle(), 0x80000000, 1, 0x00200000) };
+            let raw = unsafe { ReOpenFile(opened.as_raw_handle(), 0x80000000, share, 0x00200000) };
             if raw as isize == -1 {
                 return Err(error("固定EFS数据流"));
             }
@@ -484,7 +487,9 @@ impl Prepared {
     pub(crate) fn verify(&self, ctl: &JobControl) -> Result<(), String> {
         crate::private_stage::verify_native_private_child(self.stage.root(), &self.file)?;
         if snapshot(&self.source, ctl)?.digest != self.expected.digest
-            || snapshot(&self.file, ctl)?.digest != self.expected.digest
+            // Private target main handle owns DELETE for identity-bound cleanup.
+            // Its ADS reads must share that existing right, never share WRITE.
+            || snapshot_with_share(&self.file, ctl, 5)?.digest != self.expected.digest
         {
             return Err("EFS源或私有目标发生变化".into());
         }
