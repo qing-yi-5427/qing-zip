@@ -14,7 +14,7 @@ def place(hwnd,z,x,y,width,height):
 
 u.SetProcessDPIAware()
 from PIL import ImageGrab
-from pywinauto import Desktop, mouse
+from pywinauto import Desktop, mouse, keyboard
 from win32com.client import Dispatch
 
 result=Path('drag-evidence');result.mkdir()
@@ -40,6 +40,27 @@ def center(rect):
 def find(win,name,kind):
     hits=[a for a in win.descendants(control_type=kind) if a.element_info.name==name and a.is_visible()]
     return hits[0] if hits else None
+def dismiss_initialization_overlay(point, expected):
+    blocked=owner(point)
+    if blocked==expected:return
+    wrapper=Desktop(backend='uia').window(handle=blocked).wrapper_object()
+    controls=[(item.element_info.control_type,item.element_info.name) for item in wrapper.descendants() if item.is_visible()]
+    report['desktop_obstruction']={'hwnd':blocked,'title':wrapper.window_text(),'process_id':wrapper.process_id(),'visible_controls':controls[:160],'attempts':[]}
+    save('host-overlay-before')
+    text=' '.join(str(item[1]) for item in controls).lower()
+    if 'privacy settings' not in text:raise RuntimeError('Unrecognized foreground window; no automatic interaction')
+    # Only normal dismissal keys, never Next/Accept or changes to privacy choices.
+    for label,keys in [('Escape','{ESC}'),('Alt+F4','%{F4}')]:
+        if owner(point)==expected:break
+        u.SetForegroundWindow(blocked)
+        keyboard.send_keys(keys)
+        time.sleep(.5)
+        u.SetForegroundWindow(expected)
+        time.sleep(.2)
+        report['desktop_obstruction']['attempts'].append({'key':label,'owner_after':owner(point)})
+    save('host-overlay-after-dismissal')
+    if owner(point)!=expected:raise RuntimeError('Hosted privacy initialization has no usable normal dismissal; settings left unchanged')
+
 def manifest(p):
     return {f.relative_to(p).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file()}
 with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag-study-',ignore_cleanup_errors=True) as tmp:
@@ -74,7 +95,7 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
             report.update(verify(app.pid,target_hwnd))
         for name in ['take.txt','nested']:
             cb=wait(lambda:find(win,'选择 '+name,'CheckBox'),'checkbox '+name)
-            coords=center(cb.rectangle());assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
+            coords=center(cb.rectangle());dismiss_initialization_overlay(coords,win.handle);assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
             mouse.click(coords=coords)
         # Place windows after WebView startup and Explorer navigation have settled.
         # Explorer remains topmost so clicking the source cannot cover the drop.
