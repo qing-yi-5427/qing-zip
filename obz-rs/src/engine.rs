@@ -2703,6 +2703,16 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let mut stage;
     let mut output_guards = CheckedDirectories::default();
     output_guards.check(&dest)?;
+    // With no members there is no per-entry destination check below. An
+    // existing regular file must not be reported as a successful output folder.
+    if all_entries.is_empty() {
+        match fs::symlink_metadata(&dest) {
+            Ok(metadata) if !metadata.is_dir() => return Err("output destination is not a directory".into()),
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     #[cfg(all(windows, target_pointer_width = "64"))]
     let selected_zip_candidate = matches!(payload_source, PayloadSource::Engine)
         && !opts.selected.is_empty() && selected_source.is_some()
