@@ -1,0 +1,44 @@
+name: Published x64 physical Explorer drag
+on:
+  push:
+    branches: [codex/published-01113-ole]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  drag:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify exact released x64 portable package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted x64 required' }
+          $package=Join-Path $env:RUNNER_TEMP 'qing-zip-0.11.13-portable.zip'
+          gh release download v0.11.13 --repo qing-yi-5427/qing-zip --pattern qing-zip-0.11.13-portable.zip --output $package
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $hash=(Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '4adfc77830cb223338333f0af3af82a8884a5f18a05bf6a837fed7971219db3a') { throw 'Package digest mismatch' }
+          Expand-Archive -LiteralPath $package -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
+          'QING_DRAG_GUI_SHA=e463d5ebd42cc65aec761f2efc207c81e3d3612522bc8e1e84870bf74be603cb' >> $env:GITHUB_ENV
+          'QING_DRAG_SOURCE_SHA=1688b5e741e86cd6e347046343ec3666aafcf3bf' >> $env:GITHUB_ENV
+          'QING_DRAG_SOURCE_RUN=published-v0.11.13' >> $env:GITHUB_ENV
+          "QING_DRAG_ARTIFACT_DIGEST=$hash" >> $env:GITHUB_ENV
+          python -m pip install pywinauto==0.6.9 pillow==11.3.0
+          exit $LASTEXITCODE
+      - name: Physically cancel then drop selected archive members in Explorer
+        shell: pwsh
+        run: |
+          python -u scripts/check-hosted-drag-out.py
+          exit $LASTEXITCODE
+      - name: Save screenshots and exact operation receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: published-01113-physical-drag
+          path: drag-evidence
+          if-no-files-found: error
+          retention-days: 21
