@@ -38,6 +38,7 @@ def main():
         raise SystemExit(f"Not a binary directory: {binaries}")
     sources = [(binaries / "obz-gui.exe", "qing-zip.exe"),
                (binaries / "obz.exe", "obz.exe"),
+               (binaries / "obz-worker.exe", "obz-worker.exe"),
                (root / "README.md", "README.md"),
                (root / "LICENSE", "LICENSE")]
     for source, _ in sources:
@@ -45,9 +46,9 @@ def main():
             raise SystemExit(f"Missing package input: {source}")
     # Recheck the exact binaries even for direct invocations. There is no
     # fallback to the old ordinary target/release output directory.
-    for source, _ in sources[:2]:
+    for source, _ in sources[:3]:
         problems = hardened_issues(inspect(source), expected_machine="0xaa64" if args.architecture == "arm64" else "0x8664")
-        # No private CRT or WebView loader is shipped beside the two authored
+        # No private CRT or WebView loader is shipped beside the three authored
         # executables. Detect accidental links on build machines that have them.
         problems.extend(f"unbundled import {dll}" for dll in imports(source) if needs_private_runtime(dll))
         if problems:

@@ -1,16 +1,17 @@
 # Exercise a layout outside the checkout with only the native CLI and reviewed runtime.
 param([Parameter(Mandatory)][string]$Cli,[Parameter(Mandatory)][string]$Desktop,[Parameter(Mandatory)][string]$Layout)
 $ErrorActionPreference = 'Stop'
-$apps = @($Cli, $Desktop)
+$Worker = Join-Path (Split-Path $Cli -Parent) 'obz-worker.exe'
+$apps = @($Cli, $Desktop, $Worker)
 $report = python scripts/audit_pe_security.py @apps | ConvertFrom-Json
-if ($LASTEXITCODE -or $report.Count -ne 2 -or @($report | Where-Object machine -ne '0xaa64').Count) {
-    throw 'incorrect CLI or GUI PE machine'
+if ($LASTEXITCODE -or $report.Count -ne 3 -or @($report | Where-Object machine -ne '0xaa64').Count) {
+    throw 'incorrect CLI, worker or GUI PE machine'
 }
 $report | Select-Object path,machine,bits | Format-Table
 Get-FileHash $apps | Format-Table
 if (Test-Path -LiteralPath $Layout) { throw 'native probe requires a fresh directory' }
 New-Item -ItemType Directory -Path (Join-Path $Layout 'runtime') | Out-Null
-Copy-Item -LiteralPath $Cli -Destination $Layout
+Copy-Item -LiteralPath $Cli, $Worker -Destination $Layout
 Copy-Item -LiteralPath runtime/nanazip-arm64 -Destination (Join-Path $Layout 'runtime') -Recurse
 $executable = Join-Path $Layout 'obz.exe'
 $cap = & $executable capabilities | ConvertFrom-Json
@@ -46,3 +47,22 @@ if (@(Get-ChildItem -LiteralPath $dest -Recurse -File).Count -ne 1 -or
     throw 'isolated selected output differs from source'
 }
 Write-Host "Verified isolated native runtime: $want"
+
+# A complete ordinary archive uses the separately shipped helper. Exercise it
+# outside the checkout as well as the selected split mode above.
+$single = Join-Path $Layout 'single.zip'
+Push-Location $inputDir
+try {
+    & $want a -tzip -mx=0 $single keep.bin discard.bin
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+} finally { Pop-Location }
+$singleDest = Join-Path $Layout 'single-out'
+$trace = & $executable extract $single $singleDest --threads 4 2>&1 | Out-String
+if ($LASTEXITCODE -or $trace -notmatch 'OA_FULL_WORKER threads_applied=4' -or $trace -notmatch 'OA_FULL_WORKER decoded=131072 completed=2') {
+    throw "shipped native helper did not complete the approved archive: $trace"
+}
+foreach ($name in 'keep.bin','discard.bin') {
+    if ((Get-FileHash (Join-Path $singleDest $name)).Hash -ne (Get-FileHash (Join-Path $inputDir $name)).Hash) {
+        throw 'native helper output differs from source'
+    }
+}

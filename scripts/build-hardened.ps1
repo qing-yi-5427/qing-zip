@@ -70,16 +70,29 @@ try {
     [IO.Directory]::CreateDirectory($TargetDirectory) | Out-Null
     [IO.File]::WriteAllText($configPath, "[target.$Target]`nrustflags=$flagArray`n", [Text.UTF8Encoding]::new($false))
     foreach ($manifest in @('obz-rs/Cargo.toml', 'obz-gui/Cargo.toml')) {
-        Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('build', '--release') + $targetArguments + @('--manifest-path', $manifest)) -Failure "Hardened build failed: $manifest"
+        Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('build', '--release', '--bins') + $targetArguments + @('--manifest-path', $manifest)) -Failure "Hardened build failed: $manifest"
     }
     if ($RunTests) {
+        # Worker lifecycle tests must execute this build's helper, never a stale
+        # adjacent executable left by an earlier test run.
+        Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('build', '--bins') + $targetArguments + @('--manifest-path', 'obz-rs/Cargo.toml')) -Failure 'Debug worker build failed'
+        $debugDirectory = Join-Path $TargetDirectory "$Target/debug"
+        $testDirectory = Join-Path $debugDirectory 'deps'
+        foreach ($name in @('obz.exe', 'obz-worker.exe')) {
+            $source = Join-Path $debugDirectory $name
+            $destination = Join-Path $testDirectory $name
+            if (!(Test-Path -LiteralPath $destination) -or (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
+                Copy-Item -LiteralPath $source -Destination $destination -Force
+            }
+        }
         foreach ($manifest in @('obz-rs/Cargo.toml', 'obz-gui/Cargo.toml')) {
             Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('test') + $targetArguments + @('--manifest-path', $manifest)) -Failure "Hardened tests failed: $manifest"
         }
     }
     $corePath = Join-Path $binaryDirectory 'obz.exe'
+    $workerPath = Join-Path $binaryDirectory 'obz-worker.exe'
     $guiPath = Join-Path $binaryDirectory 'obz-gui.exe'
-    Invoke-HardenedNative -Command $PythonPath -Arguments @((Join-Path $PSScriptRoot 'audit_pe_security.py'), '--require-hardened', '--expect-machine', $peMachine, '--output', $auditPath, $corePath, $guiPath) -Failure 'Authored executable PE mitigation gate failed'
+    Invoke-HardenedNative -Command $PythonPath -Arguments @((Join-Path $PSScriptRoot 'audit_pe_security.py'), '--require-hardened', '--expect-machine', $peMachine, '--output', $auditPath, $corePath, $workerPath, $guiPath) -Failure 'Authored executable PE mitigation gate failed'
     # Build evidence does not assert identical coverage for prebuilt dependencies
     # or active hardware enforcement on the current computer.
     $receiptPath = Join-Path $binaryDirectory 'hardened-build.json'
@@ -90,10 +103,10 @@ try {
         config = $configPath
         audit = $auditPath
         tests_run = [bool]$RunTests
-        binaries = @($corePath, $guiPath | ForEach-Object {
+        binaries = @($corePath, $workerPath, $guiPath | ForEach-Object {
             [ordered]@{ name = [IO.Path]::GetFileName($_); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
         })
-        coverage = 'Authored CLI and GUI PE metadata; third-party runtimes unchanged; hardware enforcement not asserted.'
+        coverage = 'Authored CLI, archive worker and GUI PE metadata; third-party runtimes unchanged; hardware enforcement not asserted.'
     }
     $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath -Encoding UTF8
     [pscustomobject]@{
