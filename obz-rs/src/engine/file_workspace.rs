@@ -422,9 +422,10 @@ fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
 
 fn check_directory_streams(file: &File, ctl: &JobControl) -> Result<(), String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if metadata.file_attributes() & (0x400 | 0x4000) != 0 {
-        return Err("文件夹含不支持的链接或加密属性，源文件夹保持不变".into());
+    if metadata.file_attributes() & 0x400 != 0 {
+        return Err("文件夹含不支持的链接属性，源文件夹保持不变".into());
     }
+    if metadata.file_attributes()&0x4000!=0{return super::file_workspace_efs::validate_directory(file,ctl);}
     streams(file, None, ctl).map(|_| ())
 }
 
@@ -666,12 +667,19 @@ pub fn transfer(
     let mut published = Vec::new();
     let mut copies: Vec<PublishedCopy> = Vec::new();
     let mut copied_directories: Vec<(File, usize)> = Vec::new();
+    let mut encrypted_directories:Vec<(File,usize,[u8;32])>=Vec::new();
     #[cfg(test)]
     BEFORE_COPY.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() {
             run();
         }
     });
+    let mut encrypted_roots=Vec::new();
+    for node in &nodes{
+        if node.directory && node.handle.as_ref().unwrap().metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000!=0{
+            encrypted_roots.push(node.path.clone());
+        }
+    }
     let operation = (|| -> Result<(), String> {
         for (node_index, node) in nodes.iter_mut().enumerate() {
             ctl.check()?;
@@ -683,6 +691,35 @@ pub fn transfer(
                 let parent = target.parent().ok_or("缺少目标父目录")?;
                 guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
                 guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
+                if node.handle.as_ref().unwrap().metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000!=0{
+                    if target.exists(){
+                        guards.check(&target)?;
+                        if !target.is_dir(){return Err("目标名称已被文件占用".into());}
+                        // Existing directory policy/EA/ADS belong to its owner.
+                        // Merge children, never Raw-import over public contents.
+                        result.metadata_not_merged.push(node.path.display().to_string());
+                    }else{
+                        let expected=directory_identity(node.handle.as_ref().unwrap())?;
+                        node.handle.take();
+                        let parent_pin=File::options().access_mode(0x200a0).share_mode(3)
+                            .custom_flags(0x02200000).open(parent).map_err(|e|e.to_string())?;
+                        if directory_identity(&parent_pin)?!=directory_identity(&guards.held.get(parent).ok_or("目标父目录锁缺失")?.0)?{
+                            return Err("EFS目标父目录已改变".into());
+                        }
+                        let prepared=super::file_workspace_efs::prepare_directory(&node.path,Some([expected.0,(expected.1>>32) as u32,expected.1 as u32]),parent,&parent_pin,&ctl)?;
+                        let digest=prepared.digest();
+                        node.handle=Some(prepared.source().try_clone().map_err(|e|e.to_string())?);
+                        let output=prepared.publish(&target,&ctl)?;
+                        result.copied_directories+=1;
+                        guards.check(&target)?;
+                        if directory_identity(&output)?!=directory_identity(&guards.held.get(&target).ok_or("EFS目标目录锁缺失")?.0)?{
+                            return Err("已发布EFS目录被替换".into());
+                        }
+                        encrypted_directories.push((output,node_index,digest));
+                    }
+                    if moving{result.retained_reasons.push(format!("{}：EFS目录来源保留，未执行跨卷删除",node.path.display()));}
+                    continue;
+                }
                 let source = node.handle.as_ref().unwrap();
                 let existing_directory = target.exists();
                 let mut unmerged_target_digest = None;
@@ -769,7 +806,7 @@ pub fn transfer(
                     }
                     copied_directories.push((output, node_index));
                 }
-                copies.push(PublishedCopy {
+                if !encrypted_roots.iter().any(|root|node.path.starts_with(root)){copies.push(PublishedCopy {
                     index: node_index,
                     path: target.clone(),
                     source_id: directory_identity(source)?,
@@ -777,7 +814,7 @@ pub fn transfer(
                     digest: streams(source, None, &ctl)?,
                     created_directory: !existing_directory,
                     unmerged_target_digest,
-                });
+                });}
                 continue;
             }
             let Some(chosen) =
@@ -849,11 +886,18 @@ pub fn transfer(
             if directory_identity(&published_pin)? != published_identity || streams(&published_pin, None, &ctl).map_err(|e|format!("复验已发布文件：{e}"))? != expected {
                 return Err("已发布目标内容改变，源文件保持不变".into());
             }
-            copies.push(PublishedCopy { index: node_index, path: target,
+            if !encrypted_roots.iter().any(|root|node.path.starts_with(root)){copies.push(PublishedCopy { index: node_index, path: target,
                 source_id: directory_identity(input)?, target_id: published_identity,
-                digest: expected, created_directory: false, unmerged_target_digest: None });
+                digest: expected, created_directory: false, unmerged_target_digest: None });}
             published.push(published_pin);
             result.copied += 1;
+        }
+        for (directory,index,digest) in encrypted_directories.iter().rev(){
+            ctl.check()?;
+            let source=nodes[*index].handle.as_ref().unwrap();
+            super::file_workspace_efs::restore_directory_metadata(source,directory)?;
+            super::file_workspace_efs::verify_published(source,*digest,&ctl)?;
+            super::file_workspace_efs::verify_published(directory,*digest,&ctl)?;
         }
         for (directory, index) in copied_directories.iter().rev() {
             ctl.check()?;
@@ -885,6 +929,7 @@ pub fn transfer(
         // Identity and complete stream proofs are rechecked after acquisition.
         for node in &mut nodes { node.handle.take(); }
         drop(copied_directories);
+        drop(encrypted_directories);
         let completed = finish_transactional_move(&nodes, &copies, &ctl, &mut result.retained_reasons)
             .map_err(|error|format!("{error}；此前已原子移动{}项，目标副本已保留",result.moved))?;
         for copy in &copies {
