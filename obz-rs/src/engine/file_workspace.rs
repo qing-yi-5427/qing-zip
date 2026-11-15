@@ -1012,11 +1012,12 @@ mod tests {
             super::super::file_workspace_compression::set(&ads,2).unwrap();
         }
         {let file=File::options().read(true).write(true).create_new(true).open(input.join("sparse.bin")).unwrap();super::super::file_workspace_compression::set(&file,0).unwrap();make_sparse(&file,1024*1024+17,true);let mut writer=&file;std::io::Seek::seek(&mut writer,std::io::SeekFrom::End(-1)).unwrap();writer.write_all(b"!").unwrap();}
+        let expected=super::super::file_workspace_sparse::query(&File::open(input.join("sparse.bin")).unwrap(),&JobControl::new()).unwrap();
         transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
         let result=transfer(&[input.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"rename".into(),..Default::default()}).unwrap();
         eprintln!("combined-directory transfer: {result:?}");
         assert!(result.retained_sources.is_empty(),"{:?}",result.retained_reasons);assert!(!input.exists());assert_eq!(result.moved,2);
-        assert!(dest.join("empty (1)/sparse.bin").exists());
+        for folder in ["empty","empty (1)"]{assert_eq!(super::super::file_workspace_sparse::query(&File::open(dest.join(folder).join("sparse.bin")).unwrap(),&JobControl::new()).unwrap(),expected,"{folder}");}
     }
     #[test]
     fn copied_move_all_conflict_modes_keep_skipped_sources_and_exact_rename_mapping() {
