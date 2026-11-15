@@ -595,7 +595,7 @@ pub(super) fn prepare_bound(source:&Path,parent:&Path,parent_pin:&File,ctl:&JobC
     ctl.check()?;
     let file = NativeFile(Some(
         File::options()
-            .access_mode(0x170199)
+            .access_mode(0x1f0199) // WRITE_OWNER restores our private owner before adoption
             .share_mode(0)
             .custom_flags(0x02200000)
             .open(&target)
