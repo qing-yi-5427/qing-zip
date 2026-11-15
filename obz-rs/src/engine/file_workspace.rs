@@ -192,8 +192,10 @@ impl Backup<'_> {
 // records fail before publication: never silently discard EFS/reparse metadata.
 fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     use super::file_workspace_compression as compression;
+    use super::file_workspace_sparse as sparse;
     ctl.check()?;
     let main_compression = compression::get(source)?;
+    let main_sparse = sparse::query(source, ctl)?;
     if let Some(target) = target { compression::set(target, main_compression)?; }
     let mut input = Backup {
         file: source,
@@ -208,24 +210,29 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     let mut hash = Sha256::new();
     // Uncompressed empty directories retain the existing empty-stream digest.
     if main_compression != 0 { hash.update(b"main-compression"); hash.update(main_compression.to_le_bytes()); }
+    hash_sparse(&mut hash, main_sparse.as_ref());
     let mut buffer = vec![0u8; 1024 * 1024];
     let mut seen_ea = false;
+    let mut pending:Option<PendingStorage>=None;
     for _ in 0..4096 {
         ctl.check()?;
         let mut header = [0u8; 20];
         let n = input.read(&mut header)?;
         if n == 0 {
+            finish_storage(target,pending.take(),ctl)?;
             return Ok(hash.finalize().into());
         }
         input.exact(&mut header[n..])?;
         let id = u32::from_le_bytes(header[..4].try_into().unwrap());
         let mut size = u64::from_le_bytes(header[8..16].try_into().unwrap());
         let namesize = u32::from_le_bytes(header[16..].try_into().unwrap()) as usize;
-        if !matches!(id, 1 | 2 | 4) || namesize > 65536 || namesize % 2 != 0 {
+        if id!=9 {finish_storage(target,pending.take(),ctl)?;}
+        if !matches!(id, 1 | 2 | 4 | 9) || namesize > 65536 || namesize % 2 != 0 {
             return Err("此文件含暂不支持的特殊数据，源文件保持不变".into());
         }
         let mut name = vec![0; namesize];
         input.exact(&mut name)?;
+        if matches!(id,1|9) && namesize!=0 {return Err("主数据流或稀疏区间名称无效".into());}
         if id == 2 {
             if seen_ea || size > super::file_workspace_ea::MAX_EA_BYTES as u64 {
                 return Err("扩展属性重复或过大，源保持不变".into());
@@ -274,14 +281,35 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
             }
             let pin = compression::stream(source, &units, false)?;
             let state = compression::get(&pin)?;
-            alternate = Some((units, pin, state));
+            let layout = sparse::query(&pin, ctl)?;
+            alternate = Some((units, pin, state, layout));
         }
-        if let Some((_, _, state)) = &alternate {hash.update(b"alternate-compression");hash.update(state.to_le_bytes());}
+        if let Some((_, _, state, layout)) = &alternate {hash.update(b"alternate-compression");hash.update(state.to_le_bytes());hash_sparse(&mut hash, layout.as_ref());}
+        let attributes=u32::from_le_bytes(header[4..8].try_into().unwrap());
+        if !matches!(attributes,0|8) {return Err("暂不支持此数据流属性".into());}
+        if id==1 {
+            if (attributes==8)!=main_sparse.is_some() {return Err("主数据流稀疏属性不一致".into());}
+            pending=Some(PendingStorage{name:None,pin:None,compression:main_compression,layout:main_sparse.clone(),end:0});
+        } else if let Some((name,pin,compression,layout))=alternate {
+            if (attributes==8)!=layout.is_some() {return Err("备用数据流稀疏属性不一致".into());}
+            pending=Some(PendingStorage{name:Some(name),pin:Some(pin),compression,layout,end:0});
+        }
         hash.update(header);
         hash.update(&name);
         if let Some(out) = output.as_mut() {
             out.write(&header)?;
             out.write(&name)?;
+        }
+        if id==9 {
+            let active=pending.as_mut().ok_or("稀疏数据块没有所属数据流")?;
+            let layout=active.layout.as_ref().ok_or("普通数据流包含稀疏数据块")?;
+            if attributes!=8 || size<8 {return Err("稀疏数据块无效".into());}
+            let mut offset=[0;8];input.exact(&mut offset)?;
+            let start=u64::from_le_bytes(offset);let count=size-8;
+            let end=sparse::block_end(layout.eof,active.end,start,size,attributes)?;
+            active.end=end;size=count;
+            hash.update(offset);
+            if let Some(out)=output.as_mut(){out.write(&offset)?;}
         }
         while size != 0 {
             ctl.check()?;
@@ -301,12 +329,36 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
                 });
             }
         }
-        if let (Some(target), Some((name, _, state))) = (target, &alternate) {
-            let output = compression::stream(target, name, true)?;
-            compression::set(&output, *state)?;
-        }
     }
     Err("文件数据流过多".into())
+}
+
+struct PendingStorage {
+    name:Option<Vec<u16>>,
+    // Hold the source stream identity through its complete backup record group.
+    pin:Option<File>,
+    compression:u16,
+    layout:Option<super::file_workspace_sparse::Layout>,
+    end:u64,
+}
+fn finish_storage(target:Option<&File>,pending:Option<PendingStorage>,ctl:&JobControl)->Result<(),String> {
+    ctl.check()?;
+    if let (Some(target),Some(pending))=(target,pending) {
+        let alternate=match &pending.name {Some(name)=>Some(super::file_workspace_compression::stream(target,name,true)?),None=>None};
+        let stream=alternate.as_ref().unwrap_or(target);
+        super::file_workspace_compression::set(stream,pending.compression)?;
+        if let Some(layout)=&pending.layout {super::file_workspace_sparse::restore(stream,layout,ctl)?;}
+        drop(pending.pin);
+    }
+    Ok(())
+}
+
+fn hash_sparse(hash:&mut Sha256,layout:Option<&super::file_workspace_sparse::Layout>) {
+    if let Some(layout)=layout {
+        hash.update(b"sparse-layout");hash.update(layout.eof.to_le_bytes());
+        hash.update((layout.ranges.len() as u64).to_le_bytes());
+        for &(offset,length) in &layout.ranges {hash.update(offset.to_le_bytes());hash.update(length.to_le_bytes());}
+    }
 }
 
 /// Only this module can construct a proof, after source and private target have
@@ -336,7 +388,7 @@ fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
     }
     let info = source.metadata().map_err(|e| e.to_string())?;
     // Compression is independently copied and verified per stream above.
-    if info.file_attributes() & (0x400 | 0x4000 | 0x200) != 0 {
+    if info.file_attributes() & (0x400 | 0x4000) != 0 {
         return Err("此存储属性需要专用复制，源文件保持不变".into());
     }
     let attrs = info.file_attributes() & 0x3127;
@@ -357,8 +409,8 @@ fn copy_basic_metadata(source: &File, target: &File) -> Result<(), String> {
 
 fn check_directory_streams(file: &File, ctl: &JobControl) -> Result<(), String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if metadata.file_attributes() & (0x400 | 0x4000 | 0x200) != 0 {
-        return Err("文件夹含不支持的链接、加密或稀疏属性，源文件夹保持不变".into());
+    if metadata.file_attributes() & (0x400 | 0x4000) != 0 {
+        return Err("文件夹含不支持的链接或加密属性，源文件夹保持不变".into());
     }
     streams(file, None, ctl).map(|_| ())
 }
@@ -761,6 +813,85 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    fn make_sparse(file:&File,eof:u64,with_data:bool) {
+        use std::io::{Seek,SeekFrom};
+        use super::super::file_workspace_sparse as sparse;
+        file.set_len(eof).unwrap();
+        sparse::restore(file,&sparse::Layout{eof,ranges:Vec::new()},&JobControl::new()).unwrap();
+        if with_data {
+            let mut writer=file;
+            writer.seek(SeekFrom::Start(131072)).unwrap();
+            writer.write_all(b"sparse allocated bytes").unwrap();
+        }
+    }
+    #[test]
+    fn sparse_transfer_preserves_holes_eof_main_ads_ea_and_bytes() {
+        use super::super::{file_workspace_sparse as sparse,file_workspace_compression as compression};
+        for eof in [0,4*1024*1024+17] {
+            for with_data in [false,true] {
+                if eof==0 && with_data {continue;}
+                let (_temp,source,dest)=setup();let input=source.join("a.txt");
+                fs::write(format!("{}:custom",input.display()),b"").unwrap();
+                let ea=put_ea(&input,0x80,b"sparse EA");
+                let (main_layout,ads_layout)={
+                    let file=File::options().read(true).write(true).share_mode(7).open(&input).unwrap();
+                    make_sparse(&file,eof,with_data);
+                    let ads=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                    make_sparse(&ads,eof,with_data);
+                    (sparse::query(&file,&JobControl::new()).unwrap(),sparse::query(&ads,&JobControl::new()).unwrap())
+                };
+                if with_data {assert!(main_layout.as_ref().unwrap().ranges.iter().map(|v|v.1).sum::<u64>()<eof);}
+                let expected=fs::read(&input).unwrap();let expected_ads=fs::read(format!("{}:custom",input.display())).unwrap();
+                transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
+                let output=dest.join("a.txt");let file=File::open(&output).unwrap();
+                let ads=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),false).unwrap();
+                assert_eq!(sparse::query(&file,&JobControl::new()).unwrap(),main_layout);
+                assert_eq!(sparse::query(&ads,&JobControl::new()).unwrap(),ads_layout);
+                assert_eq!(fs::read(&output).unwrap(),expected);
+                assert_eq!(fs::read(format!("{}:custom",output.display())).unwrap(),expected_ads);
+                assert_eq!(get_ea(&output),ea);
+                assert_eq!(get_ea(&input),ea);
+            }
+        }
+    }
+    #[test]
+    fn sparse_directory_ads_and_cancel_preserve_originals() {
+        use super::super::{file_workspace_sparse as sparse,file_workspace_compression as compression};
+        for cancel in [false,true] {
+            let (_temp,source,dest)=setup();
+            fs::write(format!("{}:custom",source.display()),b"").unwrap();
+            let layout={
+                let directory=File::options().read(true).write(true).share_mode(7).custom_flags(0x02000000).open(&source).unwrap();
+                let ads=compression::stream(&directory,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                make_sparse(&ads,4*1024*1024+17,true);
+                sparse::query(&ads,&JobControl::new()).unwrap()
+            };
+            let ctl=JobControl::new();
+            if cancel {let stop=ctl.clone();AFTER_CHUNK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||stop.cancel())));}
+            let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions{control:Some(ctl),..Default::default()});
+            if cancel {assert!(result.is_err());assert_eq!(fs::read_dir(&dest).unwrap().count(),0);}
+            else {
+                result.unwrap();
+                let directory=File::options().read(true).share_mode(7).custom_flags(0x02000000).open(dest.join("source")).unwrap();
+                let ads=compression::stream(&directory,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),false).unwrap();
+                assert_eq!(sparse::query(&ads,&JobControl::new()).unwrap(),layout);
+            }
+            assert!(source.join("a.txt").exists());
+        }
+    }
+    #[test]
+    fn sparse_unsupported_target_never_publishes_and_keeps_source() {
+        use super::super::file_workspace_sparse as sparse;
+        let (_temp,source,dest)=setup();let input=source.join("a.txt");
+        {let file=File::options().read(true).write(true).open(&input).unwrap();make_sparse(&file,4*1024*1024+17,true);}
+        let before=fs::read(&input).unwrap();
+        sparse::FAIL_RESTORE.with(|failure|failure.set(true));
+        let error=transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap_err();
+        assert!(error.contains("目标无法保留稀疏存储属性"));
+        assert_eq!(fs::read_dir(dest).unwrap().count(),0);
+        assert_eq!(fs::read(input).unwrap(),before);
+        assert!(!sparse::FAIL_RESTORE.with(|failure|failure.replace(false)));
+    }
     #[test]
     fn compressed_transfer_preserves_each_stream_ea_and_directory_state() {
         use super::super::file_workspace_compression as compression;
