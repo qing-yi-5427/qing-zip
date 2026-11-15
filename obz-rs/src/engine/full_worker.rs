@@ -280,7 +280,7 @@ mod tests {
         let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());
         for i in 0..513 {zip.start_file(format!("{i}.txt"),zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();zip.write_all(b"abc").unwrap();}
         zip.finish().unwrap();
-        let offset={let mut zip=zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();zip.by_index(512).unwrap().data_start()};
+        let offset={let mut zip=zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();let offset=zip.by_index(512).unwrap().data_start().unwrap();offset};
         let mut bytes=fs::read(&archive).unwrap();bytes[offset as usize]^=1;fs::write(&archive,bytes).unwrap();
         let source=crate::engine_stream::pin(&archive).unwrap();
         let opts=EngineOptions::default();let ctl=JobControl::new();
