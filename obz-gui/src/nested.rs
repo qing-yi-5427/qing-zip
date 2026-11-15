@@ -17,6 +17,9 @@ use std::{
 
 struct Session {
     archive: NestedArchive,
+    // Filesystem spelling, not the TEMP alias used to create the private copy.
+    // Cache before editing: atomic replacement must not change graph identity.
+    path_key: String,
     parent: String,
     member: String,
     options: EngineOptions,
@@ -115,7 +118,7 @@ fn open_impl(
     let mut depth = 0;
     while let Some(s) = sessions
         .values()
-        .find(|s| key(&s.archive.path().to_string_lossy()) == key(&ancestor))
+        .find(|s| s.path_key == key(&ancestor))
     {
         depth += 1;
         if depth >= 32 {
@@ -128,6 +131,7 @@ fn open_impl(
     } else {
         NestedArchive::open(&parent, &member, &options)?
     };
+    let path_key = key(&crate::desktop::canonical_spelling(archive.path(), false)?);
     let process = match editor {
         Some(editor) => {
             if options
@@ -159,6 +163,7 @@ fn open_impl(
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let session = Session {
         archive,
+        path_key,
         parent,
         member,
         options,
@@ -199,7 +204,7 @@ fn close_sessions(ids: Vec<u64>, discard: bool) -> Result<(), String> {
     let paths = ids
         .iter()
         .filter_map(|id| sessions.get(id))
-        .map(|s| key(&s.archive.path().to_string_lossy()))
+        .map(|s| s.path_key.clone())
         .collect::<Vec<_>>();
     if sessions
         .iter()
@@ -237,7 +242,7 @@ pub fn validate_request(request: &Request, recycle: bool) -> Result<(), String> 
             .lock()
             .map_err(|_| "内层归档会话不可用")?
             .values()
-            .any(|s| key(&s.archive.path().to_string_lossy()) == path || key(&s.parent) == path)
+            .any(|s| s.path_key == path || key(&s.parent) == path)
     {
         return Err("请先保存并关闭内层标签，再回收压缩包".into());
     }
@@ -253,7 +258,7 @@ fn acknowledge(
         if skip == Some(id) {
             continue;
         }
-        if key(&session.archive.path().to_string_lossy()) == key(path) {
+        if session.path_key == key(path) {
             session.dirty = true;
         }
         if key(&session.parent) == key(path) {
@@ -281,16 +286,17 @@ fn save_impl(
     control: &JobControl,
     external_confirmed: bool,
 ) -> Result<OperationResponse, String> {
+    let path = request_key(path);
     let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
     let id = sessions
         .iter()
-        .find_map(|(&id, s)| (key(&s.archive.path().to_string_lossy()) == key(path)).then_some(id))
+        .find_map(|(&id, s)| (s.path_key == path).then_some(id))
         .ok_or("内层归档会话已关闭")?;
     // Save descendants first, then this archive and each enclosing archive.
     let mut pending = vec![id];
     let mut index = 0;
     while index < pending.len() {
-        let path = key(&sessions[&pending[index]].archive.path().to_string_lossy());
+        let path = sessions[&pending[index]].path_key.clone();
         let children = sessions
             .iter()
             .filter_map(|(&id, s)| (key(&s.parent) == path).then_some(id))
@@ -302,7 +308,7 @@ fn save_impl(
     let mut ancestor = sessions[&id].parent.clone();
     while let Some((&id, s)) = sessions
         .iter()
-        .find(|(_, s)| key(&s.archive.path().to_string_lossy()) == key(&ancestor))
+        .find(|(_, s)| s.path_key == key(&ancestor))
     {
         pending.push(id);
         ancestor = s.parent.clone();
@@ -356,7 +362,7 @@ pub fn track(request: &mut Request) -> Option<EditReceipt> {
     let path = request_key(&request.path);
     if sessions
         .values()
-        .any(|s| key(&s.parent) == path || key(&s.archive.path().to_string_lossy()) == path)
+        .any(|s| key(&s.parent) == path || s.path_key == path)
     {
         Some(EditReceipt::capture(&mut request.options))
     } else {
@@ -401,11 +407,12 @@ pub async fn external_edits() -> Result<Vec<ExternalView>, String> {
     .map_err(|e| e.to_string())?
 }
 pub fn external_save_job(path: &str, control: &JobControl) -> Result<OperationResponse, String> {
+    let path_key = request_key(path);
     {
         let mut sessions = registry().lock().map_err(|_| "编辑会话不可用")?;
         let session = sessions
             .values_mut()
-            .find(|s| key(&s.archive.path().to_string_lossy()) == key(path) && s.editor.is_some())
+            .find(|s| s.path_key == path_key && s.editor.is_some())
             .ok_or("编辑会话已结束")?;
         // The explicit save command is the only operation that authorizes these bytes.
         // save() pins the working file again for the complete transactional write-back.
@@ -479,6 +486,26 @@ mod tests {
             .map(|e| e.name)
             .collect()
     }
+    #[test]
+    fn session_graph_uses_filesystem_spelling_for_temp_aliases() {
+        // A separate process avoids mutating TEMP while unrelated tests run.
+        // Hosted Windows runners can supply a short-name TEMP; an alternate
+        // spelling on case-insensitive NTFS reproduces the same key mismatch.
+        let temp = tempfile::Builder::new().prefix("NestedMixedCaseTemp-").tempdir().unwrap();
+        let actual = crate::desktop::canonical_spelling(temp.path(), true).unwrap();
+        let alias = temp.path().with_file_name(temp.path().file_name().unwrap().to_string_lossy().to_uppercase());
+        if crate::desktop::canonical_spelling(&alias, true).ok().as_deref() != Some(actual.as_str()) {
+            // This volume is case-sensitive: do not reinterpret a distinct path.
+            return;
+        }
+        assert_ne!(key(&alias.to_string_lossy()), key(&actual));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "nested::tests::session_graph_saves_siblings_and_descendants_and_retains_external_conflicts", "--nocapture"])
+            .env("TEMP", &alias).env("TMP", &alias).output().unwrap();
+        assert!(output.status.success(), "nested graph with aliased TEMP failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
     #[test]
     fn session_graph_saves_siblings_and_descendants_and_retains_external_conflicts() {
         cleanup();
