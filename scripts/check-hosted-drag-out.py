@@ -65,18 +65,28 @@ def finish_hosted_privacy(point, expected, blocked):
         text=' '.join(names).lower()
         if 'choose privacy settings for your device' not in text:raise RuntimeError('Outside approved hosted privacy page; stopped')
         def current_buttons():return [a for a in controls() if a.element_info.control_type=='Button']
-        def choices():return [a for a in current_buttons() if a.element_info.name.lower() not in ['learn more','accessibility','accept','agree'] and not a.element_info.name.lower().startswith('next')]
-        def current_state(index):
-            try:return toggle_state(choices()[index])[0]
+        def choices():return [a for a in current_buttons() if a.element_info.name.lower() not in ['learn more','accessibility','accept','agree','accept these privacy settings'] and not a.element_info.name.lower().startswith('next')]
+        def choice_key(button):
+            text=button.element_info.name.lower()
+            if 'location' in text:return 'location'
+            if 'keep track of your device' in text or 'find my device' in text:return 'find-device'
+            if 'language recognition' in text or 'inking' in text or 'typing' in text:return 'inking-typing'
+            if 'personaliz' in text or 'tailored' in text:return 'personalization'
+            if 'advertis' in text:return 'advertising'
+            if 'diagnostic' in text:return 'diagnostics'
+            raise RuntimeError('Unknown privacy choice')
+        def by_key(key):return next(a for a in choices() if choice_key(a)==key)
+        def current_state(key):
+            try:return toggle_state(by_key(key))[0]
             except Exception:return None
         buttons=choices()
         page={'index':page_index,'controls':names,'choices':[]};pages.append(page);save('privacy-%d-before'%page_index)
         navigation=[]
-        for choice_index in range(len(buttons)):
-            button=choices()[choice_index]
+        for choice_index in dict.fromkeys(choice_key(a) for a in buttons):
+            button=by_key(choice_index)
             name=button.element_info.name;lower=name.lower()
             if lower in ['learn more','accessibility']:continue
-            if lower.startswith('next') or lower in ['accept','agree']:
+            if lower.startswith('next') or lower in ['accept','agree','accept these privacy settings']:
                 navigation.append(button);continue
             state,evidence=toggle_state(button);page['choices'].append(evidence)
             if state not in [0,1]:raise RuntimeError('Cannot establish privacy switch state: '+name)
@@ -89,11 +99,11 @@ def finish_hosted_privacy(point, expected, blocked):
             assert evidence['confirmed_off']
         assert page['choices'],'No verified optional switches on privacy page'
         save('privacy-%d-all-optional-off'%page_index)
-        navigation=[a for a in current_buttons() if a.element_info.name.lower().startswith('next') or a.element_info.name.lower() in ['accept','agree']]
+        navigation=[a for a in current_buttons() if a.element_info.name.lower().startswith('next') or a.element_info.name.lower() in ['accept','agree','accept these privacy settings']]
         assert len(navigation)==1,[a.element_info.name for a in navigation]
         nav=navigation[0];page['navigation']=nav.element_info.name
         coords=center(nav.rectangle());assert owner(coords)==blocked;mouse.click(coords=coords)
-        if page['navigation'].lower() in ['accept','agree']:
+        if page['navigation'].lower() in ['accept','agree','accept these privacy settings']:
             wait(lambda:owner(point)!=blocked,'approved privacy page closed',15)
             u.SetForegroundWindow(expected);wait(lambda:owner(point)==expected,'application foreground after privacy setup',10)
             report['hosted_privacy_all_optional_off']=True;return
