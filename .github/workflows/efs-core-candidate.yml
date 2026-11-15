@@ -1,13 +1,13 @@
-name: Isolated EFS core candidate
+name: Windows EFS regression
 on:
   workflow_dispatch:
   push:
-    branches: [codex/file-workspace-efs]
+    branches: [main, codex/nanazip-parity, codex/file-workspace-efs]
 permissions:
   contents: read
 jobs:
   disposable-windows-efs:
-    if: github.ref == 'refs/heads/codex/file-workspace-efs'
+    if: github.repository == 'qing-yi-5427/qing-zip'
     runs-on: windows-2022
     timeout-minutes: 20
     steps:

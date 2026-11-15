@@ -1,5 +1,5 @@
-//! Isolated EFS candidate. Not routed from file-workspace until publication and
-//! Windows CI acceptance are complete. Never decrypt to an ordinary temp file.
+//! Verified EFS local-file copies using native encrypted staging and guarded
+//! publication. Never decrypt to an ordinary temp file.
 use super::{JobControl, file_workspace_compression, file_workspace_ea};
 use sha2::{Digest, Sha256};
 use std::{
