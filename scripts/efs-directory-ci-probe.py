@@ -247,6 +247,8 @@ try:
         receipt["raw_source_pinned"]=raw_pinned(src,base/"raw-source-pinned")
         receipt["raw_exclusive_target"]=raw_pinned(src,base/"raw-exclusive-target",True)
         receipt["target_metadata_pins"]={str(share):raw_directory(src,base/("target-meta-"+str(share)),False,(0x20088,share)) for share in [1,3,7]}
+        receipt["target_extended_metadata_pins"]={hex(access)+"/"+str(share):raw_directory(src,base/("target-meta-"+str(access)+"-"+str(share)),False,(access,share))
+            for access in [0x30088,0x1f0198,0x1f0199] for share in [1,3,7]}
         receipt["source_pin_matrix"]=pin_matrix(src)
         receipt["guarded_nonempty"]=guarded_export(src)
         empty=base/"guarded-empty";empty.mkdir();require(A.EncryptFileW(str(empty)),"encrypt empty directory failed")
