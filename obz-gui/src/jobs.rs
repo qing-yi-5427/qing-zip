@@ -135,6 +135,16 @@ fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -
     Ok(())
 }
 fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
+    if request.operation == "nested-save" { return crate::nested::save_job(&request.path, control); }
+    crate::nested::validate_request(&request, recycle_after)?;
+    let edit_path = request.path.clone();
+    let receipt = obz_core::engine::nested::EditReceipt::capture(&mut request.options);
+    let result = execute_archive_job(request, recycle_after, control);
+    if let Some(revision) = receipt.take() { crate::nested::committed(&edit_path, &revision); }
+    result
+}
+
+fn execute_archive_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
     if !recycle_after {return operations::execute_request(request);}
     validate_recycle_request(&request)?;check_cancel(control)?;
     if let Some(id)=request.password_id.take() {
