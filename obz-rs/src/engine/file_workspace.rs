@@ -209,15 +209,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     ctl.check()?;
     let main_compression = compression::get(source)?;
     let main_sparse = sparse::query(source, ctl)?;
-    if let Some(target) = target {
-        compression::set(target, main_compression)?;
-        // Older Windows can omit BACKUP_DATA entirely for an empty sparse
-        // main stream. Its independent FSCTL layout is still part of the
-        // complete proof and must be restored even without a record group.
-        if let Some(layout)=main_sparse.as_ref().filter(|layout|layout.eof==0){
-            sparse::restore(target,layout,ctl)?;
-        }
-    }
+    if let Some(target) = target { compression::set(target, main_compression)?; }
     let mut input = Backup {
         file: source,
         context: std::ptr::null_mut(),
@@ -235,12 +227,24 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
     let mut buffer = vec![0u8; 1024 * 1024];
     let mut seen_ea = false;
     let mut pending:Option<PendingStorage>=None;
+    let mut main_record_seen=false;
     for _ in 0..4096 {
         ctl.check()?;
         let mut header = [0u8; 20];
         let n = input.read(&mut header)?;
         if n == 0 {
             finish_storage(target,pending.take(),ctl)?;
+            if !main_record_seen {
+                let meta=source.metadata().map_err(|e|e.to_string())?;
+                if !meta.is_dir() && meta.len()!=0{return Err("非空主数据流缺少备份记录".into());}
+                // Server 2022 may omit BACKUP_DATA for an empty sparse main
+                // stream. Restore only the independently proven empty layout;
+                // neither the raw-record hash nor any content check is relaxed.
+                if let (Some(target),Some(layout))=(target,main_sparse.as_ref()){
+                    if layout.eof!=0 || !layout.ranges.is_empty(){return Err("缺失主流的稀疏布局并非空流".into());}
+                    sparse::restore(target,layout,ctl)?;
+                }
+            }
             return Ok(hash.finalize().into());
         }
         input.exact(&mut header[n..])?;
@@ -309,6 +313,7 @@ fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8
         let attributes=u32::from_le_bytes(header[4..8].try_into().unwrap());
         if !matches!(attributes,0|8) {return Err("暂不支持此数据流属性".into());}
         if id==1 {
+            main_record_seen=true;
             if (attributes==8)!=main_sparse.is_some() {return Err("主数据流稀疏属性不一致".into());}
             pending=Some(PendingStorage{name:None,pin:None,compression:main_compression,layout:main_sparse.clone(),end:0});
         } else if let Some((name,pin,compression,layout))=alternate {
@@ -1310,6 +1315,44 @@ mod tests {
         let output=dest.join("a.txt");
         assert_eq!(sparse::query(&File::open(&output).unwrap(),&JobControl::new()).unwrap(),Some(expected_layout));
         assert_eq!(fs::read(output).unwrap(),expected);
+    }
+    #[test]
+    fn empty_sparse_main_with_optional_ea_and_streams_obeys_all_conflicts(){
+        use super::super::{file_workspace_sparse as sparse,file_workspace_compression as compression};
+        for with_ea in [false,true]{for kind in ["none","regular","sparse"]{for mode in ["new","error","skip","rename","overwrite"]{
+            let (_temp,source,dest)=setup();let input=source.join("a.txt");
+            {
+                let main=File::options().read(true).write(true).share_mode(7).open(&input).unwrap();
+                make_sparse(&main,0,false);
+                if kind!="none"{
+                    let named=format!("{}:custom",input.display());fs::write(&named,if kind=="regular"{b"named data".as_slice()}else{b"".as_slice()}).unwrap();
+                    let stream=compression::stream(&main,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
+                    if kind=="sparse"{make_sparse(&stream,0,false);}
+                    stream.sync_all().unwrap();
+                }
+                main.sync_all().unwrap();
+            }
+            if with_ea{put_ea(&input,0x80,b"empty main EA");}
+            let old=dest.join("a.txt");if mode!="new"{fs::write(&old,b"original target").unwrap();}
+            let options=EngineOptions{overwrite:if mode=="new"{"error".into()}else{mode.into()},..Default::default()};
+            let result=transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&options);
+            if mode=="error"{assert!(result.is_err());}else{assert!(result.is_ok(),"{with_ea}/{kind}/{mode}: {result:?}");}
+            if matches!(mode,"error"|"skip"|"rename"){assert_eq!(fs::read(&old).unwrap(),b"original target");}
+            let original=File::open(&input).unwrap();let layout=sparse::query(&original,&JobControl::new()).unwrap();
+            assert_eq!(layout,Some(sparse::Layout{eof:0,ranges:Vec::new()}));
+            if !matches!(mode,"error"|"skip"){
+                let out=dest.join(if mode=="rename"{"a (1).txt"}else{"a.txt"});let copied=File::open(&out).unwrap();
+                assert_eq!(sparse::query(&copied,&JobControl::new()).unwrap(),layout);
+                assert_eq!(fs::read(&out).unwrap(),Vec::<u8>::new());
+                if with_ea{assert_eq!(get_ea(&out),get_ea(&input));}
+                if kind!="none"{
+                    let name=":custom:$DATA".encode_utf16().collect::<Vec<_>>();
+                    let a=compression::stream(&original,&name,false).unwrap();let b=compression::stream(&copied,&name,false).unwrap();
+                    assert_eq!(sparse::query(&a,&JobControl::new()).unwrap(),sparse::query(&b,&JobControl::new()).unwrap());
+                    assert_eq!(fs::read(format!("{}:custom",out.display())).unwrap(),fs::read(format!("{}:custom",input.display())).unwrap());
+                }
+            }
+        }}}
     }
     #[test]
     fn empty_native_sparse_ads_exception_never_accepts_fake_empty_or_bad_flags(){
