@@ -3217,12 +3217,11 @@ impl ShellDragDirectory {
         Self::create_named("qing-zip-drag-")
     }
     fn create_named(prefix: &str) -> Result<Self, String> {
+        Self::create_named_in(&std::env::temp_dir(), prefix)
+    }
+    fn create_named_in(parent: &Path, prefix: &str) -> Result<Self, String> {
         use std::os::windows::fs::OpenOptionsExt;
-        let parent = absolute(
-            std::env::temp_dir()
-                .to_str()
-                .ok_or("invalid temporary directory")?,
-        )?;
+        let parent = absolute(parent.to_str().ok_or("invalid working directory")?)?;
         let mut ancestors = CheckedDirectories::default();
         ancestors.check(&parent)?;
         let pin = File::options()

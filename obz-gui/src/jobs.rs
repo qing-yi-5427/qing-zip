@@ -139,6 +139,8 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
         if request.options.password.is_some(){return Err("choose password or password_id, not both".into());}
         request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.get(&id)?);
     }
+    if request.operation == "external-edit" {return crate::nested::edit_job(request.path,request.name,request.options,request.label);}
+    if request.operation == "external-save" {return crate::nested::external_save_job(&request.path,control);}
     if request.operation == "nested-open" { return crate::nested::open_job(request.path,request.name,request.options); }
     if request.operation == "nested-save" { return crate::nested::save_job(&request.path, control); }
     crate::nested::validate_request(&request, recycle_after)?;

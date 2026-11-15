@@ -82,6 +82,22 @@ fn digest(file: &mut File, control: &JobControl) -> Result<[u8; 32], String> {
 
 impl NestedArchive {
     pub fn open(parent: &str, member: &str, options: &EngineOptions) -> Result<Self, String> {
+        Self::open_in(parent, member, options, None)
+    }
+    pub fn open_external(
+        parent: &str,
+        member: &str,
+        options: &EngineOptions,
+        root: &Path,
+    ) -> Result<Self, String> {
+        Self::open_in(parent, member, options, Some(root))
+    }
+    fn open_in(
+        parent: &str,
+        member: &str,
+        options: &EngineOptions,
+        root: Option<&Path>,
+    ) -> Result<Self, String> {
         let parent = super::absolute(parent)?;
         let relative = super::validate_name(member)?;
         if member.ends_with(['/', '\\']) {
@@ -94,7 +110,10 @@ impl NestedArchive {
         if super::directory_identity(&parent_identity)? != super::directory_identity(&source)? {
             return Err("parent archive changed while opening member".into());
         }
-        let directory = ShellDragDirectory::create_named("qing-zip-member-")?;
+        let directory = match root {
+            Some(root) => ShellDragDirectory::create_named_in(root, "edit-")?,
+            None => ShellDragDirectory::create_named("qing-zip-member-")?,
+        };
         let extract = EngineOptions {
             selected: vec![member.to_owned()],
             overwrite: "error".into(),
@@ -118,6 +137,19 @@ impl NestedArchive {
         })
     }
 
+    /// External editors may hand the document to an already-running process.
+    /// Retain the private copy until its caller can prove nobody still owns it.
+    pub fn retain_working_copy(&self, retain: bool) {
+        if retain {
+            self.directory.retain_for_shell();
+        } else {
+            self.directory.shell_read_finished();
+        }
+    }
+    pub fn has_changes(&self, options: &EngineOptions) -> Result<bool, String> {
+        let mut working = engine_stream::pin(&self.path)?;
+        Ok(digest(&mut working, &control(options))? != self.original_hash)
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }

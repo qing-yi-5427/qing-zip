@@ -22,6 +22,7 @@ struct Session {
     options: EngineOptions,
     dirty: bool,
     conflict: bool,
+    editor: Option<crate::editor_process::EditorProcess>,
 }
 #[derive(Serialize)]
 pub struct View {
@@ -58,7 +59,10 @@ fn view(id: u64, s: &Session) -> View {
     }
 }
 fn update_dirty(sessions: &BTreeMap<u64, Session>) {
-    DIRTY.store(sessions.values().any(|s| s.dirty), Ordering::SeqCst);
+    DIRTY.store(
+        sessions.values().any(|s| s.dirty || s.editor.is_some()),
+        Ordering::SeqCst,
+    );
 }
 pub fn dirty() -> bool {
     DIRTY.load(Ordering::SeqCst)
@@ -71,16 +75,38 @@ pub fn cleanup() {
 pub fn open_job(
     parent: String,
     member: String,
+    options: EngineOptions,
+) -> Result<OperationResponse, String> {
+    open_impl(parent, member, options, None)
+}
+pub fn edit_job(
+    parent: String,
+    member: String,
+    options: EngineOptions,
+    editor: String,
+) -> Result<OperationResponse, String> {
+    open_impl(parent, member, options, Some(editor))
+}
+fn open_impl(
+    parent: String,
+    member: String,
     mut options: EngineOptions,
+    editor: Option<String>,
 ) -> Result<OperationResponse, String> {
     let parent = crate::instance::canonical_archive_path(parent)?;
     options.selected.clear();
     options.edit_receipt = None;
     let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
+    if editor.is_some() && sessions.values().any(|s| s.editor.is_some()) {
+        return Err("请先完成现有的外部编辑会话（编辑菜单 → 外部编辑会话）".into());
+    }
     if let Some((&id, s)) = sessions
         .iter()
         .find(|(_, s)| key(&s.parent) == key(&parent) && s.member == member)
     {
+        if editor.is_some() || s.editor.is_some() {
+            return Err("该成员已在另一会话中打开，请先完成并关闭它".into());
+        }
         return Ok(OperationResponse::Json(
             serde_json::to_value(view(id, s)).map_err(|e| e.to_string())?,
         ));
@@ -97,7 +123,38 @@ pub fn open_job(
         }
         ancestor = s.parent.clone();
     }
-    let archive = NestedArchive::open(&parent, &member, &options)?;
+    let archive = if editor.is_some() {
+        NestedArchive::open_external(&parent, &member, &options, &crate::edit_copies::root()?)?
+    } else {
+        NestedArchive::open(&parent, &member, &options)?
+    };
+    let process = match editor {
+        Some(editor) => {
+            if options
+                .control
+                .as_ref()
+                .is_some_and(|c| c.cancelled.load(Ordering::SeqCst))
+            {
+                return Err("operation cancelled".into());
+            }
+            crate::edit_copies::remember(crate::edit_copies::CopyRecord {
+                path: archive.path().to_string_lossy().into_owned(),
+                parent: parent.clone(),
+                member: member.clone(),
+            })?;
+            let process =
+                match crate::editor_process::EditorProcess::launch(&editor, archive.path()) {
+                    Ok(process) => process,
+                    Err(error) => {
+                        let _ = crate::edit_copies::forget(&archive.path().to_string_lossy());
+                        return Err(error);
+                    }
+                };
+            archive.retain_working_copy(true);
+            Some(process)
+        }
+        None => None,
+    };
     options.control = None;
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let session = Session {
@@ -107,9 +164,11 @@ pub fn open_job(
         options,
         dirty: false,
         conflict: false,
+        editor: process,
     };
     let result = serde_json::to_value(view(id, &session)).map_err(|e| e.to_string())?;
     sessions.insert(id, session);
+    update_dirty(&sessions);
     Ok(OperationResponse::Json(result))
 }
 fn session_views() -> Vec<View> {
@@ -155,6 +214,12 @@ fn close_sessions(ids: Vec<u64>, discard: bool) -> Result<(), String> {
             .any(|s| s.dirty)
     {
         return Err("内层压缩包尚未写回，请保存或明确放弃更改".into());
+    }
+    if ids
+        .iter()
+        .any(|id| sessions.get(id).is_some_and(|s| s.editor.is_some()))
+    {
+        return Err("请通过外部编辑会话确认写回或结束编辑".into());
     }
     for id in ids {
         sessions.remove(&id);
@@ -209,6 +274,13 @@ pub fn committed(path: &str, revision: &ArchiveRevision) {
     acknowledge(&mut sessions, &path, revision, None);
 }
 pub fn save_job(path: &str, control: &JobControl) -> Result<OperationResponse, String> {
+    save_impl(path, control, false)
+}
+fn save_impl(
+    path: &str,
+    control: &JobControl,
+    external_confirmed: bool,
+) -> Result<OperationResponse, String> {
     let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
     let id = sessions
         .iter()
@@ -234,6 +306,13 @@ pub fn save_job(path: &str, control: &JobControl) -> Result<OperationResponse, S
     {
         pending.push(id);
         ancestor = s.parent.clone();
+    }
+    if (sessions[&id].editor.is_some() && !external_confirmed)
+        || pending
+            .iter()
+            .any(|other| *other != id && sessions[other].editor.is_some())
+    {
+        return Err("请通过外部编辑会话确认写回包内文件".into());
     }
     for id in pending {
         let (parent, receipt) = {
@@ -283,6 +362,87 @@ pub fn track(request: &mut Request) -> Option<EditReceipt> {
     } else {
         None
     }
+}
+
+#[derive(Serialize)]
+pub struct ExternalView {
+    id: u64,
+    path: String,
+    parent: String,
+    member: String,
+    state: String,
+    changed: Option<bool>,
+    error: Option<String>,
+}
+#[tauri::command]
+pub async fn external_edits() -> Result<Vec<ExternalView>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let sessions = registry().lock().map_err(|_| "编辑会话不可用")?;
+        Ok(sessions
+            .iter()
+            .filter_map(|(&id, s)| {
+                s.editor.as_ref().map(|editor| {
+                    let state = editor.state().unwrap_or("handoff").to_owned();
+                    let changed = s.archive.has_changes(&s.options);
+                    ExternalView {
+                        id,
+                        path: s.archive.path().to_string_lossy().into_owned(),
+                        parent: s.parent.clone(),
+                        member: s.member.clone(),
+                        state,
+                        changed: changed.as_ref().ok().copied(),
+                        error: changed.err(),
+                    }
+                })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+pub fn external_save_job(path: &str, control: &JobControl) -> Result<OperationResponse, String> {
+    {
+        let mut sessions = registry().lock().map_err(|_| "编辑会话不可用")?;
+        let session = sessions
+            .values_mut()
+            .find(|s| key(&s.archive.path().to_string_lossy()) == key(path) && s.editor.is_some())
+            .ok_or("编辑会话已结束")?;
+        // The explicit save command is the only operation that authorizes these bytes.
+        // save() pins the working file again for the complete transactional write-back.
+        session.dirty = session.archive.has_changes(&session.options)?;
+        if !session.dirty {
+            return Ok(OperationResponse::Json(
+                serde_json::json!({"saved":false,"unchanged":true}),
+            ));
+        }
+    }
+    save_impl(path, control, true)
+}
+#[tauri::command]
+pub async fn finish_external_edit(id: u64, discard: bool) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if crate::jobs::running() {
+            return Err("请等待当前任务完成".into());
+        }
+        let mut sessions = registry().lock().map_err(|_| "编辑会话不可用")?;
+        let session = sessions.get(&id).ok_or("编辑会话已结束")?;
+        if session.editor.is_none() {
+            return Err("不是外部编辑会话".into());
+        }
+        if !discard && session.archive.has_changes(&session.options)? {
+            return Err("文件仍有未写回的更改，请重新确认或选择不写回".into());
+        }
+        // Even a terminated launcher can have handed this document to an
+        // already-running host outside our job. Never delete external copies
+        // on the strength of process timing or executable name.
+        session.archive.retain_working_copy(true);
+        let retained = Some(session.archive.path().to_string_lossy().into_owned());
+        sessions.remove(&id);
+        update_dirty(&sessions);
+        Ok(retained)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
