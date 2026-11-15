@@ -5,8 +5,8 @@ const context={};vm.createContext(context);vm.runInContext(block,context);
 const tree=(entries,collapsed=[])=>JSON.parse(JSON.stringify(context.folderTree(entries,new Set(collapsed))));
 test('implicit, explicit and Windows-separated folders are deduplicated',()=>{
  assert.deepEqual(tree([{name:'a/b/c.txt'},{name:'a/',is_dir:true},{name:'a/b/d.txt'},{name:'empty/',is_dir:true},{name:'windows\\child.txt'}]),[
-  {path:'',depth:0,hasChildren:true},{path:'a/',depth:1,hasChildren:true},{path:'a/b/',depth:2,hasChildren:false},
-  {path:'empty/',depth:1,hasChildren:false},{path:'windows/',depth:1,hasChildren:false}]);
+  {path:'',depth:0,hasChildren:true,position:1,siblings:1},{path:'a/',depth:1,hasChildren:true,position:1,siblings:3},{path:'a/b/',depth:2,hasChildren:false,position:1,siblings:1},
+  {path:'empty/',depth:1,hasChildren:false,position:2,siblings:3},{path:'windows/',depth:1,hasChildren:false,position:3,siblings:3}]);
 });
 test('collapsed branches hide only their descendants and still show expand control',()=>{
  const input=[{name:'a/b/file'},{name:'a/c/file'},{name:'ab/d/file'},{name:'z/file'}];
@@ -16,8 +16,8 @@ test('collapsed branches hide only their descendants and still show expand contr
  assert.deepEqual(tree(input,['not-present/']).map(n=>n.path),['','a/','a/b/','a/c/','ab/','ab/d/','z/']);
 });
 test('empty archives and files directly at root have no false child folders',()=>{
- assert.deepEqual(tree([]),[{path:'',depth:0,hasChildren:false}]);
- assert.deepEqual(tree([{name:'readme.txt'}]),[{path:'',depth:0,hasChildren:false}]);
+ assert.deepEqual(tree([]),[{path:'',depth:0,hasChildren:false,position:1,siblings:1}]);
+ assert.deepEqual(tree([{name:'readme.txt'}]),[{path:'',depth:0,hasChildren:false,position:1,siblings:1}]);
 });
 test('large directory models retain every path without nested full-folder scans',()=>{
  const input=Array.from({length:20000},(_,i)=>({name:'folder'+String(i).padStart(5,'0')+'/nested/item.txt'}));

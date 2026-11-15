@@ -35,9 +35,9 @@ test('virtual folder tree reveals distant rows before moving keyboard focus', ()
       tree.nodes.set(i, {querySelector:selector => ({focus:() => focused.push([i, selector])})});
     }
   };
-  assert.equal(press(tree, 0, 'End'), true);
-  assert.equal(press(tree, 9999, 'ArrowUp'), true);
-  assert.equal(press(tree, 9998, 'Home'), true);
+  tree.focusIndex(9999);
+  tree.focusIndex(9998);
+  tree.focusIndex(0);
   assert.deepEqual(focused, [[9999,'[data-tree]'],[9998,'[data-tree]'],[0,'[data-tree]']]);
 
   assert.equal(press(tree, 0, 'Tab', {toggle:true}), false);

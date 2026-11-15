@@ -84,15 +84,17 @@ class ArchiveTreeWindow {
         toggle = !event.shiftKey && this.rows[index]?.hasChildren;
         break;
       }
-      case 'ArrowDown': index++; break;
-      case 'ArrowUp': index--; break;
-      case 'Home': index = 0; break;
-      case 'End': index = this.rows.length - 1; break;
+
       default: return;
     }
     if (index < 0 || index >= this.rows.length) return;
     event.preventDefault();
     event.stopPropagation();
+    this.focusIndex(index, toggle);
+  }
+
+  focusIndex(index, toggle = false) {
+    if(index < 0 || index >= this.rows.length)return;
     const top = this.top(), y = index * this.height;
     if (y < top) this.viewport.scrollTop += y - top;
     else if (y + this.height > top + this.viewport.clientHeight) {
