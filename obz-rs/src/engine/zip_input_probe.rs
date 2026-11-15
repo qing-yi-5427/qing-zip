@@ -48,7 +48,7 @@ pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String>
                 let archive_flags = vint(&header, &mut cursor);
                 (kind == Some(1) && flags.is_some_and(|n| n & !1 == 0)
                     && archive_flags.is_some_and(|n| n & 1 == 0)
-                    && crc32fast::hash(&header[4..]) == zip_u32(&header, 0)).then_some("rar")
+                    && crc32fast::hash(&header[4..]) == zip_u32(&header, 0)).then_some("rar5")
             }
         } else { None }
     } else { None };
@@ -203,6 +203,23 @@ mod tests {
             assert_eq!(zip_search_limit(input.as_file_mut(), &JobControl::new()).unwrap(), None);
         }
     }
+    #[test]
+    fn rar_versions_choose_their_own_official_handler() {
+        let mut rar4 = b"Rar!\x1a\x07\x00".to_vec();
+        let header = [0x73, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0];
+        rar4.extend_from_slice(&(crc32fast::hash(&header) as u16).to_le_bytes());
+        rar4.extend_from_slice(&header);
+        let mut rar5 = b"Rar!\x1a\x07\x01\x00".to_vec();
+        let header = [3, 1, 0, 0];
+        rar5.extend_from_slice(&crc32fast::hash(&header).to_le_bytes());
+        rar5.extend_from_slice(&header);
+        for (bytes, handler) in [(rar4, "rar"), (rar5, "rar5")] {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(&bytes).unwrap();
+            assert_eq!(signature(file.as_file_mut()).unwrap(), Some(handler));
+        }
+    }
+
     #[test]
     fn seven_signature_requires_crc_and_header_within_file() {
         let mut bytes = [0u8; 32]; bytes[..6].copy_from_slice(b"7z\xbc\xaf\x27\x1c");
