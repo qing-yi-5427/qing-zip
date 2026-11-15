@@ -141,6 +141,7 @@ class Source {
   std::vector<File> pins_;
   size_t units_ = 0;
   uint64_t layout_bound_ = EndRecordsBound;
+  bool classic_zip_;
   void append(Record r) {
     if (r.attributes & FILE_ATTRIBUTE_REPARSE_POINT)
       fail("linked input path rejected");
@@ -148,16 +149,19 @@ class Source {
         (units_ += r.path.size()) > 8 * 1024 * 1024 ||
         (r.attributes & ~DWORD(0xb7)))
       throw NotEligible{};
-    layout_bound_ = next_classic_bound(
-        layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size());
-    if (layout_bound_ == NotClassic)
+    if (classic_zip_) {
+      layout_bound_ = next_classic_bound(layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size());
+      if (layout_bound_ == NotClassic) throw NotEligible{};
+    } else if (items.size() >= UINT16_MAX - 1u) {
+      // Bounded source manifest only, not a claim about 7z physical offsets.
       throw NotEligible{};
+    }
     items.emplace_back(std::move(r));
   }
 
 public:
   std::vector<Record> items;
-  explicit Source(HANDLE owner) : owner_(owner) {
+  explicit Source(HANDLE owner, bool classic_zip = true) : owner_(owner), classic_zip_(classic_zip) {
     open_ = reinterpret_cast<Open>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
     if (!open_)
@@ -338,7 +342,7 @@ protected:
     return S_OK;
   }
 };
-class Input final : public ComObject<IInStream> {
+class Input final : public ComObject<IInStream>, public IStreamGetSize {
   File f_;
   const Record &record_;
   uint64_t position_ = 0;
@@ -359,8 +363,27 @@ public:
     // The encoder may legitimately request no reads from an empty file.
     if (!r.size) check();
   }
+  ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ComObject<IInStream>::AddRef(); }
+  ULONG STDMETHODCALLTYPE Release() noexcept override { return ComObject<IInStream>::Release(); }
+  HRESULT STDMETHODCALLTYPE GetSize(UInt64 *size) noexcept override {
+    if (!size) return E_POINTER;
+    return boundary([&]() -> HRESULT {
+      source_.live();
+      check();
+      *size = record_.size;
+      return S_OK;
+    });
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
+    // 7z's CFolderInStream uses this size to delimit BCJ2 substreams.
+    // The value is validated against the same pinned handle used for reads.
+    if (i == IID_IStreamGetSize) {
+      if (!out) return E_POINTER;
+      *out = static_cast<IStreamGetSize *>(this);
+      AddRef();
+      return S_OK;
+    }
     return identify(out, i == IID_IUnknown || i == IID_ISequentialInStream ||
                              i == IID_IInStream);
   }
@@ -554,16 +577,17 @@ public:
 };
 } // namespace zip_create
 
-extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
+static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid) noexcept {
   using namespace zip_create;
+  bool started=false;
   try {
     if (!runtime || !owner || !root || !name || !output ||
         (level != UINT32_MAX && (level < 1 || level > 9)) || threads > 64 ||
-        explicit_method > 1)
+        explicit_method > 1 || solid > 2 || (dictionary && (dictionary < 4096 || dictionary > (1u<<30))))
       fail("invalid ZIP request");
     if (qing_machine_policy_restricts_native())
       fail("machine policy rejects native route");
@@ -574,14 +598,19 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
       throw NotEligible{};
     Runtime dll;
     dll.init(runtime);
+    // Keep records and callback counters alive even if the handler retains
+    // input streams until its own destruction (including exception paths).
+    Source src(owner, !seven);
+    Ref<Update> cb(new Update(src));
+    std::vector<File> empty_pins;
     Ref<IOutArchive> archive;
-    dll.handler(L"zip", "Zip", archive.put(), IID_IOutArchive);
+    dll.handler(seven ? L"7z" : L"zip", seven ? "7z" : "Zip", archive.put(), IID_IOutArchive);
     Ref<ISetProperties> settings;
     exact(archive->QueryInterface(IID_ISetProperties,
                                   reinterpret_cast<void **>(settings.put())),
           "ZIP options interface");
-    const wchar_t *keys[3]{};
-    PROPVARIANT props[3]{};
+    const wchar_t *keys[5]{};
+    PROPVARIANT props[5]{};
     unsigned n = 0;
     if (level != UINT32_MAX) {
       keys[n] = L"x";
@@ -590,9 +619,9 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
     }
     Variant method;
     if (explicit_method) {
-      keys[n] = L"m";
+      keys[n] = seven ? L"0" : L"m";
       method.v.vt = VT_BSTR;
-      method.v.bstrVal = SysAllocString(L"Deflate");
+      method.v.bstrVal = SysAllocString(seven ? L"LZMA2" : L"Deflate");
       if (!method.v.bstrVal)
         fail("method allocation");
       props[n++] = method.v;
@@ -602,13 +631,34 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
       props[n].vt = VT_UI4;
       props[n++].ulVal = threads;
     }
-    if (n)
-      exact(settings->SetProperties(keys, props, n), "set ZIP Deflate options");
-    Source src(owner);
+    Variant dictionary_value;
+    if (seven && dictionary) {
+      // MethodProps::PROPVARIANT_to_DictSize treats VT_UI4 as log2(bits),
+      // whereas the public option is bytes. Match console -md=<bytes>b.
+      dictionary_value.v.vt=VT_BSTR;
+      const auto bytes=std::to_wstring(dictionary)+L"b";
+      dictionary_value.v.bstrVal=SysAllocString(bytes.c_str());
+      if (!dictionary_value.v.bstrVal) fail("dictionary allocation");
+      keys[n]=L"0d";props[n++]=dictionary_value.v;
+    }
+    if (seven && solid) {
+      keys[n]=L"s";props[n].vt=VT_BOOL;props[n++].boolVal=solid==2 ? VARIANT_TRUE : VARIANT_FALSE;
+    }
+    if (n) exact(settings->SetProperties(keys, props, n), "set archive compression options");
     src.enumerate(root, name);
-    Ref<Update> cb(new Update(src));
+    // 7z stores zero-byte entries without requesting GetStream. Validate and
+    // retain their deny-write/delete handles through UpdateItems as well.
+    if (seven) for (const auto &r : src.items) {
+      if (!r.directory() && !r.size) {
+        auto pin = src.open(r);
+        BY_HANDLE_FILE_INFORMATION info{};
+        Source::verify(pin.get(), r, info);
+        empty_pins.push_back(std::move(pin));
+      }
+    }
     Ref<Output> stream(new Output(output));
     frame(47);
+    started=true;
     exact(archive->UpdateItems(stream.get(),
                                static_cast<UInt32>(src.items.size()), cb.get()),
           "encode ZIP");
@@ -620,7 +670,8 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
       fail("machine policy changed");
     return S_OK;
   } catch (const NotEligible &) {
-    return S_FALSE;
+    // A started encoder can never become an unsupported/fallback receipt.
+    return started ? E_FAIL : S_FALSE;
   } catch (const Failure &e) {
     if (message && capacity)
       strncpy_s(message, capacity, e.reason, _TRUNCATE);
@@ -630,4 +681,15 @@ extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner,
       strncpy_s(message, capacity, "ZIP writer exception", _TRUNCATE);
     return E_FAIL;
   }
+}
+
+extern "C" HRESULT qz_create_zip(const wchar_t *runtime, HANDLE owner, HANDLE root,
+ const wchar_t *name, HANDLE output, DWORD level, DWORD threads, DWORD explicit_method,
+ char *message, size_t capacity) noexcept {
+ return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,false,0,0);
+}
+extern "C" HRESULT qz_create_7z(const wchar_t *runtime, HANDLE owner, HANDLE root,
+ const wchar_t *name, HANDLE output, DWORD level, DWORD threads, DWORD explicit_method,
+ DWORD dictionary, DWORD solid, char *message, size_t capacity) noexcept {
+ return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,true,dictionary,solid);
 }

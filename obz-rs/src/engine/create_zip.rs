@@ -7,6 +7,9 @@ extern "C" {
         input: *mut Handle,
         output: *mut Handle,
     ) -> u32;
+    fn qz_create_7z(runtime: *const u16, owner: Handle, directory: Handle,
+        root_name: *const u16, output: Handle, level: u32, threads: u32,
+        explicit: u32, dictionary: u32, solid: u32, error: *mut u8, capacity: usize) -> i32;
     fn qz_create_zip(
         runtime: *const u16,
         owner: Handle,
@@ -87,6 +90,20 @@ pub(in crate::engine) fn eligible(format: &str, names: &[String], opts: &EngineO
         && opts.zone_identifier.is_none()
 }
 
+// Initial 7z route: one local ordinary directory, single volume and no
+// encryption. Unsupported options retain the complete console source preflight.
+pub(in crate::engine) fn eligible_7z(format: &str, names: &[String], opts: &EngineOptions) -> bool {
+    if format != "7z" || !opts.method.as_deref().is_none_or(|m| m.trim().eq_ignore_ascii_case("lzma2"))
+        || !opts.dictionary_bytes.is_none_or(|n| (4096..=1024*1024*1024).contains(&n)) { return false; }
+    let mut common=opts.clone(); common.method=None;common.dictionary_bytes=None;common.solid=None;
+    eligible("zip", names, &common)
+}
+pub(in crate::engine) fn try_create_format(out: &str, names: &[String], format: &str, opts: &EngineOptions, ctl: &JobControl) -> Result<bool,String> {
+    if format == "zip" { try_create(out,names,opts,ctl) }
+    else if eligible_7z(format,names,opts) { try_create_impl(out,names,opts,ctl,true) }
+    else { Ok(false) }
+}
+
 // Routing samples a limited number of directory listings. The actual native
 // manifest or the ordinary source preflight always rechecks the tree independently.
 const MIN_WORKER_FILES: usize = 2048;
@@ -148,6 +165,9 @@ pub(in crate::engine) fn try_create(
     opts: &EngineOptions,
     ctl: &JobControl,
 ) -> Result<bool, String> {
+    try_create_impl(out,names,opts,ctl,false)
+}
+fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobControl, seven: bool) -> Result<bool,String> {
     let policy = crate::machine_policy::scope();
     ctl.check()?;
     if policy.restricted() {
@@ -159,7 +179,7 @@ pub(in crate::engine) fn try_create(
         || !local_disk(&target)
         || !target
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            .is_some_and(|e| e.eq_ignore_ascii_case(if seven {"7z"} else {"zip"}))
     {
         return Ok(false);
     }
@@ -244,6 +264,7 @@ pub(in crate::engine) fn try_create(
         &src,
         &source_guards.held[&src],
         output.file(),
+        seven,
         opts,
         ctl,
     );
@@ -285,6 +306,7 @@ fn encode(
     src: &Path,
     root: &File,
     output: &File,
+    seven: bool,
     opts: &EngineOptions,
     ctl: &JobControl,
 ) -> Result<bool, String> {
@@ -301,7 +323,11 @@ fn encode(
     data.extend_from_slice(&opts.level.map(u32::from).unwrap_or(u32::MAX).to_le_bytes());
     data.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());
     data.extend_from_slice(&u32::from(opts.method.is_some()).to_le_bytes());
-    session.send(42, data, ctl)?;
+    if seven {
+        data.extend_from_slice(&(opts.dictionary_bytes.unwrap_or(0) as u32).to_le_bytes());
+        data.extend_from_slice(&opts.solid.map(|s|u32::from(s)+1).unwrap_or(0).to_le_bytes());
+    }
+    session.send(if seven {48} else {42}, data, ctl)?;
     let mut began = false;
     let encoded = loop {
         let (kind, body) = session
@@ -345,7 +371,7 @@ fn run_worker() -> Result<bool, String> {
     let runtime = runtime_dir()?.ok_or("missing ZIP runtime")?;
     let runtime: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
     let (kind, bytes) = read_frame(&mut std::io::stdin().lock(), 1024)?.ok_or("no ZIP request")?;
-    if kind != 42 {
+    if kind != 42 && kind != 48 {
         return Err("invalid ZIP request".into());
     }
     let mut frame = Fields(&bytes);
@@ -356,10 +382,13 @@ fn run_worker() -> Result<bool, String> {
     let level = frame.u32()?;
     let threads = frame.u32()?;
     let explicit = frame.bit()?;
+    let (dictionary,solid) = if kind == 48 {(frame.u32()?,frame.u32()?)} else {(0,0)};
+    if kind == 48 && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
     frame.end()?;
     let mut error = [0u8; 256];
     let status = unsafe {
-        qz_create_zip(
+        if kind == 48 { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
+        else { qz_create_zip(
             runtime.as_ptr(),
             owner,
             root,
@@ -370,7 +399,7 @@ fn run_worker() -> Result<bool, String> {
             u32::from(explicit),
             error.as_mut_ptr(),
             error.len(),
-        )
+        ) }
     };
     if status == 1 {
         return Ok(false);
@@ -408,6 +437,26 @@ pub fn worker() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_supported_7z_options_enter_the_pinned_create_worker() {
+        let inputs=["source".to_owned()];let normal=EngineOptions::default();
+        assert!(eligible_7z("7z",&inputs,&normal));
+        for solid in [None,Some(true),Some(false)] {
+            assert!(eligible_7z("7z",&inputs,&EngineOptions {method:Some("LZMA2".into()),dictionary_bytes:Some(16*1024*1024),threads:Some(4),level:Some(5),solid,..normal.clone()}));
+        }
+        for opts in [
+            EngineOptions {method:Some("LZMA".into()),..normal.clone()},
+            EngineOptions {password:Some("secret".into()),..normal.clone()},
+            EngineOptions {dictionary_bytes:Some(4095),..normal.clone()},
+            EngineOptions {dictionary_bytes:Some(1024*1024*1024+1),..normal.clone()},
+            EngineOptions {volume_bytes:Some(1024),..normal.clone()},
+            EngineOptions {word_size:Some(32),..normal.clone()},
+            EngineOptions {solid_block_bytes:Some(1024),..normal.clone()},
+            EngineOptions {header_encryption:Some(false),..normal.clone()},
+        ] { assert!(!eligible_7z("7z",&inputs,&opts)); }
+        assert!(!eligible_7z("zip",&inputs,&normal));
+        assert!(!eligible_7z("7z",&[],&normal));
+    }
     #[test]
     fn only_matching_zip_create_options_use_the_worker() {
         let inputs = ["source".to_owned()];
