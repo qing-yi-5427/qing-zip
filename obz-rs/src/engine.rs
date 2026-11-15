@@ -2604,7 +2604,9 @@ impl PublicationJournal {
     pub(crate) fn record(&self,receipt:crate::private_stage::OutputReceipt){
         self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
     }
-    pub(crate) fn rollback(&self)->Vec<String>{
+    #[cfg(test)]
+    pub(crate) fn rollback_for_output_test(&self)->Vec<String>{self.rollback()}
+    fn rollback(&self)->Vec<String>{
         let mut errors=Vec::new();
         #[cfg(windows)]
         for file in self.files.lock().unwrap_or_else(|p|p.into_inner()).drain(..).rev(){

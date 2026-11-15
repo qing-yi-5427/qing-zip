@@ -610,7 +610,8 @@ impl PrivateOutputFile {
         if let (Some(journal), Some(receipt)) = (journal, pending) {
             journal.record(receipt);
         }
-        // No policy snapshot is applied after the public name exists.
+        // No policy snapshot is applied after the commit point (rename or
+        // clearing DELETE_ON_CLOSE for the still-exclusively-held direct name).
         step(Step::AfterCommit)
             .map_err(|e| format!("output was committed: {}: {e}", target.display()))?;
         self.state = State::Finalized;
@@ -1060,7 +1061,7 @@ mod tests {
                 let mut ads=File::options().write(true).create_new(true).share_mode(7)
                     .open(format!("{}:foreign",path.display())).unwrap();
                 ads.write_all(b"keep this change").unwrap();drop(ads);
-                assert!(!journal.rollback().is_empty());
+                assert!(!journal.rollback_for_output_test().is_empty());
                 assert_eq!(fs::read(format!("{}:foreign",path.display())).unwrap(),b"keep this change");
             } else {
                 drop(journal);
@@ -1116,7 +1117,7 @@ mod tests {
             output.as_file_mut().write_all(b"complete").unwrap();
             let returned=output.commit_owned(&path,&journal).unwrap();
             assert_eq!(security(&returned),security(&normal));drop(returned);
-            assert!(journal.rollback().is_empty());assert!(!path.exists());
+            assert!(journal.rollback_for_output_test().is_empty());assert!(!path.exists());
         }
         let name=OsStr::new("late-revoke");let path=root.path().join(name);
         let journal=crate::engine::PublicationJournal::default();
