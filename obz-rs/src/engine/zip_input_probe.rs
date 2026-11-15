@@ -94,11 +94,23 @@ pub(super) fn signature(file: &mut File) -> Result<Option<&'static str>, String>
 // ZIP search. A false/ambiguous EOCD, multi-disk record or unsupported ZIP64
 // layout falls back to the captured-volume path.
 pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
-    let result = probe(file, ctl, deep);
+    let result = probe(file, ctl, deep, false).map(|value| value.map(|layout| layout.search_limit));
     file.rewind().map_err(|e| e.to_string())?;
     result
 }
-fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, String> {
+pub(super) struct SelectedLayout {
+    pub start: u64,
+    pub end: u64,
+    search_limit: u64,
+}
+// Stronger than format identification: every payload is contiguous, with the
+// exact same conservative fields/extras admitted by the ordinary ZIP reader.
+pub(super) fn selected_layout(file: &mut File, ctl: &JobControl) -> Result<Option<SelectedLayout>, String> {
+    let result = probe(file, ctl, true, true);
+    file.rewind().map_err(|e| e.to_string())?;
+    result
+}
+fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<Option<SelectedLayout>, String> {
     const TAIL_LIMIT: u64 = 1024 * 1024;
     const SEARCH_BUDGET: u64 = 16 * 1024 * 1024;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
@@ -177,6 +189,7 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, S
     let mut directory = DirectoryWindow::default();
     let mut position = directory_start;
     let mut first_local = u64::MAX;
+    let mut ranges = Vec::new();
     for index in 0..count {
         ctl.check()?;
         if index % 256 == 0 {
@@ -189,6 +202,10 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, S
         let extra_end = name_end + usize::from(zip_u16(header, 30));
         let record_end = extra_end + usize::from(zip_u16(header, 32));
         let Some(records) = directory.range(file, position, record_end, directory_end)? else { return Ok(None) };
+        if strict && (zip_u16(records, 8) & !0x0806 != 0
+            || !matches!(zip_u16(records, 10), 0 | 8)
+            || zip_u32(records, 20) == u32::MAX || zip_u32(records, 24) == u32::MAX
+            || !ordinary_zip_extra(&records[name_end..extra_end])) { return Ok(None); }
         let mut packed_size = u64::from(zip_u32(records, 20));
         let mut offset = u64::from(zip_u32(records, 42));
         let mut disk = u32::from(zip_u16(records, 34));
@@ -235,11 +252,29 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool) -> Result<Option<u64>, S
             .and_then(|n| n.checked_add(u64::from(zip_u16(&local_header, 28)))) else { return Ok(None) };
         if packed_size == u32::MAX as u64 || payload.checked_add(packed_size).is_none_or(|end| end > directory_start) { return Ok(None); }
         if local_header[30..] != records[46..name_end] { return Ok(None); }
+        if strict {
+            if records[6..28] != local_header[4..26] { return Ok(None); }
+            let extra = read_at(file, local + local_name_size as u64, usize::from(zip_u16(&local_header, 28)))?;
+            if !ordinary_zip_extra(&extra) { return Ok(None); }
+            ranges.push((local, payload + packed_size));
+        }
         let Some(next) = position.checked_add(record_end as u64) else { return Ok(None) };
         position = next;
     }
     if position != directory_end { return Ok(None); }
-    Ok(first_local.checked_add(1))
+    if strict {
+        ranges.sort_unstable();
+        let mut previous = base;
+        for (start, end) in ranges {
+            ctl.check()?;
+            if start != previous { return Ok(None); }
+            previous = end;
+        }
+        if previous != directory_start { return Ok(None); }
+    }
+    Ok(Some(SelectedLayout { start: base,
+        end: tail_start + at as u64 + 22 + u64::from(zip_u16(end, 20)),
+        search_limit: first_local.checked_add(1).ok_or("ZIP search offset overflow")? }))
 }
 
 

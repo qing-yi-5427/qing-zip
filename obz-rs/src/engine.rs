@@ -1991,6 +1991,33 @@ fn ordinary_zip_file_layout_count(
     Ok(previous == central)
 }
 
+// A locked bounded view hides only the prefix/tail proven by the strict walk.
+struct SelectedZipView { source: File, start: u64, length: u64, position: u64 }
+impl Read for SelectedZipView {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let amount = self.length.saturating_sub(self.position).min(bytes.len() as u64) as usize;
+        if amount == 0 { return Ok(0); }
+        self.source.seek(SeekFrom::Start(self.start + self.position))?;
+        let read = self.source.read(&mut bytes[..amount])?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+impl Seek for SelectedZipView {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let next = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.length) + i128::from(value),
+        };
+        if next < 0 || next > i128::from(self.length) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek outside verified ZIP"));
+        }
+        self.position = next as u64;
+        Ok(self.position)
+    }
+}
+
 // Preserve full-archive CRC verification, but never write unselected bytes to
 // disk. Selection is intentionally not passed to the decoder's verification.
 fn decode_selected_zip(
@@ -2004,11 +2031,14 @@ fn decode_selected_zip(
     let Some(mut source) = source else {
         return Ok(false);
     };
-    if opts.selected.is_empty() || !ordinary_zip_file_layout(&mut source, entries, ctl)? {
-        return Ok(false);
-    }
-    source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut archive = match zip::ZipArchive::new(source) {
+    if opts.selected.is_empty() { return Ok(false); }
+    let (start, end) = if ordinary_zip_file_layout(&mut source, entries, ctl)? {
+        (0, source.metadata().map_err(|e| e.to_string())?.len())
+    } else if let Some(layout) = zip_input_probe::selected_layout(&mut source, ctl)? {
+        (layout.start, layout.end)
+    } else { return Ok(false); };
+    let view = SelectedZipView { source, start, length: end - start, position: 0 };
+    let mut archive = match zip::ZipArchive::new(view) {
         Ok(a) => a,
         Err(_) => return Ok(false),
     };
@@ -6976,6 +7006,66 @@ mod staging_tests {
         let ctl=JobControl::new();ctl.cancelled.store(true,Ordering::Release);
         assert!(decode_selected_zip(locked_archive_source(path.to_str().unwrap(),&opts,u32::MAX as u64-1),
             &entries,&opts,stage.path(),&mut CheckedDirectories::owned_root(stage.path()),&ctl).is_err());
+    }
+    #[test]
+    fn selected_embedded_zip_keeps_only_selected_and_verifies_every_crc() {
+        for corrupt in [false, true] {
+            let (temp, path, entries) = memory_zip_fixture();
+            let mut data = fs::read(&path).unwrap();
+            if corrupt {
+                let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&data)).unwrap();
+                let offset = zip.by_index(159).unwrap().data_start().unwrap();
+                drop(zip);
+                data[offset as usize] ^= 1;
+            }
+            let mut embedded = vec![b'X'; 8192]; embedded.extend(data); embedded.extend(b"tail");
+            fs::write(&path, embedded).unwrap();
+            let opts = EngineOptions { selected: vec![entries[1].name.clone()], ..Default::default() };
+            let stage = tempfile::tempdir().unwrap();
+            let result = decode_selected_zip(locked_archive_source(path.to_str().unwrap(), &opts, u32::MAX as u64-1),
+                &entries, &opts, stage.path(), &mut CheckedDirectories::owned_root(stage.path()), &JobControl::new());
+            if corrupt {
+                assert!(result.unwrap_err().contains("ZIP"));
+                let output = temp.path().join("output");
+                assert!(extract(path.to_str().unwrap(), output.to_str().unwrap(), &opts).is_err());
+                assert!(!output.exists());
+            } else {
+                assert!(result.unwrap());
+                assert!(stage.path().join(&entries[1].name).is_file());
+                assert!(!stage.path().join(&entries[159].name).exists());
+                #[cfg(windows)]
+                fs::write(format!("{}:Zone.Identifier", path.display()), b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+                let output = temp.path().join("success");
+                extract(path.to_str().unwrap(), output.to_str().unwrap(), &opts).unwrap();
+                assert_eq!(fs::read(output.join(&entries[1].name)).unwrap(), fs::read(stage.path().join(&entries[1].name)).unwrap());
+                assert!(!output.join(&entries[159].name).exists());
+                #[cfg(windows)]
+                assert!(fs::read_to_string(format!("{}:Zone.Identifier", output.join(&entries[1].name).display())).unwrap().contains("ZoneId=3"));
+                let cancelled = JobControl::new(); cancelled.cancel();
+                assert!(decode_selected_zip(locked_archive_source(path.to_str().unwrap(), &opts, u32::MAX as u64-1),
+                    &entries, &opts, stage.path(), &mut CheckedDirectories::owned_root(stage.path()), &cancelled).is_err());
+            }
+        }
+    }
+    #[test]
+    fn selected_embedded_zip_header_disagreement_falls_back_without_output() {
+        for mutate in [0, 1, 2] {
+            let (_temp, path, entries) = memory_zip_fixture();
+            let mut data = fs::read(&path).unwrap();
+            let cd = data.windows(4).position(|p| p == b"PK\x01\x02").unwrap();
+            match mutate {
+                0 => data[cd + 16] ^= 1, // central/local CRC disagreement
+                1 => data[cd + 8] |= 8, // descriptor flag
+                _ => data[cd + 42..cd + 46].copy_from_slice(&1u32.to_le_bytes()),
+            }
+            let mut embedded = vec![b'X'; 8192]; embedded.extend(data); embedded.extend(b"tail");
+            fs::write(&path, embedded).unwrap();
+            let opts = EngineOptions { selected: vec![entries[1].name.clone()], ..Default::default() };
+            let stage = tempfile::tempdir().unwrap();
+            assert!(!decode_selected_zip(locked_archive_source(path.to_str().unwrap(), &opts, u32::MAX as u64-1),
+                &entries, &opts, stage.path(), &mut CheckedDirectories::owned_root(stage.path()), &JobControl::new()).unwrap());
+            assert_eq!(fs::read_dir(stage.path()).unwrap().count(), 0);
+        }
     }
     #[test]
     fn selected_zip_unknown_layout_falls_back_without_writing() {
