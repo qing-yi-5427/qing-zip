@@ -1,0 +1,49 @@
+name: Published ARM64 physical Explorer drag
+on:
+  push:
+    branches: [codex/published-01113-arm64-ole]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  drag:
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Verify exact released ARM64 portable package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Disposable hosted ARM64 required' }
+          $package=Join-Path $env:RUNNER_TEMP 'qing-zip-0.11.13-arm64-portable.zip'
+          gh release download v0.11.13 --repo qing-yi-5427/qing-zip --pattern qing-zip-0.11.13-arm64-portable.zip --output $package
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $hash=(Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'be9237d20c37efe2014dff3ea74c6a08a410de5206674bed7708e7f6365be0fb') { throw 'Package digest mismatch' }
+          Expand-Archive -LiteralPath $package -DestinationPath (Join-Path $env:RUNNER_TEMP 'qing-trial')
+          'QING_DRAG_NATIVE_MACHINE=ARM64' >> $env:GITHUB_ENV
+          'QING_DRAG_GUI_SHA=8604d47b41643a8f4d89bcc01f686855c15acdd9144528101e75378a7693a936' >> $env:GITHUB_ENV
+          'QING_DRAG_SOURCE_SHA=1688b5e741e86cd6e347046343ec3666aafcf3bf' >> $env:GITHUB_ENV
+          'QING_DRAG_SOURCE_RUN=published-v0.11.13' >> $env:GITHUB_ENV
+          "QING_DRAG_ARTIFACT_DIGEST=$hash" >> $env:GITHUB_ENV
+          python -m pip install pywinauto==0.6.9 pillow==11.3.0
+          exit $LASTEXITCODE
+      - name: Physically cancel then drop selected archive members in Explorer
+        shell: pwsh
+        run: |
+          python -u scripts/check-hosted-drag-out.py
+          exit $LASTEXITCODE
+      - name: Save screenshots and exact operation receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: published-01113-arm64-physical-drag
+          path: drag-evidence
+          if-no-files-found: error
+          retention-days: 21

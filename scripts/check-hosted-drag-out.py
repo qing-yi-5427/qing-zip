@@ -20,7 +20,7 @@ from win32com.client import Dispatch
 result=Path('drag-evidence');result.mkdir()
 exe=next((Path(os.environ['RUNNER_TEMP'])/'qing-trial').rglob('qing-zip.exe'))
 assert hashlib.sha256(exe.read_bytes()).hexdigest()==os.environ['QING_DRAG_GUI_SHA']
-report={'binary':hashlib.sha256(exe.read_bytes()).hexdigest(),
+report={'binary_path':str(exe.resolve()),'app_version':'0.11.13','workflow_source':os.environ.get('GITHUB_SHA'),'run_id':os.environ.get('GITHUB_RUN_ID'),'runner_arch':os.environ.get('RUNNER_ARCH'),'binary':hashlib.sha256(exe.read_bytes()).hexdigest(),
         'tested_source':os.environ['QING_DRAG_SOURCE_SHA'],'source_run':os.environ['QING_DRAG_SOURCE_RUN'],
         'source_artifact':os.environ['QING_DRAG_ARTIFACT_DIGEST'],'passed':False,'driver_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 def wait(fn,why,seconds=30):
@@ -69,6 +69,9 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         u.ShowWindow(win.handle,9);u.SetWindowPos(win.handle,-1,0,0,left_width,height-65,0x40)
         u.SetForegroundWindow(win.handle)
         row=wait(lambda:find(win,'take.txt','Button'),'archive file')
+        if os.environ.get('QING_DRAG_NATIVE_MACHINE')=='ARM64':
+            from hosted_drag_architecture import verify
+            report.update(verify(app.pid,target_hwnd))
         for name in ['take.txt','nested']:
             cb=wait(lambda:find(win,'选择 '+name,'CheckBox'),'checkbox '+name)
             coords=center(cb.rectangle());assert owner(coords)==win.handle,(coords,owner(coords),win.handle)
