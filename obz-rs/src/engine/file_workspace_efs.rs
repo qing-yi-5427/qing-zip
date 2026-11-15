@@ -387,6 +387,10 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
     })
 }
 
+pub(super) fn verify_published(file:&File,expected:[u8;32],ctl:&JobControl)->Result<(),String>{
+    if snapshot(file,ctl)?.digest!=expected{return Err("published EFS complete proof changed".into());}
+    Ok(())
+}
 struct CopyContext<'a> {
     source: [u32; 3],
     destination: Option<[u32; 3]>,
@@ -496,6 +500,7 @@ impl crate::private_stage::LocalOutputProof for EfsProof<'_> {
 }
 impl Prepared {
     pub(super) fn source(&self)->&File { &self.source }
+    pub(super) fn digest(&self)->[u8;32] {self.expected.digest}
     pub(crate) fn publish(mut self,target:&Path,replace:bool,ctl:&JobControl)->Result<File,String>{
         self.verify(ctl)?;
         let proof=EfsProof{source:&self.source,digest:self.expected.digest,control:ctl.clone()};
@@ -523,9 +528,16 @@ pub(crate) fn prepare(
     parent: &Path,
     parent_pin: &File,
     ctl: &JobControl,
-) -> Result<Prepared, String> {
+ ) -> Result<Prepared, String> {
+    prepare_bound(source,parent,parent_pin,ctl,None)
+}
+pub(super) fn prepare_bound(source:&Path,parent:&Path,parent_pin:&File,ctl:&JobControl,expected:Option<(u32,u64)>)->Result<Prepared,String>{
     ctl.check()?;
     let source = crate::engine_stream::pin(source)?;
+    let actual=identity(source.as_raw_handle())?;
+    if expected.is_some_and(|old|old!=(actual[0],(u64::from(actual[1])<<32)|u64::from(actual[2]))) {
+        return Err("EFS source identity changed before copy".into());
+    }
     let expected = snapshot(&source, ctl)?;
     let mut flags = 0;
     let callback = Some(progress as Progress);
