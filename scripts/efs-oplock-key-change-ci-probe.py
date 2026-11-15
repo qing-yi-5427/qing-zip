@@ -6,8 +6,8 @@ try:
  with tempfile.TemporaryDirectory(prefix='qing-efs-key-mutation-') as tmp:
   base=Path(tmp);cert=base/'additional.cer';p=base/'source';p.write_bytes(b'original');require(A.EncryptFileW(str(p)),'encrypt');before=keys(p)
   env=os.environ.copy();env['QZ_EFS_PROBE_CERT']=str(cert)
-  script="Import-Module Microsoft.PowerShell.Security -Force; $c = New-SelfSignedCertificate -Type Custom -Subject 'CN=qing-zip ephemeral EFS probe' -KeyAlgorithm RSA -KeyLength 2048 -KeyUsage KeyEncipherment -KeySpec KeyExchange -CertStoreLocation Cert:\\CurrentUser\\My -TextExtension @('2.5.29.37={text}1.3.6.1.4.1.311.10.3.4'); Export-Certificate -Cert $c -FilePath $env:QZ_EFS_PROBE_CERT | Out-Null"
-  setup=subprocess.run(['powershell','-NoProfile','-Command',script],env=env,capture_output=True,text=True)
+  script="$c = New-SelfSignedCertificate -Type Custom -Subject 'CN=qing-zip ephemeral EFS probe' -KeyAlgorithm RSA -KeyLength 2048 -KeyUsage KeyEncipherment -KeySpec KeyExchange -CertStoreLocation Cert:\\CurrentUser\\My -TextExtension @('2.5.29.37={text}1.3.6.1.4.1.311.10.3.4'); Export-Certificate -Cert $c -FilePath $env:QZ_EFS_PROBE_CERT | Out-Null"
+  setup=subprocess.run(['pwsh','-NoProfile','-Command',script],env=env,capture_output=True,text=True)
   receipt['certificate_setup']={'exit':setup.returncode,'stderr':setup.stderr};require(setup.returncode==0 and cert.exists(),'hosted fixture certificate failed')
   v,info=lease(p,7);require(v,'RWH unavailable');result={}
   def mutate():
