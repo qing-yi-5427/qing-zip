@@ -491,7 +491,10 @@ pub(crate) fn verify_native_private_child(parent:&File,file:&File)->Result<(),St
     let expected_parent=Allocation(raw);
     if !verify_private_permissions(parent,&expected_parent,&sid)?{return Err("native stage permissions changed".into());}
     let expected=ordinary_permissions(parent,&token)?;let actual=descriptor(file)?;
-    if !same_file_permissions(expected.0,actual.0)?{return Err("native output did not retain private inherited permissions".into());}
+    if !same_file_permissions(expected.0,actual.0)?{
+        #[cfg(test)] eprintln!("native private ACL mismatch expected control={:#x} entries={:?}; actual control={:#x} entries={:?}",control(expected.0)?,acl_entries(&acl_bytes(expected.0)?)?,control(actual.0)?,acl_entries(&acl_bytes(actual.0)?)?);
+        return Err("native output did not retain private inherited permissions".into());
+    }
     let (mut owner,mut raw)=(std::ptr::null_mut(),std::ptr::null_mut());
     let status=unsafe{GetSecurityInfo(file.as_raw_handle(),1,1,&mut owner,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),&mut raw)};
     if status!=0{return Err(format!("native output owner query failed: {status}"));}
