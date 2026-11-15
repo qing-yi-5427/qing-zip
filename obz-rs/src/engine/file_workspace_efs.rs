@@ -92,11 +92,14 @@ fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 fn identity(handle: Handle) -> Result<[u32; 3], String> {
+    identity_kind(handle,false)
+}
+fn identity_kind(handle:Handle,directory:bool)->Result<[u32;3],String>{
     let mut info = [0u32; 13];
     if unsafe { GetFileInformationByHandle(handle, info.as_mut_ptr()) } == 0 {
         return Err(error("读取EFS对象身份"));
     }
-    if info[0] & 0x410 != 0 || info[10] != 1 {
+    if info[0] & 0x410 != if directory {0x10}else{0} || info[10] != 1 {
         return Err(format!(
             "EFS ordinary-file identity required: attrs={:#x} links={}",
             info[0], info[10]
@@ -235,6 +238,9 @@ fn stream_names(file: &File) -> Result<Vec<(Vec<u16>, u64)>, String> {
         {
             break;
         }
+        if std::io::Error::last_os_error().raw_os_error()==Some(38) && file.metadata().map_err(|e|e.to_string())?.is_dir(){
+            return Ok(Vec::new());
+        }
         if !matches!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(122 | 234)
@@ -305,7 +311,8 @@ fn snapshot_with_share(file: &File, ctl: &JobControl, share: u32) -> Result<Snap
 }
 fn snapshot_any(file: &File, ctl: &JobControl, share: u32) -> Result<Snapshot, String> {
     ctl.check()?;
-    identity(file.as_raw_handle())?;
+    let directory=file.metadata().map_err(|e|e.to_string())?.is_dir();
+    let source_id=identity_kind(file.as_raw_handle(),directory)?;
     let encrypted = file
         .metadata()
         .map_err(|e| e.to_string())?
@@ -334,7 +341,8 @@ fn snapshot_any(file: &File, ctl: &JobControl, share: u32) -> Result<Snapshot, S
             }
             unsafe { File::from_raw_handle(raw) }
         };
-        if identity(pin.as_raw_handle())? != identity(file.as_raw_handle())? {
+        let stream_is_dir=pin.metadata().map_err(|e|e.to_string())?.is_dir();
+        if identity_kind(pin.as_raw_handle(),stream_is_dir)? != source_id {
             return Err("EFS数据流对象身份不一致".into());
         }
         hash.update((name.len() as u64).to_le_bytes());
@@ -727,6 +735,112 @@ pub(super) fn prepare_bound(
     Ok(prepared)
 }
 
+
+type RawExport=unsafe extern "system" fn(*const u8,Handle,u32)->u32;
+type RawImport=unsafe extern "system" fn(*mut u8,Handle,*mut u32)->u32;
+#[link(name="advapi32")]
+unsafe extern "system" {
+    fn OpenEncryptedFileRawW(path:*const u16,flags:u32,context:*mut Handle)->u32;
+    fn ReadEncryptedFileRaw(callback:Option<RawExport>,argument:Handle,context:Handle)->u32;
+    fn WriteEncryptedFileRaw(callback:Option<RawImport>,argument:Handle,context:Handle)->u32;
+    fn CloseEncryptedFileRaw(context:Handle);
+}
+struct RawLease(Handle);
+impl Drop for RawLease{fn drop(&mut self){unsafe{CloseEncryptedFileRaw(self.0)}}}
+fn raw_open(path:&Path,flags:u32)->Result<RawLease,String>{
+    let mut handle=std::ptr::null_mut();
+    let code=unsafe{OpenEncryptedFileRawW(wide(path).as_ptr(),flags,&mut handle)};
+    if code!=0{return Err(format!("EFS directory raw open failed: {code}"));}
+    if handle.is_null(){return Err("EFS raw context is null".into());}
+    Ok(RawLease(handle))
+}
+struct RawIo<'a>{file:&'a mut File,ctl:&'a JobControl,failed:Option<String>}
+unsafe extern "system" fn raw_export(data:*const u8,arg:Handle,len:u32)->u32{
+    use std::io::Write;
+    let ctx=unsafe{&mut *arg.cast::<RawIo<'_>>()};
+    let result=(||{ctx.ctl.check()?;if data.is_null()&&len!=0{return Err("invalid EFS raw buffer".into());}
+        if len!=0 {ctx.file.write_all(unsafe{std::slice::from_raw_parts(data,len as usize)}).map_err(|e|e.to_string())?;}Ok(())})();
+    match result{Ok(())=>0,Err(e)=>{ctx.failed=Some(e);995}}
+}
+unsafe extern "system" fn raw_import(data:*mut u8,arg:Handle,len:*mut u32)->u32{
+    use std::io::Read;
+    let ctx=unsafe{&mut *arg.cast::<RawIo<'_>>()};
+    let result=(||{ctx.ctl.check()?;if len.is_null(){return Err("invalid EFS raw count".into());}
+        let count=unsafe{*len} as usize;if data.is_null()&&count!=0{return Err("invalid EFS raw buffer".into());}
+        let actual=if count==0{0}else{ctx.file.read(unsafe{std::slice::from_raw_parts_mut(data,count)}).map_err(|e|e.to_string())?};
+        unsafe{*len=actual as u32};Ok(())})();
+    match result{Ok(())=>0,Err(e)=>{ctx.failed=Some(e);995}}
+}
+/// Per-directory object only. No recursive import and no mutation of an
+/// existing public directory; publication uses the ordinary local proof gate.
+pub(super) struct PreparedDirectory{
+    output:crate::private_stage::PrivateOutputFile,
+    source:crate::engine_stream::PinnedSource,
+    expected:Snapshot,
+}
+impl PreparedDirectory{
+    pub(super) fn source(&self)->&File{&self.source}
+    pub(super) fn publish(mut self,target:&Path,ctl:&JobControl)->Result<File,String>{
+        struct Proof<'a>{source:&'a File,digest:[u8;32],ctl:&'a JobControl}
+        impl crate::private_stage::LocalOutputProof for Proof<'_>{
+            fn verify(&self,file:&File)->Result<Vec<u8>,String>{
+                self.ctl.check()?;
+                if snapshot(self.source,self.ctl)?.digest!=self.digest || snapshot_with_share(file,self.ctl,5)?.digest!=self.digest {
+                    return Err("EFS directory complete source/target proof changed".into());
+                }Ok(self.digest.to_vec())
+            }
+        }
+        let proof=Proof{source:&self.source,digest:self.expected.digest,ctl};
+        let result=self.output.commit_local_streams(target,false,&proof);
+        let cleanup=self.output.abort();
+        match (result,cleanup){(Ok(file),Ok(()))=>Ok(file),(Err(e),Ok(()))=>Err(e),(Ok(_),Err(e))=>Err(e),(Err(e),Err(c))=>Err(format!("{e}; {c}"))}
+    }
+}
+pub(super) fn prepare_directory(source_path:&Path,expected_id:Option<[u32;3]>,parent_path:&Path,parent:&File,ctl:&JobControl)->Result<PreparedDirectory,String>{
+    use std::io::{Seek,SeekFrom};
+    ctl.check()?;
+    let source=crate::engine_stream::pin_directory_metadata(source_path)?;
+    let id=identity_kind(source.as_raw_handle(),true)?;
+    if expected_id.is_some_and(|expected|expected!=id){return Err("EFS source directory identity changed".into());}
+    let mut expected=snapshot(&source,ctl)?;
+    // Existing ADS pins conflict with native Raw. The metadata/ancestor pins
+    // remain live; Raw holds existing stream locks. Re-enumerate and re-pin
+    // every stream afterwards, rejecting new streams, EA or policy changes.
+    expected._pins.clear();
+    let stage=crate::private_stage::create(parent_path,parent)?;
+    let mut spool=File::options().read(true).write(true).create_new(true)
+        .open(stage.path().join("directory.raw")).map_err(|e|e.to_string())?;
+    {
+        let lease=raw_open(source_path,0)?;
+        let mut io=RawIo{file:&mut spool,ctl,failed:None};
+        let code=unsafe{ReadEncryptedFileRaw(Some(raw_export),(&mut io as *mut RawIo<'_>).cast(),lease.0)};
+        if let Some(e)=io.failed{return Err(e);}
+        if code!=0{return Err(format!("EFS directory raw export failed: {code}"));}
+    }
+    let rebound=snapshot(&source,ctl)?;
+    if rebound.digest!=expected.digest{return Err("EFS source directory changed during raw export".into());}
+    expected=rebound;
+    spool.seek(SeekFrom::Start(0)).map_err(|e|e.to_string())?;
+    let mut output=crate::private_stage::create_local_directory_output(parent_path,parent)?;
+    output.native_directory(|_,name|{
+        let lease=raw_open(name,3)?;
+        let mut io=RawIo{file:&mut spool,ctl,failed:None};
+        let code=unsafe{WriteEncryptedFileRaw(Some(raw_import),(&mut io as *mut RawIo<'_>).cast(),lease.0)};
+        if let Some(e)=io.failed{return Err(e);}
+        if code!=0{return Err(format!("EFS directory raw import failed: {code}"));}
+        Ok(())
+    })?;
+    if !expected.ea.is_empty(){set_ea(output.as_file(),&expected.ea)?;}
+    let meta=source.metadata().map_err(|e|e.to_string())?;
+    let attrs=meta.file_attributes()&0x3127;
+    let basic=[meta.creation_time(),meta.last_access_time(),meta.last_write_time(),0,u64::from(if attrs==0{0x80}else{attrs})];
+    if unsafe{SetFileInformationByHandle(output.as_file().as_raw_handle(),0,basic.as_ptr().cast(),40)}==0{return Err(error("restore EFS directory times"));}
+    if snapshot_with_share(output.as_file(),ctl,5)?.digest!=expected.digest || snapshot(&source,ctl)?.digest!=expected.digest{
+        return Err("EFS directory content, attributes or certificate policy changed".into());
+    }
+    Ok(PreparedDirectory{output,source,expected})
+}
+
 #[cfg(test)]
 thread_local! {
     static CANCEL_NATIVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
@@ -778,6 +892,33 @@ mod tests {
             "{}",
             error("CI EFS unsupported")
         );
+    }
+    #[test]
+    #[ignore = "creates an EFS certificate only in disposable GitHub-hosted CI"]
+    fn ci_efs_directory_raw_private_publication_preserves_policy_and_all_metadata(){
+        for populated in [false,true]{
+            let temp=tempfile::tempdir().unwrap();let source=temp.path().join("encrypted-dir");let dest=temp.path().join("dest");
+            std::fs::create_dir(&source).unwrap();std::fs::create_dir(&dest).unwrap();
+            if populated{std::fs::write(source.join("plain-before"),b"source plain child").unwrap();}
+            encrypt_ci_fixture(&source);
+            if populated{
+                for name in ["alpha","beta","中文"]{std::fs::write(format!("{}:{name}",source.display()),name.as_bytes()).unwrap();}
+                let h=File::options().access_mode(0x20098).share_mode(7).custom_flags(0x02200000).open(&source).unwrap();
+                set_ea(&h,&[0,0,0,0,0x80,1,3,0,b'A',0,1,2,3]).unwrap();
+            }
+            let ctl=JobControl::new();
+            let prepared=prepare_directory(&source,None,&dest,&parent(&dest),&ctl).unwrap();
+            let digest=prepared.expected.digest;
+            assert_eq!(snapshot(&prepared.source,&ctl).unwrap().digest,digest);
+            let target=dest.join("copied");let output=prepared.publish(&target,&ctl).unwrap();drop(output);
+            let check=File::options().read(true).share_mode(7).custom_flags(0x02200000).open(&target).unwrap();
+            assert_eq!(snapshot(&check,&ctl).unwrap().digest,digest);drop(check);
+            assert_eq!(std::fs::read_dir(&target).unwrap().count(),0,"raw directory import is not recursive");
+            std::fs::write(target.join("new-child"),b"future encryption policy").unwrap();
+            assert_ne!(std::fs::metadata(target.join("new-child")).unwrap().file_attributes()&0x4000,0);
+            if populated{assert_eq!(std::fs::read(source.join("plain-before")).unwrap(),b"source plain child");
+                assert_eq!(std::fs::metadata(source.join("plain-before")).unwrap().file_attributes()&0x4000,0);}
+        }
     }
     #[test]
     #[ignore = "creates an EFS certificate only in disposable GitHub-hosted CI"]
