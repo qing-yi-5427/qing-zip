@@ -96,3 +96,14 @@ test('nested workspace locations display logical ancestry without private workin
  assert.equal(displayArchivePath(tabs[2].archive,tabs),'outer.zip / docs/inner.zip / deep.7z');
  assert.ok(!displayArchivePath(tabs[2].archive,tabs.slice(1)).includes('qing-zip-member'));
 });
+
+test('partial copied moves show committed counts and the reason sources remain',async()=>{
+ let click;const errors=[];
+ const workspace=create({esc:String,icon:()=>'',render(){},error:e=>errors.push(String(e)),run:async()=>({moved:2,copied:1,retained_sources:['C:/source/a'],retained_reasons:['当前磁盘不支持文件事务，保留来源']}),invoke:async(_,v)=>({path:v.path,parent:null,entries:[]})});
+ for(const [i,p] of workspace.state.panes.entries())Object.assign(p,{loaded:true,path:i?'D:/target':'C:/source'});
+ workspace.state.panes[0].selected.add('C:/source/a');
+ workspace.mount({querySelector:()=>({addEventListener:(type,fn)=>{if(type==='click')click=fn;}})});
+ click({preventDefault(){},target:{closest:()=>({dataset:{fm:'move',pane:'0'}})}});
+ await new Promise(setImmediate);
+ assert.equal(errors.length,1);assert.match(errors[0],/已移动 2 项/);assert.match(errors[0],/1 个源项目仍保留/);assert.match(errors[0],/不支持文件事务/);
+});

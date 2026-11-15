@@ -471,6 +471,14 @@ fn collect(
     }
     Ok(())
 }
+struct PublishedCopy {
+    index: usize,
+    path: PathBuf,
+    source_id: (u32, u64),
+    target_id: (u32, u64),
+    digest: [u8; 32],
+    created_directory: bool,
+}
 #[derive(Debug, Serialize)]
 pub struct Transfer {
     pub copied: usize,
@@ -478,6 +486,7 @@ pub struct Transfer {
     pub moved: usize,
     pub skipped: usize,
     pub retained_sources: Vec<String>,
+    pub retained_reasons: Vec<String>,
 }
 pub fn transfer(
     inputs: &[String],
@@ -538,6 +547,7 @@ pub fn transfer(
         moved: 0,
         skipped: 0,
         retained_sources: Vec::new(),
+        retained_reasons: Vec::new(),
     };
     if moving {
         let parent = File::options()
@@ -593,7 +603,9 @@ pub fn transfer(
                 });
                 ctl.check()?;
                 // Move the original object with all streams; never replace a competitor.
-                if rename_handle_noclobber_in(
+                #[cfg(test)] let force_copy = FORCE_COPY_MOVE.with(|value| value.get());
+                #[cfg(not(test))] let force_copy = false;
+                if !force_copy && rename_handle_noclobber_in(
                     nodes[index].handle.as_ref().unwrap(),
                     &target,
                     Some(&parent),
@@ -635,6 +647,7 @@ pub fn transfer(
         }
     }
     let mut published = Vec::new();
+    let mut copies: Vec<PublishedCopy> = Vec::new();
     let mut copied_directories: Vec<(File, usize)> = Vec::new();
     #[cfg(test)]
     BEFORE_COPY.with(|hook| {
@@ -651,10 +664,11 @@ pub fn transfer(
             }
             if node.directory {
                 let parent = target.parent().ok_or("缺少目标父目录")?;
-                guards.create_dirs(parent)?;
-                guards.allow_publication(parent)?;
+                guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
+                guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
                 let source = node.handle.as_ref().unwrap();
-                if target.exists() {
+                let existing_directory = target.exists();
+                if existing_directory {
                     guards.check(&target)?;
                     if !target.is_dir() {
                         return Err("目标名称已被文件占用".into());
@@ -723,6 +737,14 @@ pub fn transfer(
                     }
                     copied_directories.push((output, node_index));
                 }
+                copies.push(PublishedCopy {
+                    index: node_index,
+                    path: target.clone(),
+                    source_id: directory_identity(source)?,
+                    target_id: directory_identity(&guards.held.get(&target).ok_or("目标目录锁缺失")?.0)?,
+                    digest: streams(source, None, &ctl)?,
+                    created_directory: !existing_directory,
+                });
                 continue;
             }
             let Some(chosen) =
@@ -734,17 +756,17 @@ pub fn transfer(
             };
             target = chosen;
             let parent = target.parent().ok_or("缺少目标父目录")?;
-            guards.create_dirs(parent)?;
-            guards.allow_publication(parent)?;
+            guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
+            guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
             ctl.set("copying", None, "正在复制并验证文件");
             let input = node.handle.as_ref().unwrap();
             let (output, expected) = with_output_temp(parent, &guards, |temp| {
-                let expected = streams(input, Some(temp.as_file()), &ctl)?;
+                let expected = streams(input, Some(temp.as_file()), &ctl).map_err(|e|format!("复制文件数据流：{e}"))?;
                 temp.as_file().sync_all().map_err(|e| e.to_string())?;
                 if streams(temp.as_file(), None, &ctl)? != expected {
                     return Err("目标文件验证失败，源文件保持不变".into());
                 }
-                copy_basic_metadata(input, temp.as_file())?;
+                copy_basic_metadata(input, temp.as_file()).map_err(|e|format!("复制文件基本属性：{e}"))?;
                 ctl.check()?;
                 let proof = LocalStreamProof {
                     digest: expected,
@@ -752,13 +774,17 @@ pub fn transfer(
                 };
                 temp.inner
                     .commit_local_streams(&target, opts.overwrite == "overwrite", &proof)
-                    .map(|file| (file, expected))
-            })?;
+                    .map(|file| (file, expected)).map_err(|e|format!("发布文件：{e}"))
+            }).map_err(|e|format!("准备或写入输出文件：{e}"))?;
+            let published_identity = directory_identity(&output)?;
             drop(output);
-            let published_pin = crate::engine_stream::pin(&target)?;
-            if streams(&published_pin, None, &ctl)? != expected {
+            let published_pin = crate::engine_stream::pin(&target).map_err(|e|format!("固定已发布文件：{e}"))?;
+            if directory_identity(&published_pin)? != published_identity || streams(&published_pin, None, &ctl).map_err(|e|format!("复验已发布文件：{e}"))? != expected {
                 return Err("已发布目标内容改变，源文件保持不变".into());
             }
+            copies.push(PublishedCopy { index: node_index, path: target,
+                source_id: directory_identity(input)?, target_id: published_identity,
+                digest: expected, created_directory: false });
             published.push(published_pin);
             result.copied += 1;
         }
@@ -788,19 +814,109 @@ pub fn transfer(
                 result.copied, result.copied_directories, result.moved
             )
         })?;
-        // New ADS can bypass a main-stream pin. Never dispose copied sources.
-        result.retained_sources.extend(
-            paths
-                .iter()
-                .filter(|p| nodes.iter().any(|n| n.path == **p))
-                .map(|p| p.display().to_string()),
-        );
+        // Remove our old DELETE-access pins before taking transaction leases.
+        // Identity and complete stream proofs are rechecked after acquisition.
+        for node in &mut nodes { node.handle.take(); }
+        drop(copied_directories);
+        let completed = finish_transactional_move(&nodes, &copies, &ctl, &mut result.retained_reasons)
+            .map_err(|error|format!("{error}；此前已原子移动{}项，目标副本已保留",result.moved))?;
+        for copy in &copies {
+            if completed.contains(&copy.index) {
+                result.moved += 1;
+                if nodes[copy.index].directory {
+                    if copy.created_directory { result.copied_directories -= 1; }
+                } else { result.copied -= 1; }
+            }
+        }
+        result.retained_sources.extend(paths.iter()
+            .filter(|p| nodes.iter().enumerate().any(|(i,n)| n.path.starts_with(p) && !completed.contains(&i)))
+            .map(|p| p.display().to_string()));
     }
     Ok(result)
 }
 
+fn finish_transactional_move(
+    nodes: &[Source], copies: &[PublishedCopy], ctl: &JobControl, reasons: &mut Vec<String>,
+) -> Result<HashSet<usize>, String> {
+    use super::file_workspace_transaction::Transaction;
+    if copies.is_empty() { return Ok(HashSet::new()); }
+    let transaction = match Transaction::begin() {
+        Ok(value) => value,
+        Err(error) => { reasons.push(error); return Ok(HashSet::new()); }
+    };
+    let prepare = (|| -> Result<HashSet<usize>, String> {
+        let mut verified = Vec::new();
+        for copy in copies {
+            ctl.check()?;
+            let node = &nodes[copy.index];
+            let verify = (|| {
+                let source = transaction.lock(&node.path, copy.source_id)?;
+                let target = transaction.lock_target(&copy.path, copy.target_id)?;
+                if streams(source.reader(), None, ctl)? != copy.digest
+                    || streams(target.reader(), None, ctl)? != copy.digest {
+                    return Err("来源或目标的内容、数据流或存储属性已改变，保留来源".to_string());
+                }
+                let source_meta = source.reader().metadata().map_err(|e| e.to_string())?;
+                let target_meta = target.reader().metadata().map_err(|e| e.to_string())?;
+                if source_meta.file_attributes() & 0x3127 != target_meta.file_attributes() & 0x3127
+                    || source_meta.creation_time() != target_meta.creation_time()
+                    || source_meta.last_write_time() != target_meta.last_write_time() {
+                    return Err("来源与目标的文件属性或时间不同，保留来源".to_string());
+                }
+                Ok((copy.index, source, target))
+            })();
+            match verify {
+                Ok(value) => verified.push(value),
+                Err(error) => reasons.push(format!("{}：{error}", node.path.display())),
+            }
+        }
+        // Descendants must be marked and their handles closed before a directory
+        // is removed. Unknown/uncopied descendants are never recursively deleted.
+        verified.sort_by_key(|(index,_,_)| std::cmp::Reverse(nodes[*index].path.components().count()));
+        let mut completed = HashSet::new();
+        let mut targets = Vec::new();
+        for (index, source, target) in verified {
+            ctl.check()?;
+            let node = &nodes[index];
+            if node.directory && nodes.iter().enumerate().any(|(child,n)|
+                child != index && n.path.starts_with(&node.path) && !completed.contains(&child)) {
+                reasons.push(format!("{}：部分子项目未完成移动，保留源文件夹",node.path.display()));
+                continue;
+            }
+            #[cfg(test)] BEFORE_TRANSACTION_DELETE.with(|hook|if let Some(run)=hook.borrow_mut().take(){run()});
+            ctl.check()?;
+            source.delete()?;
+            targets.push(target);
+            completed.insert(index);
+        }
+        ctl.check()?;
+        // Dropping readers does not release the transaction's write exclusion.
+        // All leased file handles must be closed before CommitTransaction.
+        drop(targets);
+        Ok(completed)
+    })();
+    match prepare {
+        Ok(completed) => {
+            #[cfg(test)] BEFORE_TRANSACTION_COMMIT.with(|hook|if let Some(run)=hook.borrow_mut().take(){run()});
+            if let Err(error) = ctl.check() {
+                transaction.rollback().map_err(|rollback|format!("{error}；{rollback}"))?;
+                return Err(format!("{error}；本次复制项目的来源未删除"));
+            }
+            transaction.commit()?;
+            Ok(completed)
+        }
+        Err(error) => {
+            transaction.rollback().map_err(|rollback|format!("{error}；{rollback}"))?;
+            Err(format!("{error}；已回滚本次删除，复制的来源仍保留"))
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
+ static FORCE_COPY_MOVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
+ static BEFORE_TRANSACTION_DELETE:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
+ static BEFORE_TRANSACTION_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static BEFORE_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_CHUNK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
@@ -813,6 +929,130 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    struct CopyMoveGuard;
+    impl Drop for CopyMoveGuard { fn drop(&mut self) { FORCE_COPY_MOVE.with(|v|v.set(false)); } }
+    fn copy_move_setup() -> (tempfile::TempDir,tempfile::TempDir,PathBuf,PathBuf,CopyMoveGuard) {
+        let first=tempfile::tempdir().unwrap();
+        let second=if let Some(root)=std::env::var_os("QING_ZIP_SECOND_VOLUME") {
+            tempfile::Builder::new().prefix("qing-zip-move-test-").tempdir_in(root).unwrap()
+        }else{tempfile::tempdir().unwrap()};
+        let source=first.path().join("source");let dest=second.path().join("dest");
+        fs::create_dir(&source).unwrap();fs::create_dir(&dest).unwrap();
+        fs::create_dir(source.join("empty")).unwrap();fs::write(source.join("a.txt"),b"known bytes").unwrap();
+        if std::env::var_os("QING_ZIP_SECOND_VOLUME").is_some() {
+            let a=File::options().read(true).custom_flags(0x02200000).open(&source).unwrap();
+            let b=File::options().read(true).custom_flags(0x02200000).open(&dest).unwrap();
+            let av=directory_identity(&a).unwrap().0;let bv=directory_identity(&b).unwrap().0;
+            assert_ne!(av,bv,"explicit second-volume acceptance requires genuinely different volumes");
+            eprintln!("cross-volume acceptance: source serial {av:#x}; target serial {bv:#x}");
+        }else{FORCE_COPY_MOVE.with(|v|v.set(true));}
+        (first,second,source,dest,CopyMoveGuard)
+    }
+    #[test]
+    fn copied_move_directory_keeps_ea_ads_compression_sparse_and_removes_all_sources() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();
+        let file=source.join("a.txt");let sparse_path=source.join("稀疏.bin");
+        put_ea(&source,0,b"directory EA");put_ea(&file,0,b"file EA");
+        fs::write(format!("{}:extra",source.display()),b"directory stream").unwrap();
+        fs::write(format!("{}:extra",file.display()),b"file stream").unwrap();
+        {let f=File::options().read(true).write(true).open(&file).unwrap();super::super::file_workspace_compression::set(&f,2).unwrap();}
+        {let f=File::options().read(true).write(true).create_new(true).open(&sparse_path).unwrap();make_sparse(&f,1024*1024,true);}
+        let expected=streams(&File::open(&file).unwrap(),None,&JobControl::new()).unwrap();
+        let sparse_expected=streams(&File::open(&sparse_path).unwrap(),None,&JobControl::new()).unwrap();
+        let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
+        assert!(result.retained_sources.is_empty(),"{:?}",result.retained_reasons);
+        assert!(!source.exists());assert_eq!(result.moved,4);assert_eq!(result.copied,0);assert_eq!(result.copied_directories,0);
+        assert_eq!(streams(&File::open(dest.join("source/a.txt")).unwrap(),None,&JobControl::new()).unwrap(),expected);
+        assert_eq!(streams(&File::open(dest.join("source/稀疏.bin")).unwrap(),None,&JobControl::new()).unwrap(),sparse_expected);
+        assert_eq!(get_ea(&dest.join("source")),{let name=b"QING.TEST";let value=b"directory EA";let mut raw=vec![0,0,0,0,0,name.len()as u8,value.len()as u8,0];raw.extend_from_slice(name);raw.push(0);raw.extend_from_slice(value);raw});
+        assert_eq!(fs::read(format!("{}:extra",dest.join("source").display())).unwrap(),b"directory stream");
+        assert!(dest.join("source/empty").is_dir());
+    }
+    #[test]
+    fn copied_move_all_conflict_modes_keep_skipped_sources_and_exact_rename_mapping() {
+        for mode in ["error","skip","rename","overwrite"] {
+            let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");
+            let expected=put_ea(&file,0,b"copied EA");fs::write(dest.join("a.txt"),b"old target").unwrap();
+            let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:mode.into(),..Default::default()});
+            if mode=="error" {assert!(result.is_err());assert!(file.exists());assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"old target");continue}
+            let result=result.unwrap();
+            if mode=="skip" {assert_eq!(result.skipped,1);assert!(file.exists());assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"old target");continue}
+            assert_eq!(result.moved,1,"{:?}",result.retained_reasons);assert!(!file.exists());
+            let target=dest.join(if mode=="rename"{"a (1).txt"}else{"a.txt"});
+            assert_eq!(fs::read(&target).unwrap(),b"known bytes");assert_eq!(get_ea(&target),expected);
+            if mode=="rename"{assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"old target");}
+        }
+    }
+    #[test]
+    fn copied_move_cancel_before_commit_restores_readonly_source_and_ea() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");let expected=put_ea(&file,0,b"source EA");
+        let mut permissions=fs::metadata(&file).unwrap().permissions();permissions.set_readonly(true);fs::set_permissions(&file,permissions).unwrap();
+        let ctl=JobControl::new();let cancel=ctl.clone();BEFORE_TRANSACTION_COMMIT.with(|h|*h.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{control:Some(ctl),..Default::default()});
+        assert!(result.is_err());assert_eq!(fs::read(&file).unwrap(),b"known bytes");assert_eq!(get_ea(&file),expected);assert!(fs::metadata(&file).unwrap().permissions().readonly());
+        assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"known bytes");
+        for path in [&file,&dest.join("a.txt")] {let mut p=fs::metadata(path).unwrap().permissions();p.set_readonly(false);fs::set_permissions(path,p).unwrap();}
+    }
+    #[test]
+    fn copied_move_late_child_rolls_back_all_source_deletions() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let late=source.join("late");let added=late.clone();
+        BEFORE_TRANSACTION_DELETE.with(|h|*h.borrow_mut()=Some(Box::new(move||fs::write(added,b"foreign child").unwrap())));
+        assert!(transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).is_err());
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(),b"known bytes");assert!(source.join("empty").is_dir());assert_eq!(fs::read(late).unwrap(),b"foreign child");
+        assert_eq!(fs::read(dest.join("source/a.txt")).unwrap(),b"known bytes");
+    }
+    #[test]
+    fn copied_move_existing_ea_writer_retains_source_and_explains_failure() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");
+        let _writer=File::options().access_mode(0x18).share_mode(7).open(&file).unwrap();
+        let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
+        assert_eq!(result.moved,0);assert_eq!(result.copied,1);assert_eq!(result.retained_sources.len(),1);assert!(!result.retained_reasons.is_empty());
+        assert_eq!(fs::read(file).unwrap(),b"known bytes");assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"known bytes");
+    }
+    #[test]
+    fn copied_move_late_source_or_target_ads_never_deletes_unmatched_source() {
+        for change_target in [false,true] {
+            let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");let changed=if change_target{dest.join("a.txt")}else{file.clone()};
+            let late=format!("{}:late",changed.display());let write=late.clone();
+            BEFORE_MOVE.with(|h|*h.borrow_mut()=Some(Box::new(move||fs::write(write,b"new data").unwrap())));
+            let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
+            assert_eq!(result.moved,0);assert_eq!(result.retained_sources.len(),1);assert!(!result.retained_reasons.is_empty());
+            assert_eq!(fs::read(file).unwrap(),b"known bytes");assert_eq!(fs::read(late).unwrap(),b"new data");
+        }
+    }
+    #[test]
+    fn copied_move_target_ea_writer_blocks_delete_and_target_replacement_is_denied() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");let output=dest.join("a.txt");
+        let writer=std::rc::Rc::new(std::cell::RefCell::new(None));let saved=writer.clone();let target=output.clone();
+        BEFORE_MOVE.with(|h|*h.borrow_mut()=Some(Box::new(move||{
+            assert!(fs::rename(&target,target.with_extension("replaced")).is_err());
+            *saved.borrow_mut()=Some(File::options().access_mode(0x18).share_mode(7).open(&target).unwrap());
+        })));
+        let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
+        assert_eq!(result.moved,0);assert_eq!(result.retained_sources.len(),1);assert!(!result.retained_reasons.is_empty());
+        assert_eq!(fs::read(file).unwrap(),b"known bytes");assert_eq!(fs::read(output).unwrap(),b"known bytes");
+        writer.borrow_mut().take();
+    }
+    #[test]
+    fn copied_move_directory_skip_keeps_original_skipped_child_and_parent() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();
+        let competing=dest.join("source");
+        BEFORE_COPY.with(|h|*h.borrow_mut()=Some(Box::new(move||{fs::create_dir(&competing).unwrap();fs::write(competing.join("a.txt"),b"old target").unwrap();})));
+        fs::write(source.join("b.txt"),b"move this").unwrap();
+        let result=transfer(&[source.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions{overwrite:"skip".into(),..Default::default()}).unwrap();
+        assert_eq!(result.skipped,1);assert_eq!(result.retained_sources.len(),1);assert!(source.exists());
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(),b"known bytes");assert_eq!(fs::read(dest.join("source/a.txt")).unwrap(),b"old target");
+        assert!(!source.join("b.txt").exists());assert_eq!(fs::read(dest.join("source/b.txt")).unwrap(),b"move this");
+    }
+    #[test]
+    fn copied_move_unavailable_transaction_reports_retained_complete_source() {
+        let (_a,_b,source,dest,_force)=copy_move_setup();let file=source.join("a.txt");
+        super::super::file_workspace_transaction::FAIL_BEGIN.with(|value|value.set(true));
+        let result=transfer(&[file.display().to_string()],dest.to_str().unwrap(),true,&EngineOptions::default()).unwrap();
+        assert_eq!(result.moved,0);assert_eq!(result.copied,1);assert_eq!(result.retained_sources.len(),1);
+        assert!(result.retained_reasons.iter().any(|v|v.contains("不支持文件事务")));
+        assert_eq!(fs::read(file).unwrap(),b"known bytes");assert_eq!(fs::read(dest.join("a.txt")).unwrap(),b"known bytes");
+    }
     fn make_sparse(file:&File,eof:u64,with_data:bool) {
         use std::io::{Seek,SeekFrom};
         use super::super::file_workspace_sparse as sparse;
@@ -1320,11 +1560,8 @@ mod tests {
                 assert!(file.exists());
                 assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"old");
             } else {
-                assert_eq!(file.exists(), mode == "overwrite");
-                assert_eq!(
-                    result.retained_sources.len(),
-                    usize::from(mode == "overwrite")
-                );
+                assert!(!file.exists());
+                assert!(result.retained_sources.is_empty());
                 let target = dest.join(if mode == "rename" {
                     "a (1).txt"
                 } else {
@@ -1588,8 +1825,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.retained_sources.len(), 1);
-        assert_eq!(result.moved, 0);
-        assert!(source.join("a.txt").exists());
+        assert_eq!(result.moved, 2);
+        assert!(!source.join("a.txt").exists());
+        assert!(!source.join("empty").exists());
+        assert_eq!(fs::read(dest.join("source/a.txt")).unwrap(), b"known local bytes");
+        assert!(dest.join("source/empty").is_dir());
         assert_eq!(
             fs::read(format!("{}:late", source.display())).unwrap(),
             b"late directory stream"

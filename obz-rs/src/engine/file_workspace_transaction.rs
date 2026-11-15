@@ -61,6 +61,7 @@ pub(super) struct Transaction {
 }
 impl Transaction {
     pub(super) fn begin() -> Result<Self, String> {
+        #[cfg(test)] if FAIL_BEGIN.with(|value|value.replace(false)){return Err("测试模拟：磁盘不支持文件事务，保留来源".into())}
         let description: Vec<u16> = "qing-zip verified local move"
             .encode_utf16()
             .chain(Some(0))
@@ -421,7 +422,7 @@ mod tests {
             fn NtCreateFile(
                 out: *mut Handle,
                 access: u32,
-                attrs: *mut Attributes,
+                attrs: *const Attributes,
                 status: *mut Status,
                 size: *const i64,
                 attributes: u32,
@@ -437,7 +438,9 @@ mod tests {
         fs::write(&path, b"original").unwrap();
         let tx = Transaction::begin().unwrap();
         let locked = tx.lock(&path, identity(&path)).unwrap();
-        let text = format!("\\??\\{}", path.display());
+        let display=path.display().to_string();
+        let display=display.strip_prefix("\\\\?\\").unwrap_or(&display);
+        let text = format!("\\??\\{display}");
         let mut text = text.encode_utf16().collect::<Vec<_>>();
         let mut name = Unicode {
             length: (text.len() * 2) as u16,
@@ -476,10 +479,7 @@ mod tests {
             if result >= 0 && !handle.is_null() {
                 drop(unsafe { OwnedHandle::from_raw_handle(handle) });
             }
-            assert!(
-                result < 0,
-                "native access {access:#x} must not bypass transaction"
-            );
+            assert!(matches!(result as u32,0xc0000043|0xc0190001),"native access {access:#x} must be refused by transaction, got {result:#x}");
         }
         drop(locked);
         tx.rollback().unwrap();
@@ -595,3 +595,6 @@ mod tests {
         assert!(path.is_dir());
     }
 }
+
+#[cfg(test)]
+thread_local!{pub(super) static FAIL_BEGIN:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
