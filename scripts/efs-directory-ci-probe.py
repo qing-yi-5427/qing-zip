@@ -32,6 +32,55 @@ def backup_records(path):
     finally:
         actual=W.DWORD();K.BackupRead(h,None,0,C.byref(actual),True,False,C.byref(context));K.CloseHandle(h)
 
+EXPORT=C.WINFUNCTYPE(W.DWORD,C.c_void_p,C.c_void_p,W.ULONG)
+IMPORT=C.WINFUNCTYPE(W.DWORD,C.c_void_p,C.c_void_p,C.POINTER(W.ULONG))
+A.OpenEncryptedFileRawW.argtypes=[W.LPCWSTR,W.ULONG,C.POINTER(C.c_void_p)]
+A.OpenEncryptedFileRawW.restype=W.DWORD
+A.ReadEncryptedFileRaw.argtypes=[EXPORT,C.c_void_p,C.c_void_p]
+A.ReadEncryptedFileRaw.restype=W.DWORD
+A.WriteEncryptedFileRaw.argtypes=[IMPORT,C.c_void_p,C.c_void_p]
+A.WriteEncryptedFileRaw.restype=W.DWORD
+A.CloseEncryptedFileRaw.argtypes=[C.c_void_p]
+A.CloseEncryptedFileRaw.restype=None
+
+def raw_directory(source,target,precreate=False):
+    result={"flags_export":0,"flags_import":3,"precreated":precreate}
+    exported=bytearray();context=C.c_void_p()
+    @EXPORT
+    def take(data,unused,size):
+        if len(exported)+size>4*1024*1024:return 8
+        exported.extend(C.string_at(data,size));return 0
+    code=A.OpenEncryptedFileRawW(str(source),0,C.byref(context));result["open_export"]=code
+    if code:return result
+    try:result["read_raw"]=A.ReadEncryptedFileRaw(take,None,context)
+    finally:A.CloseEncryptedFileRaw(context)
+    result["export_bytes"]=len(exported)
+    if result["read_raw"]:return result
+    if precreate:target.mkdir()
+    context=C.c_void_p();code=A.OpenEncryptedFileRawW(str(target),3,C.byref(context));result["open_import"]=code
+    if code:return result
+    offset=0
+    @IMPORT
+    def supply(data,unused,size):
+        nonlocal offset
+        count=min(size[0],len(exported)-offset)
+        if count:C.memmove(data,bytes(exported[offset:offset+count]),count)
+        offset+=count;size[0]=count;return 0
+    try:result["write_raw"]=A.WriteEncryptedFileRaw(supply,None,context)
+    finally:A.CloseEncryptedFileRaw(context)
+    result["consumed_bytes"]=offset
+    if result["write_raw"]:return result
+    result["directory"]=state(target)
+    result["children_before_explicit_copy"]=[p.name for p in target.iterdir()]
+    result["checks"]={"empty_import_no_recursive_surprise":not any(target.iterdir()),
+      "encrypted":encrypted(target),"users_equal":keys(source)==keys(target),
+      "recovery_equal":keys(source,True)==keys(target,True),"ea_equal":ea(source)==ea(target),
+      "ads_equal":Path(str(target)+":meta").exists() and Path(str(target)+":meta").read_bytes()==Path(str(source)+":meta").read_bytes()}
+    # Preserve a pre-existing clear child when changing directory default policy.
+    plain=target/"existing-plain.txt";plain.write_bytes(b"test")
+    result["new_child_encrypted"]=encrypted(plain)
+    return result
+
 def state(path):
     value={"encrypted":encrypted(path),"attributes":K.GetFileAttributesW(str(path)),"backup":backup_records(path),"ea":ea(path).hex()}
     for recovery in [False,True]:
@@ -67,6 +116,9 @@ try:
           "source_directory_ads_preserved":Path(str(src)+":meta").read_bytes()==b"directory named data",
           "all_child_bytes_match":all((dst/p.name).read_bytes()==p.read_bytes() for p in [before,after])}
         require(all(receipt["checks"].values()),"directory policy expectation failed")
+        receipt["raw_directory_new"]=raw_directory(src,base/"raw-new")
+        receipt["raw_directory_existing"]=raw_directory(src,base/"raw-existing",True)
+        receipt["source_after_raw"]=state(src)
         receipt["status"]="passed"
 except Exception as error:receipt["error"]=str(error)
 finally:out.write_text(json.dumps(receipt,ensure_ascii=False,indent=2),encoding="utf-8")
