@@ -160,21 +160,23 @@ def non_efs_volume(base):
     setup = base / "attach-vhd.txt"
     setup.write_text(f'create vdisk file="{image}" maximum=64 type=expandable\n'
         f'select vdisk file="{image}"\nattach vdisk\ncreate partition primary\n'
-        f'format fs=fat32 quick label=QZ_EFS_CI\nassign letter={letter}\n', encoding="utf-8")
+        f'format fs=exfat quick label=QZ_EFS_CI\nassign letter={letter}\n', encoding="utf-8")
     try:
         result = subprocess.run(["diskpart", "/s", str(setup)], capture_output=True, text=True)
+        receipt["diskpart_setup"] = {"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
         require(result.returncode == 0, "isolated VHD preparation failed: "+result.stdout[-2000:])
         root = Path(letter+":/")
         filesystem = C.create_unicode_buffer(64)
         require(K.GetVolumeInformationW(str(root), None, 0, None, None, None, filesystem, 64),
                 "cannot query isolated VHD filesystem")
-        require(filesystem.value.upper() == "FAT32", "fixture destination is not FAT32")
+        require(filesystem.value.upper() == "EXFAT", "fixture destination is not exFAT")
         yield root
     finally:
         if image.exists():
             detach = base / "detach-vhd.txt"
             detach.write_text(f'select vdisk file="{image}"\ndetach vdisk\n', encoding="utf-8")
             result = subprocess.run(["diskpart", "/s", str(detach)], capture_output=True, text=True)
+            receipt["diskpart_detach"] = {"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
             require(result.returncode == 0, "isolated VHD detach failed")
 
 try:
@@ -242,30 +244,35 @@ try:
         require(not ok or encrypted(plaintext_target), "encryption-disabled directory accepted plaintext fallback")
         with non_efs_volume(base) as non_efs:
             plaintext_target = non_efs / "must-not-decrypt.bin"
-            require(encrypted(source) and keys(source) == source_keys, "source lost EFS before FAT test")
+            capability_probe = non_efs / "capability-probe.bin"
+            capability_probe.write_bytes(b"volume capability probe")
+            capability = location(capability_probe)
+            receipt["candidate_destination_capability"] = capability
+            receipt["unsupported_target_available"] = not capability["volume_supports_encryption"]
+            require(encrypted(source) and keys(source) == source_keys, "source lost EFS before volume test")
             ok, error = copy(source, plaintext_target)
-            native_plaintext_refused = not ok and not plaintext_target.exists()
-            receipt["fat32_copy"] = {"succeeded": ok, "error": error,
+            native_plaintext_refused = (not ok and not plaintext_target.exists()) if receipt["unsupported_target_available"] else None
+            receipt["candidate_volume_copy"] = {"succeeded": ok, "error": error,
                 "target_exists": plaintext_target.exists(),
                 "target_encrypted": encrypted(plaintext_target) if plaintext_target.exists() else None,
                 "target_content_matches": digest(plaintext_target) == original if plaintext_target.exists() else None,
                 "source_encrypted_before": True}
             if plaintext_target.exists():
-                receipt["fat32_copy"]["actual_location"] = location(plaintext_target)
-                guid_path = receipt["fat32_copy"]["actual_location"]["volume_guid_path"]
+                receipt["candidate_volume_copy"]["actual_location"] = location(plaintext_target)
+                guid_path = receipt["candidate_volume_copy"]["actual_location"]["volume_guid_path"]
                 guid_root = guid_path.split("}\\", 1)[0] + "}\\"
                 volume_info = subprocess.run(["fsutil", "fsinfo", "volumeinfo", guid_root], capture_output=True, text=True)
-                receipt["fat32_copy"]["fsutil_volumeinfo"] = {"exit": volume_info.returncode, "stdout": volume_info.stdout, "stderr": volume_info.stderr}
+                receipt["candidate_volume_copy"]["fsutil_volumeinfo"] = {"exit": volume_info.returncode, "stdout": volume_info.stdout, "stderr": volume_info.stderr}
                 cipher_info = subprocess.run(["cipher", "/c", str(plaintext_target)], capture_output=True, text=True)
-                receipt["fat32_copy"]["cipher_readonly_info"] = {"exit": cipher_info.returncode, "stdout": cipher_info.stdout, "stderr": cipher_info.stderr}
+                receipt["candidate_volume_copy"]["cipher_readonly_info"] = {"exit": cipher_info.returncode, "stdout": cipher_info.stdout, "stderr": cipher_info.stderr}
                 try:
-                    receipt["fat32_copy"]["same_user_keys"] = keys(plaintext_target) == source_keys
+                    receipt["candidate_volume_copy"]["same_user_keys"] = keys(plaintext_target) == source_keys
                 except RuntimeError as query_error:
-                    receipt["fat32_copy"]["key_query_error"] = str(query_error)
+                    receipt["candidate_volume_copy"]["key_query_error"] = str(query_error)
         require(digest(source) == original and encrypted(source) and keys(source) == source_keys,
                 "refused plaintext fallback changed source")
         receipt["plaintext_fallback_rejection_error"] = error
-        receipt["checks"]["fat32_target_rejects_plaintext_fallback"] = native_plaintext_refused
+        receipt["checks"]["unsupported_target_rejects_plaintext_fallback"] = native_plaintext_refused
 
         existing = private / "existing.bin"
         existing.write_bytes(b"existing target must survive")
