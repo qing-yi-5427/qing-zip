@@ -22,6 +22,14 @@ struct HintScope;
 impl Drop for HintScope {
     fn drop(&mut self) { HINTS.with(|hints| { hints.borrow_mut().pop(); }); }
 }
+// A scope hint is only a routing hint; the native worker re-proves the layout
+// from the exact pinned handle it will read. Ordinary files incur no new probe.
+pub(super) fn positioned_zip_hint(path: &Path) -> bool {
+    HINTS.with(|hints| hints.borrow().iter().rev().find(|(input, _)| input == path)
+        .and_then(|(_,hint)| hint.strip_prefix("-tzip:s"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|limit| limit > 8 * 1024 * 1024))
+}
 pub(super) fn apply_read_hint(args: &mut Vec<String>) {
     if !matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) { return; }
     HINTS.with(|hints| {

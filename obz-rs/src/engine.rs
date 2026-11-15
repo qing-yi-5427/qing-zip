@@ -786,6 +786,13 @@ fn read_directory(
     ctl.set("listing", None, "Reading archive directory");
     let raw_format = crate::stream_formats::raw_format(path);
     if raw_format.is_some() { crate::stream_formats::validate_raw_options(opts)?; }
+    #[cfg(nana_selected_worker)]
+    if raw_format.is_none() && zip_volume_view::positioned_zip_hint(&absolute(path)?) {
+        if let Some(entries) = selected_worker::zip_listing::try_list(source, opts, &ctl)? {
+            ctl.set("complete", Some(100), "Archive directory ready");
+            return Ok((entries, PayloadSource::Engine));
+        }
+    }
     let probe = if raw_format.is_none() && crate::machine_policy::scope().handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
         Some(crate::zealfs_guard::SourceProbe::read(source)?)
     } else { None };

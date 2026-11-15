@@ -101,12 +101,21 @@ pub(super) fn zip_search_limit(file: &mut File, ctl: &JobControl, deep: bool) ->
 pub(super) struct SelectedLayout {
     pub start: u64,
     pub end: u64,
+    pub count: u64,
+    pub first_local: u64,
     search_limit: u64,
 }
 // Stronger than format identification: every payload is contiguous, with the
 // exact same conservative fields/extras admitted by the ordinary ZIP reader.
 pub(super) fn selected_layout(file: &mut File, ctl: &JobControl) -> Result<Option<SelectedLayout>, String> {
     let result = probe(file, ctl, true, true);
+    file.rewind().map_err(|e| e.to_string())?;
+    result
+}
+// Identification proof for positioned read-only listing, including AES and
+// non-contiguous layouts. This never authorizes payload publication.
+pub(super) fn list_layout(file: &mut File, ctl: &JobControl) -> Result<Option<SelectedLayout>, String> {
+    let result = probe(file, ctl, false, false);
     file.rewind().map_err(|e| e.to_string())?;
     result
 }
@@ -279,7 +288,7 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
         }
         if previous != directory_start { return Ok(None); }
     }
-    Ok(Some(SelectedLayout { start: base,
+    Ok(Some(SelectedLayout { start: base, count, first_local,
         end: tail_start + at as u64 + 22 + u64::from(zip_u16(end, 20)),
         search_limit: first_local.checked_add(1).ok_or("ZIP search offset overflow")? }))
 }
