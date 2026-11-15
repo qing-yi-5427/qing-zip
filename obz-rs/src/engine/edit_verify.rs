@@ -24,21 +24,19 @@ pub(super) fn ordinary_zip(path: &Path, opts: &EngineOptions) -> Result<bool, St
         bytes.extend_from_slice(&chunk[..n]);
     }
     if bytes.len() != length as usize { return Err("ZIP proposal changed".into()); }
-    let count = {
-        let archive = match zip::ZipArchive::new(std::io::Cursor::new(&bytes)) {
-            Ok(archive) => archive,
-            Err(_) => return Ok(false),
-        };
-        if archive.offset() != 0 || archive.has_duplicate_names() {
-            return Ok(false);
-        }
-        archive.len()
-    };
+    if bytes.len() < 22 { return Ok(false); }
+    // Enforce layout/count bounds before ZipArchive allocates member metadata.
+    let Some(end) = (bytes.len().saturating_sub(65557)..=bytes.len() - 22).rev().find(|&i| {
+        bytes[i..i + 4] == *b"PK\x05\x06"
+            && i + 22 + zip_u16(&bytes, i + 20) as usize == bytes.len()
+    }) else { return Ok(false); };
+    let count = zip_u16(&bytes, end + 10) as usize;
     if !ordinary_zip_layout_count(&bytes, count) {
         return Ok(false);
     }
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).map_err(|e| e.to_string())?;
-    if archive.validate_header_consistency().is_err() {
+    if archive.len() != count || archive.offset() != 0 || archive.has_duplicate_names()
+        || archive.validate_header_consistency().is_err() {
         return Ok(false);
     }
     // Qualify every member before using this decoder. Do not reinterpret
@@ -149,6 +147,20 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         bytes.extend_from_slice(b"trailing bytes");
         fs::write(&path, bytes).unwrap();
+        assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
+    }
+
+    #[test]
+    fn edited_zip_many_empty_members_keep_native_verification() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("many.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        for i in 0..=MEMORY_ZIP_ENTRY_LIMIT {
+            writer.start_file(format!("item-{i}.txt"), zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)).unwrap();
+        }
+        writer.finish().unwrap();
+        assert!(path.metadata().unwrap().len() < 8 * 1024 * 1024);
         assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
     }
 
