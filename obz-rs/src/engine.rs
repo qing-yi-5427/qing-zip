@@ -90,9 +90,31 @@ impl Drop for PhaseTimer {
     fn drop(&mut self) { if let Some(start)=self.1 {eprintln!("OA_PHASE {} {:.6}",self.0,start.elapsed().as_secs_f64());} }
 }
 
+/// Official p/q/r/x/y/z/w actions, with the existing Add behavior as default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    #[default]
+    Add,
+    Update,
+    Fresh,
+    Sync,
+}
+impl UpdateMode {
+    fn actions(self) -> &'static str {
+        match self {
+            Self::Add => "p1q1r2x2y2z2w2",
+            Self::Update => "p1q1r2x1y2z1w2",
+            Self::Fresh => "p1q1r0x1y2z1w2",
+            Self::Sync => "p1q0r2x1y2z1w2",
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
+    pub update_mode: UpdateMode,
     pub password: Option<String>,
     pub codepage: Option<u32>,
     pub threads: Option<u32>,
@@ -117,6 +139,7 @@ pub struct EngineOptions {
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
+            update_mode: UpdateMode::Add,
             password: None,
             codepage: None,
             threads: None,
@@ -4782,6 +4805,9 @@ pub fn update(
     if inputs.is_empty() {
         return Err("no update entries".into());
     }
+    if action != "add" && opts.update_mode != UpdateMode::Add {
+        return Err("更新模式仅适用于添加文件".into());
+    }
     let command = match action {
         "add" => "a",
         "delete" => "d",
@@ -4817,10 +4843,14 @@ pub fn update(
     #[cfg(not(windows))]
     let direct = false;
     let mut a = base(command, opts)?;
+    let actions = if action == "add" && opts.update_mode != UpdateMode::Add {
+        opts.update_mode.actions()
+    } else { "" };
     if direct {
-        a.extend(["-u-".to_owned(), format!("-u!{}", staged.display())]);
+        a.extend(["-u-".to_owned(), format!("-u{actions}!{}", staged.display())]);
     } else {
         fs::copy(&path, &staged).map_err(|e| e.to_string())?;
+        if !actions.is_empty() { a.push(format!("-u{actions}")); }
     }
     let names = if action == "add" {
         {
@@ -4858,6 +4888,10 @@ pub fn update(
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
     run(&a, None, opts, None)?;
+    #[cfg(test)]
+    update_modes_tests::AFTER_ENGINE.with(|hook| {
+        if let Some(run) = hook.borrow_mut().take() { run(&staged); }
+    });
     if !edit_verify::ordinary_zip(&staged, opts)? {
         test(staged.to_str().ok_or("invalid archive path")?, opts)?;
     }
@@ -8052,3 +8086,6 @@ mod staging_tests {
         assert!(verify_stage(t.path(), &expected, &JobControl::new()).is_err());
     }
 }
+
+#[cfg(test)]
+mod update_modes_tests;

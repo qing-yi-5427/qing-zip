@@ -116,6 +116,9 @@ pub fn execute(r: Request) -> Result<Value, String> {
 
 /// No shell commands or arbitrary application execution are accepted here.
 pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
+    if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
+        return Err("更新模式仅适用于添加文件".into());
+    }
     let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
