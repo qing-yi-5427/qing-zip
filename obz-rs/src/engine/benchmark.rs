@@ -35,7 +35,7 @@ fn args(options: &Options) -> Result<Vec<String>, String> {
         return Err("基准测试参数无效：线程 1–256，字典指数 18–28，轮数 1–20".into());
     }
     Ok(vec!["b".into(), options.iterations.to_string(),
-        format!("-mmt{}", options.threads), format!("-md{}", options.dictionary_log),
+        format!("-mmt{}", options.threads), format!("-mdf={}", options.dictionary_log),
         "-bt".into(), "-sccUTF-8".into()])
 }
 fn scores(report: &str) -> Result<(Score, Score), String> {
@@ -76,7 +76,7 @@ mod tests {
         for (threads, dictionary_log, iterations) in [(0,24,1),(257,24,1),(1,17,1),(1,29,1),(1,24,0),(1,24,21)] {
             assert!(args(&Options { threads, dictionary_log, iterations }).is_err());
         }
-        assert_eq!(&args(&Options::default()).unwrap()[..4], &["b","1","-mmt2","-md24"]);
+        assert_eq!(&args(&Options::default()).unwrap()[..4], &["b","1","-mmt2","-mdf=24"]);
     }
     #[test]
     fn requires_complete_numeric_engine_results() {
