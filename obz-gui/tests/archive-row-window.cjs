@@ -84,7 +84,7 @@ test('the archive view uses the window only for large details and keeps icon thu
   const excerpt=app.slice(app.indexOf('const windowThreshold'),app.indexOf('\n}',app.indexOf('function rows() {'))+2);
   const table={attributes:{},classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v}};
   const body={closest:()=>table,innerHTML:''};
-  const state={selected:new Set(),listStyle:'details'},calls=[];
+  const state={selected:new Set(),listStyle:'details',entries:[],search:''},calls=[];
   const env={ArchiveColumns:require('../frontend/archive-columns.js'),columns:require('../frontend/archive-columns.js').normalize(null),entryType:()=>'PNG',s:state,main:{},document:{activeElement:null},listingWindow:null,
     $:()=>body,positionsFor:l=>new Map(l.map((e,i)=>[e.name,i])),visibleEntries:()=>env.list,
     refreshSelection:()=>calls.push('selection'),stopThumbnailObserver:()=>calls.push('stop'),observeThumbnails:()=>calls.push('observe'),
@@ -102,4 +102,7 @@ test('the archive view uses the window only for large details and keeps icon thu
   env.list=entries(64);env.rows();assert.equal(calls.at(-1),'observe');assert.equal(env.listingWindow,null);
   assert.equal((body.innerHTML.match(/data-thumbnail=/g)||[]).length,64);
   state.listStyle='details';env.list=[];env.rows();assert.ok(body.innerHTML.includes('colspan="6"'));assert.equal(calls.at(-1),'stop');
+  assert.ok(body.innerHTML.includes('此压缩包为空'));
+  state.entries=entries(1);env.rows();assert.ok(body.innerHTML.includes('此文件夹为空'));
+  state.search='missing';env.rows();assert.ok(body.innerHTML.includes('没有匹配的文件'));
 });

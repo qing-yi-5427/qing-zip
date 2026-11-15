@@ -5,6 +5,7 @@ param(
     [string]$TargetDirectory,
     [string]$CargoPath = 'cargo',
     [string]$PythonPath = 'python',
+    [string]$NodePath = 'node',
     [switch]$RunTests
 )
 
@@ -73,6 +74,9 @@ try {
         Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('build', '--release', '--bins') + $targetArguments + @('--manifest-path', $manifest)) -Failure "Hardened build failed: $manifest"
     }
     if ($RunTests) {
+        $frontendTests = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'obz-gui/tests') -Filter '*.cjs' -File | Sort-Object Name | ForEach-Object FullName)
+        if (!$frontendTests.Count) { throw 'Frontend test files are missing' }
+        Invoke-HardenedNative -Command $NodePath -Arguments (@('--test') + $frontendTests) -Failure 'Frontend tests failed'
         # Worker lifecycle tests must execute this build's helper, never a stale
         # adjacent executable left by an earlier test run.
         Invoke-HardenedNative -Command $CargoPath -Arguments ($commonArguments + @('build', '--bins') + $targetArguments + @('--manifest-path', 'obz-rs/Cargo.toml')) -Failure 'Debug worker build failed'
@@ -103,6 +107,7 @@ try {
         config = $configPath
         audit = $auditPath
         tests_run = [bool]$RunTests
+        frontend_tests_run = [bool]$RunTests
         binaries = @($corePath, $workerPath, $guiPath | ForEach-Object {
             [ordered]@{ name = [IO.Path]::GetFileName($_); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
         })

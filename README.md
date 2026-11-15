@@ -53,7 +53,7 @@ x64 版支持 Windows 10 2004（19041）及以上版本和 Windows 11。Windows 
 
 ## 构建
 
-需要 Rust stable、Visual Studio C++ Build Tools、Python 3.10+，以及 NSIS 3.11+（构建安装版时使用）。
+需要 Rust stable、Visual Studio C++ Build Tools、Python 3.10+，以及 NSIS 3.11+（构建安装版时使用）。运行完整测试还需要 Node.js。
 
 ```powershell
 ./scripts/build.ps1 -NsisPath "C:/path/to/NSIS/makensis.exe"
