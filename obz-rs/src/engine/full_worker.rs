@@ -62,6 +62,13 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
     let mut magic=[0u8;4];probe.rewind().map_err(|e|e.to_string())?;
     if probe.read_exact(&mut magic).is_err(){return Ok(None);}
     let mode:u32=if magic==*b"PK\x03\x04" || magic==*b"PK\x05\x06" {
+        // Exclusion only: this EOCD count grants no payload or output access.
+        // Ineligible jobs retain the original complete listing and CRC checks;
+        // avoid rewalking every central/local header solely to decline them.
+        if zip_volume_view::single_disk_record(&mut probe)?
+            .is_some_and(|record| !record.zip64 && usize::from(record.entries)>MAX_OUTPUT_HANDLES) {
+            return Ok(None);
+        }
         let Some(layout)=zip_input_probe::list_layout(&mut probe,ctl)? else{return Ok(None)};
         // This is a decline-only hint, never authority to publish. Counts include
         // directories; conservative declines retain the complete original listing
@@ -267,6 +274,23 @@ mod tests {
         assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
     }
 
+    #[test]
+    fn over_limit_count_is_only_a_decline_hint_and_cannot_hide_bad_crc() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("many.zip");
+        let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());
+        for i in 0..513 {zip.start_file(format!("{i}.txt"),zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();zip.write_all(b"abc").unwrap();}
+        zip.finish().unwrap();
+        let offset={let mut zip=zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();zip.by_index(512).unwrap().data_start()};
+        let mut bytes=fs::read(&archive).unwrap();bytes[offset as usize]^=1;fs::write(&archive,bytes).unwrap();
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        let opts=EngineOptions::default();let ctl=JobControl::new();
+        assert!(prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().is_none());
+        assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
+        drop(source);
+        let dest=temp.path().join("out");
+        assert!(extract(archive.to_str().unwrap(),dest.to_str().unwrap(),&opts).is_err());
+        assert!(!dest.exists() || fs::read_dir(dest).unwrap().next().is_none());
+    }
     #[test]
     fn encrypted_header_without_password_declines_and_reaps_before_output() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("encrypted.7z");
