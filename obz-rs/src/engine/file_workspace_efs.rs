@@ -160,7 +160,7 @@ fn keys(path: &Path, recovery: bool) -> Result<Vec<Vec<u8>>, String> {
     Ok(result)
 }
 fn ea(file: &File) -> Result<Vec<u8>, String> {
-    let mut bytes = vec![0u8; file_workspace_ea::MAX_EA_BYTES];
+    let mut words = vec![0u64; file_workspace_ea::MAX_EA_BYTES/8];
     let mut status = Status {
         status: 0,
         information: 0,
@@ -169,8 +169,8 @@ fn ea(file: &File) -> Result<Vec<u8>, String> {
         NtQueryEaFile(
             file.as_raw_handle(),
             &mut status,
-            bytes.as_mut_ptr(),
-            bytes.len() as u32,
+            words.as_mut_ptr().cast(),
+            (words.len()*8) as u32,
             0,
             std::ptr::null(),
             0,
@@ -181,12 +181,20 @@ fn ea(file: &File) -> Result<Vec<u8>, String> {
     if code as u32 == 0xc0000052 {
         return Ok(Vec::new());
     }
-    if code != 0 || status.information > bytes.len() {
+    if code != 0 || status.information > words.len()*8 {
         return Err(format!("读取EFS扩展属性失败：{code:#x}"));
     }
-    bytes.truncate(status.information);
+    let bytes=unsafe{std::slice::from_raw_parts(words.as_ptr().cast::<u8>(),status.information)}.to_vec();
     file_workspace_ea::validate(0, 0, &bytes, || Ok(()))?;
     Ok(bytes)
+}
+fn set_ea(file:&File,bytes:&[u8])->Result<(),String>{
+    file_workspace_ea::validate(0,0,bytes,||Ok(()))?;
+    let mut aligned=vec![0u32;bytes.len().div_ceil(4)];
+    unsafe{std::ptr::copy_nonoverlapping(bytes.as_ptr(),aligned.as_mut_ptr().cast::<u8>(),bytes.len());}
+    let mut status=Status{status:0,information:0};
+    let code=unsafe{NtSetEaFile(file.as_raw_handle(),&mut status,aligned.as_ptr().cast(),bytes.len() as u32)};
+    if code!=0{return Err(format!("EFS私有目标扩展属性恢复失败：{code:#x}"));}Ok(())
 }
 fn stream_names(file: &File) -> Result<Vec<(Vec<u16>, u64)>, String> {
     let mut words = vec![0u64; 512];
@@ -260,13 +268,19 @@ struct Snapshot {
 fn snapshot(file: &File, ctl: &JobControl) -> Result<Snapshot, String> {
     ctl.check()?;
     identity(file.as_raw_handle())?;
-    if file
+    let encrypted = file
         .metadata()
         .map_err(|e| e.to_string())?
         .file_attributes()
         & 0x4000
-        == 0
-    {
+        != 0;
+    #[cfg(test)]
+    let encrypted = encrypted
+        && !(TARGET_STATE_FAULT.with(|v| v.get()) == 1
+            && path(file)?
+                .file_name()
+                .is_some_and(|n| n == "encrypted-native-output"));
+    if !encrypted {
         return Err("目标未保持EFS加密，拒绝发布".into());
     }
     let names = stream_names(file)?;
@@ -320,6 +334,17 @@ fn snapshot(file: &File, ctl: &JobControl) -> Result<Snapshot, String> {
     let path = path(file)?;
     for recovery in [false, true] {
         let keys = keys(&path, recovery)?;
+        #[cfg(test)]
+        let keys = if !recovery
+            && TARGET_STATE_FAULT.with(|v| v.get()) == 2
+            && path
+                .file_name()
+                .is_some_and(|n| n == "encrypted-native-output")
+        {
+            Vec::new()
+        } else {
+            keys
+        };
         if !recovery && keys.is_empty() {
             return Err("EFS缺少授权用户证书".into());
         }
@@ -470,21 +495,7 @@ pub(crate) fn prepare(
         return Err("EFS原生目标身份变化".into());
     }
     if !expected.ea.is_empty() {
-        let mut status = Status {
-            status: 0,
-            information: 0,
-        };
-        let code = unsafe {
-            NtSetEaFile(
-                file.as_raw_handle(),
-                &mut status,
-                expected.ea.as_ptr(),
-                expected.ea.len() as u32,
-            )
-        };
-        if code != 0 {
-            return Err(format!("EFS私有目标扩展属性恢复失败：{code:#x}"));
-        }
+        set_ea(&file,&expected.ea)?;
     }
     let prepared = Prepared {
         file,
@@ -497,7 +508,10 @@ pub(crate) fn prepare(
 }
 
 #[cfg(test)]
-thread_local! {static CANCEL_NATIVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+thread_local! {
+    static CANCEL_NATIVE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};
+    static TARGET_STATE_FAULT:std::cell::Cell<u8>=const{std::cell::Cell::new(0)};
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,21 +578,7 @@ mod tests {
                     .open(&source)
                     .unwrap();
                 let payload = [0, 0, 0, 0, 0x80, 1, 3, 0, b'A', 0, 1, 2, 3];
-                let mut status = Status {
-                    status: 0,
-                    information: 0,
-                };
-                assert_eq!(
-                    unsafe {
-                        NtSetEaFile(
-                            file.as_raw_handle(),
-                            &mut status,
-                            payload.as_ptr(),
-                            payload.len() as u32,
-                        )
-                    },
-                    0
-                );
+                set_ea(&file,&payload).unwrap();
                 ea(&file).unwrap()
             };
             let prepared = prepare(&source, &dest, &parent(&dest), &JobControl::new()).unwrap();
@@ -609,5 +609,34 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
         assert_eq!(std::fs::read(&source).unwrap(), vec![0x51; 1024 * 1024]);
+    }
+    #[test]
+    #[ignore = "creates EFS only in disposable CI; encryption/key failure uses explicit fault injection"]
+    fn ci_efs_target_encryption_and_key_rejection_discards_private_output() {
+        for fault in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            let dest = temp.path().join("dest");
+            std::fs::write(&source, b"real encrypted source").unwrap();
+            std::fs::create_dir(&dest).unwrap();
+            encrypt_ci_fixture(&source);
+            TARGET_STATE_FAULT.with(|v| v.set(fault));
+            let result = prepare(&source, &dest, &parent(&dest), &JobControl::new());
+            TARGET_STATE_FAULT.with(|v| v.set(0));
+            let error = match result {
+                Ok(_) => panic!("injected EFS downgrade was accepted"),
+                Err(e) => e,
+            };
+            assert!(
+                error.contains(if fault == 1 {
+                    "未保持EFS加密"
+                } else {
+                    "缺少授权用户证书"
+                }),
+                "{error}"
+            );
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            assert_eq!(std::fs::read(source).unwrap(), b"real encrypted source");
+        }
     }
 }
