@@ -14,6 +14,7 @@ pub(crate) fn recover_interrupted_edit(path:&std::path::Path)->Result<bool,Strin
 mod zip_preview;
 #[cfg(windows)]
 mod update_list;
+mod edit_verify;
 pub use zip_preview::ZipPreviewBatch;
 #[cfg(windows)]
 pub use crate::engine_stream::canonical_input_path;
@@ -1881,6 +1882,14 @@ fn ordinary_zip_file_layout(
     entries: &[Entry],
     ctl: &JobControl,
 ) -> Result<bool, String> {
+    ordinary_zip_file_layout_count(source, entries.len(), ctl)
+}
+
+fn ordinary_zip_file_layout_count(
+    source: &mut File,
+    entry_count: usize,
+    ctl: &JobControl,
+) -> Result<bool, String> {
     fn at(source: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         source
             .seek(SeekFrom::Start(offset))
@@ -1890,7 +1899,7 @@ fn ordinary_zip_file_layout(
         Ok(bytes)
     }
     let size = source.metadata().map_err(|e| e.to_string())?.len();
-    if !(22..u32::MAX as u64).contains(&size) || entries.len() > MEMORY_ZIP_ENTRY_LIMIT {
+    if !(22..u32::MAX as u64).contains(&size) || entry_count > MEMORY_ZIP_ENTRY_LIMIT {
         return Ok(false);
     }
     let tail_len = size.min(65557) as usize;
@@ -1905,8 +1914,8 @@ fn ordinary_zip_file_layout(
     let length = zip_u32(eocd, 12) as usize;
     if zip_u16(eocd, 4) != 0
         || zip_u16(eocd, 6) != 0
-        || zip_u16(eocd, 8) as usize != entries.len()
-        || zip_u16(eocd, 10) as usize != entries.len()
+        || zip_u16(eocd, 8) as usize != entry_count
+        || zip_u16(eocd, 10) as usize != entry_count
         || length > 8 * 1024 * 1024
         || central + length as u64 != size - tail_len as u64 + end as u64
     {
@@ -1914,8 +1923,8 @@ fn ordinary_zip_file_layout(
     }
     let directory = at(source, central, length)?;
     let mut cursor = 0;
-    let mut ranges = Vec::with_capacity(entries.len());
-    for _ in entries {
+    let mut ranges = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
         ctl.check()?;
         if cursor + 46 > length || directory[cursor..cursor + 4] != *b"PK\x01\x02" {
             return Ok(false);
@@ -4777,7 +4786,9 @@ pub fn update(
     let ctl = control(opts);
     ctl.set("updating", None, "Updating a temporary archive copy");
     run(&a, None, opts, None)?;
-    test(staged.to_str().ok_or("invalid archive path")?, opts)?;
+    if !edit_verify::ordinary_zip(&staged, opts)? {
+        test(staged.to_str().ok_or("invalid archive path")?, opts)?;
+    }
     ctl.check()?;
     no_links(&path)?;
     #[cfg(windows)]
