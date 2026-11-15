@@ -135,12 +135,17 @@ fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -
     Ok(())
 }
 fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
+    if let Some(id)=request.password_id.take() {
+        if request.options.password.is_some(){return Err("choose password or password_id, not both".into());}
+        request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.get(&id)?);
+    }
+    if request.operation == "nested-open" { return crate::nested::open_job(request.path,request.name,request.options); }
     if request.operation == "nested-save" { return crate::nested::save_job(&request.path, control); }
     crate::nested::validate_request(&request, recycle_after)?;
     let edit_path = request.path.clone();
-    let receipt = obz_core::engine::nested::EditReceipt::capture(&mut request.options);
+    let receipt = crate::nested::track(&mut request);
     let result = execute_archive_job(request, recycle_after, control);
-    if let Some(revision) = receipt.take() { crate::nested::committed(&edit_path, &revision); }
+    if let Some(revision) = receipt.and_then(|r|r.take()) { crate::nested::committed(&edit_path, &revision); }
     result
 }
 
