@@ -778,19 +778,28 @@ pub fn transfer(
                 // pins deny DELETE sharing; release that old access, immediately
                 // pin again and require the identical source before publication.
                 node.handle.take();
-                let parent_pin=&guards.held.get(parent).ok_or("missing EFS destination guard")?.0;
-                let prepared=super::file_workspace_efs::prepare(&node.path,parent,parent_pin,&ctl)?;
+                guards.check_prepared(parent)?;
+                let held=&guards.held.get(parent).ok_or("missing EFS destination guard")?.0;
+                let parent_pin=File::options().access_mode(0x200a0).share_mode(3)
+                    .custom_flags(0x02200000).open(parent).map_err(|e|e.to_string())?;
+                let (parent_id,parent_attrs)=directory_identity_and_attributes(&parent_pin)?;
+                if directory_identity(held)?!=parent_id || parent_attrs&0x410!=0x10 {
+                    return Err("EFS destination parent identity changed".into());
+                }
+                let prepared=super::file_workspace_efs::prepare_bound(&node.path,parent,&parent_pin,&ctl,Some(expected_source))?;
                 if directory_identity(prepared.source())? != expected_source {
                     return Err("EFS source identity changed before copy".into());
                 }
                 node.handle=Some(prepared.source().try_clone().map_err(|e|e.to_string())?);
+                let expected_digest=prepared.digest();
                 let output=prepared.publish(&target,opts.overwrite=="overwrite",&ctl)?;
+                result.copied+=1;
                 let id=directory_identity(&output)?;
                 drop(output);
                 let pin=crate::engine_stream::pin(&target)?;
                 if directory_identity(&pin)?!=id{return Err("published EFS target identity changed".into());}
+                super::file_workspace_efs::verify_published(&pin,expected_digest,&ctl)?;
                 published.push(pin);
-                result.copied+=1;
                 if moving {result.retained_reasons.push(format!("{}：EFS副本已验证，跨卷来源保留",node.path.display()));}
                 // EFS key/stream proofs are intentionally not sent to the
                 // ordinary BackupRead cross-volume source deletion finalizer.
