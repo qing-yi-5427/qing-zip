@@ -1440,7 +1440,7 @@ mod file_publication {
         if !ordinary_aces(policy.0)? {
             return Ok(FilePublication::Unavailable);
         }
-        let permissions = match token().and_then(|token| output::ordinary_permissions(target_parent, &token)) {
+        let permissions = match token().and_then(|token| output::ordinary_permissions_from_descriptor(policy.0, &token, false)) {
             Ok(value) => value,
             Err(_) => return Ok(FilePublication::Unavailable),
         };
@@ -1479,13 +1479,13 @@ mod file_publication {
         let mut pending = None;
         let transition = (|| -> Result<Result<(),String>,String> {
             let current = descriptor(target_parent)?;
-            if !ordinary_aces(current.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions(target_parent, &token()?)?.0)? {
+            if !ordinary_aces(current.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions_from_descriptor(current.0, &token()?, false)?.0)? {
                 return Err("destination permissions changed; verified file was not published".into());
             }
             step(Step::ApplyTarget)?;
             apply_native(&file, &permissions)?;
             let fresh=descriptor(target_parent)?;
-            if !ordinary_aces(fresh.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions(target_parent, &token()?)?.0)? {
+            if !ordinary_aces(fresh.0)? || !output::same_file_permissions(permissions.0, output::ordinary_permissions_from_descriptor(fresh.0, &token()?, false)?.0)? {
                 return Err("destination permissions changed; verified file was not published".into());
             }
             if info(&file)?[10] != 1 || output::output_marker(&file)? != marker {
@@ -1817,6 +1817,48 @@ mod file_publication {
                 if let Some(sd)=changed {assert_eq!(security(&open(f.target.parent().unwrap(),0x20080,7)),sd);}
                 assert!(!fs::read_dir(f.target.parent().unwrap()).unwrap().any(|e|e.unwrap().file_name().to_string_lossy().starts_with(".qing-zip-output-")));
             }
+        }
+
+        #[test]
+        fn file_publication_snapshot_derivation_and_late_cancel_do_not_replay_permissions() {
+            let mut f=Fixture::new(false); f.legacy_parent();
+            let parent=open(f.target.parent().unwrap(),0x60081,3);
+            let captured=descriptor(&parent).unwrap();
+            let before=output::ordinary_permissions_from_descriptor(captured.0,&token().unwrap(),false).unwrap();
+            policy(&parent,true);
+            let after=output::ordinary_permissions_from_descriptor(captured.0,&token().unwrap(),false).unwrap();
+            assert!(output::same_file_permissions(before.0,after.0).unwrap());
+            assert!(matches!(f.run(false,&mut || Ok(()),&mut |_| Ok(())).unwrap(),FilePublication::Unavailable));
+            f.unchanged(); assert!(!f.target.exists());
+            drop(parent);
+            let mut f=Fixture::new(false); f.legacy_parent(); let mut calls=0;
+            let result=f.run(false,&mut || {calls+=1;if calls==3 {Err("cancelled at final rename".into())} else {Ok(())}},&mut |_| Ok(()));
+            assert!(matches!(result,Err(e) if e.contains("cancelled at final rename")));
+            assert_eq!(calls,3);assert!(!f.target.exists());f.archive_intact();
+            assert!(!fs::read_dir(f.target.parent().unwrap()).unwrap().any(|e|e.unwrap().file_name().to_string_lossy().starts_with(".qing-zip-output-")));
+        }
+
+        #[test]
+        fn file_publication_legacy_final_callback_permission_change_is_not_overwritten() {
+            let mut f=Fixture::new(false);f.legacy_parent();let mut calls=0;
+            let result=f.run(false,&mut || {
+                calls+=1;
+                if calls==3 {
+                    let parent=open(f.target.parent().unwrap(),0x60081,3);
+                    policy(&parent,true);
+                    let sd=descriptor(&parent)?;
+                    let (mut present,mut defaulted,mut dacl)=(0,0,std::ptr::null_mut());
+                    assert_ne!(unsafe {GetSecurityDescriptorDacl(sd.0,&mut present,&mut dacl,&mut defaulted)},0);
+                    assert_eq!(unsafe {SetSecurityInfo(parent.as_raw_handle(),1,4|0x2000_0000,std::ptr::null_mut(),std::ptr::null_mut(),dacl,std::ptr::null_mut())},0);
+                }
+                Ok(())
+            },&mut |_| Ok(()));
+            let FilePublication::Committed(file)=result.unwrap() else {panic!("must commit or reject changed parent");};
+            let ordinary=f.target.parent().unwrap().join("late-native");fs::write(&ordinary,b"control").unwrap();
+            let expected=descriptor(&open(&ordinary,0x20080,7)).unwrap();
+            let actual=descriptor(&file).unwrap();
+            assert!(output::same_file_permissions(actual.0,expected.0).unwrap(),"late revocation must reach final output without old-DACL replay");
+            f.archive_intact();
         }
 
         #[test]

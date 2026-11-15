@@ -149,11 +149,16 @@ fn private_permissions_match(
         .map_err(|e| e.to_string())?;
     Ok(sid == user_sid || matches!(sid.as_str(), "S-1-5-18" | "S-1-5-32-544"))
 }
-pub(super) fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
+fn ordinary_permissions(parent: &File, token: &Token) -> Result<PrivateDescriptor, String> {ordinary_permissions_kind(parent,token,false)}
 fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Result<PrivateDescriptor, String> {
 
     let policy = descriptor(parent)?;
-    let automatic = control(policy.0)? & 0x400 != 0;
+    ordinary_permissions_from_descriptor(policy.0, token, directory)
+}
+// Let callers qualify and derive one captured descriptor, without a second
+// parent read between those operations. They still re-read before publication.
+pub(super) fn ordinary_permissions_from_descriptor(policy: Handle, token: &Token, directory: bool) -> Result<PrivateDescriptor, String> {
+    let automatic = control(policy)? & 0x400 != 0;
     // Windows interprets conditional, no-propagate, creator-owner and default
     // token ACEs. Request the parent's actual inheritance model at derivation,
     // not just in the resulting control bits: requesting AI for a legacy parent
@@ -171,7 +176,7 @@ fn ordinary_permissions_kind(parent: &File, token: &Token,directory:bool) -> Res
     };
     if unsafe {
         CreatePrivateObjectSecurityEx(
-            policy.0,
+            policy,
             std::ptr::null_mut(),
             &mut raw,
             std::ptr::null_mut(),
