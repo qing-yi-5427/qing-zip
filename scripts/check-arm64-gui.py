@@ -111,6 +111,7 @@ def main():
    def shot(name):(out/(name+'.png')).write_bytes(base64.b64decode(call('Page.captureScreenshot',{'format':'png'})['data']))
    def check(name):evidence['checks'].append(name);(out/'receipt.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
    def finish():
+    wait('document.querySelector("#qa-overlay .qa-jobcard")')
     wait('document.querySelector("#qa-status-text")?.innerText==="就绪" && document.querySelector("#qa-overlay .qa-dialog-footer [data-action=close]") && !document.querySelector("#qa-overlay .qa-dialog-footer [data-action=close]").disabled')
     assert '失败' not in js('document.querySelector("#qa-overlay").innerText')
     click('#qa-overlay .qa-dialog-footer [data-action=close]');wait('document.querySelector("#qa-overlay").hidden')
