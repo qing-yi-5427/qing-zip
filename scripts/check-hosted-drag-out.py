@@ -118,8 +118,8 @@ with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP'],prefix='qing-drag
         mouse.click(coords=center(task.rectangle()))
         wait(lambda:find(win,'已取消拖放。','Text'),'cancelled drag acknowledgement',6)
         assert manifest(dest)=={}
-        close_button=wait(lambda:find(win,'关闭','Button'),'task modal close')
-        mouse.click(coords=center(close_button.rectangle()))
+        file_navigation=wait(lambda:find(win,'文件','Button'),'file navigation')
+        mouse.click(coords=center(file_navigation.rectangle()))
         wait(lambda:find(win,'take.txt','Button'),'return to archive')
         wait(lambda:not drag_stages(),'private export files released after Escape',8)
         report['after_escape_stages']=drag_stages()
