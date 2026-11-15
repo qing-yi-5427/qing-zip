@@ -190,6 +190,58 @@ mod tests {
         assert!(!ordinary_zip(&path, &EngineOptions::default()).unwrap());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn edited_zip_cancel_during_testing_keeps_the_proposal_pinned_and_unchanged() {
+        use std::sync::Barrier;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("active-proposal.zip");
+        let moved = temp.path().join("must-not-move.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        // Stay inside both qualification limits, but use many independent
+        // members so the observer can exercise an active verification phase.
+        let data = vec![42; 8192];
+        for i in 0..8192 {
+            writer.start_file(format!("group-{}/item-{i}.bin", i % 32), options).unwrap();
+            writer.write_all(&data).unwrap();
+        }
+        writer.finish().unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(original.len() < 8 * 1024 * 1024);
+        let ctl = JobControl::new();
+        let opts = EngineOptions { control: Some(ctl.clone()), ..EngineOptions::default() };
+        let start = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                start.wait();
+                ordinary_zip(&path, &opts)
+            });
+            start.wait();
+            // No sleep/delay is used to infer progress or source ownership.
+            // We require the actual phase and a still-running worker.
+            while ctl.snapshot().phase != "testing" {
+                assert!(!worker.is_finished(), "verification ended before entering testing");
+                std::thread::yield_now();
+            }
+            let write_attempt = File::options().write(true).open(&path);
+            let rename_attempt = fs::rename(&path, &moved);
+            let still_running = !worker.is_finished();
+            ctl.cancel();
+            let result = worker.join().unwrap();
+            assert!(still_running, "the lock attempts must occur during verification");
+            assert_eq!(write_attempt.unwrap_err().raw_os_error(), Some(32));
+            assert_eq!(rename_attempt.unwrap_err().raw_os_error(), Some(32));
+            assert!(result.unwrap_err().contains("cancel"));
+        });
+        assert!(!moved.exists());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        // A successful open now proves the worker released its own lock.
+        drop(File::options().write(true).open(&path).unwrap());
+    }
+
     #[test]
     fn edited_zip_checks_cancel_before_verifying() {
         let (_temp, path) = fixture(zip::CompressionMethod::Stored);
