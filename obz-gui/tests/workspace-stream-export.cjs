@@ -23,9 +23,16 @@ test('single stream export has editable name, opposite local destination, receip
  assert.deepEqual(t.refreshes,['D:/out']);assert.match(t.ws.page(),/已导出 1 项/);assert.equal(t.ws.state.busy,false);
 });
 test('directory ADS and multi-select export show exact output mapping and zero-length streams',async()=>{
- const t=setup(async()=>({summary:'ok'}),{directory:true});t.click('streams');await tick();t.click('streams-select-all');assert.match(t.ws.page(),/a&lt;\.txt → <input[^>]+value="a_\.txt"/);assert.match(t.ws.page(),/empty → <input[^>]+value="empty"/);assert.equal((t.ws.page().match(/data-fm-stream-name=/g)||[]).length,2);
+ const t=setup(async()=>({summary:'ok'}),{directory:true});t.click('streams');await tick();t.click('streams-select-all');assert.match(t.ws.page(),/class="fm-stream-source">a&lt;\.txt<\/span>.*value="a_\.txt"/);assert.match(t.ws.page(),/class="fm-stream-source">empty<\/span>.*value="empty"/);assert.equal((t.ws.page().match(/class="fm-stream-mapping"/g)||[]).length,2);assert.equal((t.ws.page().match(/data-fm-stream-name=/g)||[]).length,2);
  t.click('streams-pick');await tick();t.submit();await tick();assert.equal(t.requests[0].dest,'E:/chosen');assert.equal(t.requests[0].stream_exports.length,2);assert.deepEqual(t.requests[0].stream_exports[1],{name:'empty',size:0,output_name:'empty'});
  assert.equal(t.requests[0].stream_exports[0].output_name,'a_.txt');
+});
+test('top export control reaches configuration for large selections without submitting and preserves selected names',async()=>{
+ const streams=Array.from({length:129},(_,i)=>({name:'stream'+i,size:0,allocated_size:0,export_name:'stream'+i}));const t=setup(async()=>({summary:'ok'}),{streams});t.click('streams');await tick();assert.match(t.ws.page(),/data-fm="streams-configure"[^>]*disabled/);t.click('streams-select-all');
+ assert.ok(t.ws.page().indexOf('data-fm="streams-configure"')<t.ws.page().indexOf('<table'));assert.doesNotMatch(t.ws.page(),/4096/);assert.match(t.ws.page(),/class="fm-stream-destination-controls"/);
+ const calls=[];const previous=global.document;global.document={querySelector:selector=>{assert.equal(selector,'[data-fm-stream-export]');return {scrollIntoView:options=>calls.push(['scroll',options.block]),querySelector:selector=>{assert.equal(selector,'[data-fm-stream-dest]');return {focus:options=>calls.push(['focus',options.preventScroll])};}};}};
+ try{t.click('streams-configure');}finally{if(previous===undefined)delete global.document;else global.document=previous;}
+ assert.deepEqual(calls,[['scroll','start'],['focus',true]]);assert.equal(t.requests.length,0);assert.equal(t.ws.state.streams.selected.size,129);
 });
 test('directory comparison preserves volume roots and refreshes either trailing-separator spelling',async()=>{
  assert.equal(localDirectoryKey('C:\\'),'c:/');assert.equal(localDirectoryKey('c:////'),'c:/');assert.notEqual(localDirectoryKey('C:'),localDirectoryKey('C:/'));
