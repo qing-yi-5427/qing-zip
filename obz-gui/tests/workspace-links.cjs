@@ -55,3 +55,48 @@ test('WSL raw target has its own field, validates empty input and retains failur
  t.handlers.input({target:{value:'../用户/target',hasAttribute:key=>key==='data-fm-link-wsl-target',closest:()=>null}});t.edit('name','wsl');t.submit();await tick();
  assert.deepEqual(requests,[{operation:'fs-create-link',wsl_target:'../用户/target',dest:'D:/right',name:'wsl',link_kind:'wsl',options:{overwrite:'error'}}]);assert.equal(t.ws.state.link.wslTarget,'../用户/target');assert.equal(t.ws.state.link.kind,'wsl');assert.match(t.ws.state.link.error,/fixture failure/);
 });
+
+const receipt={volume:'01234567',file_id:'fedcba9876543210',tag:'a000001d',reparse_sha256:'a'.repeat(64)};
+const inspected={path:'C:/left/source<.txt',kind:'wsl',target:'../actual<',print_target:'cosmetic<',relative:false,can_edit:true,edit_reason:null,receipt};
+function editorSetup(run){
+ const t=setup(run);t.ws.state.panes[0].entries[0].linked=true;t.ws.state.panes[0].selected.clear();
+ t.click=action=>t.handlers.click({preventDefault(){},target:{closest:s=>s==='[data-fm]'?{dataset:{fm:action,pane:'0',path:'C:/left/source<.txt',index:'0'}}:null}});
+ t.editTarget=value=>t.handlers.input({target:{value,hasAttribute:key=>key==='data-fm-link-edit-target',closest:()=>null}});
+ t.submitEdit=()=>t.handlers.submit({preventDefault(){},target:{closest:s=>s==='[data-fm-link-editor]'?{}:null}});return t;
+}
+test('linked row has dedicated inspection without enabling selection or ordinary open/copy',async()=>{
+ const requests=[];const t=editorSetup(async body=>{requests.push(body);return inspected;});assert.match(t.ws.page(),/查看\/编辑链接/);assert.match(t.ws.page(),/type="checkbox"[^>]*disabled/);
+ t.click('entry');assert.equal(t.ws.state.panes[0].selected.size,0);t.click('copy');await tick();assert.equal(requests.length,0);
+ t.click('link-inspect');await tick();assert.deepEqual(requests,[{operation:'fs-inspect-link',path:'C:/left/source<.txt'}]);assert.equal(t.ws.state.linkEditor.target,'../actual<');assert.match(t.ws.page(),/value="\.\.\/actual&lt;"/);assert.match(t.ws.page(),/显示名称：cosmetic&lt;/);
+ t.click('link-editor-close');t.ws.state.panes[0].kind='archive';t.click('link-inspect');await tick();assert.equal(requests.length,1);
+});
+test('closing pending inspection prevents a late response reopening the editor',async()=>{
+ let done;const t=editorSetup(()=>new Promise(resolve=>done=resolve));t.click('link-inspect');assert.equal(t.ws.state.busy,true);t.click('link-editor-close');assert.equal(t.ws.state.linkEditor,null);done(inspected);await tick();assert.equal(t.ws.state.linkEditor,null);assert.equal(t.ws.state.busy,false);
+});
+test('failed edit preserves target and receipt and busy forbids duplicate edits or closing',async()=>{
+ let reject;const requests=[];const t=editorSetup(body=>{requests.push(body);return body.operation==='fs-inspect-link'?inspected:new Promise((_,r)=>reject=r);});t.click('link-inspect');await tick();t.editTarget('../changed');t.submitEdit();t.submitEdit();t.click('link-editor-close');
+ assert.equal(requests.length,2);assert.equal(t.ws.state.busy,true);assert.equal(t.ws.state.linkEditor.target,'../changed');reject(Error('fixture failure'));await tick();assert.equal(t.ws.state.linkEditor.target,'../changed');assert.deepEqual(t.ws.state.linkEditor.data.receipt,receipt);assert.equal(t.ws.state.linkEditor.error,'fixture failure');assert.equal(t.ws.state.busy,false);
+});
+test('edit refreshes all matching panes with auto refresh off and Windows spelling differences',async()=>{
+ const requests=[];const t=editorSetup(async body=>{requests.push(body);return body.operation==='fs-inspect-link'?inspected:{removed:false};});t.ws.state.panes[0].autoRefresh=false;Object.assign(t.ws.state.panes[1],{path:'C:\\left',autoRefresh:false});t.click('link-inspect');await tick();t.editTarget('/new');t.submitEdit();await tick();
+ assert.deepEqual(requests[1],{operation:'fs-edit-link',path:'C:/left/source<.txt',link_receipt:receipt,link_target:'/new',options:{overwrite:'error'}});assert.deepEqual(t.calls,['C:/left','C:\\left']);assert.equal(t.ws.state.linkEditor,null);
+});
+test('late edit completion never refreshes a pane that navigated away',async()=>{
+ let done;const t=editorSetup(body=>body.operation==='fs-inspect-link'?inspected:new Promise(resolve=>done=resolve));t.click('link-inspect');await tick();t.editTarget('/new');t.submitEdit();t.ws.state.panes[0].path='E:/new';t.ws.state.panes[0].requestId++;done({removed:false});await tick();assert.deepEqual(t.calls,[]);assert.equal(t.ws.state.panes[0].path,'E:/new');
+});
+test('blank target cannot clear; clear requires its distinct confirmation and preserves original entry',async()=>{
+ const requests=[];const t=editorSetup(async body=>{requests.push(body);return body.operation==='fs-inspect-link'?inspected:{removed:true};});t.click('link-inspect');await tick();t.editTarget('');t.submitEdit();assert.equal(requests.length,1);assert.match(t.ws.state.linkEditor.error,/目标不能为空/);
+ t.click('link-editor-clear-confirm');assert.equal(requests.length,1);t.click('link-editor-clear');assert.equal(requests.length,1);assert.match(t.ws.page(),/项目本身和原有数据都会保留/);t.click('link-editor-clear-confirm');await tick();
+ assert.deepEqual(requests[1],{operation:'fs-clear-link-data',path:'C:/left/source<.txt',link_receipt:receipt,options:{overwrite:'error'}});assert.deepEqual(t.calls,['C:/left']);assert.equal(t.ws.state.linkEditor,null);
+});
+test('readonly inspection reports reason and cannot submit edit or clear',async()=>{
+ let calls=0;const t=editorSetup(async()=>{calls++;return {...inspected,can_edit:false,edit_reason:'多硬链接对象仅支持查看'};});t.click('link-inspect');await tick();assert.match(t.ws.page(),/多硬链接对象仅支持查看/);t.submitEdit();t.click('link-editor-clear');t.click('link-editor-clear-confirm');await tick();assert.equal(calls,1);
+});
+
+test('return keeps a target draft but reopening always obtains a fresh receipt',async()=>{
+ const requests=[];const t=editorSetup(async body=>{requests.push(body);return {...inspected,receipt:{...receipt,reparse_sha256:String(requests.length).repeat(64)}};});t.click('link-inspect');await tick();t.editTarget('../draft');t.click('link-editor-close');assert.equal(t.ws.state.linkEditor,null);t.click('link-inspect');await tick();assert.equal(t.ws.state.linkEditor.target,'../draft');assert.equal(requests.length,2);assert.equal(t.ws.state.linkEditor.data.receipt.reparse_sha256,'2'.repeat(64));assert.match(t.ws.page(),/当前实际目标：\.\.\/actual&lt;/);
+});
+
+test('a replacement object at the same path never receives the previous object draft',async()=>{
+ let calls=0;const t=editorSetup(async()=>{calls++;return calls===1?inspected:{...inspected,target:'/foreign-target',receipt:{...receipt,file_id:'1111111111111111'}};});t.click('link-inspect');await tick();t.editTarget('../old-object-draft');t.click('link-editor-close');t.click('link-inspect');await tick();assert.equal(t.ws.state.linkEditor.target,'/foreign-target');assert.equal(t.ws.state.linkEditor.data.receipt.file_id,'1111111111111111');assert.equal(t.ws.state.linkDrafts.size,0);assert.match(t.ws.page(),/未恢复旧草稿/);
+});

@@ -117,7 +117,7 @@ pub fn edit_link(path:&str,expected:&LinkReceipt,target:Option<&str>,opts:&Engin
     if &receipt(&file,&old)?!=expected{return Err("链接在查看后已改变；请刷新后重试，未修改".into());}
     let new=target.map(|value|replacement(&parsed,value)).transpose()?;let ctl=opts.control.clone().unwrap_or_default();ctl.check()?;
     #[cfg(test)] BEFORE_EDIT.with(|hook|{if let Some(run)=hook.borrow_mut().take(){run();}});
-    ctl.check()?;if &receipt(&file,&get(&file)?)?!=expected{return Err("链接编辑前身份或数据改变；未修改".into());}
+    ctl.check()?;if info(&file)?[10]!=1||info(&pin)?[10]!=1{return Err("链接的硬链接计数在编辑前已改变；未修改".into());}if &receipt(&file,&get(&file)?)?!=expected{return Err("链接编辑前身份或数据改变；未修改".into());}
     let changed=AtomicBool::new(false);let mut header=[0u8;8];header[..4].copy_from_slice(&old[..4]);
     #[cfg(test)] let fail=FAIL_VERIFY.with(|flag|flag.replace(false));
     #[cfg(test)] let fail_restore=FAIL_RESTORE.with(|flag|flag.replace(false));

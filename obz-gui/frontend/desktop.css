@@ -176,3 +176,5 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .fm-stream-table col:nth-child(n+2){width:11rem}
 #qing-archive .fm-stream-table th:first-child,#qing-archive .fm-stream-table td:first-child{width:auto;padding:8px 12px}
 #qing-archive .fm-stream-table th:nth-child(n+2),#qing-archive .fm-stream-table td:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums;padding-left:12px;padding-right:12px}
+
+.fm-row>button.fm-link-inspect{flex:none;font-size:11px;padding:5px;color:var(--qa-accent,#4b6ef5)}

@@ -17,6 +17,9 @@ pub struct Request {
     #[cfg(windows)]
     pub link_kind: Option<engine::file_workspace::LinkKind>,
     pub wsl_target: Option<String>,
+    #[cfg(windows)]
+    pub link_receipt: Option<engine::file_workspace::LinkReceipt>,
+    pub link_target: Option<String>,
     pub label: String,
     pub password_id: Option<String>,
     pub candidates: Vec<String>,
@@ -175,6 +178,17 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
                 r.wsl_target.as_deref().ok_or("请输入 WSL 目标路径")?
             }else{if r.wsl_target.is_some(){return Err("只有 WSL 链接接受 wsl_target".into());}&r.path};
             Ok(serde_json::to_value(engine::file_workspace::create_link(target,&r.dest,&r.name,kind,&r.options)?).map_err(|e|e.to_string())?)
+        },
+        #[cfg(windows)]
+        "fs-inspect-link"=>Ok(serde_json::to_value(engine::file_workspace::inspect_link(&r.path,&r.options)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
+        "fs-edit-link"|"fs-clear-link-data"=>{
+            if r.link_kind.is_some()||r.wsl_target.is_some(){return Err("已有链接操作由原始链接类型决定，请先重新读取链接".into());}
+            let receipt=r.link_receipt.as_ref().ok_or("请先读取链接并提供原始链接凭据")?;
+            let target=if r.operation=="fs-edit-link"{Some(r.link_target.as_deref().filter(|s|!s.is_empty()).ok_or("目标不能为空；如需清除，请使用独立的清除链接数据操作")?)}else{
+                if r.link_target.is_some(){return Err("清除链接数据操作不接受目标路径".into());}None
+            };
+            Ok(serde_json::to_value(engine::file_workspace::edit_link(&r.path,receipt,target,&r.options)?).map_err(|e|e.to_string())?)
         },
         #[cfg(windows)]
         "fs-copy" | "fs-move" => Ok(serde_json::to_value(engine::file_workspace::transfer(&r.inputs, &r.dest, r.operation == "fs-move", &r.options)?).map_err(|e|e.to_string())?),
@@ -376,6 +390,18 @@ fn base64(data: &[u8]) -> String {
         }
         let result=execute(serde_json::from_value(wsl.clone()).unwrap()).unwrap();assert_eq!(result["kind"],"wsl");assert_eq!(result["target"],"../用户/target");
         assert!(execute(serde_json::from_value(wsl).unwrap()).is_err());std::fs::remove_file(root.path().join("wsl")).unwrap();
+    }
+    #[cfg(windows)]
+    #[test] fn existing_link_request_inspect_edit_clear_contract(){
+        let root=tempfile::tempdir().unwrap();let path=root.path().join("link");let run=|v:Value|execute(serde_json::from_value(v).unwrap());
+        run(json!({"operation":"fs-create-link","dest":root.path(),"name":"link","link_kind":"wsl","wsl_target":"../old"})).unwrap();
+        let inspect=json!({"operation":"fs-inspect-link","path":path});let first=run(inspect.clone()).unwrap();assert_eq!(first["target"],"../old");assert_eq!(first["can_edit"],true);assert!(first["receipt"]["file_id"].is_string());
+        let edit=json!({"operation":"fs-edit-link","path":path,"link_receipt":first["receipt"],"link_target":"/new/用户"});
+        for field in ["link_receipt","link_target"]{let mut invalid=edit.clone();invalid.as_object_mut().unwrap().remove(field);assert!(run(invalid).is_err());}
+        let mut empty=edit.clone();empty["link_target"]=json!("");assert!(run(empty).is_err());assert_eq!(run(inspect.clone()).unwrap()["receipt"],first["receipt"]);
+        run(edit.clone()).unwrap();assert!(run(edit).is_err());let after=run(inspect.clone()).unwrap();assert_eq!(after["target"],"/new/用户");
+        let clear=json!({"operation":"fs-clear-link-data","path":path,"link_receipt":after["receipt"]});let mut ambiguous=clear.clone();ambiguous["link_target"]=json!("");assert!(run(ambiguous).is_err());
+        assert_eq!(run(clear).unwrap()["removed"],true);assert!(std::fs::symlink_metadata(&path).unwrap().is_file());assert!(run(inspect).is_err());
     }
     #[test]
     fn preserve_input_atime_unsupported_operations_fail_before_output_or_source_reads(){

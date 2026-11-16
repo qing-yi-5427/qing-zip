@@ -96,3 +96,15 @@ fn require_symbolic_inspect_edit_clear_success(){
  let file=raw(&path,0x100100);let result=ioctl(&file,0x900a4,&data,&mut []);println!("native junction overlapping name slices: {result:?}; parser permits bounded aliases");
  match result{Ok(_)=>{assert_eq!(get(&file).unwrap(),data);drop(file);let inspected=inspect_link(path.to_str().unwrap(),&EngineOptions::default()).unwrap();assert_eq!(inspected.target,target.display().to_string());edit_link(path.to_str().unwrap(),&inspected.receipt,None,&EngineOptions::default()).unwrap();},Err(error)=>{assert!(error.contains("os error 4392"),"{error}");assert_eq!(file.metadata().unwrap().file_attributes()&0x400,0);}}
 }
+
+#[test] fn transaction_excludes_concurrent_new_hardlink_before_edit(){
+ let mut f=Fixture::new(LinkKind::Wsl);{let file=raw(&f.path,0x100100);attrs(&file,0x22);f.attributes=file.metadata().unwrap().file_attributes();}
+ let opts=EngineOptions::default();let parent=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(f.root.path()).unwrap();let source=child(&parent,f.path.file_name().unwrap(),None,0x100080,7).unwrap();
+ let baseline=hard(&source,&parent,std::ffi::OsStr::new("baseline-alias"));println!("same WSL non-readonly object hardlink outside TxF: {baseline:?}");drop((source,parent));baseline.expect("control fixture must allow a hardlink to the same non-readonly WSL object outside TxF");fs::remove_file(f.root.path().join("baseline-alias")).unwrap();
+ let before=inspect_link(f.path.to_str().unwrap(),&opts).unwrap();let path=f.path.clone();let root=f.root.path().to_path_buf();
+ BEFORE_EDIT.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{
+    let parent=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(&root).unwrap();let source=child(&parent,path.file_name().unwrap(),None,0x100080,7).unwrap();
+    let result=hard(&source,&parent,std::ffi::OsStr::new("foreign-alias"));println!("concurrent hardlink while reparse TxF active: {result:?}");assert!(result.is_err(),"a hardlink must not be introduced through a metadata-only source handle during edit");
+ })));
+ edit_link(f.path.to_str().unwrap(),&before.receipt,Some("/updated"),&opts).unwrap();assert!(!f.root.path().join("foreign-alias").exists());assert_eq!(inspect_link(f.path.to_str().unwrap(),&opts).unwrap().target,"/updated");f.check(true);
+}

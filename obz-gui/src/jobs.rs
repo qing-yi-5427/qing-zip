@@ -291,6 +291,19 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         assert_eq!(serde_json::to_value(state.result).unwrap()["path"],root.path().join("link").display().to_string());
         assert_eq!(std::fs::read(source).unwrap(),b"keep");forget_operation(id).unwrap();
     }
+    #[test] fn real_existing_link_jobs_inspect_edit_and_clear_without_sync_bridge(){
+        let _registry=test_registry_guard();let root=tempfile::tempdir().unwrap();let path=root.path().join("wsl-link");
+        let run=|body:serde_json::Value|{
+            let request:Request=serde_json::from_value(body).unwrap();let id=start_operation(request,None).unwrap();let job=registry().lock().unwrap().get(&id).cloned().unwrap();
+            let state=wait_snapshot(&job,id,Duration::from_secs(10)).unwrap();assert_eq!(state.status,"complete","{:?}",state.error);let result=serde_json::to_value(state.result).unwrap();forget_operation(id).unwrap();result
+        };
+        run(serde_json::json!({"operation":"fs-create-link","dest":root.path(),"name":"wsl-link","link_kind":"wsl","wsl_target":"../old"}));
+        let before=run(serde_json::json!({"operation":"fs-inspect-link","path":path}));assert_eq!(before["target"],"../old");assert!(before["receipt"]["file_id"].is_string());
+        run(serde_json::json!({"operation":"fs-edit-link","path":path,"link_receipt":before["receipt"],"link_target":"/new/用户"}));
+        let after=run(serde_json::json!({"operation":"fs-inspect-link","path":path}));assert_eq!(after["target"],"/new/用户");
+        assert_eq!(run(serde_json::json!({"operation":"fs-clear-link-data","path":path,"link_receipt":after["receipt"]}))["removed"],true);
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
+    }
     #[test]
     fn real_listing_job_serializes_the_shared_entries_in_each_snapshot() {
         let _registry = test_registry_guard();
