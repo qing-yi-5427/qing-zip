@@ -1,0 +1,92 @@
+name: Exact-source hosted GUI efficiency comparison
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full 40-character final product commit to build in this run
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: harness
+      - name: Validate explicit product source
+        shell: pwsh
+        env:
+          PRODUCT_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          if ($env:PRODUCT_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Full source commit required' }
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: product
+      - name: Build and package the exact product source
+        shell: pwsh
+        env:
+          PRODUCT_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory evidence
+          git -C harness rev-parse HEAD | Set-Content evidence/harness-source.txt
+          $actual = (git -C product rev-parse HEAD).Trim()
+          if ($actual -ne $env:PRODUCT_COMMIT) { throw 'Source mismatch' }
+          $actual | Set-Content evidence/product-source.txt
+          $build = & ./product/scripts/build-hardened.ps1 -TargetDirectory (Join-Path $env:RUNNER_TEMP 'gui-hardened')
+          $build | ConvertTo-Json | Set-Content evidence/build-paths.json
+          python product/scripts/package.py --binary-directory $build.BinaryDirectory --output-directory product/dist/gui-efficiency
+          if ($LASTEXITCODE) { throw 'Package gate failed' }
+          Copy-Item (Join-Path $build.BinaryDirectory 'hardened-build.json') evidence/hardened-build.json
+          Copy-Item (Join-Path $build.BinaryDirectory 'pe-security.json') evidence/pe-security.json
+      - name: Register fixed signed reference on disposable runner only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+          $pkg = Join-Path $env:RUNNER_TEMP 'NanaZip_7.0.1882.0.msixbundle'
+          gh release download 7.0.1882.0 --repo M2Team/NanaZip --pattern 'NanaZip_7.0.1882.0.msixbundle' --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -or (Get-FileHash $pkg).Hash -ne 'c32c33e5a59a0d02db89f1e85889f942cd7b22ad81110289214187c20e2b6168') { throw 'Reference digest mismatch' }
+          $sig=Get-AuthenticodeSignature $pkg
+          $sig | Format-List Status,StatusMessage,SignerCertificate | Out-File evidence/package-signature.txt
+          if ($sig.Status -ne 'Valid') { throw 'Reference signature invalid' }
+          Add-AppxPackage -Path $pkg
+          $installed=@(Get-AppxPackage | Where-Object {$_.Name -eq '40174MouriNaruto.NanaZip' -and $_.Version -eq '7.0.1882.0'})
+          if ($installed.Count -ne 1) { throw 'Expected one registered reference' }
+          $installed[0] | Select-Object Name,@{n='Version';e={$_.Version.ToString()}},Architecture,PackageFullName,SignatureKind,InstallLocation | ConvertTo-Json | Set-Content evidence/nana-source.json
+          Get-Process -Id $PID | Format-List SessionId,Path | Out-File evidence/desktop-session.txt
+          qwinsta | Out-File evidence/desktop-session.txt -Append
+          python -m pip install psutil==6.1.1 pywinauto==0.6.9 Pillow==11.3.0
+          if ($LASTEXITCODE) { throw 'Desktop dependencies unavailable' }
+      - name: Observe real visible filenames and idle process trees
+        shell: pwsh
+        env:
+          PRODUCT_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $package=Get-Content -Raw evidence/nana-source.json | ConvertFrom-Json
+          $nana=Join-Path $package.InstallLocation 'NanaZip.Modern.FileManager.exe'
+          $qing=@(Get-ChildItem product/dist/gui-efficiency -Recurse -File -Filter qing-zip.exe)
+          if ($qing.Count -ne 1) { throw 'Expected one same-run qing GUI' }
+          python harness/scripts/bind-final-desktops.py --product product --stage $qing[0].DirectoryName --nana $nana --package evidence/nana-source.json --output evidence/binding.json --fixture harness/scripts/fixtures/gui-121.zip --build evidence/hardened-build.json --commit $env:PRODUCT_COMMIT
+          if ($LASTEXITCODE) { throw 'Source/binary binding failed' }
+          python harness/scripts/compare-final-desktops.py --qing $qing[0].FullName --nana $nana --archive harness/scripts/fixtures/gui-121.zip --result evidence/gui --binding evidence/binding.json
+          exit $LASTEXITCODE
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: final-gui-efficiency-evidence
+          if-no-files-found: warn
+          path: |
+            evidence/*.json
+            evidence/*.txt
+            evidence/gui/*.json
+            evidence/gui/*.png
