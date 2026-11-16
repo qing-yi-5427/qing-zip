@@ -159,6 +159,8 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "benchmark" => serde_json::to_value(engine::benchmark::execute(r.benchmark.unwrap_or_default(), &r.options)?).map_err(|e|e.to_string()),
         "archive-properties" => Ok(json!(engine::archive_properties::read(&r.path, &r.options)?)),
         #[cfg(windows)]
+        "fs-streams" => Ok(serde_json::to_value(engine::file_workspace::list_streams(&r.path)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
         "fs-list" => Ok(serde_json::to_value(engine::file_workspace::browse(&r.path)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
         "fs-create-file" | "fs-create-directory" => Ok(serde_json::to_value(engine::file_workspace::create_item(&r.path,&r.name,r.operation=="fs-create-directory",&r.options)?).map_err(|e|e.to_string())?),

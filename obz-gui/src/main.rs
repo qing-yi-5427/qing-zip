@@ -56,6 +56,12 @@ async fn probe_local_directory(path:String,names:Vec<String>)->Result<obz_core::
 }
 
 #[tauri::command]
+async fn local_streams(path: String) -> Result<engine::file_workspace::StreamInventory, String> {
+    tauri::async_runtime::spawn_blocking(move || engine::file_workspace::list_streams(&path))
+        .await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
 async fn open_archive(path: String) -> Result<ArchiveView, String> {
     tauri::async_runtime::spawn_blocking(move || load_view(&path)).await.map_err(|e|e.to_string())?
 }
@@ -265,7 +271,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![browse_local, probe_local_directory,
+        .invoke_handler(tauri::generate_handler![browse_local, probe_local_directory, local_streams,
             open_archive,
             extract_archive,
             create_zip,

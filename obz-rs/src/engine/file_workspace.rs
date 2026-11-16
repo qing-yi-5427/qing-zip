@@ -6,6 +6,9 @@ mod create;
 pub use create::create_item;
 #[path = "file_workspace_stamp.rs"]
 mod stamp;
+#[path = "file_workspace_streams.rs"]
+mod stream_inventory;
+pub use stream_inventory::{list_streams, StreamInventory};
 pub use stamp::{directory_stamp,DirectoryStamp};
 use sha2::{Digest, Sha256};
 #[path = "file_workspace_preserved.rs"]
@@ -1360,6 +1363,8 @@ mod tests {
                 };
                 if with_data {assert!(main_layout.as_ref().unwrap().ranges.iter().map(|v|v.1).sum::<u64>()<eof);}
                 let expected=fs::read(&input).unwrap();let expected_ads=fs::read(format!("{}:custom",input.display())).unwrap();
+                let inventory=list_streams(input.to_str().unwrap()).unwrap();
+                assert_eq!(inventory.streams.iter().find(|v|v.name=="custom").unwrap().size,eof);
                 transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
                 let output=dest.join("a.txt");let file=File::open(&output).unwrap();
                 let ads=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),false).unwrap();
@@ -1574,6 +1579,8 @@ mod tests {
                         let stream=compression::stream(&file,&":custom:$DATA".encode_utf16().collect::<Vec<_>>(),true).unwrap();
                         compression::set(&stream,ads).unwrap();
                     }
+                    let inventory=list_streams(input.to_str().unwrap()).unwrap();
+                    assert_eq!(inventory.streams.iter().map(|v|(&*v.name,v.size)).collect::<Vec<_>>(),vec![("custom",14)]);
                     transfer(&[input.display().to_string()],dest.to_str().unwrap(),false,&EngineOptions::default()).unwrap();
                     let output=dest.join(input.file_name().unwrap());
                     let file=File::options().read(true).share_mode(7).custom_flags(0x02000000).open(&output).unwrap();
