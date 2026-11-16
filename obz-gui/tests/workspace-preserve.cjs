@@ -34,3 +34,24 @@ test('advanced preserve switch is shown only for local to archive transfers',()=
  workspace.state.active=1;
  assert.equal(workspace.page().includes('id="fm-preserve-atime"'),false);
 });
+test('preservation reports distinguish unavailable protection from unconfirmed protection',()=>{
+ const {preservationNotice}=api();
+ assert.equal(preservationNotice({}), '');
+ assert.equal(preservationNotice({input_atime:{applied_handles:5}}), '');
+ assert.match(preservationNotice({input_atime:{unavailable_handles:1}}), /未能启用/);
+ assert.match(preservationNotice({input_atime:{backend_best_effort:true}}), /无法逐项确认/);
+ assert.doesNotMatch(preservationNotice({input_atime:{unconfirmed_sources:1}}), /未能保留/);
+});
+test('archive add warning is delivered after refresh rather than hidden by the list job',async()=>{
+ const events=[],handlers={},current=api();current.preservePreference(true);
+ const workspace=current.create({esc:String,icon:()=>'',render(){},error:e=>{throw e},
+  run:async body=>{events.push(body.operation);return body.operation==='archive-add'?{input_atime:{backend_best_effort:true}}:{entries:[]};},
+  updated:async()=>events.push('refreshed'),notice:message=>events.push(message)});
+ Object.assign(workspace.state.panes[0],local,{loaded:true});
+ Object.assign(workspace.state.panes[1],archive,{loaded:true});
+ workspace.mount({querySelector:()=>({addEventListener:(key,fn)=>handlers[key]=fn})});
+ handlers.click({preventDefault(){},target:{closest:selector=>selector==='[data-fm]'?{dataset:{fm:'copy',pane:'0'}}:null}});
+ await new Promise(setImmediate);
+ assert.deepEqual(events.slice(0,3),['archive-add','list','refreshed']);
+ assert.match(events[3],/无法逐项确认/);assert.equal(workspace.state.busy,false);
+});

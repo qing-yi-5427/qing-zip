@@ -1,5 +1,12 @@
 (function(global){'use strict';
 let preserveAtime;
+function preservationNotice(result){
+ const report=result?.input_atime;if(!report)return '';
+ const notes=[];
+ if(report.unavailable_handles>0)notes.push('部分来源文件未能启用访问时间保护。');
+ if(report.unconfirmed_sources>0||report.backend_best_effort)notes.push('部分来源文件的访问时间保护无法逐项确认。');
+ return notes.join('');
+}
 function preservePreference(value){
  if(typeof value==='boolean'){
   preserveAtime=value;
@@ -192,8 +199,8 @@ function create(ui){
 
   if(action==='copy'||action==='move'){
    const target=state.panes[1-index],body=request(p,target,action==='move',state.overwrite,preservePreference());state.busy=true;render();
-   let failure;try{const value=await ui.run(body,action==='move'?'移动文件':body.operation==='archive-add'?'添加到压缩包':body.operation==='archive-export'?'解压到另一侧':body.operation==='archive-copy'?'复制压缩包内容':'复制文件');if(p.kind==='archive')ui.credentials?.(p.archive,p.password||'',p.codepage||null);if(target.kind==='archive')ui.credentials?.(target.archive,target.password||'',target.codepage||null);if(body.operation==='archive-move'&&value.partial)ui.error(archiveMoveNotice(value));else if(value.retained_sources?.length)ui.error(`已移动 ${value.moved||0} 项；${value.retained_sources.length} 个源项目仍保留在原位置，目标副本已保留。${value.retained_reasons?.[0]?`\n${value.retained_reasons[0]}`:""}`);else if(value.metadata_not_merged?.length)ui.error(`${value.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${value.metadata_not_merged[0]}`);}catch(error){failure=error;}
-   finally{const sameArchive=p.kind==='archive'&&target.kind==='archive'&&p.archive.replace(/\\/g,'/').toLowerCase()===target.archive.replace(/\\/g,'/').toLowerCase();for(const pane of [1-index,...(action==='move'||sameArchive?[index]:[])]){try{await refresh(pane);}catch(error){if(!failure)failure=error;}}state.busy=false;render();}if(failure)throw failure;return;
+   let failure,notice='';try{const value=await ui.run(body,action==='move'?'移动文件':body.operation==='archive-add'?'添加到压缩包':body.operation==='archive-export'?'解压到另一侧':body.operation==='archive-copy'?'复制压缩包内容':'复制文件');notice=preservationNotice(value);if(p.kind==='archive')ui.credentials?.(p.archive,p.password||'',p.codepage||null);if(target.kind==='archive')ui.credentials?.(target.archive,target.password||'',target.codepage||null);if(body.operation==='archive-move'&&value.partial)ui.error(archiveMoveNotice(value));else if(value.retained_sources?.length)ui.error(`已移动 ${value.moved||0} 项；${value.retained_sources.length} 个源项目仍保留在原位置，目标副本已保留。${value.retained_reasons?.[0]?`\n${value.retained_reasons[0]}`:""}`);else if(value.metadata_not_merged?.length)ui.error(`${value.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${value.metadata_not_merged[0]}`);}catch(error){failure=error;}
+   finally{const sameArchive=p.kind==='archive'&&target.kind==='archive'&&p.archive.replace(/\\/g,'/').toLowerCase()===target.archive.replace(/\\/g,'/').toLowerCase();for(const pane of [1-index,...(action==='move'||sameArchive?[index]:[])]){try{await refresh(pane);}catch(error){if(!failure)failure=error;}}state.busy=false;render();}if(failure)throw failure;if(notice)ui.notice?.(notice);return;
   }
  }
  function mount(host){const section=host.querySelector('.fm-workspace');if(!section)return;
@@ -212,5 +219,5 @@ function create(ui){
  }
  return {page,mount,state};
 }
-const api={preservePreference,archiveMoveNotice,create,request,archiveRows,displayArchivePath,localTreeRows};if(typeof module!=='undefined'&&module.exports)module.exports=api;global.QingFileWorkspace=api;
+const api={preservationNotice,preservePreference,archiveMoveNotice,create,request,archiveRows,displayArchivePath,localTreeRows};if(typeof module!=='undefined'&&module.exports)module.exports=api;global.QingFileWorkspace=api;
 })(typeof window!=='undefined'?window:globalThis);
