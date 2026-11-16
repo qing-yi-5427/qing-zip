@@ -4,6 +4,9 @@ use super::*;
 #[path = "file_workspace_create.rs"]
 mod create;
 pub use create::create_item;
+#[path = "file_workspace_links.rs"]
+mod links;
+pub use links::{create_link, LinkKind, CreatedLink};
 #[path = "file_workspace_stamp.rs"]
 mod stamp;
 #[path = "file_workspace_streams.rs"]

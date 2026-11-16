@@ -1,0 +1,290 @@
+//! Explicit local creation only. Archive readers and ordinary publishers never
+//! call these primitives. All mutations bind to pinned handles, never a reopened
+//! pathname; an unexpected post-create failure preserves an unverified entry.
+use super::*;
+use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+use std::path::{Component, Prefix};
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all="kebab-case")]
+pub enum LinkKind { Hard, SymbolicFile, SymbolicDirectory }
+#[derive(Debug, Serialize)]
+pub struct CreatedLink { pub path: String, pub target: String, pub kind: LinkKind }
+#[repr(C)] struct Unicode { length:u16, maximum:u16, buffer:*mut u16 }
+#[repr(C)] struct Attributes { length:u32, root:Handle, name:*mut Unicode, flags:u32, security:Handle, qos:Handle }
+#[repr(C)] struct Status { status:usize, information:usize }
+#[repr(C)] struct LinkInformation { replace:u32, root:Handle, length:u32, name:[u16;1] }
+#[link(name="ntdll")] unsafe extern "system" {
+    fn NtCreateFile(handle:*mut Handle,access:u32,attributes:*const Attributes,status:*mut Status,
+        allocation:*const i64,attrs:u32,sharing:u32,disposition:u32,options:u32,ea:Handle,ea_size:u32)->i32;
+    fn NtSetInformationFile(handle:Handle,status:*mut usize,data:*const c_void,size:u32,class:u32)->i32;
+    fn RtlNtStatusToDosError(status:i32)->u32;
+}
+#[link(name="kernel32")] unsafe extern "system" {
+    fn DeviceIoControl(handle:Handle,code:u32,input:*const u8,input_size:u32,output:*mut u8,
+        output_size:u32,returned:*mut u32,overlapped:Handle)->i32;
+    fn SetFileInformationByHandle(handle:Handle,class:i32,data:*const c_void,size:u32)->i32;
+}
+fn nt_error(action:&str,status:i32)->String {
+    format!("{action}：{}",std::io::Error::from_raw_os_error(unsafe{RtlNtStatusToDosError(status)} as i32))
+}
+fn checked_path(text:&str)->Result<PathBuf,String>{
+    if text.is_empty() || text.contains('\0') {return Err("请选择普通本地绝对路径".into());}
+    let path=PathBuf::from(text);
+    if !path.is_absolute() || !matches!(path.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_))){return Err("链接创建仅支持普通本地绝对路径".into());}
+    for name in text.get(3..).ok_or("无效本地路径")?.split(['/', '\\']).filter(|s|!s.is_empty()) {
+        checked_name(name)?;
+    }
+    local_path(text)
+}
+fn checked_name(name:&str)->Result<PathBuf,String>{
+    if name.is_empty() || name.contains(['/', '\\']) || matches!(name,"."|"..") {return Err("请输入单个新名称".into());}
+    let leaf=crate::extract::relative_path(name)?;
+    if leaf.components().count()!=1 {return Err("名称必须是单个路径组件".into());}
+    Ok(leaf)
+}
+// FILE_CREATE is atomic and returns the exact created object; OPEN_REPARSE_POINT
+// plus a single component relative to the pinned parent excludes traversal.
+fn child(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->Result<File,String>{
+    let mut wide:Vec<_>=name.encode_wide().collect();
+    if wide.is_empty() || wide.len()>32767 || wide.iter().any(|v|matches!(*v,0|47|58|92)) {return Err("无效链接名称".into());}
+    let mut unicode=Unicode{length:(wide.len()*2) as u16,maximum:(wide.len()*2) as u16,buffer:wide.as_mut_ptr()};
+    let attrs=Attributes{length:std::mem::size_of::<Attributes>() as u32,root:parent.as_raw_handle(),name:&mut unicode,flags:0x40,security:std::ptr::null_mut(),qos:std::ptr::null_mut()};
+    let mut status=Status{status:0,information:0};let mut raw=std::ptr::null_mut();
+    let result=unsafe{NtCreateFile(&mut raw,access,&attrs,&mut status,std::ptr::null(),0,sharing,
+        if create.is_some(){2}else{1},0x200020|match create{Some(true)=>1,Some(false)=>0x40,None=>0},std::ptr::null_mut(),0)};
+    if result<0{return Err(nt_error("打开或创建链接项目",result));}
+    Ok(unsafe{File::from_raw_handle(raw)})
+}
+fn parent_pin(path:&Path,guards:&mut CheckedDirectories)->Result<File,String>{
+    guards.check(path)?;
+    let expected=guards.held.get(path).ok_or("缺少本地父目录锁")?;
+    let pin=File::options().access_mode(0x81).share_mode(if expected.1{3}else{1}).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
+    let (id,attrs)=directory_identity_and_attributes(&pin)?;
+    if id!=directory_identity(&expected.0)? || attrs&0x410!=0x10{return Err("本地父目录已改变".into());}
+    Ok(pin)
+}
+fn hard(source:&File,parent:&File,name:&std::ffi::OsStr)->Result<(),String>{
+    let wide:Vec<_>=name.encode_wide().collect();
+    let offset=std::mem::offset_of!(LinkInformation,name);
+    let size=(offset+wide.len()*2).max(std::mem::size_of::<LinkInformation>());
+    // usize storage supplies the ABI's pointer alignment on x86 and x64.
+    let mut storage=vec![0usize;size.div_ceil(std::mem::size_of::<usize>())];
+    let data=storage.as_mut_ptr().cast::<u8>();
+    unsafe {
+        let info=data.cast::<LinkInformation>();(*info).replace=0;(*info).root=parent.as_raw_handle();(*info).length=(wide.len()*2) as u32;
+        std::ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(),data.add(offset),wide.len()*2);
+    }
+    let mut status=[0usize;2];
+    let result=unsafe{NtSetInformationFile(source.as_raw_handle(),status.as_mut_ptr(),data.cast(),size as u32,11)};
+    if result<0{return Err(nt_error("创建硬链接",result));}
+    Ok(())
+}
+fn symbolic_data(target:&Path)->Result<Vec<u8>,String>{
+    let print:Vec<_>=target.as_os_str().encode_wide().collect();
+    let substitute:Vec<_>="\\??\\".encode_utf16().chain(print.iter().copied()).collect();
+    let length=12+(substitute.len()+print.len()+2)*2;
+    if length+8>16384{return Err("符号链接目标过长".into());}
+    let mut data=Vec::with_capacity(length+8);
+    data.extend(0xa000000cu32.to_le_bytes());data.extend((length as u16).to_le_bytes());data.extend(0u16.to_le_bytes());
+    for value in [0,(substitute.len()*2) as u16,((substitute.len()+1)*2) as u16,(print.len()*2) as u16]{data.extend(value.to_le_bytes());}
+    data.extend(0u32.to_le_bytes());
+    for value in substitute.into_iter().chain([0]).chain(print).chain([0]){data.extend(value.to_le_bytes());}
+    Ok(data)
+}
+fn ioctl(file:&File,code:u32,input:&[u8],output:&mut [u8])->Result<usize,String>{
+    let mut returned=0;
+    if unsafe{DeviceIoControl(file.as_raw_handle(),code,input.as_ptr(),input.len() as u32,output.as_mut_ptr(),output.len() as u32,&mut returned,std::ptr::null_mut())}==0 {
+        return Err(format!("设置或核验符号链接（需要当前账户已有的创建权限）：{}",std::io::Error::last_os_error()));
+    }
+    if returned as usize>output.len(){return Err("无效符号链接响应长度".into());}
+    Ok(returned as usize)
+}
+fn dispose_owned(file:&File)->Result<(),String>{
+    let delete=1u8;
+    if unsafe{SetFileInformationByHandle(file.as_raw_handle(),4,(&delete as *const u8).cast(),1)}==0 {
+        return Err(format!("本次创建项目无法按句柄清理，已保留：{}",std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineOptions)->Result<CreatedLink,String>{
+    if opts.overwrite!="error" {return Err("链接创建不允许覆盖".into());}
+    let target=checked_path(target)?;let parent=checked_path(parent)?;let leaf=checked_name(name)?;
+    let output_path=parent.join(&leaf);
+    let source_parent=target.parent().ok_or("不能将磁盘根目录作为链接目标")?;
+    let source_name=target.file_name().ok_or("请选择普通文件或目录")?;
+    let mut guards=CheckedDirectories::default();
+    guards.check(source_parent)?;guards.check(&parent)?;
+    guards.allow_publication(&parent)?;
+    let parent_path=parent.clone();
+    let source_parent_pin=parent_pin(source_parent,&mut guards)?;
+    let parent=parent_pin(&parent,&mut guards)?;
+    let parent_id=directory_identity(&parent)?;
+    // The kernel opens a publication parent for WRITE when linking, so its pin
+    // must share WRITE. A transaction WRITE_ATTRIBUTES lease separately excludes
+    // reparse/EA writers, including writers opened before the lease (lock fails).
+    // Dropping Locked closes the reader that denies WRITE sharing; the lease
+    // remains until rollback, while our non-delete-sharing parent pin remains.
+    let transaction=super::super::file_workspace_transaction::Transaction::begin()
+        .map_err(|e|format!("当前安全实现需要可用的文件事务；尚未创建链接：{e}"))?;
+    let lease=transaction.lock_target(&parent_path,parent_id)
+        .map_err(|e|format!("无法取得创建位置的安全租约；尚未创建链接：{e}"))?;drop(lease);
+    // READ_DATA/LIST_DIRECTORY participates in Windows sharing checks;
+    // READ_ATTRIBUTES-only opens do not reliably block rename/delete. No data
+    // is read, but the participating handle must deny WRITE and DELETE.
+    let source=child(&source_parent_pin,source_name,None,0x100081,1)?;
+    let metadata=source.metadata().map_err(|e|e.to_string())?;
+    if metadata.file_attributes()&0x400!=0 || (!metadata.is_file()&&!metadata.is_dir()) {return Err("链接目标必须是普通文件或目录".into());}
+    if metadata.is_dir()!=(kind==LinkKind::SymbolicDirectory){return Err("链接类型与目标类型不符".into());}
+    let source_id=directory_identity(&source)?;
+    let ctl=opts.control.clone().unwrap_or_default();ctl.check()?;
+    #[cfg(test)] BEFORE_LINK.with(|hook|{if let Some(run)=hook.borrow_mut().take(){run();}});
+    ctl.check()?;
+    let (current_id,current_attrs)=directory_identity_and_attributes(&parent)?;
+    if current_id!=parent_id || current_attrs&0x410!=0x10 {return Err("创建位置身份或类型已改变".into());}
+    match kind {
+        LinkKind::Hard=>{
+            if source_id.0!=directory_identity(&parent)?.0 {return Err("硬链接必须位于同一卷".into());}
+            hard(&source,&parent,leaf.as_os_str())?;
+            // Source denies DELETE sharing, including through the new name.
+            // Never delete by name if post-creation observation fails.
+            let output=child(&parent,leaf.as_os_str(),None,0x100080,1)
+                .map_err(|e|format!("硬链接已创建，核验失败；为保护内容已保留：{e}"))?;
+            if directory_identity(&output)?!=source_id{return Err("硬链接身份核验失败；已保留项目".into());}
+        },
+        LinkKind::SymbolicFile|LinkKind::SymbolicDirectory=>{
+            let data=symbolic_data(&target)?;
+            let output=child(&parent,leaf.as_os_str(),Some(kind==LinkKind::SymbolicDirectory),0x110182,1)?;
+            let result=(||{
+                ioctl(&output,0x900a4,&data,&mut [])?;
+                let mut observed=vec![0u8;16384];let size=ioctl(&output,0x900a8,&[],&mut observed)?;
+                if observed[..size]!=data{return Err("符号链接数据核验不符".into());}
+                Ok(())
+            })();
+            if let Err(error)=result{return match dispose_owned(&output){Ok(())=>Err(error),Err(cleanup)=>Err(format!("{error}；{cleanup}"))};}
+        }
+    }
+    let (current_id,current_attrs)=directory_identity_and_attributes(&parent)
+        .map_err(|e|format!("链接已创建，位置核验失败；已保留：{e}"))?;
+    if current_id!=parent_id || current_attrs&0x410!=0x10 {return Err("链接已创建，位置身份或类型核验失败；已保留".into());}
+    // A metadata-only lease rollback never undoes our non-transacted creation.
+    transaction.rollback().map_err(|e|format!("链接已创建，位置租约释放失败；已保留：{e}"))?;
+    Ok(CreatedLink{path:output_path.display().to_string(),target:target.display().to_string(),kind})
+}
+#[cfg(test)] thread_local!{static BEFORE_LINK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn hard_link_identity_and_existing_data(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("原文件.txt");fs::write(&source,b"original bytes").unwrap();
+        let result=create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"新链接.txt",LinkKind::Hard,&EngineOptions::default()).unwrap();
+        let a=File::open(&source).unwrap();let b=File::open(&result.path).unwrap();assert_eq!(directory_identity(&a).unwrap(),directory_identity(&b).unwrap());drop((a,b));
+        fs::write(&result.path,b"shared fixture bytes").unwrap();assert_eq!(fs::read(&source).unwrap(),b"shared fixture bytes");
+        assert!(create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"新链接.txt",LinkKind::Hard,&EngineOptions::default()).is_err());
+        assert_eq!(fs::read(&source).unwrap(),b"shared fixture bytes");
+    }
+    #[test] fn hard_link_share_probe(){
+        for parent_share in [1,3,7] {for source_share in [1,3,7]{
+            let root=tempfile::tempdir().unwrap();let target=root.path().join("source");fs::write(&target,b"keep").unwrap();
+            let parent=File::options().access_mode(0x81).share_mode(parent_share).custom_flags(0x02200000).open(root.path()).unwrap();
+            let source=child(&parent,std::ffi::OsStr::new("source"),None,0x100080,source_share).unwrap();
+            let result=hard(&source,&parent,std::ffi::OsStr::new("link"));
+            println!("hardlink share probe parent={parent_share}, source={source_share}: {result:?}");
+            assert_eq!(result.is_ok(),parent_share!=1);
+            drop((parent,source));assert_eq!(fs::read(&target).unwrap(),b"keep");
+        }}
+    }
+    #[test] fn hard_link_parent_transaction_probe(){
+        let root=tempfile::tempdir().unwrap();fs::write(root.path().join("source"),b"keep").unwrap();
+        let parent=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(root.path()).unwrap();
+        let source=child(&parent,std::ffi::OsStr::new("source"),None,0x100080,1).unwrap();
+        let tx=super::super::super::file_workspace_transaction::Transaction::begin().unwrap();
+        let lock=tx.lock_target(root.path(),directory_identity(&parent).unwrap()).unwrap();drop(lock);
+        hard(&source,&parent,std::ffi::OsStr::new("link")).unwrap();
+        tx.rollback().unwrap();
+        assert_eq!(fs::read(root.path().join("link")).unwrap(),b"keep");
+    }
+    #[test] fn symbolic_existing_permission_probe(){
+        #[link(name="kernel32")] unsafe extern "system" {fn CreateSymbolicLinkW(link:*const u16,target:*const u16,flags:u32)->u8;}
+        let root=tempfile::tempdir().unwrap();
+        for directory in [false,true] {
+            let target=root.path().join(if directory{"target-dir"}else{"target-file"});
+            if directory{fs::create_dir(&target).unwrap();}else{fs::write(&target,b"keep").unwrap();}
+            let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};
+            let candidate=create_link(target.to_str().unwrap(),root.path().to_str().unwrap(),if directory{"candidate-dir"}else{"candidate-file"},kind,&EngineOptions::default());
+            let api=root.path().join(if directory{"api-dir"}else{"api-file"});
+            let link:Vec<_>=api.as_os_str().encode_wide().chain([0]).collect();let to:Vec<_>=target.as_os_str().encode_wide().chain([0]).collect();
+            let api_ok=unsafe{CreateSymbolicLinkW(link.as_ptr(),to.as_ptr(),2|u32::from(directory))}!=0;
+            let api_error=if api_ok{None}else{Some(std::io::Error::last_os_error().raw_os_error())};
+            println!("symbolic permission fixture directory={directory}: handle_candidate={candidate:?}; CreateSymbolicLinkW(ALLOW_UNPRIVILEGED_CREATE)={api_ok}, error={api_error:?}");
+            if api_ok {assert!(candidate.is_ok(),"官方API可成功而候选失败，权限兼容缺口：{candidate:?}");}
+            if let Ok(created)=&candidate {
+                let entry=fs::symlink_metadata(&created.path).unwrap();assert_ne!(entry.file_attributes()&0x400,0);
+                assert_eq!(fs::read_link(&created.path).unwrap(),target);
+                if directory{fs::remove_dir(&created.path).unwrap();}else{fs::remove_file(&created.path).unwrap();}
+            }else{assert!(!root.path().join(if directory{"candidate-dir"}else{"candidate-file"}).try_exists().unwrap());}
+            if api_ok {if directory{fs::remove_dir(&api).unwrap();}else{fs::remove_file(&api).unwrap();}}
+            if !directory{assert_eq!(fs::read(&target).unwrap(),b"keep");}
+        }
+    }
+    #[test] fn unsafe_inputs_and_racing_foreign_target(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source");fs::write(&source,b"source").unwrap();
+        let parent=root.path().to_str().unwrap();let opts=EngineOptions::default();
+        for name in ["",".","..","../x","a/b","a\\b","x:ads","CON","NUL.txt","x.","x ","x\0"] {
+            assert!(create_link(source.to_str().unwrap(),parent,name,LinkKind::Hard,&opts).is_err(),"{name:?}");
+        }
+        for path in ["C:relative","\\\\server\\share\\file","\\\\?\\C:\\file","C:\\file:ads","C:\\a\\..\\file"] {
+            assert!(create_link(path,parent,"new",LinkKind::Hard,&opts).is_err(),"{path:?}");
+        }
+        assert!(create_link(source.to_str().unwrap(),parent,"wrong",LinkKind::SymbolicDirectory,&opts).is_err());
+        let foreign=root.path().join("foreign");let copy=foreign.clone();
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||fs::write(copy,b"foreign data").unwrap())));
+        assert!(create_link(source.to_str().unwrap(),parent,"foreign",LinkKind::Hard,&opts).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(),b"foreign data");assert_eq!(fs::read(&source).unwrap(),b"source");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(),2);
+    }
+    #[test] fn pinned_source_parent_and_parent_lease_exclude_mutation(){
+        let root=tempfile::tempdir().unwrap();let parent=root.path().join("parent");fs::create_dir(&parent).unwrap();
+        let source=parent.join("source");fs::write(&source,b"original").unwrap();
+        let attempt_parent=parent.clone();let attempt_source=source.clone();
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{
+            assert!(fs::rename(&attempt_source,attempt_source.with_extension("moved")).is_err());
+            assert!(fs::remove_file(&attempt_source).is_err());
+            assert!(fs::write(&attempt_source,b"foreign").is_err());
+            assert!(fs::rename(&attempt_parent,attempt_parent.with_extension("moved")).is_err());
+            // WRITE_ATTRIBUTES, WRITE_EA and WRITE_DATA are prerequisites for
+            // changing directory reparse/EA metadata. Existing transactional
+            // lease must exclude them despite the publication WRITE sharing.
+            for access in [0x100,0x18,0x40000000] {
+                assert!(File::options().access_mode(access).share_mode(7).custom_flags(0x02200000).open(&attempt_parent).is_err(),"parent writer {access:x}");
+            }
+        })));
+        create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"link",LinkKind::Hard,&EngineOptions::default()).unwrap();
+        assert_eq!(fs::read(&source).unwrap(),b"original");assert_eq!(fs::read(parent.join("link")).unwrap(),b"original");
+    }
+    #[test] fn preexisting_parent_writer_fails_without_output_and_cancel_preserves_all(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source");fs::write(&source,b"keep").unwrap();
+        let writer=File::options().access_mode(0x100).share_mode(7).custom_flags(0x02200000).open(root.path()).unwrap();
+        assert!(create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"absent",LinkKind::Hard,&EngineOptions::default()).is_err());
+        assert!(!root.path().join("absent").exists());drop(writer);
+        let ctl=JobControl::new();let cancel=ctl.clone();let mut opts=EngineOptions::default();opts.control=Some(ctl);
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        assert!(create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"cancelled",LinkKind::Hard,&opts).is_err());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(),1);assert_eq!(fs::read(source).unwrap(),b"keep");
+    }
+    #[test] fn reparse_source_or_ancestor_is_rejected_and_existing_entries_survive(){
+        use std::os::windows::process::CommandExt;
+        let root=tempfile::tempdir().unwrap();let real=root.path().join("real");fs::create_dir(&real).unwrap();
+        fs::write(real.join("source"),b"keep").unwrap();let junction=root.path().join("junction");
+        let output=std::process::Command::new("cmd.exe").args(["/c","mklink","/J"]).arg(&junction).arg(&real).creation_flags(0x08000000).output().unwrap();assert!(output.status.success());
+        let opts=EngineOptions::default();
+        assert!(create_link(junction.join("source").to_str().unwrap(),root.path().to_str().unwrap(),"rejected",LinkKind::Hard,&opts).is_err());
+        assert!(create_link(junction.to_str().unwrap(),root.path().to_str().unwrap(),"rejected",LinkKind::SymbolicDirectory,&opts).is_err());
+        assert!(create_link(real.join("source").to_str().unwrap(),junction.to_str().unwrap(),"rejected",LinkKind::Hard,&opts).is_err());
+        for kind in [LinkKind::Hard,LinkKind::SymbolicFile,LinkKind::SymbolicDirectory] {
+            let source=if kind==LinkKind::SymbolicDirectory{real.clone()}else{real.join("source")};
+            for name in ["real","junction"] {assert!(create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),name,kind,&opts).is_err());}
+        }
+        assert_eq!(fs::read(real.join("source")).unwrap(),b"keep");assert_eq!(fs::read_dir(&real).unwrap().count(),1);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(),2);fs::remove_dir(junction).unwrap();
+    }
+}
