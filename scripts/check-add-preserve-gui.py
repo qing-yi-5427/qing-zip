@@ -80,7 +80,7 @@ class Browser:
 b=None
 try:
  b=Browser();b.wait('!document.querySelector("[data-action=add]").disabled');b.click('[data-action=add]');b.fill('#qa-edit-inputs',src/'data.txt');b.click('.qa-advanced > summary');b.click('#oa-add-preserve-atime');assert b.js('document.querySelector("#oa-add-preserve-atime").checked');b.click('[data-action=add-submit]')
- b.wait('document.querySelector(".qa-dialog")?.innerText.includes("来源访问时间") && !document.querySelector(".qa-dialog")?.innerText.includes("任务进度")');b.screenshot('main-add-warning');report['main_notice']=b.js('document.querySelector(".qa-dialog").innerText')
+ b.wait('document.querySelector(".qa-dialog")?.innerText.includes("操作提示") && document.querySelector(".qa-dialog")?.innerText.includes("保护无法逐项确认")');b.screenshot('main-add-warning');report['main_notice']=b.js('document.querySelector(".qa-dialog").innerText')
  with zipfile.ZipFile(archive) as z:assert z.read('data.txt')==b'timestamp GUI proof' and z.read('base.txt')==b'base'
  checked('main-add-completes-and-notice-remains-after-refresh');b.click('.qa-dialog-header [data-action=close]')
  b.click('[data-action=add]');b.click('.qa-advanced > summary');assert b.js('document.querySelector("#oa-add-preserve-atime").checked');b.click('.qa-dialog-header [data-action=close]');checked('main-add-remembers-choice')
