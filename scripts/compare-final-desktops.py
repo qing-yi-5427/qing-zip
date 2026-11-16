@@ -81,7 +81,40 @@ def root(exe, seen):
             except (OSError, psutil.Error):
                 pass
 
-def snap(proc):
+def desktop_state():
+    from ctypes import wintypes as W
+    u=ctypes.WinDLL('user32',use_last_error=True)
+    k=ctypes.WinDLL('kernel32',use_last_error=True)
+    wts=ctypes.WinDLL('wtsapi32',use_last_error=True)
+    u.OpenInputDesktop.argtypes=[W.DWORD,W.BOOL,W.DWORD];u.OpenInputDesktop.restype=W.HANDLE
+    u.GetUserObjectInformationW.argtypes=[W.HANDLE,ctypes.c_int,W.LPVOID,W.DWORD,ctypes.POINTER(W.DWORD)]
+    u.CloseDesktop.argtypes=[W.HANDLE]
+    k.ProcessIdToSessionId.argtypes=[W.DWORD,ctypes.POINTER(W.DWORD)]
+    wts.WTSQuerySessionInformationW.argtypes=[W.HANDLE,W.DWORD,ctypes.c_int,ctypes.POINTER(W.LPVOID),ctypes.POINTER(W.DWORD)]
+    wts.WTSFreeMemory.argtypes=[W.LPVOID]
+    sid=W.DWORD();assert k.ProcessIdToSessionId(os.getpid(),ctypes.byref(sid))
+    ptr=W.LPVOID();size=W.DWORD()
+    assert wts.WTSQuerySessionInformationW(None,sid.value,8,ctypes.byref(ptr),ctypes.byref(size))
+    try:
+        assert size.value>=4;state=ctypes.cast(ptr,ctypes.POINTER(ctypes.c_int)).contents.value
+    finally:wts.WTSFreeMemory(ptr)
+    desktop=u.OpenInputDesktop(0,False,1)
+    if not desktop:raise RuntimeError('No readable interactive input desktop')
+    try:
+        name=ctypes.create_unicode_buffer(256);needed=W.DWORD()
+        assert u.GetUserObjectInformationW(desktop,2,name,ctypes.sizeof(name),ctypes.byref(needed))
+        value={'session_id':sid.value,'wts_connection_state':state,'input_desktop':name.value,'screen':[u.GetSystemMetrics(0),u.GetSystemMetrics(1)]}
+    finally:u.CloseDesktop(desktop)
+    if state!=0 or name.value.lower()!='default' or min(value['screen'])<800:raise RuntimeError('Desktop not active/default or display too small: '+str(value))
+    return value
+
+def remember(proc,owned):
+    for p in [proc,*proc.children(recursive=True)]:
+        try:owned[(p.pid,p.create_time())]=p
+        except psutil.NoSuchProcess:pass
+
+def snap(proc,owned):
+    remember(proc,owned)
     rows = []
     for p in [proc, *proc.children(recursive=True)]:
         try:
@@ -95,6 +128,7 @@ def snap(proc):
             "private":sum(r["private"] for r in rows), "cpu_s":sum(r["cpu_s"] for r in rows)}
 
 def run(label, exe, rep):
+    initial_desktop=desktop_state()
     before = set(psutil.pids())
     configured=set()
     env=dict(os.environ)
@@ -104,13 +138,17 @@ def run(label, exe, rep):
         env['WEBVIEW2_USER_DATA_FOLDER']=str(result/'qing-webview')
     start = time.perf_counter()
     child = subprocess.Popen([str(exe), str(archive)],env=env)
+    owned={}
+    try:remember(psutil.Process(child.pid),owned)
+    except psutil.NoSuchProcess:pass
     app = None
     item = None
-    row = {"app":label, "rep":rep}
+    row = {"app":label, "rep":rep,"initial_desktop":initial_desktop}
     data["trials"].append(row)
     try:
         while time.perf_counter() - start < 50:
             app = app or root(exe, before)
+            if app:remember(app,owned)
             for hwnd in windows(app.pid) if app else []:
                 try:
                     if hwnd not in configured:
@@ -137,16 +175,22 @@ def run(label, exe, rep):
             raise RuntimeError(f"{label} archive entry never observed within 50s")
         row.update(visible_ms=(time.perf_counter()-start)*1000, marker=item.CurrentName,
                    root_pid=app.pid, hwnd=int(hwnd), window_bounds=list(rect), bounds=[box.left,box.top,box.right,box.bottom])
+        row["visible_desktop"]=desktop_state()
         if rep == 0:
             wr = win.CurrentBoundingRectangle
             screen = ImageGrab.grab((wr.left,wr.top,wr.right,wr.bottom), all_screens=True)
             row["screenshot_channel_stddev"] = ImageStat.Stat(screen.convert("RGB")).stddev
             screen.save(result / (label + "-desktop.png"))
+            rgb=screen.convert('RGB');extrema=rgb.getextrema()
+            row['screenshot_size']=list(rgb.size);row['screenshot_extrema']=extrema
+            # Reject blank/black captures, but preserve original PNG for human review.
+            if min(rgb.size)<600 or max(row['screenshot_channel_stddev'])<3 or max(hi-lo for lo,hi in extrema)<30:
+                raise RuntimeError('Blank or invalid desktop screenshot; original retained')
         time.sleep(3)
-        samples = [snap(app)]
+        samples = [snap(app,owned)]
         for i in range(4):
             time.sleep(1)
-            samples.append(snap(app))
+            samples.append(snap(app,owned))
         row.update(idle=samples, median_rss=statistics.median(x["rss"] for x in samples),
                    median_private=statistics.median(x["private"] for x in samples))
         # Process identities must be stable before reporting a CPU delta.
@@ -154,16 +198,37 @@ def run(label, exe, rep):
             row["idle_cpu_one_core_percent"] = (samples[-1]["cpu_s"]-samples[0]["cpu_s"])*100/(samples[-1]["clock"]-samples[0]["clock"])
         print(label, rep, row["visible_ms"], row["median_rss"], row["median_private"], flush=True)
     finally:
-        if app:
-            children = app.children(recursive=True)
-            for h in windows(app.pid): hwnds.PostMessageW(ctypes.c_void_p(h),0x10,0,0)
-            _, stubborn = psutil.wait_procs([app, *children], timeout=6)
-            for p in stubborn:
-                try: p.terminate()
-                except psutil.NoSuchProcess: pass
-            psutil.wait_procs(stubborn, timeout=3)
-        if child.poll() is None: child.terminate()
-        save()
+        cleanup_error=None
+        try:
+            if app:
+                try:remember(app,owned)
+                except psutil.NoSuchProcess:pass
+                for h in windows(app.pid):hwnds.PostMessageW(ctypes.c_void_p(h),0x10,0,0)
+            # Only exact Process objects captured in our owned tree are signalled.
+            def observe_until(deadline):
+                while True:
+                    for proc in list(owned.values()):
+                        try:
+                            if proc.is_running():remember(proc,owned)
+                        except psutil.NoSuchProcess:pass
+                    live=[p for p in owned.values() if p.is_running()]
+                    if not live or time.perf_counter()>=deadline:return live
+                    time.sleep(.05)
+            stubborn=observe_until(time.perf_counter()+6)
+            for proc in stubborn:
+                try:proc.terminate()
+                except psutil.NoSuchProcess:pass
+            survivors=observe_until(time.perf_counter()+3)
+            row['cleanup_survivors']=[{'pid':p.pid,'created':p.create_time()} for p in survivors if p.is_running()]
+            try:child.wait(timeout=3)
+            except subprocess.TimeoutExpired:row['launcher_still_live']=True
+            if row['cleanup_survivors'] or child.poll() is None:
+                raise RuntimeError('Owned process cleanup incomplete; aborting further rounds')
+            row['cleanup_complete']=True
+        except Exception as error:
+            cleanup_error=error;row['cleanup_error']=repr(error)
+        finally:save()
+        if cleanup_error:raise cleanup_error
 apps = [("qing", qing), ("nana", nana)]
 try:
     for rep in range(4):
