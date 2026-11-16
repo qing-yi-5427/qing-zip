@@ -1,7 +1,7 @@
 //! Explicit file-workspace projection, prepared while the target edit lock is held.
 use super::*;
 use std::io::Write;
-mod move_proof;
+pub(super) mod move_proof;
 
 pub(super) struct Prepared {
     pub names: Vec<String>,

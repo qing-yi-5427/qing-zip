@@ -201,6 +201,27 @@ impl Backup<'_> {
         Ok(())
     }
 }
+// Archive Move stores the primary stream only. This is called exclusively under
+// the transaction write lease, on its identity-checked committed reader.
+// Any additional record retains the source; no source data is silently discarded.
+pub(super) fn archive_primary_proof(source:&File,ctl:&JobControl)->Result<[u8;32],String>{
+    use std::os::windows::fs::MetadataExt;
+    let metadata=crate::private_stage::checked_metadata(source)?;
+    if metadata.file_attributes()&0x4400!=0{return Err("加密或重解析来源保持不变".into());}
+    let mut input=Backup{file:source,context:std::ptr::null_mut(),writing:false};
+    let mut hash=Sha256::new();let mut seen=false;let mut buffer=vec![0;1024*1024];
+    loop{
+        ctl.check()?;let mut header=[0u8;20];let n=input.read(&mut header)?;
+        if n==0{if !metadata.is_dir() && metadata.len()!=0 && !seen{return Err("主数据流缺失，保留来源".into());}return Ok(hash.finalize().into());}
+        input.exact(&mut header[n..])?;
+        let id=u32::from_le_bytes(header[..4].try_into().unwrap());let flags=u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let mut size=u64::from_le_bytes(header[8..16].try_into().unwrap());let name=u32::from_le_bytes(header[16..20].try_into().unwrap());
+        if id!=1 || name!=0 || flags!=0 || seen || metadata.is_dir() || size!=metadata.len(){return Err("来源包含未归档的附加数据或特殊流，已复制并保留来源".into());}
+        seen=true;
+        while size!=0{ctl.check()?;let amount=usize::try_from(size.min(buffer.len() as u64)).unwrap();input.exact(&mut buffer[..amount])?;hash.update(&buffer[..amount]);size-=amount as u64;}
+    }
+}
+
 // Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
 fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {

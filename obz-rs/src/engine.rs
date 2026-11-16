@@ -20,6 +20,8 @@ mod file_workspace_transaction;
 #[cfg(windows)]
 mod archive_add;
 #[cfg(windows)]
+pub mod archive_move;
+#[cfg(windows)]
 pub mod archive_export;
 #[cfg(windows)]
 pub mod archive_export_local;
@@ -4254,6 +4256,8 @@ fn publish_staged_files_parallel(
         && journal.is_some() && policy == "error" && matches!(stage,StagedContents::Memory(_));
     #[cfg(not(windows))]
     let direct = false;
+    #[cfg(not(windows))]
+    let move_noop = false;
     let prepared_guards: &CheckedDirectories = guards;
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
@@ -4954,6 +4958,12 @@ pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOpt
     options.selected.clear();
     update_impl(path, "add", inputs, &options, Some(WorkspaceAdd { folder, export: None }))
 }
+#[cfg(windows)]
+pub fn archive_move(path:&str,inputs:&[String],folder:&str,opts:&EngineOptions)->Result<archive_move::Report,String>{
+    let mut options=opts.clone();options.selected.clear();let mut report=archive_move::Report::default();
+    update_impl_with_move(path,"add",inputs,&options,Some(WorkspaceAdd{folder,export:None}),Some(&mut report))?;
+    Ok(report)
+}
 struct WorkspaceAdd<'a> {
     folder: &'a str,
     #[cfg(windows)]
@@ -4967,6 +4977,13 @@ fn archive_import(path: &str, export: archive_export::Export, folder: &str, opts
 }
 
 fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>) -> Result<(), String> {
+    update_impl_with_move(path,action,inputs,opts,workspace,None)
+}
+#[cfg(windows)]
+type ArchiveMoveReport=archive_move::Report;
+#[cfg(not(windows))]
+type ArchiveMoveReport=();
+fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>, mut move_report:Option<&mut ArchiveMoveReport>) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
     if workspace.is_some() && opts.update_mode != UpdateMode::Add {
         return Err("文件管理添加仅支持保留其他成员的添加模式".into());
@@ -5008,11 +5025,16 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     #[cfg(windows)]
     let prepared = workspace.map(|workspace| match workspace.export {
         Some(export) => archive_add::prepare_export(&path, export, workspace.folder, opts),
-        None => archive_add::prepare(&path, inputs, workspace.folder, opts),
+        None => if move_report.is_some(){archive_add::prepare_for_move_proof(&path, inputs, workspace.folder, opts)}else{archive_add::prepare(&path, inputs, workspace.folder, opts)},
     }).transpose()?;
     #[cfg(windows)]
-    if prepared.as_ref().is_some_and(|p| p.names.is_empty()) {
+    if let Some(report)=move_report.as_deref_mut(){report.plan(prepared.as_ref().and_then(|p|p.proof.as_ref()).ok_or("missing archive move plan")?);}
+    #[cfg(windows)]
+    let move_noop=move_report.is_some() && prepared.as_ref().is_some_and(|p|p.names.is_empty() && p.proof.as_ref().is_some_and(|plan|plan.items.iter().any(|i|i.skipped.is_none())));
+    #[cfg(windows)]
+    if prepared.as_ref().is_some_and(|p| p.names.is_empty()) && !move_noop {
         control(opts).check()?;
+        if let Some(report)=move_report.as_deref_mut(){report.summarize();}
         control(opts).set("complete", Some(100), "所有同名项目已跳过，压缩包未修改");
         return Ok(());
     }
@@ -5025,7 +5047,7 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     #[cfg(not(windows))]
     let staged = temp.path().join(path.file_name().ok_or("missing archive filename")?);
     #[cfg(windows)]
-    let direct = source.direct_zip(&path)?;
+    let direct = !move_noop && source.direct_zip(&path)?;
     #[cfg(not(windows))]
     let direct = false;
     let mut a = base(command, opts)?;
@@ -5081,7 +5103,7 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     let cwd = prepared.as_ref().map(|p| p.cwd.as_path());
     #[cfg(not(windows))]
     let cwd = None;
-    run(&a, cwd, opts, None)?;
+    if !move_noop { run(&a, cwd, opts, None)?; }
     #[cfg(test)]
     update_modes_tests::AFTER_ENGINE.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() { run(&staged); }
@@ -5092,9 +5114,18 @@ fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions
     ctl.check()?;
     no_links(&path)?;
     #[cfg(windows)]
-    source.commit_tracked(output, opts)?;
+    if let Some(report)=move_report.as_deref_mut(){
+        let plan=prepared.as_ref().and_then(|p|p.proof.as_ref()).ok_or("missing archive move proof")?;
+        let binding=edit_source::CandidateIdentityBinding::from_pinned(crate::engine_stream::pin(output.path())?)?;
+        let guard=source.commit_tracked_guarded(output,binding,opts,|exact|archive_add::move_proof::verify_locked_candidate(exact,plan,opts))?;
+        report.target_committed=true;
+        archive_move::finish(plan,&guard,opts,report);
+        drop(guard);
+    }else{source.commit_tracked(output, opts)?;}
     #[cfg(not(windows))]
     fs::rename(&staged, &path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    if let Some(report)=move_report.as_deref_mut(){report.summarize();ctl.set("complete",Some(100),&report.summary);return Ok(());}
     ctl.set("complete", Some(100), "Archive updated");
     Ok(())
 }

@@ -401,7 +401,7 @@ fn open_name(path: &Path, directory: bool) -> std::io::Result<File> {
 }
 
 #[cfg(windows)]
-fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
+pub(crate) fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
     let mut parents = Vec::new();
     for ancestor in path.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
         parents.push(open_name(ancestor, true)?);

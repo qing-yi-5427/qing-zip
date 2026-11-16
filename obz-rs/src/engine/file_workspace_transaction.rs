@@ -55,6 +55,10 @@ fn error(action: &str) -> String {
     format!("{action}：{}", std::io::Error::last_os_error())
 }
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub(super) enum CommitOutcome { ConfirmedRolledBack, Unknown }
+#[derive(Debug)]
+pub(super) struct CommitFailure {pub message:String,pub outcome:CommitOutcome}
 pub(super) struct Transaction {
     handle: OwnedHandle,
     finished: bool,
@@ -180,18 +184,22 @@ impl Transaction {
         };
         (ok != 0).then_some(outcome)
     }
-    pub(super) fn commit(mut self) -> Result<(), String> {
+    pub(super) fn commit(self) -> Result<(), String> {self.commit_checked().map_err(|error|error.message)}
+    pub(super) fn commit_checked(mut self) -> Result<(), CommitFailure> {
         // Locked<'_> borrows self: all leased file handles must have been closed
         // before this consuming call. TxF retains write exclusion until commit.
-        let committed = unsafe { CommitTransaction(self.handle.as_raw_handle()) } != 0;
+        #[cfg(test)]
+        let injected=FAIL_COMMIT.with(|value|value.replace(false));
+        #[cfg(not(test))]
+        let injected=false;
+        let committed = !injected && unsafe { CommitTransaction(self.handle.as_raw_handle()) } != 0;
         let failure = error("文件事务提交失败");
         if committed || self.outcome() == Some(2) {
             self.finished = true;
             return Ok(());
         }
-        self.rollback_inner()
-            .map_err(|rollback| format!("{failure}；{rollback}"))?;
-        Err(format!("{failure}；删除已回滚，来源仍保留"))
+        self.rollback_inner().map_err(|rollback|CommitFailure{message:format!("{failure}；{rollback}"),outcome:CommitOutcome::Unknown})?;
+        Err(CommitFailure{message:format!("{failure}；删除已回滚，来源仍保留"),outcome:CommitOutcome::ConfirmedRolledBack})
     }
     fn rollback_inner(&mut self) -> Result<(), String> {
         if self.finished {
@@ -598,3 +606,6 @@ mod tests {
 
 #[cfg(test)]
 thread_local!{pub(super) static FAIL_BEGIN:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+
+#[cfg(test)]
+thread_local!{pub(super) static FAIL_COMMIT:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
