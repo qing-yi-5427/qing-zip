@@ -283,6 +283,14 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         assert_eq!(entry,b"desktop create");
         forget_operation(id).unwrap();
     }
+    #[test] fn real_local_link_job_uses_typed_request_and_returns_created_path(){
+        let _registry=test_registry_guard();let root=tempfile::tempdir().unwrap();let source=root.path().join("source");std::fs::write(&source,b"keep").unwrap();
+        let request:Request=serde_json::from_value(serde_json::json!({"operation":"fs-create-link","path":source,"dest":root.path(),"name":"link","link_kind":"hard","options":{"overwrite":"error"}})).unwrap();
+        let id=start_operation(request,None).unwrap();let job=registry().lock().unwrap().get(&id).cloned().unwrap();
+        let state=wait_snapshot(&job,id,Duration::from_secs(10)).unwrap();assert_eq!(state.status,"complete","{:?}",state.error);
+        assert_eq!(serde_json::to_value(state.result).unwrap()["path"],root.path().join("link").display().to_string());
+        assert_eq!(std::fs::read(source).unwrap(),b"keep");forget_operation(id).unwrap();
+    }
     #[test]
     fn real_listing_job_serializes_the_shared_entries_in_each_snapshot() {
         let _registry = test_registry_guard();

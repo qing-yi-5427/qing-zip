@@ -14,6 +14,8 @@ pub struct Request {
     pub inputs: Vec<String>,
     pub options: EngineOptions,
     pub name: String,
+    #[cfg(windows)]
+    pub link_kind: Option<engine::file_workspace::LinkKind>,
     pub label: String,
     pub password_id: Option<String>,
     pub candidates: Vec<String>,
@@ -164,6 +166,8 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "fs-list" => Ok(serde_json::to_value(engine::file_workspace::browse(&r.path)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
         "fs-create-file" | "fs-create-directory" => Ok(serde_json::to_value(engine::file_workspace::create_item(&r.path,&r.name,r.operation=="fs-create-directory",&r.options)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
+        "fs-create-link" => Ok(serde_json::to_value(engine::file_workspace::create_link(&r.path,&r.dest,&r.name,r.link_kind.ok_or("请选择链接类型")?,&r.options)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
         "fs-copy" | "fs-move" => Ok(serde_json::to_value(engine::file_workspace::transfer(&r.inputs, &r.dest, r.operation == "fs-move", &r.options)?).map_err(|e|e.to_string())?),
         "capabilities" => {
@@ -339,6 +343,20 @@ fn base64(data: &[u8]) -> String {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test] fn local_link_request_contract_and_no_replace(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source");std::fs::write(&source,b"keep").unwrap();
+        let base=json!({"operation":"fs-create-link","path":source,"dest":root.path(),"name":"link","link_kind":"hard","options":{"overwrite":"error"}});
+        for bad in [json!("junction"),json!("wsl"),json!("Hard"),json!(3),json!({})] {let mut request=base.clone();request["link_kind"]=bad;assert!(serde_json::from_value::<Request>(request).is_err());}
+        for field in ["path","dest","name","link_kind"] {
+            let mut request=base.clone();request.as_object_mut().unwrap().remove(field);
+            assert!(execute(serde_json::from_value(request).unwrap()).is_err(),"{field}");
+        }
+        let mut overwrite=base.clone();overwrite["options"]["overwrite"]=json!("overwrite");
+        assert!(execute(serde_json::from_value(overwrite).unwrap()).is_err());assert!(!root.path().join("link").exists());
+        let result=execute(serde_json::from_value(base.clone()).unwrap()).unwrap();assert_eq!(result["kind"],"hard");
+        assert!(execute(serde_json::from_value(base).unwrap()).is_err());assert_eq!(std::fs::read(source).unwrap(),b"keep");
+    }
     #[test]
     fn preserve_input_atime_unsupported_operations_fail_before_output_or_source_reads(){
         let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source.txt");std::fs::write(&source,b"original").unwrap();let output=temp.path().join("not-created/archive.zip");

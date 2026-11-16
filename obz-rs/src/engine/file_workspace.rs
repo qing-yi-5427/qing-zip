@@ -1649,6 +1649,19 @@ mod tests {
             assert!(!compression::FAIL_SET.with(|failure|failure.replace(false)));
         }
     }
+    #[test] fn local_link_preserves_main_ads_ea_attributes_and_expected_link_count(){
+        #[link(name="kernel32")] unsafe extern "system" {fn GetFileInformationByHandle(handle:Handle,data:*mut u32)->i32;}
+        fn info(path:&Path)->[u32;13]{let file=File::open(path).unwrap();let mut data=[0;13];assert_ne!(unsafe{GetFileInformationByHandle(file.as_raw_handle(),data.as_mut_ptr())},0);data}
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source.txt");fs::write(&source,b"main bytes").unwrap();
+        fs::write(format!("{}:unicode_数据",source.display()),b"ADS bytes").unwrap();fs::write(format!("{}:empty",source.display()),b"").unwrap();
+        let ea=put_ea(&source,0,b"preserved EA");let mut attributes=fs::metadata(&source).unwrap().permissions();attributes.set_readonly(true);fs::set_permissions(&source,attributes).unwrap();
+        let before=info(&source);
+        let result=create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"hard.txt",LinkKind::Hard,&EngineOptions::default()).unwrap();
+        let after=info(&source);let mut expected=before;expected[10]+=1;assert_eq!(after,expected);assert_eq!(info(Path::new(&result.path)),after);
+        assert_eq!(fs::read(&source).unwrap(),b"main bytes");assert_eq!(fs::read(&result.path).unwrap(),b"main bytes");
+        for path in [&source,Path::new(&result.path)] {assert_eq!(fs::read(format!("{}:unicode_数据",path.display())).unwrap(),b"ADS bytes");assert_eq!(fs::read(format!("{}:empty",path.display())).unwrap(),b"");assert_eq!(get_ea(path),ea);}
+        let mut attributes=fs::metadata(&source).unwrap().permissions();attributes.set_readonly(false);fs::set_permissions(&source,attributes).unwrap();
+    }
     fn put_ea(path: &Path, flags: u8, value: &[u8]) -> Vec<u8> {
         let name = b"QING.TEST";
         let mut data = vec![0; 8];
