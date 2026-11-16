@@ -146,17 +146,20 @@ class Source {
   size_t units_ = 0;
   uint64_t layout_bound_ = EndRecordsBound;
   bool classic_zip_;
+  size_t snapshot_limit_;
   void append(Record r) {
     if (r.attributes & FILE_ATTRIBUTE_REPARSE_POINT)
       fail("linked input path rejected");
-    if (!valid_leaf(r.name) || r.path.size() > 32767 ||
-        (units_ += r.path.size()) > 8 * 1024 * 1024 ||
-        (r.attributes & ~DWORD(0xb7)))
+    if (!valid_leaf(r.name) || r.path.size() > 32767)
+      throw NotEligible{};
+    if (snapshot_limit_) {
+      if(items.size()>=snapshot_limit_) fail("unexpected extra snapshot member");
+    } else if ((units_ += r.path.size()) > 8 * 1024 * 1024 || (r.attributes & ~DWORD(0xb7)))
       throw NotEligible{};
     if (classic_zip_) {
       layout_bound_ = next_classic_bound(layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size());
       if (layout_bound_ == NotClassic) throw NotEligible{};
-    } else if (items.size() >= UINT16_MAX - 1u) {
+    } else if (!snapshot_limit_ && items.size() >= UINT16_MAX - 1u) {
       // Bounded source manifest only, not a claim about 7z physical offsets.
       throw NotEligible{};
     }
@@ -166,7 +169,7 @@ class Source {
 public:
   std::vector<Record> items;
   bool needs_substream_size() const { return !classic_zip_; }
-  explicit Source(HANDLE owner, bool classic_zip = true) : owner_(owner), classic_zip_(classic_zip) {
+  explicit Source(HANDLE owner, bool classic_zip = true, size_t snapshot_limit=0) : owner_(owner), classic_zip_(classic_zip), snapshot_limit_(snapshot_limit) {
     open_ = reinterpret_cast<Open>(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
     if (!open_)
@@ -291,7 +294,7 @@ public:
             append(std::move(r));
             auto &entry = items.back();
             if (entry.directory()) {
-              if (pins_.size() >= 4095)
+              if (!snapshot_limit_ && pins_.size() >= 4095)
                 throw NotEligible{};
               auto pin = open(entry);
               BY_HANDLE_FILE_INFORMATION actual{};
@@ -322,6 +325,42 @@ public:
   }
 };
 
+
+struct SnapshotOptions {
+  std::vector<std::wstring> names, values;
+  bool password_defined=false;
+  std::wstring password;
+  const BYTE *manifest=nullptr;
+  size_t manifest_size=0;
+  SnapshotOptions(const BYTE *data,size_t size) {
+    auto take=[&](size_t n){if(n>size) fail("truncated snapshot options");const BYTE *p=data;data+=n;size-=n;return p;};
+    auto number=[&](){uint32_t v;memcpy(&v,take(4),4);return v;};
+    auto text=[&](){uint32_t n=number();if(n>32767)fail("snapshot option too long");std::wstring v(n,L'\0');memcpy(v.data(),take(size_t(n)*2),size_t(n)*2);if(v.find(L'\0')!=v.npos)fail("NUL snapshot option");return v;};
+    const uint32_t count=number();if(count>32)fail("too many snapshot properties");
+    for(uint32_t i=0;i<count;++i){auto n=text();if(n.empty())fail("empty property name");names.push_back(std::move(n));values.push_back(text());}
+    const uint32_t pw=number();if(pw>1)fail("invalid password flag");password_defined=pw!=0;
+    if(password_defined)password=text();
+    manifest=data;manifest_size=size;
+  }
+  ~SnapshotOptions(){if(!password.empty())SecureZeroMemory(password.data(),password.size()*sizeof(wchar_t));}
+  void apply(ISetProperties *settings) const {
+    std::vector<const wchar_t*> keys;
+    std::vector<PROPVARIANT> props(names.size());
+    for(auto &p:props)PropVariantInit(&p);
+    try {
+      for(size_t i=0;i<names.size();++i){
+        keys.push_back(names[i].c_str());
+        // Exact console SetProperties.cpp ParseNumberString semantics.
+        const auto &v=values[i];uint64_t n=0;bool numeric=!v.empty();
+        for(wchar_t c:v){if(c<L'0'||c>L'9'||n>(UINT64_MAX-uint64_t(c-L'0'))/10){numeric=false;break;}n=n*10+uint64_t(c-L'0');}
+        if(numeric){if(n<=UINT32_MAX){props[i].vt=VT_UI4;props[i].ulVal=static_cast<ULONG>(n);}else{props[i].vt=VT_UI8;props[i].uhVal.QuadPart=n;}}
+        else {props[i].vt=VT_BSTR;props[i].bstrVal=SysAllocStringLen(v.data(),static_cast<UINT>(v.size()));if(!props[i].bstrVal)fail("snapshot property allocation",E_OUTOFMEMORY);}
+      }
+      exact(settings->SetProperties(keys.data(),props.data(),static_cast<UInt32>(props.size())),"snapshot compression properties");
+    } catch (...) {for(auto &p:props)PropVariantClear(&p);throw;}
+    for(auto &p:props)PropVariantClear(&p);
+  }
+};
 // The parent captures times before any child lookup. Never round-trip that
 // snapshot through filesystem timestamps: legitimate readers can change atime.
 static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
@@ -489,9 +528,10 @@ public:
 };
 class Output final : public ComObject<IOutStream> {
   HANDLE h_;
+  uint64_t base_;
 
 public:
-  explicit Output(HANDLE h) : h_(h) {}
+  explicit Output(HANDLE h,uint64_t base=0) : h_(h),base_(base) {}
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
     return identify(out, i == IID_IUnknown || i == IID_ISequentialOutStream ||
@@ -511,22 +551,36 @@ public:
   HRESULT STDMETHODCALLTYPE Seek(Int64 offset, UInt32 origin,
                                  UInt64 *pos) noexcept override {
     LARGE_INTEGER d{}, result{};
-    d.QuadPart = offset;
+    if(origin>FILE_END || base_>INT64_MAX) return E_INVALIDARG;
+    if(origin==FILE_BEGIN) {
+      if(offset<0 || uint64_t(offset)>uint64_t(INT64_MAX)-base_) return E_INVALIDARG;
+      d.QuadPart=offset+static_cast<int64_t>(base_);
+    } else {
+      LARGE_INTEGER zero{},current{};
+      if(origin==FILE_CURRENT) {if(!SetFilePointerEx(h_,zero,&current,FILE_CURRENT)) return HRESULT_FROM_WIN32(GetLastError());}
+      else {if(!GetFileSizeEx(h_,&current)) return HRESULT_FROM_WIN32(GetLastError());}
+      if((offset<0 && uint64_t(-(offset+1))+1>uint64_t(current.QuadPart)-base_) ||
+         (offset>=0 && uint64_t(offset)>uint64_t(INT64_MAX-current.QuadPart))) return E_INVALIDARG;
+      d.QuadPart=current.QuadPart+offset;
+      origin=FILE_BEGIN;
+    }
     if (!SetFilePointerEx(h_, d, &result, origin))
       return HRESULT_FROM_WIN32(GetLastError());
     if (pos)
-      *pos = result.QuadPart;
+      *pos = result.QuadPart-static_cast<int64_t>(base_);
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE SetSize(UInt64 n) noexcept override {
     FILE_END_OF_FILE_INFO end{};
-    end.EndOfFile.QuadPart = n;
+    if(n>uint64_t(INT64_MAX)-base_)return E_INVALIDARG;
+    end.EndOfFile.QuadPart = n+base_;
     return SetFileInformationByHandle(h_, FileEndOfFileInfo, &end, sizeof(end))
                ? S_OK
                : HRESULT_FROM_WIN32(GetLastError());
   }
 };
-class Update final : public ComObject<IArchiveUpdateCallback> {
+class Update final : public ComObject<IArchiveUpdateCallback>, public ICryptoGetTextPassword2 {
+  const SnapshotOptions *options_;
   Source &src_;
   std::mutex progress_;
   UInt64 total_ = 0;
@@ -535,9 +589,17 @@ class Update final : public ComObject<IArchiveUpdateCallback> {
 public:
   std::atomic<HRESULT> error{S_OK};
   std::atomic<unsigned> requested{0}, verified{0};
-  explicit Update(Source &s) : src_(s) {}
+  explicit Update(Source &s,const SnapshotOptions *options=nullptr) : options_(options), src_(s) {}
+  ULONG STDMETHODCALLTYPE AddRef() noexcept override {return ComObject<IArchiveUpdateCallback>::AddRef();}
+  ULONG STDMETHODCALLTYPE Release() noexcept override {return ComObject<IArchiveUpdateCallback>::Release();}
+  HRESULT STDMETHODCALLTYPE CryptoGetTextPassword2(Int32 *defined,BSTR *password) noexcept override {
+    if(!defined||!password)return E_POINTER;*defined=0;*password=nullptr;
+    if(options_ && options_->password_defined){*password=SysAllocStringLen(options_->password.data(),static_cast<UINT>(options_->password.size()));if(!*password)return E_OUTOFMEMORY;*defined=1;}
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
+    if(i==IID_ICryptoGetTextPassword2 && options_){if(!out)return E_POINTER;*out=static_cast<ICryptoGetTextPassword2*>(this);AddRef();return S_OK;}
     return identify(out, i == IID_IUnknown || i == IID_IProgress ||
                              i == IID_IArchiveUpdateCallback);
   }
@@ -647,12 +709,12 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0, const zip_create::SnapshotOptions *snapshot_options=nullptr, uint64_t output_base=0) noexcept {
   using namespace zip_create;
   bool started=false;
   try {
     if (!runtime || !owner || !root || !name || !output ||
-        (level != UINT32_MAX && (level < 1 || level > 9)) || threads > 64 ||
+        (level != UINT32_MAX && (level < (snapshot_options?0u:1u) || level > (snapshot_options?49u:9u))) || (!snapshot_options && threads > 64) ||
         explicit_method > 1 || solid > 2 || (dictionary && (dictionary < 4096 || dictionary > (1u<<30))))
       fail("invalid ZIP request");
     if ((times & ~127u) || (times&3)==3 || ((times>>2)&3)==3 || ((times>>4)&3)==3 || ((times&64)&&!latest)) fail("invalid timestamp request");
@@ -667,8 +729,14 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     dll.init(runtime);
     // Keep records and callback counters alive even if the handler retains
     // input streams until its own destruction (including exception paths).
-    Source src(owner, !seven);
-    Ref<Update> cb(new Update(src));
+    uint32_t snapshot_count=0;
+    if(snapshot_options) {
+      if(snapshot_size<4 || snapshot_size>64u*1024*1024) fail("invalid snapshot manifest size");
+      memcpy(&snapshot_count,snapshot,4);
+      if(snapshot_count>(snapshot_size-4)/30) fail("invalid snapshot record count");
+    }
+    Source src(owner, !seven && !snapshot_options, snapshot_options ? size_t(snapshot_count)+1 : 0);
+    Ref<Update> cb(new Update(src,snapshot_options));
     std::vector<File> empty_pins;
     Ref<IOutArchive> archive;
     dll.handler(seven ? L"7z" : L"zip", seven ? "7z" : "Zip", archive.put(), IID_IOutArchive);
@@ -676,6 +744,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     exact(archive->QueryInterface(IID_ISetProperties,
                                   reinterpret_cast<void **>(settings.put())),
           "ZIP options interface");
+    if(snapshot_options) {snapshot_options->apply(settings.get());} else {
     const wchar_t *keys[8]{};
     PROPVARIANT props[8]{};
     unsigned n = 0;
@@ -717,6 +786,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
       if(value) { keys[n]=time_keys[i];props[n].vt=VT_BOOL;props[n++].boolVal=value==2?VARIANT_TRUE:VARIANT_FALSE; }
     }
     if (n) exact(settings->SetProperties(keys, props, n), "set archive compression options");
+    }
     src.enumerate(root, name);
     if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name);
     // 7z stores zero-byte entries without requesting GetStream. Validate and
@@ -729,7 +799,8 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
         empty_pins.push_back(std::move(pin));
       }
     }
-    Ref<Output> stream(new Output(output));
+    Ref<Output> stream(new Output(output,output_base));
+    exact(stream->Seek(0,FILE_BEGIN,nullptr),"archive output position");
     frame(47);
     started=true;
     exact(archive->UpdateItems(stream.get(),
@@ -779,7 +850,11 @@ extern "C" HRESULT qz_create_timed(const wchar_t *runtime,HANDLE owner,HANDLE ro
 
 extern "C" HRESULT qz_create_snapshot(const wchar_t *runtime,HANDLE owner,HANDLE root,const wchar_t *name,HANDLE output,
  DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,
- const BYTE *snapshot,size_t snapshot_size,uint64_t *latest,char *message,size_t capacity) noexcept {
+ const BYTE *snapshot,size_t snapshot_size,uint64_t output_base,uint64_t *latest,char *message,size_t capacity) noexcept {
  if(seven>1 || !snapshot) return E_INVALIDARG;
- return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,snapshot,snapshot_size);
+ try {
+   zip_create::SnapshotOptions options(snapshot,snapshot_size);
+   return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,options.manifest,options.manifest_size,&options,output_base);
+ } catch(const Failure &e) {if(message&&capacity)strncpy_s(message,capacity,e.reason,_TRUNCATE);return FAILED(e.hr)?e.hr:E_FAIL;}
+ catch(...) {return E_FAIL;}
 }

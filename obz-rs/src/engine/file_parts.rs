@@ -32,7 +32,7 @@ fn leaf(name: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn copy_hash(
+pub(super) fn copy_hash(
     input: &mut impl Read,
     output: &mut impl Write,
     size: u64,

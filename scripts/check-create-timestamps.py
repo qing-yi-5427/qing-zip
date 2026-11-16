@@ -69,13 +69,14 @@ for count in [3,2050]:
      if tool=='candidate':
       log=p.stderr.decode(errors='replace');native='OA_CREATE_WORKER status=complete' in log
       assert native==(count==2050 and not (choice is not None and choice[2])),(tag,'unexpected creation route',log)
+      if choice is not None and choice[2]:assert 'OA_CREATE_SNAPSHOT status=complete' in log,(tag,'missing snapshot route',log)
      md=metadata(archive);dest=OUT/(tag+'-'+tool+'-decoded');run([a.reference,'x','-y','-o'+str(dest),'--',archive]);assert manifest(dest)==expected
      row={'case':tag,'tool':tool,'argv':list(map(str,cmd)),'metadata':md,'archive_mtime_ns':archive.stat().st_mtime_ns,'archive_sha256':sha(archive),'verified_content':True,'stderr':p.stderr.decode(errors='replace')};report['rows'].append(row);save();outputs.append(row)
     assert all(x['metadata']==outputs[0]['metadata'] for x in outputs),tag
     if choice is None and not latest:
      bytool={x['tool']:x for x in outputs};assert bytool['candidate']['archive_sha256']==bytool['old']['archive_sha256'],(tag,'default archive bytes changed')
     if latest:assert all(x['archive_mtime_ns']==outputs[0]['archive_mtime_ns'] for x in outputs),tag
-# Additional console publication routes: volumes, encrypted headers, and SFX.
+# Additional timestamp publication routes: volumes, encrypted headers, and SFX.
 for mode,fmt in ([('split','zip'),('split','7z'),('encrypted','7z'),('sfx','sfx')] if a.scope=='full' else []):
  src=OUT/'source-3';expected={src.name+'/'+k:v for k,v in manifest(src).items()};results=[]
  reset_paths=sorted(list(src.rglob('*')),key=lambda p:(p.is_dir(),-len(p.parts)))

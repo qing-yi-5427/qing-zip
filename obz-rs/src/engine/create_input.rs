@@ -1,8 +1,10 @@
 //! Private input snapshot used only for explicitly stored access timestamps.
 //! Traversal may change source directory atime; snapshot it before child lookup,
-//! copy with the existing complete local-stream proofs, then set private times.
+//! copy with the existing complete local-stream proofs, then send immutable times.
 use super::*;
-use std::{ffi::OsString,os::windows::{fs::{MetadataExt,OpenOptionsExt},io::AsRawHandle}};
+use sha2::{Digest,Sha256};
+use super::file_parts::copy_hash;
+use std::{ffi::OsString,os::windows::{fs::{MetadataExt,OpenOptionsExt}}};
 
 pub(super) struct Snapshot {
     path: PathBuf,
@@ -89,7 +91,7 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&Job
     let mut targets=Vec::new();
     for snapshot in &snapshots {
         ctl.check()?;let path=stage.path().join(&snapshot.relative);no_links(&path)?;
-        let target=File::options().access_mode(0x80000100).share_mode(1).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
+        let target=File::options().access_mode(0x80000000).share_mode(1).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
         if target.metadata().map_err(|e|e.to_string())?.file_attributes()&0x400!=0{return Err("private input link rejected".into());}
         targets.push(target);
     }
@@ -103,4 +105,97 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&Job
     // whatever times its safe publisher supplied; no filesystem timestamp is
     // used to transport the snapshot to the encoder.
     let _=opts;Ok(ready)
+}
+
+#[cfg(test)]
+thread_local! {static BEFORE_TIME_VOLUME_PUBLISH:std::cell::RefCell<Option<Box<dyn FnMut(usize,&Path)>>> = std::cell::RefCell::new(None);}
+
+// Only the explicit-time route uses this journaled multi-name publication.
+// All parts exist and are verified before any destination name becomes visible.
+// NTFS cannot atomically expose multiple unrelated filenames; rollback receipts
+// protect competitors and report any owned output that could not be removed.
+pub(super) fn split_and_publish(archive:&Path,output:&Path,bytes:u64,opts:&EngineOptions,ctl:&JobControl)->Result<Vec<String>,String>{
+    if bytes==0 {return Err("volume size must be positive".into());}
+    let parent=output.parent().ok_or("output has no parent")?;
+    let parts=ShellDragDirectory::create_named_in(parent,"qing-zip-time-volumes-")?;
+    let mut input=crate::engine_stream::pin(archive)?;
+    let length=input.metadata().map_err(|e|e.to_string())?.len();
+    let modified=input.metadata().map_err(|e|e.to_string())?.modified().map_err(|e|e.to_string())?;
+    let mut stage_guards=CheckedDirectories::default();stage_guards.check(parts.path())?;
+    let mut produced=Vec::new();let mut remaining=length;let mut index=1u64;
+    let mut whole=Sha256::new();let mut copy_done=0;
+    while remaining!=0 || produced.is_empty() {
+        ctl.check()?;let mut name=output.file_name().ok_or("missing output name")?.to_os_string();name.push(format!(".{index:03}"));
+        let part=parts.path().join(&name);let n=remaining.min(bytes);
+        let mut file=create_staged_output(&part,&mut stage_guards)?;
+        copy_hash(&mut *input,&mut file,n,length,&mut copy_done,&mut whole,ctl)?;
+        if opts.archive_timestamp==ArchiveTimestamp::Latest {file.set_times(std::fs::FileTimes::new().set_modified(modified)).map_err(|e|e.to_string())?;}
+        file.sync_all().map_err(|e|e.to_string())?;produced.push((name,part,n));remaining-=n;
+        index=index.checked_add(1).ok_or("too many volumes")?;
+    }
+    let mut verified=Sha256::new();let mut buffer=[0u8;64*1024];let mut pins=Vec::new();
+    for (_,path,size) in &produced {
+        let mut file=crate::engine_stream::pin(path)?;let mut total=0u64;
+        loop {ctl.check()?;let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0 {break;}verified.update(&buffer[..n]);total+=n as u64;}
+        if total!=*size {return Err("private volume size changed".into());}
+        pins.push(file);
+    }
+    if whole.finalize()!=verified.finalize(){return Err("private volume content verification failed".into());}
+    let mut guards=CheckedDirectories::default();guards.check(parent)?;guards.allow_publication(parent)?;
+    for (name,_,_) in &produced {let target=parent.join(name);no_links(&target)?;if target.try_exists().map_err(|e|e.to_string())? {return Err(format!("output exists: {}",target.display()));}}
+    let journal=PublicationJournal::default();let mut results=Vec::new();
+    ctl.set("publishing",Some(95),"正在保存分卷压缩包");
+    let result=(||{
+        for (index,((name,_path,n),file)) in produced.iter().zip(pins.iter_mut()).enumerate() {
+            ctl.check()?;let target=parent.join(name);guards.check(&target)?;
+            #[cfg(test)] BEFORE_TIME_VOLUME_PUBLISH.with(|hook|{if let Some(callback)=hook.borrow_mut().as_mut(){callback(index,&target);}});
+            #[cfg(not(test))] let _=index;
+            with_output_temp(parent,&guards,|out|{
+                file.seek(SeekFrom::Start(0)).map_err(|e|e.to_string())?;let mut copied=0;
+                copy_hash(&mut **file,out.as_file_mut(),*n,*n,&mut copied,&mut Sha256::new(),ctl)?;
+                if opts.archive_timestamp==ArchiveTimestamp::Latest {out.as_file().set_times(std::fs::FileTimes::new().set_modified(modified)).map_err(|e|e.to_string())?;}
+                out.as_file().sync_all().map_err(|e|e.to_string())?;ctl.check()?;
+                publish_output_recorded(out,&target,false,Some(&journal)).map(drop)
+            })?;
+            results.push(target.display().to_string());
+        }
+        ctl.check()?;Ok(())
+    })();
+    if let Err(reason)=result {let errors=journal.rollback();return if errors.is_empty(){Err(reason)}else{Err(format!("{reason}; volume rollback incomplete: {}",errors.join("; ")))};}
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn snapshot_volumes_roundtrip_and_latest_timestamp() {
+        let dir=tempfile::tempdir().unwrap();let archive=dir.path().join("private.bin");
+        let bytes=(0..513).map(|i|(i%251) as u8).collect::<Vec<_>>();fs::write(&archive,&bytes).unwrap();
+        let file=File::options().write(true).open(&archive).unwrap();
+        let when=std::time::UNIX_EPOCH+Duration::from_secs(1641081600);
+        file.set_times(std::fs::FileTimes::new().set_modified(when)).unwrap();drop(file);
+        let opts=EngineOptions{archive_timestamp:ArchiveTimestamp::Latest,..Default::default()};
+        let outputs=split_and_publish(&archive,&dir.path().join("输出.7z"),128,&opts,&JobControl::new()).unwrap();
+        assert_eq!(outputs.len(),5);let mut actual=Vec::new();
+        for path in outputs {actual.extend(fs::read(&path).unwrap());assert_eq!(fs::metadata(path).unwrap().modified().unwrap(),when);}
+        assert_eq!(actual,bytes);assert_eq!(fs::read(archive).unwrap(),bytes);
+    }
+    #[test]
+    fn snapshot_volume_cancel_and_late_conflict_roll_back_owned_names() {
+        for conflict in [false,true] {
+            let dir=tempfile::tempdir().unwrap();let archive=dir.path().join("private.bin");
+            let bytes=vec![42u8;513];fs::write(&archive,&bytes).unwrap();
+            let ctl=JobControl::new();let cancel=ctl.clone();
+            BEFORE_TIME_VOLUME_PUBLISH.with(|hook|*hook.borrow_mut()=Some(Box::new(move |index,path|{
+                if index==1 {if conflict {fs::write(path,b"competitor").unwrap();} else {cancel.cancel();}}
+            })));
+            let result=split_and_publish(&archive,&dir.path().join("output.zip"),128,&EngineOptions::default(),&ctl);
+            BEFORE_TIME_VOLUME_PUBLISH.with(|hook|hook.borrow_mut().take());
+            assert!(result.is_err());assert!(!dir.path().join("output.zip.001").exists());
+            if conflict {assert_eq!(fs::read(dir.path().join("output.zip.002")).unwrap(),b"competitor");}
+            else {assert!(!dir.path().join("output.zip.002").exists());}
+            assert_eq!(fs::read(archive).unwrap(),bytes);
+        }
+    }
 }

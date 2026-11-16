@@ -2,7 +2,7 @@ use super::*;
 
 extern "C" {
     fn qz_create_snapshot(runtime:*const u16,owner:Handle,root:Handle,name:*const u16,output:Handle,
-        level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,snapshot:*const u8,snapshot_size:usize,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
+        level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,snapshot:*const u8,snapshot_size:usize,output_base:u64,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
     fn qz_create_timed(runtime:*const u16,owner:Handle,root:Handle,name:*const u16,output:Handle,
         level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
     pub(super) fn qing_spawn_create_worker(
@@ -172,7 +172,7 @@ pub(in crate::engine) fn try_create(
     try_create_impl(out,names,opts,ctl,false)
 }
 fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobControl, seven: bool) -> Result<bool,String> {
-    // Console preflight uses atime-suppressed enumeration. A native attempt can
+    // Explicit atime uses the immutable snapshot route. A fast-path attempt can
     // enumerate before declining; that would lose the original directory atime.
     if opts.store_atime==Some(true) {return Ok(false);}
     let policy = crate::machine_policy::scope();
@@ -275,6 +275,7 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
         opts,
         ctl,
         None,
+        0,
     );
     for (p, overlap) in shared {
         if overlap {
@@ -314,14 +315,18 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
 // to a filesystem-atime encoder after the source has already been traversed.
 pub(in crate::engine) fn create_from_snapshot(target:&Path, prepared:&create_input::Prepared,
     format:&str, opts:&EngineOptions, ctl:&JobControl)->Result<(),String>{
-    let mut qualified=opts.clone();qualified.store_atime=None;
-    let names=vec![prepared.container().display().to_string()];
-    if !eligible(format,&names,&qualified) && !eligible_7z(format,&names,&qualified) {
-        return Err("snapshot creation options are not implemented by the current native candidate".into());
+    if !matches!(format,"zip"|"7z"|"sfx") || opts.volume_bytes.is_some() {
+        return Err("snapshot volume publication is not yet implemented".into());
     }
+    let mut switches=base("a",opts)?;compression(&mut switches,format,opts)?;
+    let properties=switches.iter().filter_map(|s|s.strip_prefix("-m")).map(|s|s.split_once('=').ok_or("invalid compression property")).collect::<Result<Vec<_>,_>>()?;
+    let mut manifest=Vec::new();manifest.extend_from_slice(&(properties.len() as u32).to_le_bytes());
+    for (key,value) in properties {wide(&mut manifest,OsStr::new(key))?;wide(&mut manifest,OsStr::new(value))?;}
+    manifest.extend_from_slice(&u32::from(opts.password.is_some()).to_le_bytes());
+    if let Some(password)=&opts.password {wide(&mut manifest,OsStr::new(password))?;}
+    manifest.extend_from_slice(&prepared.snapshot_manifest()?);
     let policy=crate::machine_policy::scope();
     if policy.restricted(){return Err("machine policy rejects native snapshot writer".into());}
-    let manifest=prepared.snapshot_manifest()?;
     prepared.verify(ctl)?;
     let source=File::options().access_mode(0x100081).share_mode(1).custom_flags(0x02200000)
         .open(prepared.container()).map_err(|e|e.to_string())?;
@@ -339,7 +344,19 @@ pub(in crate::engine) fn create_from_snapshot(target:&Path, prepared:&create_inp
     let _image=crate::engine_stream::pin(&exe)?;
     let mut output=crate::private_stage::ArchiveOutput::try_new(parent,&parent_pin)?.ok_or("private snapshot output unavailable")?;
     let result=(||{
-        let (encoded,latest)=encode(&exe,prepared.container(),&source,output.file(),format=="7z",opts,ctl,Some(&manifest))?;
+        let mut stub_pin=None;
+        let output_base=if format=="sfx" {
+            let mut stub=crate::engine_stream::pin(&sfx_stub()?)?;
+            let length=stub.metadata().map_err(|e|e.to_string())?.len();
+            if length==0 || length>16*1024*1024 {return Err("invalid SFX stub size".into());}
+            let mut writer=output.file().try_clone().map_err(|e|e.to_string())?;
+            let mut buffer=[0u8;64*1024];let mut copied=0u64;
+            while copied<length {ctl.check()?;let n=stub.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{return Err("SFX stub shortened".into());}writer.write_all(&buffer[..n]).map_err(|e|e.to_string())?;copied+=n as u64;}
+            if copied!=length {return Err("SFX stub changed".into());}
+            stub_pin=Some(stub);length
+        }else{0};
+        let (encoded,latest)=encode(&exe,prepared.container(),&source,output.file(),format!="zip",opts,ctl,Some(&manifest),output_base)?;
+        drop(stub_pin);
         if !encoded {return Err("native snapshot writer declined verified input".into());}
         prepared.verify(ctl)?;policy.unchanged()?;ctl.check()?;
         output.file().sync_all().map_err(|e|e.to_string())?;
@@ -357,7 +374,7 @@ const CREATE_HELLO: u8 = 49;
 const CREATE_CHALLENGE: u8 = 50;
 const CREATE_ACK: u8 = 51;
 const CREATE_VERSION: u32 = 1;
-const CREATE_CAPABILITIES: u32 = 15; // ZIP + single-volume LZMA2 7z + typed TIMES
+const CREATE_CAPABILITIES: u32 = 15; // ZIP + single-volume LZMA2 7z + typed TIMES + SNAPSHOT
 const CREATE_TIMES: u32 = 4;
 
 struct CreateSession {
@@ -447,7 +464,7 @@ pub fn helper_worker() -> u8 {
         let mut output = std::io::stdout().lock();
         output.write_all(&[CREATE_HELLO]).and_then(|_| output.write_all(&(hello.len() as u32).to_le_bytes()))
             .and_then(|_| output.write_all(&hello)).and_then(|_| output.flush()).map_err(|e| e.to_string())?;
-        let (kind, nonce) = read_frame(&mut std::io::stdin().lock(), 64*1024*1024+1024)?.ok_or("missing create challenge")?;
+        let (kind, nonce) = read_frame(&mut std::io::stdin().lock(), 1024)?.ok_or("missing create challenge")?;
         if kind != CREATE_CHALLENGE || nonce.len() != 16 { return Err("invalid create challenge".into()); }
         output.write_all(&[CREATE_ACK]).and_then(|_| output.write_all(&16u32.to_le_bytes()))
             .and_then(|_| output.write_all(&nonce)).and_then(|_| output.flush()).map_err(|e| e.to_string())
@@ -465,6 +482,7 @@ fn encode(
     opts: &EngineOptions,
     ctl: &JobControl,
     snapshot: Option<&[u8]>,
+    output_base:u64,
 ) -> Result<(bool, Option<u64>), String> {
     let times=compression_times::native_flags(opts);
     let mut prepared = create_session(exe, ctl, times!=0, snapshot.is_some())?;
@@ -487,7 +505,7 @@ fn encode(
         data.extend_from_slice(&opts.solid.map(|s|u32::from(s)+1).unwrap_or(0).to_le_bytes());
     }
     if times!=0 {data.extend_from_slice(&times.to_le_bytes());}
-    if let Some(snapshot)=snapshot {data.extend_from_slice(snapshot);}
+    if let Some(snapshot)=snapshot {data.extend_from_slice(&output_base.to_le_bytes());data.extend_from_slice(snapshot);}
     session.send(if snapshot.is_some() {54}else if times!=0 {52}else if seven {48} else {42}, data, ctl)?;
     let mut began = false;
     let mut latest=None;
@@ -551,12 +569,13 @@ fn run_worker() -> Result<(bool, Option<u64>), String> {
     if seven && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
     let times=if kind==52 || kind==54 {frame.u32()?}else{0};
     if !compression_times::valid_native(times) {return Err("invalid timestamp options".into());}
+    let output_base=if kind==54 {frame.u64()?}else{0};
     let snapshot=if kind==54 {let remaining=frame.0.len();frame.take(remaining)?}else{&[]};
     frame.end()?;
     let mut latest=0u64;
     let mut error = [0u8; 256];
     let status = unsafe {
-        if kind==54 {qz_create_snapshot(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,snapshot.as_ptr(),snapshot.len(),&mut latest,error.as_mut_ptr(),error.len())}
+        if kind==54 {qz_create_snapshot(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,snapshot.as_ptr(),snapshot.len(),output_base,&mut latest,error.as_mut_ptr(),error.len())}
         else if kind==52 {qz_create_timed(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,&mut latest,error.as_mut_ptr(),error.len())}
         else if seven { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
         else { qz_create_zip(
@@ -613,11 +632,15 @@ mod tests {
     use super::*;
     #[test]
     fn create_helper_identity_requires_exact_version_capabilities_and_nonce() {
+        let mut oversized=std::io::Cursor::new([50u8,1,4,0,0]);
+        assert!(read_frame(&mut oversized,1024).is_err());
+
         let hello = [1u32.to_le_bytes(), 3u32.to_le_bytes()].concat();
         assert_eq!(check_create_hello(CREATE_HELLO, &hello).unwrap(),3);
         let timed=[1u32.to_le_bytes(),7u32.to_le_bytes()].concat();
         assert_eq!(check_create_hello(CREATE_HELLO,&timed).unwrap(),7);
-        assert!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),15u32.to_le_bytes()].concat()).is_err());
+        assert_eq!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),15u32.to_le_bytes()].concat()).unwrap(),15);
+        assert!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),31u32.to_le_bytes()].concat()).is_err());
         for kind in [0, CREATE_ACK, 41, 43, 47] { assert!(check_create_hello(kind, &hello).is_err()); }
         for body in [vec![], [2u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
             [1u32.to_le_bytes(), 1u32.to_le_bytes()].concat(), [hello.as_slice(), &[0]].concat()] {

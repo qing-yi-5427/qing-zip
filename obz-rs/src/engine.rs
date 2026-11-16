@@ -4851,7 +4851,8 @@ pub fn create(
     if let Some(stage)=&input_stage {stage.trace_root("pre_run")?;}
     #[cfg(nana_selected_worker)]
     if let Some(stage)=&input_stage {
-        selected_worker::create_zip::create_from_snapshot(&staged,stage,format,opts,&ctl)?;
+        let mut encoder_options=opts.clone();encoder_options.volume_bytes=None;
+        selected_worker::create_zip::create_from_snapshot(&staged,stage,format,&encoder_options,&ctl)?;
     } else {run(&a,None,opts,None)?;}
     #[cfg(not(nana_selected_worker))]
     { if input_stage.is_some() {return Err("snapshot writer is unavailable in this build".into());} run(&a,None,opts,None)?; }
@@ -4860,6 +4861,14 @@ pub fn create(
     #[cfg(windows)]
     if let Some(stage)=&input_stage {stage.verify(&ctl)?;}
     ctl.check()?;
+    #[cfg(windows)]
+    if input_stage.is_some() {
+        if let Some(bytes)=opts.volume_bytes {
+            let result=create_input::split_and_publish(&staged,&out,bytes,opts,&ctl)?;
+            ctl.set("complete",Some(100),"Archive created");
+            return Ok(result);
+        }
+    }
     let mut produced = fs::read_dir(temp.path())
         .map_err(|e| e.to_string())?
         .map(|e| e.map(|e| e.path()).map_err(|e| e.to_string()))
