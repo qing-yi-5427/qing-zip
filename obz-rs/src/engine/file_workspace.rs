@@ -6,7 +6,7 @@ mod create;
 pub use create::create_item;
 #[path = "file_workspace_links.rs"]
 mod links;
-pub use links::{create_link, LinkKind, CreatedLink};
+pub use links::{create_link, LinkKind, CreatedLink,inspect_link,edit_link,LinkReceipt,InspectedLink,EditedLink};
 #[path = "file_workspace_stamp.rs"]
 mod stamp;
 #[path = "file_workspace_streams.rs"]

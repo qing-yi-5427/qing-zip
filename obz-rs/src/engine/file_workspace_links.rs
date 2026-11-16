@@ -516,3 +516,11 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
         assert_eq!(fs::read_dir(root.path()).unwrap().count(),2);fs::remove_dir(junction).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path="file_workspace_link_edit_probe.rs"]
+mod edit_probe;
+
+#[path="file_workspace_link_edit.rs"]
+mod edit;
+pub use edit::{inspect_link,edit_link,LinkReceipt,InspectedLink,EditedLink};

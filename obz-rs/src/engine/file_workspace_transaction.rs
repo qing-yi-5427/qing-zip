@@ -169,6 +169,20 @@ impl Transaction {
         })
     }
 
+    /// Explicit local-link editor only. The caller pins ordinary ancestors and
+    /// an original non-delete-sharing leaf, then validates exact reparse bytes.
+    /// Unlike ordinary transfer leases this accepts a reparse leaf, never follows
+    /// it, and exposes only the same transacted handle for metadata mutation.
+    pub(super) fn open_reparse(&self,path:&Path,expected:(u32,u64))->Result<File,String>{
+        let mut wide:Vec<_>=path.as_os_str().encode_wide().collect();
+        if !path.is_absolute() || wide.contains(&0){return Err("链接事务需要有效绝对路径".into());}wide.push(0);
+        let raw=unsafe{CreateFileTransactedW(wide.as_ptr(),0x80000100,3,std::ptr::null_mut(),3,0x02200000,std::ptr::null_mut(),self.handle.as_raw_handle(),std::ptr::null_mut(),std::ptr::null_mut())};
+        if raw.is_null() || raw as isize == -1{return Err(error("无法独占链接元数据的事务视图；尚未修改"));}
+        let file=unsafe{File::from_raw_handle(raw)};
+        if directory_identity(&file)?!=expected || file.metadata().map_err(|e|e.to_string())?.file_attributes()&0x400==0{return Err("链接事务对象身份或类型已改变；尚未修改".into());}
+        Ok(file)
+    }
+
     fn outcome(&self) -> Option<u32> {
         let (mut outcome, mut isolation, mut flags, mut timeout) = (0, 0, 0, 0);
         let ok = unsafe {
