@@ -700,12 +700,19 @@ fn run(
     }
     consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested,false)
 }
-#[derive(Clone,Copy)]
-enum OutputPlan { Requested, None }
+#[path="verification_sink.rs"]
+mod verification_sink;
+use verification_sink::HashSink;
+#[path="worker_ack.rs"]
+mod worker_ack;
+#[cfg(test)]
+thread_local! {static HASH_GRANTS:std::cell::RefCell<Vec<(usize,usize,usize)>>=const{std::cell::RefCell::new(Vec::new())};}
+enum OutputPlan<'a> { Requested, None, Hashes(&'a mut HashSink) }
 #[allow(clippy::too_many_arguments)]
 fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&EngineOptions,
     root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,stats:&mut Stats,
-    mut initial:Frame, output:OutputPlan,verification:bool)->Result<bool,String> {
+    mut initial:Frame, mut output:OutputPlan,verification:bool)->Result<bool,String> {
+    let mut ack_writer=if matches!(&output,OutputPlan::Hashes(_)){Some(worker_ack::AckWriter::new(session)?)}else{None};
     let password = opts.password.as_deref();
     let full_bytes = entries
         .iter()
@@ -725,8 +732,9 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
             2 if accepted.is_none() => {
                 if data.u32()? as usize != entries.len(){return Err("archive manifest changed before extraction".into());}
                 let mut members = acknowledge_mode(&mut data, entries, opts,verification)?;
-                if matches!(output,OutputPlan::None){for member in &mut members{member.chosen=false;}}
-                if members.iter().filter(|m|m.chosen && !entries[m.entry].is_dir).count()>MAX_OUTPUT_HANDLES {
+                if matches!(&output,OutputPlan::None){for member in &mut members{member.chosen=false;}}
+                if let OutputPlan::Hashes(sink)=&output{for member in &mut members{member.chosen=sink.wanted(member.entry);}}
+                if !matches!(&output,OutputPlan::Hashes(_)) && members.iter().filter(|m|m.chosen && !entries[m.entry].is_dir).count()>MAX_OUTPUT_HANDLES {
                     return Err("verification output handle budget exceeded".into());
                 }
                 let mut ack = nonce.to_vec();
@@ -735,7 +743,7 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
                     ctl.check()?;
                     let e = &entries[member.entry];
                     let mut remote = 0u64;
-                    if member.chosen {
+                    if member.chosen && !matches!(&output,OutputPlan::Hashes(_)) {
                         let path = root.join(validate_name(&e.name)?);
                         if e.is_dir {
                             guards.create_dirs(&path)?;
@@ -748,8 +756,17 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
                     ack.push(u8::from(member.chosen));
                     ack.extend_from_slice(&remote.to_le_bytes());
                 }
+                #[cfg(test)]
+                if matches!(&output,OutputPlan::Hashes(_)) {
+                    let nonzero=ack[20..].chunks_exact(9).filter(|row|row[1..].iter().any(|b|*b!=0)).count();
+                    HASH_GRANTS.with(|v|v.borrow_mut().push((members.iter().filter(|m|m.chosen).count(),nonzero,files.len())));
+                }
                 session.send(3, ack, ctl)?;
                 accepted = Some(members);
+            }
+            12|14|16 if accepted.is_some()=>{
+                let OutputPlan::Hashes(sink)=&mut output else{return Err("unexpected proof stream".into());};
+                let (reply,body)=sink.frame(kind,&mut data,nonce)?;ctl.check()?;ack_writer.as_mut().ok_or("missing hash ACK writer")?.send(reply,body,ctl)?;
             }
             7 if password.is_some() && accepted.is_none() => {
                 data.end()?;
@@ -786,12 +803,7 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
                 let reason =
                     std::str::from_utf8(data.take(length)?).map_err(|_| "invalid worker reason")?;
                 data.end()?;
-                let selection = Selection::new(&opts.selected);
-                let selected_bytes = entries
-                    .iter()
-                    .filter(|e| matches!(output,OutputPlan::Requested) && selection.contains(&e.name))
-                    .map(|e| e.size)
-                    .sum::<u64>();
+                let selected_bytes=accepted.as_ref().map_or(0,|members|members.iter().filter(|m|m.chosen).map(|m|entries[m.entry].size).sum::<u64>());
                 let valid = accepted.is_some()
                     && hr == 0
                     && outcome == 2
@@ -842,6 +854,7 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
     if !used {
         return Ok(false);
     }
+    if let OutputPlan::Hashes(sink)=&output {ctl.check()?;sink.finish()?;return Ok(true);}
     for member in accepted.unwrap().iter().rev().filter(|m| m.chosen) {
         ctl.check()?;
         if let Some(file) = files.get(&member.entry) {

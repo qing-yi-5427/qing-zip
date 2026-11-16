@@ -9,6 +9,7 @@ pub(in crate::engine) struct Pending {
     nonce: [u8;16],
     manifest: (u8,Vec<u8>),
     verification: bool,
+    hashing: bool,
 }
 
 #[cfg(test)]
@@ -66,16 +67,18 @@ fn acknowledge_threads(body:&[u8],nonce:&[u8;16],requested:Option<u32>,already_a
 
 pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
-    prepare_impl(path,source,opts,ctl,false)
+    prepare_impl(path,source,opts,ctl,false,false)
 }
 // Verification grants capabilities only after the complete manifest is checked.
 // Unlike full extraction, its handle budget depends on requested outputs, not
 // total entries. Password, policy, format and inventory limits remain unchanged.
 pub(in crate::engine) fn prepare_verification(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
-    prepare_impl(path,source,opts,ctl,true)
+    prepare_impl(path,source,opts,ctl,true,false)
 }
-fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verification:bool)
+pub(in crate::engine) fn prepare_hash_verification(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
+    ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {prepare_impl(path,source,opts,ctl,true,true)}
+fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verification:bool,hashing:bool)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
     if opts.threads==Some(0) {return Err("invalid compression settings".into());}
     if !opts.selected.is_empty() || (!verification && (opts.password.is_some() || opts.codepage.is_some())) ||
@@ -119,7 +122,7 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
     // DLL is verified. Field order reaps the child before releasing any pin on
     // failure, cancellation, fallback or success.
     let mut pending=Pending{session:Session::start_mode(&exe,3)?,_runtime:Vec::new(),_image:image,
-        nonce,manifest:(0,Vec::new()),verification};
+        nonce,manifest:(0,Vec::new()),verification,hashing};
     #[cfg(test)]
     TEST_CHILDREN.with(|children|children.borrow_mut().push(pending.session.child.try_clone().unwrap()));
     #[cfg(test)]
@@ -134,7 +137,7 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
     request.extend_from_slice(&source.metadata().map_err(|e|e.to_string())?.len().to_le_bytes());
     wide(&mut request,OsStr::new(if mode==1{"input.7z"}else{"input.zip"}))?;
     let units=opts.password.as_ref().map_or(0,|p|p.encode_utf16().count() as u32);
-    request.extend_from_slice(&units.to_le_bytes());request.extend_from_slice(&(mode+if verification{4}else{0}).to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());
+    request.extend_from_slice(&units.to_le_bytes());request.extend_from_slice(&(mode+if hashing{6}else if verification{4}else{0}).to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());
     if verification{request.extend_from_slice(&u32::from(opts.codepage.is_some()).to_le_bytes());request.extend_from_slice(&opts.codepage.unwrap_or(0).to_le_bytes());}
     session.send(11,request,ctl)?;
     if let Some(password)=opts.password.as_deref(){session.send(6,SecretFrame::new(password),ctl)?;}
@@ -173,6 +176,11 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
 }
 pub(in crate::engine) enum VerificationOutput { None, Members }
 impl Pending {
+    pub(in crate::engine) fn verify_hashes(self,entries:&[Entry],opts:&EngineOptions,expected:&BTreeMap<String,[u8;32]>,ctl:&JobControl)->Result<(),String> {
+        if !self.hashing{return Err("hash verification requires dedicated mode".into());}
+        let mut sink=HashSink::new(entries,expected)?;
+        self.decode_impl(entries,opts,Path::new(""),&mut CheckedDirectories::default(),ctl,OutputPlan::Hashes(&mut sink))
+    }
     pub(in crate::engine) fn decode(self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl)->Result<(),String> {
         self.decode_impl(entries,opts,root,guards,ctl,OutputPlan::Requested)
     }
@@ -244,6 +252,54 @@ mod tests {
             Err(std::sync::mpsc::TryRecvError::Empty)), "no request or manifest before runtime verification");
     }
     #[test]
+    #[ignore="explicit 1GiB verification diagnostic; run alone"]
+    fn hash_verification_one_gibibyte_uses_one_ack_thread_and_no_outputs() {
+        use sha2::{Digest,Sha256};
+        fn digest(path:&Path)->String {let mut file=File::open(path).unwrap();let mut hash=Sha256::new();let mut buffer=vec![0;1024*1024];loop{let n=file.read(&mut buffer).unwrap();if n==0{break;}hash.update(&buffer[..n]);}hash.finalize().iter().map(|b|format!("{b:02x}")).collect()}
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("one-gib.zip");
+        let block:Vec<u8>=(0..65536).map(|n|(n%251)as u8).collect();let mut hash=Sha256::new();
+        let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());zip.start_file("one-gib.bin",zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        for _ in 0..16384{zip.write_all(&block).unwrap();hash.update(&block);}zip.finish().unwrap();let expected:[u8;32]=hash.finalize().into();
+        let archive_before=digest(&archive);let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions{threads:Some(4),..Default::default()};let ctl=JobControl::new();
+        HASH_GRANTS.with(|v|v.borrow_mut().clear());verification_sink::CHUNKS.with(|v|v.set(0));worker_ack::WRITERS_STARTED.with(|v|v.set(0));
+        let started=std::time::Instant::now();let(entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        pending.unwrap().verify_hashes(&entries,&opts,&BTreeMap::from([("one-gib.bin".into(),expected)]),&ctl).unwrap();reap_proof();let elapsed=started.elapsed().as_secs_f64();
+        let chunks=verification_sink::CHUNKS.with(|v|v.get());let writers=worker_ack::WRITERS_STARTED.with(|v|v.get());assert!(chunks>=16384);assert_eq!(writers,1);HASH_GRANTS.with(|v|assert_eq!(&*v.borrow(),&[(1,0,0)]));
+        assert_eq!(digest(&archive),archive_before);assert_eq!(fs::read_dir(temp.path()).unwrap().count(),1);
+        eprintln!("HASH_STREAM_DIAGNOSTIC {}",serde_json::json!({"bytes":1073741824u64,"chunks":chunks,"ack_writer_threads":writers,"seconds_debug_diagnostic":elapsed,"archive_sha256_before_after":archive_before,"payload_sha256":expected.iter().map(|b|format!("{b:02x}")).collect::<String>(),"output_handles":0,"output_files":0}));
+    }
+    #[test]
+    fn hash_verification_mid_chunk_cancel_reaps_worker_and_preserves_candidate() {
+        use sha2::{Digest,Sha256};
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");let payload=vec![42u8;200000];
+        let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());zip.start_file("a.bin",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(&payload).unwrap();zip.finish().unwrap();
+        let before=fs::read(&archive).unwrap();let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();let opts=EngineOptions::default();
+        let (entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        let cancel=ctl.clone();verification_sink::AFTER_CHUNK.with(|h|*h.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        let expected=BTreeMap::from([("a.bin".into(),Sha256::digest(&payload).into())]);
+        assert!(pending.unwrap().verify_hashes(&entries,&opts,&expected,&ctl).unwrap_err().contains("cancel"));reap_proof();assert_eq!(fs::read(&archive).unwrap(),before);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(),1);
+    }
+    #[test]
+    fn hash_verification_streams_more_than_512_members_without_output_handles() {
+        use sha2::{Digest,Sha256};
+        for format in ["zip","7z"] {
+            let temp=tempfile::tempdir().unwrap();let input=temp.path().join("inputs");fs::create_dir(&input).unwrap();
+            let payload=vec![42u8;140000];let mut expected=BTreeMap::new();
+            for index in 0..600 {let bytes=if index==0{payload.as_slice()}else if index==1{&[][..]}else{&b"abc"[..]};
+                fs::write(input.join(format!("{index}.txt")),bytes).unwrap();expected.insert(format!("inputs/{index}.txt"),Sha256::digest(bytes).into());}
+            let archive=temp.path().join(format!("case.{format}"));create(archive.to_str().unwrap(),&[input.display().to_string()],format,&EngineOptions::default()).unwrap();
+            let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions{threads:Some(4),..Default::default()};let ctl=JobControl::new();
+            let (entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+            HASH_GRANTS.with(|v|v.borrow_mut().clear());
+            assert_eq!(entries.iter().filter(|e|!e.is_dir).count(),600);pending.unwrap().verify_hashes(&entries,&opts,&expected,&ctl).unwrap();reap_proof();
+            HASH_GRANTS.with(|v|assert_eq!(&*v.borrow(),&[(600,0,0)]));
+            let (entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();expected.insert("inputs/599.txt".into(),[0;32]);
+            assert!(pending.unwrap().verify_hashes(&entries,&opts,&expected,&ctl).unwrap_err().contains("payload mismatch"));reap_proof();
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(),2,"only source tree and candidate archive exist");
+        }
+    }
+    #[test]
     fn verification_codepage_cannot_hide_unsafe_or_colliding_names_and_secret_limit() {
         let temp=tempfile::tempdir().unwrap();
         for (index,names) in [vec!["../xx.txt"],vec!["xx.txt","XX.txt"]].iter().enumerate(){
@@ -299,6 +355,11 @@ mod tests {
                     assert!(entries.iter().any(|e|e.encrypted));pending.ok_or("no worker")?.verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::Members)});
                 if correct{result.unwrap();assert_eq!(fs::read(stage.join("a.txt")).unwrap(),b"secret payload");}else{assert!(result.is_err());}
                 reap_proof();
+                if correct {
+                    use sha2::{Digest,Sha256};
+                    let (entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+                    pending.unwrap().verify_hashes(&entries,&opts,&BTreeMap::from([("a.txt".into(),Sha256::digest(b"secret payload").into())]),&ctl).unwrap();reap_proof();
+                }
             }
         }}}
     }
@@ -315,6 +376,9 @@ mod tests {
         let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions{codepage:Some(936),threads:Some(4),..Default::default()};let ctl=JobControl::new();
         let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();assert_eq!(entries[0].name,"中.txt");
         let stage=temp.path().join("cp-out");fs::create_dir(&stage).unwrap();pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::Members).unwrap();assert_eq!(fs::read(stage.join("中.txt")).unwrap(),b"codepage");reap_proof();
+        use sha2::{Digest,Sha256};
+        let (entries,pending)=prepare_hash_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        pending.unwrap().verify_hashes(&entries,&opts,&BTreeMap::from([("中.txt".into(),Sha256::digest(b"codepage").into())]),&ctl).unwrap();reap_proof();
     }
     #[test]
     fn verification_overlap_keeps_zero_capabilities_until_runtime_is_verified() {

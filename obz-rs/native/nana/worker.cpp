@@ -90,7 +90,10 @@ struct Worker {
     if (received != nonce) throw std::runtime_error("worker job identity mismatch");
   }
   uint32_t single_mode = 0;
-  bool verification = false;
+  bool verification = false, hashing = false;
+  std::mutex stream_lock;
+  std::vector<uint64_t> sizes, offsets;
+  std::vector<uint8_t> opened, closed;
   uint32_t cp_present = 0, codepage = 0;
   uint32_t thread_limit = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
@@ -113,7 +116,7 @@ struct Worker {
       volumes.push_back({leaves.back().c_str(), uint32_t(leaves.back().size()), 0, size});
     }
     auto units = r.get<uint32_t>();
-    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode != 1 && single_mode != 2 && single_mode != 5 && single_mode != 6) throw std::runtime_error("invalid single archive mode"); verification = single_mode > 2; if (verification) { single_mode -= 4; cp_present=r.get<uint32_t>(); codepage=r.get<uint32_t>(); if(cp_present>1 || (!cp_present && codepage)) throw std::runtime_error("invalid codepage field"); } }
+    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode != 1 && single_mode != 2 && single_mode != 5 && single_mode != 6 && single_mode != 7 && single_mode != 8) throw std::runtime_error("invalid single archive mode"); verification = single_mode > 2; hashing = single_mode > 6; if (verification) { single_mode -= hashing ? 6 : 4; cp_present=r.get<uint32_t>(); codepage=r.get<uint32_t>(); if(cp_present>1 || (!cp_present && codepage)) throw std::runtime_error("invalid codepage field"); } }
     if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
     if (units) {
@@ -156,9 +159,10 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
     auto r = w.channel.read(3); w.match_nonce(r);
     if (r.get<uint32_t>() != count) return E_FAIL;
     w.outputs.assign(count, nullptr); w.selected.resize(count);
+    if(w.hashing){w.sizes.resize(count);w.offsets.assign(count,0);w.opened.assign(count,0);w.closed.assign(count,0);}
     for (uint32_t i = 0; i < count; ++i) {
       auto selected = r.get<uint8_t>(); auto handle = reinterpret_cast<HANDLE>(r.get<uint64_t>());
-      if (selected > 1 || bool(handle) != bool(selected && !items[i].is_dir)) return E_FAIL;
+      if (selected > 1 || bool(handle) != bool(selected && !items[i].is_dir && !w.hashing)) return E_FAIL;
       if (handle) {
         BY_HANDLE_FILE_INFORMATION info{};
         if (GetFileType(handle) != FILE_TYPE_DISK || !GetFileInformationByHandle(handle, &info) ||
@@ -166,27 +170,57 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
             (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return E_FAIL;
       }
       w.outputs[i] = handle; w.selected[i] = selected; ack[i] = selected;
+      if(w.hashing)w.sizes[i]=items[i].size;
     }
     r.end(); return S_OK;
   });
 }
 HRESULT __stdcall prepared(void *) { return S_OK; } // Parent prepared directories before granting capabilities.
+void stream_ack(Worker &w,uint8_t kind,uint32_t index,uint64_t offset) {
+  auto r=w.channel.read(kind);w.match_nonce(r);
+  if(r.get<uint32_t>()!=index || r.get<uint64_t>()!=offset)throw std::runtime_error("invalid hash stream acknowledgement");r.end();
+}
 HRESULT __stdcall open_output(void *context, uint32_t index, uint64_t *token) {
   auto &w = *static_cast<Worker *>(context);
-  if (index >= w.outputs.size() || !w.outputs[index]) return E_FAIL;
-  *token = index; return S_OK;
+  return guarded(w,[&]()->HRESULT{
+    if(w.hashing){
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if(index>=w.selected.size()||!w.selected[index]||w.opened[index]||w.closed[index])return E_FAIL;
+      Bytes msg=w.message();put(msg,index);put(msg,w.sizes[index]);w.channel.send(12,msg);stream_ack(w,13,index,w.sizes[index]);w.opened[index]=1;
+    }else if (index >= w.outputs.size() || !w.outputs[index]) return E_FAIL;
+    *token=index;return S_OK;
+  });
 }
 HRESULT __stdcall write_output(void *context, uint64_t token, const void *buffer, uint32_t size, uint32_t *processed) {
-  auto &w = *static_cast<Worker *>(context); *processed = 0; DWORD n = 0;
-  if (token >= w.outputs.size() || !w.outputs[size_t(token)]) return E_FAIL;
-  if (!WriteFile(w.outputs[size_t(token)], buffer, size, &n, nullptr)) return HRESULT_FROM_WIN32(GetLastError());
-  *processed = n; return S_OK;
+  auto &w = *static_cast<Worker *>(context); *processed = 0;
+  return guarded(w,[&]()->HRESULT{
+    if(w.hashing){
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if(token>=w.selected.size()||!w.selected[size_t(token)]||!w.opened[size_t(token)]||w.closed[size_t(token)])return E_FAIL;
+      const uint32_t index=uint32_t(token);const auto *bytes=static_cast<const uint8_t *>(buffer);
+      if(w.offsets[index]>w.sizes[index]||size>w.sizes[index]-w.offsets[index])return E_FAIL;
+      while(*processed<size){
+        uint32_t amount=std::min<uint32_t>(size-*processed,64*1024);Bytes msg=w.message();put(msg,index);put(msg,w.offsets[index]);put(msg,amount);append(msg,bytes+*processed,amount);
+        w.channel.send(14,msg);stream_ack(w,15,index,w.offsets[index]);w.offsets[index]+=amount;*processed+=amount;
+      }return S_OK;
+    }
+    DWORD n=0;if (token >= w.outputs.size() || !w.outputs[size_t(token)]) return E_FAIL;
+    if (!WriteFile(w.outputs[size_t(token)], buffer, size, &n, nullptr)) return HRESULT_FROM_WIN32(GetLastError());
+    *processed=n;return S_OK;
+  });
 }
 HRESULT __stdcall close_output(void *context, uint64_t token) {
   auto &w = *static_cast<Worker *>(context);
-  if (token >= w.outputs.size() || !w.outputs[size_t(token)]) return E_FAIL;
-  HANDLE h = w.outputs[size_t(token)]; w.outputs[size_t(token)] = nullptr;
-  return CloseHandle(h) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+  return guarded(w,[&]()->HRESULT{
+    if(w.hashing){
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if(token>=w.selected.size()||!w.opened[size_t(token)]||w.closed[size_t(token)]||w.offsets[size_t(token)]!=w.sizes[size_t(token)])return E_FAIL;
+      const uint32_t index=uint32_t(token);Bytes msg=w.message();put(msg,index);put(msg,w.offsets[index]);w.channel.send(16,msg);stream_ack(w,17,index,w.offsets[index]);w.closed[index]=1;return S_OK;
+    }
+    if (token >= w.outputs.size() || !w.outputs[size_t(token)]) return E_FAIL;
+    HANDLE h = w.outputs[size_t(token)]; w.outputs[size_t(token)] = nullptr;
+    return CloseHandle(h) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+  });
 }
 int32_t __stdcall cancelled(void *p) {
   auto &w = *static_cast<Worker *>(p);

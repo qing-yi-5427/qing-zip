@@ -118,7 +118,6 @@ pub(super) fn verify_candidate(candidate:&Path, plan:&Plan, opts:&EngineOptions)
 #[allow(dead_code)]
 pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts:&EngineOptions)->Result<(),String> {
     use std::os::windows::io::{AsRawHandle,FromRawHandle};
-    use sha2::{Digest,Sha256};
     #[link(name="kernel32")]
     extern "system" {fn ReOpenFile(file:*mut std::ffi::c_void,access:u32,share:u32,flags:u32)->*mut std::ffi::c_void;}
     let ctl=control(opts);ctl.check()?;plan.validate_mapping()?;
@@ -130,39 +129,30 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
     let mut options=opts.clone();options.selected.clear();options.overwrite="error".into();
     // Name is a decoder hint only. prepare obtains every input byte through
     // reader; the existing single-volume probe chooses ZIP or 7z by content.
-    let (entries,pending)=selected_worker::full_worker::prepare_verification("move-proof-candidate",&reader,&options,&ctl)?
+    let (entries,pending)=selected_worker::full_worker::prepare_hash_verification("move-proof-candidate",&reader,&options,&ctl)?
         .ok_or("当前候选格式、密码、编码或策略不支持固定句柄验证，原包与源文件保持不变")?;
     let pending=pending.ok_or("候选成员数超过固定句柄验证上限，原包与源文件保持不变")?;
     let occupied=inventory(entries.clone())?;
+    let sizes:BTreeMap<_,_>=entries.iter().filter(|e|!e.is_dir).map(|e|(key(&e.name),e.size)).collect();
     let wanted:Vec<_>=plan.items.iter().filter(|i|i.skipped.is_none()).collect();
     for item in &wanted {
         if occupied.get(&key(&item.member))!=Some(&item.directory){return Err("Candidate member/type mismatch".into());}
+        if !item.directory && sizes.get(&key(&item.member))!=Some(&item.bytes){return Err("Candidate length mismatch".into());}
     }
-    options.selected=wanted.iter().filter(|i|!i.directory).map(|i|i.member.clone()).collect();
-    use selected_worker::full_worker::VerificationOutput;
-    let output=if options.selected.is_empty(){VerificationOutput::None}else{VerificationOutput::Members};
-    let stage=ShellDragDirectory::create_named("qing-zip-locked-move-proof-")?;
-    let data=stage.path().join("verified");fs::create_dir(&data).map_err(|e|e.to_string())?;
-    let mut guards=CheckedDirectories::default();
-    pending.verify(&entries,&options,&data,&mut guards,&ctl,output)?;
+    let mut expected=BTreeMap::new();
+    for item in wanted {if !item.directory {
+        expected.insert(item.member.clone(),item.sha256.ok_or("Missing snapshot SHA")?);
+    }}
+    pending.verify_hashes(&entries,&options,&expected,&ctl)?;
     #[cfg(test)]
-    AFTER_EXTRACT.with(|hook| {if let Some(run)=hook.borrow_mut().take(){run(&data);}});
-    for item in wanted {
-        ctl.check()?;if item.directory{continue;}
-        let path=data.join(validate_name(&item.member)?);
-        let mut file=crate::engine_stream::pin(&path)?;
-        let meta=crate::private_stage::checked_metadata(&file)?;
-        if !meta.is_file()||meta.len()!=item.bytes{return Err("Candidate length mismatch".into());}
-        let mut hash=Sha256::new();let mut buffer=vec![0u8;1024*1024];
-        loop {ctl.check()?;let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{break;}hash.update(&buffer[..n]);}
-        let actual:[u8;32]=hash.finalize().into();
-        if Some(actual)!=item.sha256{return Err(format!("Candidate payload mismatch: {}",item.member));}
-    }
+    AFTER_VERIFY.with(|hook|{if let Some(run)=hook.borrow_mut().take(){run();}});
     ctl.check()?;
     if directory_identity(candidate)?!=identity{return Err("Candidate identity changed during validation".into());}
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {static AFTER_VERIFY:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 #[cfg(test)]
 thread_local! { static AFTER_EXTRACT: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) }; }
 #[cfg(test)]
@@ -277,7 +267,6 @@ mod tests {
         let result=verify_candidate(&output,prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
         assert_eq!(result.verified_members,vec!["nested/target/empty"]);
         drop(result);
-        AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|{assert!(!data.join("untouched.bin").exists());assert!(!data.join("folder/docs/a.txt").exists());})));
         verify_locked_candidate(&strong(&output),prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
     }
     #[test]
@@ -287,7 +276,6 @@ mod tests {
             let archive=temp.path().join(format!("candidate.{format}"));
             create(archive.to_str().unwrap(),&[seed.display().to_string()],format,&EngineOptions::default()).unwrap();
             let plan=Plan{items:vec![item("docs",true)]};
-            AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|assert_eq!(fs::read_dir(data).unwrap().count(),0))));
             verify_locked_candidate(&strong(&archive),&plan,&EngineOptions::default()).unwrap();
             assert_eq!(fs::read(seed.join("old.txt")).unwrap(),b"old content");
         }
@@ -328,7 +316,6 @@ mod tests {
             archive_add(candidate.to_str().unwrap(),&inputs,"folder",&opts).unwrap();
             let pinned=strong(&candidate);
             assert!(crate::engine_stream::pin(&candidate).is_err(),"normal path pin must conflict with the strong DELETE handle");
-            AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|{assert!(!data.join("untouched.bin").exists());assert!(data.join("folder/docs/b.txt").is_file());})));
             verify_locked_candidate(&pinned,plan.proof.as_ref().unwrap(),&opts).unwrap();
             assert!(File::options().write(true).open(&candidate).is_err());
             assert_eq!(fs::read(&original).unwrap(),before);assert!(local.join("docs/a.txt").exists());
@@ -343,7 +330,7 @@ mod tests {
             if mode=="crc"{let mut bytes=fs::read(&output).unwrap();let marker=b"UNSELECTED-INTEGRITY-PAYLOAD";let n=bytes.windows(marker.len()).position(|w|w==marker).unwrap();bytes[n]^=1;fs::write(&output,bytes).unwrap();}
             if mode=="sha"{plan.proof.as_mut().unwrap().items.iter_mut().find(|i|!i.directory).unwrap().sha256=Some([0;32]);}
             if mode=="password"{opts.password=Some("not inherited".into());}
-            if mode=="cancel"{AFTER_EXTRACT.with(|h|*h.borrow_mut()=Some(Box::new(move|_|ctl.cancel())));}
+            if mode=="cancel"{AFTER_VERIFY.with(|h|*h.borrow_mut()=Some(Box::new(move||ctl.cancel())));}
             let pin=strong(&output);assert!(verify_locked_candidate(&pin,plan.proof.as_ref().unwrap(),&opts).is_err(),"{mode}");
             assert!(local.join("docs/a.txt").exists());
         }
@@ -387,6 +374,25 @@ mod tests {
         }}}
     }
 
+    #[test]
+    fn proof_guarded_encrypted_large_update_streams_sha_before_publication() {
+        for format in ["zip","7z"] {
+            let (temp,_,local,_)=fixture();
+            for i in 0..520{fs::write(local.join("docs").join(format!("new-{i}.txt")),format!("payload-{i}")).unwrap();}
+            let original=temp.path().join(format!("encrypted.{format}"));let seed=temp.path().join("old.txt");fs::write(&seed,b"old archive member").unwrap();
+            let opts=EngineOptions{password:Some("fixture-password".into()),header_encryption:(format=="7z").then_some(true),overwrite:"overwrite".into(),threads:Some(4),..Default::default()};
+            create(original.to_str().unwrap(),&[seed.display().to_string()],format,&opts).unwrap();
+            let prepared=prepare_for_move_proof(&original,&[local.join("docs").display().to_string()],"nested",&opts).unwrap();
+            let source=edit_source::EditSource::open_controlled(&original,&control(&opts)).unwrap();let output=source.output().unwrap();fs::copy(&original,output.path()).unwrap();
+            archive_add(output.path().to_str().unwrap(),&[local.join("docs").display().to_string()],"nested",&opts).unwrap();
+            let binding=edit_source::CandidateIdentityBinding::from_pinned(crate::engine_stream::pin(output.path()).unwrap()).unwrap();
+            let guard=source.commit_tracked_guarded(output,binding,&opts,|exact|verify_locked_candidate(exact,prepared.proof.as_ref().unwrap(),&opts)).unwrap();
+            assert!(File::options().write(true).open(&original).is_err());drop(guard);
+            let dest=temp.path().join("check");extract(original.to_str().unwrap(),dest.to_str().unwrap(),&opts).unwrap();
+            for i in 0..520{assert_eq!(fs::read(dest.join("nested/docs").join(format!("new-{i}.txt"))).unwrap(),format!("payload-{i}").as_bytes());assert!(local.join("docs").join(format!("new-{i}.txt")).exists());}
+            assert_eq!(fs::read(dest.join("old.txt")).unwrap(),b"old archive member");
+        }
+    }
     #[test]
     fn proof_guarded_wrong_password_restores_original_archive() {
         let (temp,_,local,_)=fixture();let original=temp.path().join("encrypted.7z");
