@@ -81,20 +81,24 @@ def reset_times():
   vals=[ctypes.c_uint64((11644473600+v+offset)*10000000) for v in [1577836800,1609459200,1640995200]]
   try:assert K.SetFileTime(h,*[ctypes.byref(v) for v in vals])
   finally:K.CloseHandle(h)
-def create(b,path):
- b.click('details:has(#qa-inputs) > summary');b.fill('#qa-inputs',src);b.fill('#qa-save',path);reset_times();b.click('[data-action=startcompress]')
+def create(b,path,source=src,reset=True,expect_preserved=True):
+ b.click('details:has(#qa-inputs) > summary');b.fill('#qa-inputs',source);b.fill('#qa-save',path)
+ if reset:reset_times()
+ b.click('[data-action=startcompress]')
  deadline=time.monotonic()+45
  while time.monotonic()<deadline:
   if path.exists():break
   time.sleep(.15)
  assert path.exists(),b.js('document.body.innerText');time.sleep(.4)
- if not Path(str(src/'data.txt')+':proof').exists():assert (src/'data.txt').stat().st_atime_ns==1609459200000000000
+ if expect_preserved:assert (src/'data.txt' if source==src else source).stat().st_atime_ns==1609459200000000000
  b.wait('!document.querySelector("#qa-inputs")')
  nana=a.exe.parent/'runtime/nanazip/NanaZip.Universal.Console.exe'
  p=subprocess.run([str(nana),'l','-slt','-sccUTF-8',str(path)],capture_output=True,timeout=30);assert p.returncode==0,p.stderr
  (a.out/(path.name+'.metadata.txt')).write_bytes(p.stdout)
  dest=root/(path.name+'-decoded');p=subprocess.run([str(nana),'x','-y','-o'+str(dest),str(path)],capture_output=True,timeout=30);assert p.returncode==0,p.stderr
- assert (dest/src.name/'data.txt').read_bytes()==b'timestamp GUI proof'
+ decoded=dest/src.name/'data.txt' if source==src else dest/source.name
+ assert decoded.read_bytes()==b'timestamp GUI proof'
+ report.setdefault('created_archives',[]).append({'path':str(path),'decoded_sha256':sha(decoded),'source_atime_ns':(src/'data.txt' if source==src else source).stat().st_atime_ns,'expect_preserved':expect_preserved});save()
  b.wait('document.body.innerText.includes("完整性检查通过")');b.click('.qa-dialog-footer [data-action=close]');return p
 b=None
 try:
@@ -111,16 +115,46 @@ try:
  b.dialog();b.click('[data-action=compression-advanced]');b.select('#oa-store-ctime','true');b.select('#oa-store-atime','true');b.click('#oa-preserve-atime');b.screenshot('storage-failure-still-usable');create(b,root/'storage-failure.zip');checked('storage_write_failure_does_not_block_actual_creation')
  b.js('Storage.prototype.setItem=window.originalTimeStorageSet')
  checked('preserved_regular_source_atime_and_postcreate_integrity_check')
- Path(str(src/'data.txt')+':proof').write_bytes(b'ADS warning fixture')
+ ads=Path(str(src/'data.txt')+':proof');ads_payload=b'ADS preservation fixture';ads.write_bytes(ads_payload)
  b.dialog();b.click('[data-action=compression-advanced]')
  if not b.js('document.querySelector("#oa-preserve-atime").checked'):b.click('#oa-preserve-atime')
  b.js('document.querySelector("#oa-preserve-atime").scrollIntoView({block:"center"})');b.screenshot('preserve-switch')
- create(b,root/'ads-warning.zip')
+ create(b,root/'ads-preserved.zip')
+ # Check ATime before this test's own ADS content verification reads the source.
+ assert (src/'data.txt').stat().st_atime_ns==1609459200000000000
+ assert ads.read_bytes()==ads_payload
+ b.click('[data-view=history]')
+ assert b.js('Array.from(document.querySelectorAll(".qa-jobcard")).filter(c=>c.innerText.includes("ads-preserved.zip")).length===2')
+ assert b.js('Array.from(document.querySelectorAll(".qa-jobcard")).filter(c=>c.innerText.includes("ads-preserved.zip")).every(c=>c.innerText.includes("已完成")&&!c.innerText.includes("访问时间未能保留"))')
+ b.screenshot('ads-preserved-no-warning');checked('actual_ads_source_atime_and_data_preserved_without_warning')
+ # Real ordinary fixture denying WRITE_ATTRIBUTES only. Never change user files
+ # or relax the ACL after failure; original ordinary read access remains allowed.
+ denied=root/'attribute-denied.txt';denied.write_bytes(b'timestamp GUI proof')
+ os.utime(denied,ns=(1609459200000000000,1640995200000000000))
+ adv=ctypes.WinDLL('advapi32',use_last_error=True);P=ctypes.c_void_p;U=ctypes.c_uint32
+ adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes=[ctypes.c_wchar_p,U,ctypes.POINTER(P),ctypes.POINTER(U)]
+ adv.SetFileSecurityW.argtypes=[ctypes.c_wchar_p,U,P];adv.GetFileSecurityW.argtypes=[ctypes.c_wchar_p,U,P,U,ctypes.POINTER(U)];K.LocalFree.argtypes=[P]
+ descriptor=P();assert adv.ConvertStringSecurityDescriptorToSecurityDescriptorW('D:P(D;;0x100;;;WD)(A;;FA;;;OW)',1,ctypes.byref(descriptor),None)
+ try:assert adv.SetFileSecurityW(str(denied),0x80000004,descriptor),ctypes.get_last_error()
+ finally:K.LocalFree(descriptor)
+ def denied_acl():
+  needed=U();adv.GetFileSecurityW(str(denied),4,None,0,ctypes.byref(needed));buffer=ctypes.create_string_buffer(needed.value)
+  assert adv.GetFileSecurityW(str(denied),4,buffer,needed.value,ctypes.byref(needed)),ctypes.get_last_error()
+  return hashlib.sha256(buffer.raw[:needed.value]).hexdigest()
+ acl_before=denied_acl()
+ # Prove the fixture denies the exact permission before invoking the real UI.
+ blocked=K.CreateFileW(str(denied),0x100,7,None,3,0x00200000,None)
+ assert blocked==ctypes.c_void_p(-1).value and ctypes.get_last_error()==5
+ b.dialog();b.click('[data-action=compression-advanced]')
+ if not b.js('document.querySelector("#oa-preserve-atime").checked'):b.click('#oa-preserve-atime')
+ create(b,root/'permission-warning.zip',source=denied,reset=False,expect_preserved=False)
+ assert denied_acl()==acl_before
+ report['permission_fixture']={'source':str(denied),'acl_before':acl_before,'acl_after':denied_acl(),'attribute_open_error':5};save()
  b.click('[data-view=history]');b.wait('document.body.innerText.includes("部分文件的访问时间未能保留")')
- b.click('details:has(summary) > summary');b.screenshot('atime-warning-details')
- assert '附加数据检查无法完整保留访问时间' in b.js('document.body.innerText')
- assert b.js('Array.from(document.querySelectorAll(".qa-jobcard")).some(c=>c.innerText.includes("ads-warning.zip")&&c.innerText.includes("已完成")&&c.innerText.includes("部分文件的访问时间未能保留"))')
- checked('actual_ads_gap_visible_with_file_reason_without_data_failure')
+ b.click('.qa-jobcard details > summary');b.screenshot('atime-permission-warning-details')
+ assert '无法取得所需的文件权限' in b.js('document.body.innerText')
+ assert b.js('Array.from(document.querySelectorAll(".qa-jobcard")).some(c=>c.innerText.includes("permission-warning.zip")&&c.innerText.includes("已完成")&&c.innerText.includes("部分文件的访问时间未能保留")&&c.innerText.includes("attribute-denied.txt"))')
+ checked('actual_denied_attribute_permission_keeps_acl_and_reports_file_without_data_failure')
  assert dependencies()==bound;report['passed']=True
 except Exception:
  if b and b.ws:
