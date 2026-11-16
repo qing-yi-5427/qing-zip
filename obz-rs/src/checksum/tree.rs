@@ -65,6 +65,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn six_thousand_files_have_bounded_retained_handles() {
+        // Process-wide resource accounting must not include concurrent tests.
+        const CHILD: &str = "QING_CHECKSUM_HANDLE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "checksum::tree::tests::six_thousand_files_have_bounded_retained_handles", "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(output.status.success(), "isolated handle test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            return;
+        }
         #[link(name="kernel32")] extern "system" {
             fn GetCurrentProcess()->*mut std::ffi::c_void;
             fn GetProcessHandleCount(process:*mut std::ffi::c_void,count:*mut u32)->i32;
@@ -75,6 +86,9 @@ mod tests {
         let baseline=handles();let started=std::time::Instant::now();
         let inputs=Inputs::collect(&[tmp.path().to_str().unwrap().into()],&Default::default()).unwrap();
         let retained=handles();assert_eq!(inputs.count,6001);
+        assert_eq!(inputs._leaves.len(), 6000);
+        assert_eq!(inputs.directories.len(), 1);
+        assert!(inputs._ancestors.len() < 100);
         assert!(retained>=baseline+6000);assert!(retained<baseline+6100);
         eprintln!("RECURSIVE_CHECKSUM_DIAGNOSTIC debug=true count=6000 collection_ms={} baseline_handles={baseline} retained_handles={retained} sampled_not_kernel_peak=true",started.elapsed().as_millis());
         drop(inputs);assert!(handles()<baseline+20);
