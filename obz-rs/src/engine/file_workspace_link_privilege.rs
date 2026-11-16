@@ -21,7 +21,7 @@ type Handle=*mut c_void;
     fn SetLastError(error:u32);
 }
 fn error(action:&str)->String{format!("{action}：{}",std::io::Error::last_os_error())}
-fn prepare()->Result<OwnedHandle,String>{
+fn effective()->Result<(OwnedHandle,u32),String>{
     let mut raw=std::ptr::null_mut();
     let thread_token=unsafe{OpenThreadToken(GetCurrentThread(),0x0a,1,&mut raw)}!=0;
     if !thread_token {
@@ -41,6 +41,10 @@ fn prepare()->Result<OwnedHandle,String>{
         if unsafe{GetTokenInformation(source.as_raw_handle(),9,(&mut level as *mut u32).cast(),4,&mut needed)}==0{return Err(error("无法读取调用者模拟级别"));}
         if level<2{return Err("调用者模拟级别不足；不会改用进程身份".into());}
     }
+    Ok((source,level))
+}
+fn prepare()->Result<OwnedHandle,String>{
+    let (source,level)=effective()?;
     let mut copy=std::ptr::null_mut();
     // Preserve the effective source's impersonation level and restrictions.
     if unsafe{DuplicateTokenEx(source.as_raw_handle(),0x2c,std::ptr::null(),level,2,&mut copy)}==0{return Err(error("无法复制调用者身份"));}
@@ -91,38 +95,38 @@ pub(super) fn run<T:Send>(work:impl FnOnce()->Result<T,String>+Send)->Result<T,S
     })
 }
 #[cfg(test)]
-pub(super) fn snapshot()->(Vec<u8>,Option<Vec<u8>>){
+pub(super) fn snapshot()->(Vec<u8>,Option<Vec<u8>>){snapshot_with_process(&snapshot_process_handle())}
+#[cfg(test)]
+fn snapshot_process_handle()->OwnedHandle{
+    let mut raw=std::ptr::null_mut();assert_ne!(unsafe{OpenProcessToken(GetCurrentProcess(),8,&mut raw)},0,"snapshot OpenProcessToken: {}",std::io::Error::last_os_error());
+    unsafe{OwnedHandle::from_raw_handle(raw)}
+}
+#[cfg(test)]
+fn snapshot_with_process(process:&OwnedHandle)->(Vec<u8>,Option<Vec<u8>>){
     fn query(token:&OwnedHandle,class:u32)->Vec<u8>{
         let mut needed=0;unsafe{GetTokenInformation(token.as_raw_handle(),class,std::ptr::null_mut(),0,&mut needed);}
         assert!(needed>0&&needed<=16384);let mut data=vec![0u8;needed as usize];
         assert_ne!(unsafe{GetTokenInformation(token.as_raw_handle(),class,data.as_mut_ptr().cast(),needed,&mut needed)},0);data
     }
-    let mut raw=std::ptr::null_mut();assert_ne!(unsafe{OpenProcessToken(GetCurrentProcess(),8,&mut raw)},0);
-    let process=unsafe{OwnedHandle::from_raw_handle(raw)};
+    let mut raw=std::ptr::null_mut();
     let thread=if unsafe{OpenThreadToken(GetCurrentThread(),8,1,&mut raw)}!=0 {
         Some(query(&unsafe{OwnedHandle::from_raw_handle(raw)},10))
     }else{assert_eq!(std::io::Error::last_os_error().raw_os_error(),Some(1008));None};
-    (query(&process,3),thread)
+    (query(process,3),thread)
 }
 #[cfg(test)]
-pub(super) fn require_existing_thread_contexts(){
+pub(super) fn require_existing_thread_contexts(){check_existing_thread_contexts(true);}
+#[cfg(test)]
+fn check_existing_thread_contexts(require_success:bool){
     #[link(name="advapi32")] unsafe extern "system" {
         fn CreateRestrictedToken(token:Handle,flags:u32,disabled_count:u32,disabled:*const c_void,
             deleted_count:u32,deleted:*const c_void,restricted_count:u32,restricted:*const c_void,result:*mut Handle)->i32;
     }
     let outside=snapshot();
     for mode in [0,1,2] {
-        // prepare() must succeed before this fixture runs: no skip for missing
-        // rights. All synthetic caller contexts live only on a fresh thread.
-        let effective=prepare().expect("native CI must hold the existing symbolic-link privilege");
-        // Reopen only this duplicate to obtain DUPLICATE access for test tokens.
-        // The source is never a broader process identity.
-        #[link(name="kernel32")] unsafe extern "system" {
-            fn DuplicateHandle(process:Handle,source:Handle,target_process:Handle,target:*mut Handle,access:u32,inherit:i32,options:u32)->i32;
-        }
-        let mut source_raw=std::ptr::null_mut();
-        assert_ne!(unsafe{DuplicateHandle(GetCurrentProcess(),effective.as_raw_handle(),GetCurrentProcess(),&mut source_raw,0x2e,0,0)},0);
-        let source=unsafe{OwnedHandle::from_raw_handle(source_raw)};let mut raw=std::ptr::null_mut();
+        let (source,level)=effective().unwrap();let mut base=std::ptr::null_mut();
+        assert_ne!(unsafe{DuplicateTokenEx(source.as_raw_handle(),0x2e,std::ptr::null(),if mode==1{1}else{level},2,&mut base)},0);
+        let source=unsafe{OwnedHandle::from_raw_handle(base)};let mut raw=std::ptr::null_mut();
         if mode==2 {
             let name:Vec<_>="SeCreateSymbolicLinkPrivilege".encode_utf16().chain([0]).collect();let mut luid=Luid{low:0,high:0};
             assert_ne!(unsafe{LookupPrivilegeValueW(std::ptr::null(),name.as_ptr(),&mut luid)},0);
@@ -132,21 +136,29 @@ pub(super) fn require_existing_thread_contexts(){
             assert_ne!(unsafe{DuplicateTokenEx(source.as_raw_handle(),0x2c,std::ptr::null(),if mode==1{1}else{2},2,&mut raw)},0);
         }
         let caller=unsafe{OwnedHandle::from_raw_handle(raw)};
+        // Identification tokens cannot open a process token. Keep a QUERY-only
+        // handle from before impersonation; compare its complete privileges and
+        // the actual current thread's statistics on both sides of run().
+        let process=snapshot_process_handle();
         std::thread::scope(|scope|scope.spawn(move||{
-            let mut guard=Impersonation::enter(&caller).unwrap();let before=snapshot();let mut executed=false;
-            let result=run(||{executed=true;Ok(())});assert_eq!(snapshot(),before);
+            let mut guard=Impersonation::enter(&caller).unwrap();let before=snapshot_with_process(&process);let mut executed=false;
+            let result=run(||{executed=true;Ok(())});assert_eq!(snapshot_with_process(&process),before);
             match mode {
-                0=>{result.unwrap();assert!(executed);},
+                0=>{match result {Ok(())=>assert!(executed),Err(e)=>{assert!(!require_success,"required existing caller failed: {e}");assert!(e.contains("os error 1300"),"{e}");assert!(!executed);}}},
                 1=>{assert!(result.unwrap_err().contains("模拟级别不足"));assert!(!executed);},
                 _=>{assert!(result.unwrap_err().contains("os error 1300"));assert!(!executed);},
             }
             guard.restore().unwrap();
-        }).join().unwrap());
+        }).join().unwrap_or_else(|payload|{
+            let message=payload.downcast_ref::<String>().map(String::as_str).or_else(||payload.downcast_ref::<&str>().copied()).unwrap_or("non-string panic");
+            panic!("caller context mode={mode}: {message}");
+        }));
     }
     assert_eq!(snapshot(),outside);
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn caller_contexts_without_granting_new_privileges(){check_existing_thread_contexts(false);}
     #[test] fn preparation_preserves_caller_identity_and_process_privileges(){
         let before=snapshot();let fixture=tempfile::tempdir().unwrap();let output=fixture.path().join("only-if-prepared");
         let result=run(||std::fs::write(&output,b"owned fixture").map_err(|e|e.to_string()));
