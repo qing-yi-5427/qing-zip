@@ -70,12 +70,10 @@ impl Drop for Fixture{fn drop(&mut self){let file=raw(&self.path,0x100100);attrs
 #[test]
 #[ignore="Requires an already-held symbolic-link privilege; native CI must run explicitly"]
 fn require_symbolic_inspect_edit_clear_success(){
- native_symbolic_fixture_diagnostics();
+ require_native_symbolic_fixture_storage_contract();
  for directory in [false,true]{
     let root=tempfile::tempdir().unwrap();let path=root.path().join("relative-link");let opts=EngineOptions::default();let caller=privilege::snapshot();
-    let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};if directory{fs::create_dir(&path).unwrap();}else{fs::write(&path,b"hidden original payload").unwrap();}
-    let original=Parsed{kind,target:"..\\missing-old".into(),print:String::new(),relative:true};let old=replacement(&original,"..\\missing-old").unwrap();
-    let file=raw(&path,0x100100);isolated(kind,||{ioctl(&file,0x900a4,&old,&mut [])?;Ok(())}).expect("native CI must set symbolic metadata with existing held privilege");drop(file);
+    win32_relative_symbolic(&path,r"..\missing-old",directory).expect("native CI must create a real relative/dangling symbolic fixture using existing privilege");
     let before=inspect_link(path.to_str().unwrap(),&opts).unwrap();assert!(before.relative);assert_eq!(before.target,"..\\missing-old");
     let edited=edit_link(path.to_str().unwrap(),&before.receipt,Some("..\\new-相对目标"),&opts).expect("native CI must successfully edit relative/dangling symbolic target");assert!(!edited.removed);
     let after=inspect_link(path.to_str().unwrap(),&opts).unwrap();assert!(after.relative);assert_eq!(after.target,"..\\new-相对目标");
@@ -84,7 +82,7 @@ fn require_symbolic_inspect_edit_clear_success(){
         let error=edit_link(path.to_str().unwrap(),&after.receipt,Some("..\\must-rollback"),&opts).unwrap_err();assert!(error.contains("已确认事务回滚"),"{error}");assert_eq!(inspect_link(path.to_str().unwrap(),&opts).unwrap().receipt,after.receipt);assert_eq!(privilege::snapshot(),caller);
     }
     assert!(edit_link(path.to_str().unwrap(),&after.receipt,None,&opts).expect("native CI must remove symbolic reparse metadata without deleting entry").removed);
-    assert_eq!(fs::symlink_metadata(&path).unwrap().file_attributes()&0x400,0);if directory{fs::remove_dir(&path).unwrap();}else{assert_eq!(fs::read(&path).unwrap(),b"hidden original payload");}
+    assert_eq!(fs::symlink_metadata(&path).unwrap().file_attributes()&0x400,0);if directory{fs::remove_dir(&path).unwrap();}else{assert_eq!(fs::read(&path).unwrap(),b"");assert_eq!(fs::metadata(&path).unwrap().len(),0);}
     assert_eq!(privilege::snapshot(),caller);println!("required symbolic existing-link acceptance passed: directory={directory}; relative/dangling targets, edit/clear, failure/helper restore/panic rollback and unchanged caller token");
  }
 }
@@ -110,14 +108,6 @@ fn require_symbolic_inspect_edit_clear_success(){
  edit_link(f.path.to_str().unwrap(),&before.receipt,Some("/updated"),&opts).unwrap();assert!(!f.root.path().join("foreign-alias").exists());assert_eq!(inspect_link(f.path.to_str().unwrap(),&opts).unwrap().target,"/updated");f.check(true);
 }
 
-#[test] fn relative_reparse_buffer_is_validated_by_kernel_before_privilege_check(){
- let root=tempfile::tempdir().unwrap();let path=root.path().join("relative-fixture");fs::write(&path,b"owned payload").unwrap();let file=raw(&path,0x100100);
- let parsed=Parsed{kind:LinkKind::SymbolicFile,target:"..\\missing".into(),print:String::new(),relative:true};let valid=replacement(&parsed,"..\\missing").unwrap();
- let sub_len=u16_at(&valid,10).unwrap() as usize;let mut invalid=valid[..20+sub_len].to_vec();let old_len=(invalid.len()-8) as u16;invalid[4..6].copy_from_slice(&old_len.to_le_bytes());invalid[12..16].fill(0);let old=ioctl(&file,0x900a4,&invalid,&mut []);println!("relative old zero-print layout: {old:?}");
- let current=ioctl(&file,0x900a4,&valid,&mut []);println!("relative corrected two-name layout: {current:?}");
- assert!(old.is_err());if let Err(error)=current{assert!(error.contains("os error 1314"),"valid format must reach privilege boundary instead of invalid-buffer rejection: {error}");}
-}
-
 #[test] fn relative_layout_offsets_lengths_flags_and_non_bmp_utf16_units(){
  let target="..\\🌌目标";let parsed=Parsed{kind:LinkKind::SymbolicFile,target:String::new(),print:String::new(),relative:true};let data=replacement(&parsed,target).unwrap();let words=target.encode_utf16().count();let bytes=(words*2) as u16;
  assert_eq!(u32_at(&data,0).unwrap(),0xa000000c);assert_eq!(u16_at(&data,4).unwrap() as usize+8,data.len());assert_eq!(data.len(),20+(words+1)*4);
@@ -126,31 +116,26 @@ fn require_symbolic_inspect_edit_clear_success(){
  assert_eq!(replacement(&parsed,&"x".repeat(4090)).unwrap().len(),16384);assert!(replacement(&parsed,&"x".repeat(4091)).is_err());
 }
 
-// Narrow native diagnosis only. All original strict assertions still run below.
-fn native_symbolic_fixture_diagnostics(){
+// Native storage contract: API-produced relative bytes and our encoder both
+// work on empty files; neither may hide the payload of an ordinary nonempty file.
+fn win32_relative_symbolic(path:&Path,target:&str,directory:bool)->Result<(),String>{
  #[link(name="kernel32")] unsafe extern "system"{fn CreateSymbolicLinkW(link:*const u16,target:*const u16,flags:u32)->u8;}
+ let link:Vec<_>=path.as_os_str().encode_wide().chain([0]).collect();let to:Vec<_>=target.encode_utf16().chain([0]).collect();let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};
+ isolated(kind,||{if unsafe{CreateSymbolicLinkW(link.as_ptr(),to.as_ptr(),u32::from(directory))}==0{return Err(std::io::Error::last_os_error().to_string());}Ok(())})
+}
+fn require_native_symbolic_fixture_storage_contract(){
  let root=tempfile::tempdir().unwrap();let target=r"..\missing-old";let mut file_raw=None;
  for directory in [false,true]{
-    let path=root.path().join(if directory{"win32-dir"}else{"win32-file"});let link:Vec<_>=path.as_os_str().encode_wide().chain([0]).collect();let to:Vec<_>=target.encode_utf16().chain([0]).collect();let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};
-    let result=isolated(kind,||{if unsafe{CreateSymbolicLinkW(link.as_ptr(),to.as_ptr(),u32::from(directory))}==0{return Err(std::io::Error::last_os_error().to_string());}Ok(())});
-    println!("SYMLINK_DIAGNOSTIC Win32 directory={directory} target={target:?} UTF16={:04x?} result={result:?}",target.encode_utf16().collect::<Vec<_>>());
-    if result.is_ok(){
-        match File::options().access_mode(0x100180).share_mode(7).custom_flags(0x02200000).open(&path){
-            Ok(file)=>{println!("SYMLINK_DIAGNOSTIC Win32 GetFileInformation directory={directory} info={:?}",info(&file).map(|v|(v[0],((v[8] as u64)<<32)|v[9] as u64,v[10])));match get(&file){Ok(data)=>{let parsed=parse(&data,directory).map(|p|(p.target,p.print,p.relative));println!("SYMLINK_DIAGNOSTIC Win32 GET directory={directory} bytes={} raw={data:02x?} parsed={parsed:?}",data.len());if !directory{file_raw=Some(data);}},Err(error)=>println!("SYMLINK_DIAGNOSTIC Win32 GET error={error}")}},
-            Err(error)=>println!("SYMLINK_DIAGNOSTIC Win32 no-follow open error={error}"),
-        }
-    }
+    let path=root.path().join(if directory{"win32-dir"}else{"win32-file"});win32_relative_symbolic(&path,target,directory).expect("native CI must create real relative file and directory symlinks with existing privilege");
+    let file=raw(&path,0x100180);let data=get(&file).unwrap();let parsed=parse(&data,directory).unwrap();assert_eq!(parsed.target,target);assert_eq!(parsed.print,target);assert!(parsed.relative);
+    println!("required Win32 relative fixture directory={directory}: GetFileInformation={:?}, UTF16={:04x?}, raw={data:02x?}",info(&file).map(|v|(v[0],((v[8] as u64)<<32)|v[9] as u64,v[10])),target.encode_utf16().collect::<Vec<_>>());if !directory{file_raw=Some(data);}
  }
- let parsed=Parsed{kind:LinkKind::SymbolicFile,target:target.into(),print:String::new(),relative:true};let encoded=replacement(&parsed,target).unwrap();println!("SYMLINK_DIAGNOSTIC encoder raw={encoded:02x?}");
+ let parsed=Parsed{kind:LinkKind::SymbolicFile,target:target.into(),print:String::new(),relative:true};let encoded=replacement(&parsed,target).unwrap();let file_raw=file_raw.unwrap();
  for encoder in [false,true]{for nonempty in [false,true]{
-    let label=format!("{}-{}",if encoder{"encoder"}else{"win32_raw"},if nonempty{"nonempty"}else{"empty"});let data=if encoder{Some(&encoded)}else{file_raw.as_ref()};
-    if let Some(data)=data{
-        let path=root.path().join(&label);let payload=if nonempty{b"hidden original payload".as_slice()}else{b"".as_slice()};if let Err(error)=fs::write(&path,payload){println!("SYMLINK_DIAGNOSTIC case={label} setup error={error}");continue;}
-        match File::options().access_mode(0x100180).share_mode(7).custom_flags(0x02200000).open(&path){
-            Ok(file)=>{println!("SYMLINK_DIAGNOSTIC case={label} GetFileInformation-before={:?} raw={data:02x?}",info(&file).map(|v|(v[0],((v[8] as u64)<<32)|v[9] as u64,v[10])));let result=isolated(LinkKind::SymbolicFile,||{ioctl(&file,0x900a4,data,&mut [])?;Ok(())});println!("SYMLINK_DIAGNOSTIC case={label} payload_len={} result={result:?}",payload.len());if result.is_ok(){println!("SYMLINK_DIAGNOSTIC case={label} GET matches={:?}",get(&file).map(|raw|raw==*data));}},
-            Err(error)=>println!("SYMLINK_DIAGNOSTIC case={label} no-follow open error={error}"),
-        }
-    }else{println!("SYMLINK_DIAGNOSTIC case={label} unavailable: Win32 baseline failed");}
+    let label=format!("{}-{}",if encoder{"encoder"}else{"win32_raw"},if nonempty{"nonempty"}else{"empty"});let data=if encoder{&encoded}else{&file_raw};let path=root.path().join(&label);let payload=if nonempty{b"hidden original payload".as_slice()}else{b"".as_slice()};fs::write(&path,payload).unwrap();
+    let file=raw(&path,0x100180);let before=info(&file).unwrap();let result=isolated(LinkKind::SymbolicFile,||{ioctl(&file,0x900a4,data,&mut [])?;Ok(())});
+    println!("required symbolic storage case={label} payload_len={} GetFileInformation-before={before:?} result={result:?}",payload.len());
+    if nonempty{let error=result.unwrap_err();assert!(error.contains("os error 4392"),"{error}");assert_eq!(get_optional(&file).unwrap(),None);assert_eq!(info(&file).unwrap(),before);drop(file);assert_eq!(fs::read(&path).unwrap(),payload);}
+    else{result.expect("both Win32 bytes and product encoder must be accepted on a real empty native file");assert_eq!(&get(&file).unwrap(),data);}
  }}
- println!("SYMLINK_DIAGNOSTIC complete; original strict create/edit/clear assertions follow unchanged");
 }
