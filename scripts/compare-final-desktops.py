@@ -40,7 +40,7 @@ assert not any((p.info['name'] or '').lower() in [qing.name.lower(),nana.name.lo
 
 assert qing.name.lower() in ("qing-zip.exe","obz-gui.exe")
 assert nana.name.lower() == "nanazip.modern.filemanager.exe"
-data = {"binding":binding,"window_request":[40,40,1200,800],"display_state":"normal, visible, foreground requested; verified rectangle required", "driver_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "platform": platform.platform(), "cpu_count": psutil.cpu_count(),
+data = {"binding":binding,"window_request":None,"display_state":"normal, visible, foreground requested; verified rectangle required", "driver_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "platform": platform.platform(), "cpu_count": psutil.cpu_count(),
         "executables": {x.name: hashlib.sha256(x.read_bytes()).hexdigest() for x in (qing, nana)},
         "trials": [], "notes": [
             "Startup measures request to first UIA descendant with matching filename, visible bounds and IsOffscreen false.",
@@ -103,9 +103,18 @@ def desktop_state():
     try:
         name=ctypes.create_unicode_buffer(256);needed=W.DWORD()
         assert u.GetUserObjectInformationW(desktop,2,name,ctypes.sizeof(name),ctypes.byref(needed))
-        value={'session_id':sid.value,'wts_connection_state':state,'input_desktop':name.value,'screen':[u.GetSystemMetrics(0),u.GetSystemMetrics(1)]}
+        monitors=[]
+        monitor_callback=ctypes.WINFUNCTYPE(W.BOOL,W.HANDLE,W.HDC,ctypes.POINTER(W.RECT),W.LPARAM)
+        @monitor_callback
+        def visit_monitor(handle,dc,rect,context):
+            r=rect.contents;monitors.append([r.left,r.top,r.right,r.bottom]);return True
+        u.EnumDisplayMonitors.argtypes=[W.HDC,ctypes.POINTER(W.RECT),monitor_callback,W.LPARAM]
+        if not u.EnumDisplayMonitors(None,None,visit_monitor,0):raise RuntimeError('Cannot enumerate display layout')
+        value={'session_id':sid.value,'wts_connection_state':state,'input_desktop':name.value,'screen':[u.GetSystemMetrics(0),u.GetSystemMetrics(1)],'layout_metrics':{'metrics':{str(i):u.GetSystemMetrics(i) for i in [0,1,76,77,78,79,80]},'monitor_rectangles':sorted(monitors)}}
     finally:u.CloseDesktop(desktop)
-    if state!=0 or name.value.lower()!='default' or min(value['screen'])<800:raise RuntimeError('Desktop not active/default or display too small: '+str(value))
+    if state!=0 or name.value.lower()!='default':raise RuntimeError('Desktop not active/default: '+str(value))
+    if data.get('display_layout') is not None and value['layout_metrics']!=data['display_layout']:
+        raise RuntimeError('Display layout changed during comparison: '+str(value))
     return value
 
 def remember(proc,owned):
@@ -153,12 +162,16 @@ def run(label, exe, rep):
                 try:
                     if hwnd not in configured:
                         hwnds.ShowWindow(ctypes.c_void_p(hwnd),9)
-                        if not hwnds.SetWindowPos(ctypes.c_void_p(hwnd),None,40,40,1200,800,0x0040): raise RuntimeError('Window sizing failed')
+                        if not hwnds.SetWindowPos(ctypes.c_void_p(hwnd),None,*data["window_request"],0x0040): raise RuntimeError('Window sizing failed')
                         hwnds.SetForegroundWindow(ctypes.c_void_p(hwnd))
                         configured.add(hwnd)
                     rect=(ctypes.c_long*4)()
                     assert hwnds.GetWindowRect(ctypes.c_void_p(hwnd),ctypes.byref(rect))
-                    if tuple(rect)!=(40,40,1240,840):continue
+                    x,y,width,height=data['window_request']
+                    if tuple(rect)!=(x,y,x+width,y+height):continue
+                    screen=desktop_state()['screen']
+                    if rect[0]<0 or rect[1]<0 or rect[2]>screen[0] or rect[3]>screen[1]:
+                        raise RuntimeError('Window outside primary display')
                     win = machine.ElementFromHandle(hwnd)
                     item = win.FindFirst(4, name_filter)
                     if item and not item.CurrentIsOffscreen:
@@ -190,6 +203,7 @@ def run(label, exe, rep):
         samples = [snap(app,owned)]
         for i in range(4):
             time.sleep(1)
+            desktop_state()
             samples.append(snap(app,owned))
         row.update(idle=samples, median_rss=statistics.median(x["rss"] for x in samples),
                    median_private=statistics.median(x["private"] for x in samples))
@@ -231,6 +245,15 @@ def run(label, exe, rep):
         if cleanup_error:raise cleanup_error
 apps = [("qing", qing), ("nana", nana)]
 try:
+    display=desktop_state()
+    width=min(1200,display['screen'][0]-80)
+    height=min(800,display['screen'][1]-80)
+    if width<780 or height<620:
+        raise RuntimeError('Display cannot fit common qing minimum780x620 with margins; no display changes attempted')
+    data['display_layout']=display['layout_metrics']
+    data['window_request']=[40,40,width,height]
+    data['initial_display']=display
+    save()
     for rep in range(4):
         for name, exe in (apps if rep % 2 == 0 else reversed(apps)):
             run(name, exe, rep)
