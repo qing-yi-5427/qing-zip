@@ -25,7 +25,7 @@ pub fn running() -> bool { registry().lock().map(|jobs|jobs.values().any(|j|j.st
 pub fn cancel_all() { if let Ok(jobs)=registry().lock(){for job in jobs.values(){
     let phase=job.control.progress.lock().unwrap_or_else(|e|e.into_inner());
     if phase.phase!="recycling" {job.control.cancel();}
-}} }
+}} crate::verification::revoke(); }
 
 fn check_cancel(control: &JobControl) -> Result<(), String> {
     if control.cancelled.load(Ordering::SeqCst) {Err("operation cancelled".into())} else {Ok(())}
@@ -197,11 +197,13 @@ pub(super) fn start_controlled(mut request: Request, recycle_after: bool, contro
         if let Some(id)=id {jobs.remove(&id);} else {break;}
     }
     request.options.control=Some(control.clone());
+    let verification=crate::verification::prepare(&mut request,recycle_after);
     let job=Arc::new(Job{control,state:Mutex::new(JobState{status:"running".into(),result:None,error:None}),finished:std::sync::Condvar::new()});
     let id=NEXT.fetch_add(1,Ordering::Relaxed); jobs.insert(id,job.clone());
     let worker = std::thread::Builder::new().spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||execute_job(request,recycle_after,&job.control)))
             .unwrap_or_else(|_|Err("归档任务异常结束".into()));
+        if let Some(pending)=verification {pending.finish(result.is_ok() && !job.control.cancelled.load(Ordering::SeqCst));}
         finished(result.is_ok());
         let mut state=job.state.lock().unwrap_or_else(|e|e.into_inner());
         match result {
@@ -242,7 +244,7 @@ pub fn cancel_operation(id:u64)->Result<(),String>{
     let job=registry().lock().map_err(|_|"job registry unavailable")?.get(&id).cloned().ok_or("任务不存在")?;
     let phase=job.control.progress.lock().unwrap_or_else(|e|e.into_inner());
     if phase.phase=="recycling" {return Err("原包正在移入回收站，此阶段不可取消".into());}
-    job.control.cancel(); Ok(())
+    job.control.cancel(); crate::verification::revoke(); Ok(())
 }
 
 #[tauri::command]

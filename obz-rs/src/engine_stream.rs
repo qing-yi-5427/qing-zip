@@ -340,6 +340,7 @@ pub(crate) struct PinnedSource {
     _parents: Vec<File>,
 }
 impl PinnedSource {
+    pub(crate) fn retained_handle_count(&self) -> usize { 1+self._parents.len() }
     // Used only for a continuous handle-to-handle edit handoff: the caller
     // establishes its replacement guard before releasing this leaf.
     pub(crate) fn into_handle_parts(self) -> (File, Vec<File>) {

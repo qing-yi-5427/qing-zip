@@ -192,6 +192,7 @@ pub async fn nested_sessions() -> Result<Vec<View>, String> {
 }
 #[tauri::command]
 pub async fn close_nested(ids: Vec<u64>, discard: bool) -> Result<(), String> {
+    crate::verification::revoke();
     tauri::async_runtime::spawn_blocking(move || close_sessions(ids, discard))
         .await
         .map_err(|e| e.to_string())?
@@ -427,6 +428,7 @@ pub fn external_save_job(path: &str, control: &JobControl) -> Result<OperationRe
 }
 #[tauri::command]
 pub async fn finish_external_edit(id: u64, discard: bool) -> Result<Option<String>, String> {
+    crate::verification::revoke();
     tauri::async_runtime::spawn_blocking(move || {
         if crate::jobs::running() {
             return Err("请等待当前任务完成".into());

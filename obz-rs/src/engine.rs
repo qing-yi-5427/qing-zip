@@ -3,6 +3,8 @@
 #[cfg(nana_selected_worker)]
 pub mod selected_worker;
 #[cfg(windows)]
+pub mod verification_lease;
+#[cfg(windows)]
 mod created_directories;
 #[cfg(windows)]
 pub mod nested;
@@ -134,6 +136,9 @@ pub use compression_times::ArchiveTimestamp;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub verification_capture: Option<verification_lease::Capture>,
     pub store_mtime: Option<bool>,
     pub store_ctime: Option<bool>,
     pub store_atime: Option<bool>,
@@ -171,6 +176,8 @@ pub struct EngineOptions {
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
+            #[cfg(windows)]
+            verification_capture: None,
             store_mtime: None, store_ctime: None, store_atime: None,
             archive_timestamp: ArchiveTimestamp::Default,
             preserve_input_atime: false,
@@ -3159,6 +3166,15 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         if !errors.is_empty() || dest.try_exists().unwrap_or(true) {
             let examples=errors.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("; ");
             return Err(format!("{reason}; partial destination retained (foreign, changed, or unremovable entries): {} {examples}",dest.display()));
+        }
+    }
+    // Only the isolated split worker proves every member, including unselected
+    // data, before it returns true. Retain its ORIGINAL source handles only
+    // after normal output commit also succeeded. No decoder behavior changes.
+    #[cfg(windows)]
+    if publication.is_ok() && split_streamed && ctl.check().is_ok() {
+        if let Some(capture)=&opts.verification_capture {
+            capture.complete(source_path, source_guard, _volume_guards, all_entries);
         }
     }
     publication

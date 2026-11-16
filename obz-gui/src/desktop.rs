@@ -461,7 +461,6 @@ fn recycle_inner(paths: Vec<String>) -> Result<usize, String> {
         Ok(paths.len())
     }
 }
-#[tauri::command]
 pub async fn recycle_paths(paths: Vec<String>) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         std::thread::spawn(move || recycle_inner(paths))
