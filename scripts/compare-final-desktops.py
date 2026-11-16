@@ -176,6 +176,7 @@ def run(label, exe, rep):
             app = app or root(exe, before)
             if app:remember(app,owned)
             for hwnd in windows(app.pid) if app else []:
+                screen=desktop_state()['screen']
                 try:
                     if hwnd not in configured:
                         hwnds.ShowWindow(ctypes.c_void_p(hwnd),9)
@@ -186,7 +187,6 @@ def run(label, exe, rep):
                     assert hwnds.GetWindowRect(ctypes.c_void_p(hwnd),ctypes.byref(rect))
                     x,y,width,height=data['window_request']
                     if tuple(rect)!=(x,y,x+width,y+height):continue
-                    screen=desktop_state()['screen']
                     if rect[0]<0 or rect[1]<0 or rect[2]>screen[0] or rect[3]>screen[1]:
                         raise RuntimeError('Window outside primary display')
                     win = machine.ElementFromHandle(hwnd)
