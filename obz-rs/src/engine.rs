@@ -4830,8 +4830,7 @@ pub fn create(
         ctl.set("complete",Some(100),"Archive created");
         return Ok(vec![absolute(out)?.display().to_string()]);
     }
-    let original_paths = checked_input_roots(inputs)?;
-    let paths = if opts.store_atime==Some(true) {original_paths.clone()}else{input_paths(inputs)?};
+    let paths = if opts.store_atime==Some(true) {checked_input_roots(inputs)?}else{input_paths(inputs)?};
     let out = absolute(out)?;
     no_links(&out)?;
     if out.exists() {
@@ -4849,7 +4848,7 @@ pub fn create(
         .path()
         .join(out.file_name().ok_or("output has no filename")?);
     #[cfg(windows)]
-    let input_stage=if opts.store_atime==Some(true) {Some(create_input::prepare(&original_paths,parent,opts,&ctl)?)}else{None};
+    let input_stage=if opts.store_atime==Some(true) {Some(create_input::prepare(&paths,parent,opts,&ctl)?)}else{None};
     #[cfg(windows)]
     let paths=input_stage.as_ref().map(|s|s.roots.clone()).unwrap_or(paths);
     let mut a = base("a", opts)?;
