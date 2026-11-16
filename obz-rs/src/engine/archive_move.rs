@@ -98,6 +98,23 @@ mod tests {
         let local=t.path().join("docs");fs::create_dir(&local).unwrap();fs::write(local.join("a.txt"),b"new-a").unwrap();fs::write(local.join("b.txt"),b"new-b").unwrap();(t,archive,local)
     }
     #[test]
+    fn archive_move_fresh_verifier_rejects_unselected_crc_and_cancel_without_source_cleanup(){
+        use std::io::Write;
+        for cancel in [false,true]{
+            let(_temp,archive,local)=fixture("zip",false);let original=fs::read(&archive).unwrap();
+            let ctl=JobControl::new();let opts=EngineOptions{control:Some(ctl.clone()),..Default::default()};
+            if cancel{archive_add::move_proof::AFTER_VERIFY.with(|h|*h.borrow_mut()=Some(Box::new(move||ctl.cancel())));}
+            else{super::super::update_modes_tests::AFTER_ENGINE.with(|h|*h.borrow_mut()=Some(Box::new(|path|{
+                let mut z=zip::ZipWriter::new(File::create(path).unwrap());let o=zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                z.add_directory("target/docs/",o).unwrap();
+                for (name,data) in [("old.txt",b"bad-unselected-crc".as_slice()),("target/docs/a.txt",b"new-a".as_slice()),("target/docs/b.txt",b"new-b".as_slice())]{z.start_file(name,o).unwrap();z.write_all(data).unwrap();}
+                z.finish().unwrap();let mut bytes=fs::read(path).unwrap();let offset=bytes.windows(b"bad-unselected-crc".len()).position(|x|x==b"bad-unselected-crc").unwrap();bytes[offset]^=1;fs::write(path,bytes).unwrap();
+            })));}
+            assert!(super::super::archive_move(archive.to_str().unwrap(),&[local.display().to_string()],"target",&opts).is_err());
+            assert_eq!(fs::read(&archive).unwrap(),original);assert_eq!(fs::read(local.join("a.txt")).unwrap(),b"new-a");assert_eq!(fs::read(local.join("b.txt")).unwrap(),b"new-b");
+        }
+    }
+    #[test]
     fn archive_move_cancel_after_committed_batch_keeps_exact_partial_ledger(){
         let(_t,archive,local)=fixture("zip",false);for i in 0..130{fs::write(local.join(format!("extra-{i}.txt")),b"payload").unwrap();}
         let ctl=JobControl::new();let cancel=ctl.clone();AFTER_SOURCE_COMMIT.with(|h|*h.borrow_mut()=Some(Box::new(move||cancel.cancel())));

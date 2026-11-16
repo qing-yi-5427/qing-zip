@@ -5108,7 +5108,10 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     update_modes_tests::AFTER_ENGINE.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() { run(&staged); }
     });
-    if !edit_verify::ordinary_zip(&staged, opts)? {
+    // Move verifies every member again from the exact strongly held candidate
+    // after private replacement, including CRC and imported-content SHA. Avoid
+    // decoding it a second time here; ordinary Add keeps its existing checks.
+    if move_report.is_none() && !edit_verify::ordinary_zip(&staged, opts)? {
         test(staged.to_str().ok_or("invalid archive path")?, opts)?;
     }
     ctl.check()?;

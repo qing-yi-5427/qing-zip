@@ -152,7 +152,7 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
 }
 
 #[cfg(test)]
-thread_local! {static AFTER_VERIFY:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
+thread_local! {pub(crate) static AFTER_VERIFY:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 #[cfg(test)]
 thread_local! { static AFTER_EXTRACT: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) }; }
 #[cfg(test)]
