@@ -2,15 +2,37 @@
 //! No saved timestamp is ever written back. This is not a directory traversal,
 //! ADS-group, independent-handle, or external-process preservation guarantee.
 use std::{fs::File, io, path::Path};
+use serde::Serialize;
 use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Phase { EnhancedOpen, SuppressUpdates }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all="snake_case")]
+pub enum Phase { EnhancedOpen, SuppressUpdates }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Preservation {
     Disabled,
     Applied,
     Unavailable { phase: Phase, os_error: Option<i32> },
+}
+/// Per-operation evidence for input primary-stream handles, not a global
+/// filesystem timestamp guarantee. The external backend reports best-effort
+/// only because its own attribute-permission fallback is not observable.
+#[derive(Clone, Default, Serialize)]
+pub struct Report {
+    pub applied_handles: usize,
+    pub unavailable_handles: usize,
+    pub backend_best_effort: bool,
+    pub directory_enumeration_covered: bool,
+    pub warnings: Vec<Warning>,
+    pub omitted_warnings: usize,
+}
+#[derive(Clone, Serialize)]
+pub struct Warning {pub source:String,pub phase:Phase,pub os_error:Option<i32>}
+impl Report {
+    pub(crate) fn record(&mut self,path:&Path,status:Preservation){match status{
+        Preservation::Disabled=>(),Preservation::Applied=>self.applied_handles+=1,
+        Preservation::Unavailable{phase,os_error}=>{self.unavailable_handles+=1;if self.warnings.len()<64{self.warnings.push(Warning{source:path.display().to_string(),phase,os_error});}else{self.omitted_warnings+=1;}}
+    }}
 }
 pub(crate) struct Opened { pub file: File, pub preservation: Preservation }
 /// Preserve the caller's exact access/share/flags. The caller must keep its
@@ -31,8 +53,9 @@ extern "system" {
                    accessed: *const FileTime, modified: *const FileTime) -> i32;
 }
 #[cfg(test)]
-thread_local! {static FAIL_SUPPRESS: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
+thread_local! {pub(crate) static SUPPRESS_CALLS:std::cell::RefCell<Vec<usize>>=const{std::cell::RefCell::new(Vec::new())};pub(crate) static FAIL_SUPPRESS: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 fn suppress(file: &File) -> io::Result<()> {
+    #[cfg(test)] SUPPRESS_CALLS.with(|v|v.borrow_mut().push(file.as_raw_handle() as usize));
     #[cfg(test)]
     if FAIL_SUPPRESS.with(|v|v.replace(false)) {return Err(io::Error::from_raw_os_error(50));}
     let sentinel=FileTime{low:u32::MAX,high:u32::MAX};

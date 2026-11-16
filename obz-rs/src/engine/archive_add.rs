@@ -155,6 +155,7 @@ fn snapshot(
     parents: &mut CheckedDirectories,
     proof: &mut Option<move_proof::Plan>,
     snapshot_root: &Path,
+    opts: &EngineOptions,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     use std::os::windows::{
@@ -163,23 +164,21 @@ fn snapshot(
     };
     ctl.check()?;
     parents.check(source.parent().ok_or("missing source parent")?)?;
-    let mut input = File::options()
-        .access_mode(0x80000000)
-        .share_mode(1)
-        .custom_flags(0x02200000)
-        .open(source)
-        .map_err(|e| e.to_string())?;
+    let opened=crate::source_access::open(source,crate::source_access::OpenSpec{access:0x80000000,share:1,flags:0x02200000},opts.preserve_input_atime).map_err(|e|e.to_string())?;
+    let status=opened.preservation;
+    let mut input=opened.file;
     let meta = crate::private_stage::checked_metadata(&input)?;
     if meta.file_attributes() & 0x400 != 0 || (!meta.is_file() && !meta.is_dir()) {
         return Err("不能添加链接或特殊对象".into());
     }
+    if meta.is_file(){if let Some(report)=&opts.input_atime_report{report.lock().unwrap_or_else(|e|e.into_inner()).record(source,status);}}
     let mut primary_sha = None;
     let output = if meta.is_dir() {
         fs::create_dir(target).map_err(|e| e.to_string())?;
         for child in fs::read_dir(source).map_err(|e| e.to_string())? {
             ctl.check()?;
             let child = child.map_err(|e| e.to_string())?;
-            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents, proof, snapshot_root)?;
+            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents, proof, snapshot_root, opts)?;
         }
         File::options()
             .access_mode(0xc0000100)
@@ -197,6 +196,7 @@ fn snapshot(
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut digest = Sha256::new();
         let mut length = 0u64;
+        #[cfg(test)] BEFORE_SOURCE_READ.with(|hook|if let Some(check)=hook.borrow_mut().as_mut(){check(source,&mut input);});
         loop {
             ctl.check()?;
             let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
@@ -349,6 +349,7 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
             &mut parents,
             &mut proof,
             directory.path(),
+            opts,
         )?;
     }
     let cwd = directory.path().to_owned();
@@ -471,6 +472,7 @@ fn finish_projection(
 
 #[cfg(test)]
 thread_local! {
+    static BEFORE_SOURCE_READ:std::cell::RefCell<Option<Box<dyn FnMut(&Path,&mut File)>>>=const{std::cell::RefCell::new(None)};
     static AFTER_SNAPSHOT: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -478,6 +480,29 @@ thread_local! {
 mod tests {
     use super::*;
 
+    #[test]
+    fn preserve_input_atime_snapshot_hooks_cover_each_primary_read_and_receipt(){
+        use std::os::windows::io::AsRawHandle;
+        let(_temp,archive,local)=fixture("zip");fs::create_dir_all(local.join("deep")).unwrap();fs::write(local.join("one.txt"),b"one").unwrap();fs::write(local.join("deep/two.txt"),b"two").unwrap();fs::write(local.join("empty.txt"),b"").unwrap();
+        let seen=std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));let capture=seen.clone();
+        crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow_mut().clear());
+        BEFORE_SOURCE_READ.with(|h|*h.borrow_mut()=Some(Box::new(move|path,file|{assert_eq!(file.stream_position().unwrap(),0);assert!(crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow_mut().pop())==Some(file.as_raw_handle() as usize),"first read must follow suppression on this exact handle");capture.borrow_mut().push(path.to_owned());})));
+        let response=crate::operations::execute(crate::operations::Request{operation:"archive-add".into(),path:archive.display().to_string(),dest:"projected".into(),inputs:vec![local.display().to_string()],options:EngineOptions{preserve_input_atime:true,..Default::default()},..Default::default()}).unwrap();
+        BEFORE_SOURCE_READ.with(|h|h.borrow_mut().take());
+        assert_eq!(response["input_atime"]["applied_handles"].as_u64(),Some(seen.borrow().len() as u64));assert!(seen.borrow().len()>=3);assert_eq!(response["input_atime"]["unavailable_handles"],0);assert_eq!(response["input_atime"]["backend_best_effort"],false);assert_eq!(response["input_atime"]["directory_enumeration_covered"],false);
+        assert_eq!(fs::read(local.join("one.txt")).unwrap(),b"one");test(archive.to_str().unwrap(),&EngineOptions::default()).unwrap();
+    }
+    #[test]
+    fn preserve_input_atime_add_failures_reported_and_ordinary_backend_unconfirmed(){
+        for ordinary in [false,true]{let(_temp,archive,local)=fixture("zip");let input=local.join("new.txt");fs::write(&input,b"payload").unwrap();
+            if !ordinary{crate::source_access::FAIL_SUPPRESS.with(|v|v.set(true));}
+            let response=crate::operations::execute(crate::operations::Request{operation:if ordinary{"add"}else{"archive-add"}.into(),path:archive.display().to_string(),inputs:vec![input.display().to_string()],options:EngineOptions{preserve_input_atime:true,..Default::default()},..Default::default()}).unwrap();
+            assert_eq!(response["input_atime"]["backend_best_effort"],ordinary);
+            if !ordinary{assert_eq!(response["input_atime"]["unavailable_handles"],1);assert_eq!(response["input_atime"]["warnings"][0]["phase"],"suppress_updates");assert_eq!(response["input_atime"]["warnings"][0]["os_error"],50);}
+            assert_eq!(fs::read(&input).unwrap(),b"payload");test(archive.to_str().unwrap(),&EngineOptions::default()).unwrap();
+        }
+        let disabled:EngineOptions=serde_json::from_str("{}").unwrap();assert!(!disabled.preserve_input_atime);
+    }
     fn fixture(format: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let seed = temp.path().join("seed");

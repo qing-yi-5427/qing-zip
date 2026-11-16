@@ -138,6 +138,12 @@ pub struct EngineOptions {
     pub store_ctime: Option<bool>,
     pub store_atime: Option<bool>,
     pub archive_timestamp: ArchiveTimestamp,
+    /// Best-effort preservation while reading added input primary streams.
+    /// Independent of timestamps stored in the archive; default is disabled.
+    pub preserve_input_atime: bool,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub input_atime_report: Option<Arc<Mutex<crate::source_access::Report>>>,
     pub update_mode: UpdateMode,
     pub password: Option<String>,
     pub codepage: Option<u32>,
@@ -167,6 +173,9 @@ impl Default for EngineOptions {
         Self {
             store_mtime: None, store_ctime: None, store_atime: None,
             archive_timestamp: ArchiveTimestamp::Default,
+            preserve_input_atime: false,
+            #[cfg(windows)]
+            input_atime_report: None,
             update_mode: UpdateMode::Add,
             password: None,
             codepage: None,
@@ -4776,6 +4785,7 @@ pub fn create(
     format: &str,
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    if opts.preserve_input_atime{return Err("输入访问时间保护尚未覆盖新建压缩包，未创建输出".into());}
     compression_parameters::switches(format, opts)?;
     compression_times::validate(format, opts)?;
     let policy = crate::machine_policy::scope();
@@ -5004,6 +5014,7 @@ pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOpt
 }
 #[cfg(windows)]
 pub fn archive_move(path:&str,inputs:&[String],folder:&str,opts:&EngineOptions)->Result<archive_move::Report,String>{
+    if opts.preserve_input_atime{return Err("输入访问时间保护暂未覆盖移动事务读取，请使用添加并保留来源".into());}
     let mut options=opts.clone();options.selected.clear();let mut report=archive_move::Report::default();
     update_impl_with_move(path,"add",inputs,&options,Some(WorkspaceAdd{folder,export:None}),Some(&mut report))?;
     Ok(report)
@@ -5097,6 +5108,11 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     #[cfg(not(windows))]
     let direct = false;
     let mut a = base(command, opts)?;
+    if action=="add" && opts.preserve_input_atime {
+        a.push("-ssp".into());
+        #[cfg(windows)]
+        if prepared.is_none(){if let Some(report)=&opts.input_atime_report{report.lock().unwrap_or_else(|e|e.into_inner()).backend_best_effort=true;}}
+    }
     let actions = if action == "add" && opts.update_mode != UpdateMode::Add {
         opts.update_mode.actions()
     } else { "" };

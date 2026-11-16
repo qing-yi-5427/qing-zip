@@ -39,4 +39,4 @@ mod private_stage;
 pub mod output_profile;
 
 #[cfg(windows)]
-mod source_access;
+pub mod source_access;
