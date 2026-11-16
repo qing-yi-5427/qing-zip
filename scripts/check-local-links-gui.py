@@ -1,4 +1,4 @@
-"""Actual WebView input and native archive output; isolated profile only."""
+"""Actual WebView input and native local links; isolated profile and owned fixtures only."""
 from pathlib import Path
 import argparse,os,time,json,tempfile,subprocess,hashlib,urllib.request,base64,ctypes
 from websockets.sync.client import connect
@@ -108,6 +108,16 @@ try:
  assert b.js('Array.from(document.querySelector("[data-fm-link-kind]").options).map(v=>v.value)')==['symbolic-directory']
  b.fill('[data-fm-link-name]','dir-symbolic');b.click('[data-fm-link] [type=submit]');b.wait('!!document.querySelector(".fm-link-error")')
  assert any(('os error '+code) in b.js('document.querySelector(".fm-link-error").innerText') for code in ('1300','1314'));assert not (right/'dir-symbolic').exists();checked('actual-directory-symbolic-permission-failure-no-residue');b.screenshot('directory-symbolic-permission-failure')
+ b.click('[data-fm="link-close"]');b.click('[data-fm-check="0"][aria-label="选择 source-dir"]')
+ b.fill('[data-fm-path="1"] input',str(src));b.click('[data-fm="go"][data-pane="1"]');b.wait('document.querySelector(`[data-fm-path="1"] input`).value==='+json.dumps(str(src)))
+ for index in [0,1]:
+  if b.js(f'document.querySelector(`[data-fm-auto="{index}"]`).checked'):b.click(f'[data-fm-auto="{index}"]')
+ open_link('source.txt');b.fill('[data-fm-link-name]','同目录链接.txt');b.click('[data-fm-link] [type=submit]');b.wait('!document.querySelector("[data-fm-link]")')
+ for index in [0,1]:
+  b.wait(f'Array.from(document.querySelectorAll(`[data-fm-pane="{index}"] .fm-row`)).some(r=>r.innerText.includes("同目录链接.txt"))')
+  assert b.js(f'document.querySelector(`[data-fm-auto="{index}"]`).checked') is False
+ assert os.stat(src/'source.txt').st_ino==os.stat(src/'同目录链接.txt').st_ino
+ checked('actual-both-panes-same-directory-auto-refresh-off-update');b.screenshot('both-panes-same-directory')
  assert (src/'existing.txt').read_bytes()==b'keep';assert (src/'source.txt').read_bytes()==b'original bytes'
  assert sorted(p.name for p in right.iterdir())==['硬链接.txt'];assert dependencies()==bound
  report['limitations']=['No symbolic-link success evidence on this token; native CI with existing permission is required.','TxF-unavailable and source READ_DATA-denied compatibility remain open.','Junction/WSL/edit-existing-links are out of this phase.'];report['passed']=True;save()
