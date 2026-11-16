@@ -45,12 +45,10 @@ impl OpenSpec {
             .custom_flags(self.flags).open(path)
     }
 }
-#[repr(C)]
-struct FileTime { low: u32, high: u32 }
 #[link(name="kernel32")]
 extern "system" {
-    fn SetFileTime(file: *mut std::ffi::c_void, created: *const FileTime,
-                   accessed: *const FileTime, modified: *const FileTime) -> i32;
+    fn SetFileTime(file: *mut std::ffi::c_void, created: *const u64,
+                   accessed: *const u64, modified: *const u64) -> i32;
 }
 #[cfg(test)]
 thread_local! {pub(crate) static SUPPRESS_CALLS:std::cell::RefCell<Vec<usize>>=const{std::cell::RefCell::new(Vec::new())};pub(crate) static FAIL_SUPPRESS: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
@@ -58,7 +56,7 @@ fn suppress(file: &File) -> io::Result<()> {
     #[cfg(test)] SUPPRESS_CALLS.with(|v|v.borrow_mut().push(file.as_raw_handle() as usize));
     #[cfg(test)]
     if FAIL_SUPPRESS.with(|v|v.replace(false)) {return Err(io::Error::from_raw_os_error(50));}
-    let sentinel=FileTime{low:u32::MAX,high:u32::MAX};
+    let sentinel=u64::MAX;
     if unsafe{SetFileTime(file.as_raw_handle(),std::ptr::null(),&sentinel,std::ptr::null())}==0 {
         Err(io::Error::last_os_error())
     }else{Ok(())}
@@ -101,7 +99,7 @@ mod tests{
     fn denied_attribute_access_falls_back_without_changing_source_acl(){
         use std::os::windows::ffi::OsStrExt;
         #[link(name="advapi32")]
-        extern "system"{fn ConvertStringSecurityDescriptorToSecurityDescriptorW(s:*const u16,revision:u32,out:*mut *mut std::ffi::c_void,len:*mut u32)->i32;fn SetFileSecurityW(path:*const u16,flags:u32,sd:*const std::ffi::c_void)->i32;}
+        extern "system"{fn ConvertStringSecurityDescriptorToSecurityDescriptorW(s:*const u16,revision:u32,out:*mut *mut std::ffi::c_void,len:*mut u32)->i32;fn SetFileSecurityW(path:*const u16,flags:u32,sd:*mut std::ffi::c_void)->i32;}
         #[link(name="kernel32")]
         extern "system"{fn LocalFree(p:*mut std::ffi::c_void)->*mut std::ffi::c_void;}
         let t=tempfile::tempdir().unwrap();let p=t.path().join("source");std::fs::write(&p,b"readable").unwrap();let sddl:Vec<u16>="D:P(D;;0x100;;;WD)(A;;FA;;;OW)".encode_utf16().chain(Some(0)).collect();let path:Vec<u16>=p.as_os_str().encode_wide().chain(Some(0)).collect();let mut sd=std::ptr::null_mut();
