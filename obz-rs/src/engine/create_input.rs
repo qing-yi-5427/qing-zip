@@ -49,33 +49,38 @@ pub(super) struct Snapshot {
     identity: (u32,u64),
     logical_time:[u64;3],
     digest: [u8;32],
+    preserve: bool,
+    report: Option<std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>,
     pub(super) children: Vec<OsString>,
 }
-fn digest(file:&File,ctl:&JobControl)->Result<[u8;32],String>{
+fn digest(file:&File,ctl:&JobControl,path:&Path,preserve:bool,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<[u8;32],String>{
     if file.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000!=0 {
+        if let Some(report)=report {report.lock().unwrap_or_else(|e|e.into_inner()).record_unconfirmed(path,crate::source_access::Phase::EncryptedSourceProof);}
         file_workspace_efs::archive_input_digest(file,ctl)
+    }else if preserve {
+        let proof=file_workspace::streams_preserving_access(file,ctl)?;
+        if proof.protection!=crate::source_access::Preservation::Applied {
+            if let Some(report)=report {report.lock().unwrap_or_else(|e|e.into_inner()).record(path,proof.protection);}
+        }
+        Ok(proof.digest)
     }else{file_workspace::streams(file,None,ctl)}
 }
 impl Snapshot {
     pub(super) fn capture(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl)->Result<Self,String>{
-        Self::capture_reported(path,relative,source,metadata,ctl,None)
+        Self::capture_reported(path,relative,source,metadata,ctl,false,None)
     }
-    fn capture_reported(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<Self,String>{
-        let mut uncertain=None;
-        let proof=if metadata.file_attributes()&0x4000!=0 {
-            uncertain=Some(crate::source_access::Phase::EncryptedSourceProof);file_workspace_efs::archive_input_digest(source,ctl)?
-        }else{file_workspace::streams_observed(source,None,ctl,Some(&mut ||{uncertain=Some(crate::source_access::Phase::AlternateStreamProof);}))?};
-        if let (Some(report),Some(phase))=(report,uncertain){report.lock().unwrap_or_else(|e|e.into_inner()).record_unconfirmed(path,phase);}
+    fn capture_reported(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl,preserve:bool,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<Self,String>{
+        let proof=digest(source,ctl,path,preserve,report)?;
         if PhaseTimer::enabled() && relative.components().count()==1 {eprintln!("OA_TIME_CAPTURE atime={}",metadata.last_access_time());}
         // Metadata was obtained before streams or any child-name resolution.
         Ok(Self{path:path.to_owned(),relative:relative.to_owned(),source:source.try_clone().map_err(|e|e.to_string())?,
-            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:proof,children:Vec::new()})
+            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:proof,preserve,report:report.cloned(),children:Vec::new()})
     }
     fn verify(&self,ctl:&JobControl)->Result<(),String>{
         ctl.check()?;let now=self.source.metadata().map_err(|e|e.to_string())?;
         if directory_identity(&self.source)?!=self.identity || now.file_attributes()!=self.metadata.file_attributes()
             || now.creation_time()!=self.metadata.creation_time() || now.last_write_time()!=self.metadata.last_write_time()
-            || now.file_size()!=self.metadata.file_size() || digest(&self.source,ctl)?!=self.digest {
+            || now.file_size()!=self.metadata.file_size() || digest(&self.source,ctl,&self.path,self.preserve,self.report.as_ref())?!=self.digest {
             return Err("creation source changed while preparing timestamp snapshot".into());
         }
         if now.is_dir(){
@@ -180,7 +185,7 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&Job
             if !metadata.is_dir() {
                 if let Some(report)=&opts.input_atime_report {report.lock().unwrap_or_else(|e|e.into_inner()).record(&path,opened.preservation);}
             }
-            let mut snapshot=Snapshot::capture_reported(&path,&relative,&file,&metadata,ctl,if opts.preserve_input_atime{opts.input_atime_report.as_ref()}else{None})?;
+            let mut snapshot=Snapshot::capture_reported(&path,&relative,&file,&metadata,ctl,opts.preserve_input_atime,if opts.preserve_input_atime{opts.input_atime_report.as_ref()}else{None})?;
             // A physical file may legitimately appear at several logical paths
             // (overlapping input roots or hardlinks). Keep its first time snapshot.
             snapshot.logical_time=*first_times.entry(snapshot.identity).or_insert(snapshot.logical_time);
@@ -362,4 +367,34 @@ mod tests {
             assert_eq!(fs::read(archive).unwrap(),bytes);
         }
     }
+}
+
+#[cfg(test)]
+mod preserved_snapshot_tests {
+    use super::*;
+    #[test]
+    fn protected_snapshot_rechecks_every_final_proof_and_detects_changed_ads(){
+        let t=tempfile::tempdir().unwrap();let p=t.path().join("source");fs::write(&p,b"main").unwrap();
+        let ads=format!("{}:proof",p.display());fs::write(&ads,b"original").unwrap();
+        let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));
+        let file=File::options().access_mode(0x80000100).share_mode(1).open(&p).unwrap();
+        let ctl=JobControl::new();
+        let snapshot=Snapshot::capture_reported(&p,Path::new("source"),&file,&file.metadata().unwrap(),&ctl,true,Some(&report)).unwrap();
+        let before=crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow().len());
+        snapshot.verify(&ctl).unwrap();
+        let after=crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow().len());assert!(after>=before+2);
+        assert_eq!(report.lock().unwrap().unconfirmed_sources,0);assert_eq!(report.lock().unwrap().unavailable_handles,0);
+        fs::write(&ads,b"modified").unwrap();assert!(snapshot.verify(&ctl).is_err());
+    }
+    #[test]
+    fn protected_snapshot_handles_4100_empty_directories_without_unconfirmed_fallback(){
+        let t=tempfile::tempdir().unwrap();let source=t.path().join("source");fs::create_dir(&source).unwrap();
+        for i in 0..4100 {fs::create_dir(source.join(format!("d{i:04}"))).unwrap();}
+        let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));
+        let opts=EngineOptions{preserve_input_atime:true,input_atime_report:Some(report.clone()),..Default::default()};
+        let prepared=prepare(&[source],t.path(),&opts,&JobControl::new()).unwrap();
+        assert_eq!(prepared.snapshots.len(),4101);prepared.verify(&JobControl::new()).unwrap();
+        assert_eq!(report.lock().unwrap().unavailable_handles,0);assert_eq!(report.lock().unwrap().unconfirmed_sources,0);
+    }
+
 }

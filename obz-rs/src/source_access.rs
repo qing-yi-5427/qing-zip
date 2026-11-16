@@ -94,6 +94,14 @@ pub(crate) fn protect_reader(file:&File,spec:OpenSpec)->Result<File,Preservation
     suppress(&reopened).map_err(|e|Preservation::Unavailable{phase:Phase::SuppressUpdates,os_error:e.raw_os_error()})?;
     Ok(reopened)
 }
+/// Duplicate the caller's already-open FILE_OBJECT and verify suppression on it.
+/// Used for directory handles that ReOpenFile cannot enhance. No pathname lookup
+/// and no assumed prior protection: missing WRITE_ATTRIBUTES is a typed failure.
+pub(crate) fn protect_shared_reader(file:&File)->Result<File,Preservation>{
+    let reader=file.try_clone().map_err(|e|Preservation::Unavailable{phase:Phase::EnhancedReopen,os_error:e.raw_os_error()})?;
+    suppress(&reader).map_err(|e|Preservation::Unavailable{phase:Phase::SuppressUpdates,os_error:e.raw_os_error()})?;
+    Ok(reader)
+}
 pub(crate) fn open_with(access:u32,preserve:bool,mut opener:impl FnMut(u32)->io::Result<File>)->io::Result<Opened>{
     if !preserve{return opener(access).map(|file|Opened{file,preservation:Preservation::Disabled});}
     match opener(access|0x100) {

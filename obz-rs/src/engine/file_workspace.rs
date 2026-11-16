@@ -2,6 +2,9 @@
 //! published. Moves use atomic no-replace renames; copy fallbacks retain sources.
 use super::*;
 use sha2::{Digest, Sha256};
+#[path = "file_workspace_preserved.rs"]
+mod preserved;
+pub(super) use preserved::{streams_preserving_access};
 use std::ffi::c_void;
 use std::os::windows::{
     fs::{MetadataExt, OpenOptionsExt},
@@ -224,21 +227,38 @@ pub(super) fn archive_primary_proof(source:&File,ctl:&JobControl)->Result<[u8;32
 
 // Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
+trait BackupInput {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<usize, String>;
+    fn exact(&mut self, mut bytes: &mut [u8]) -> Result<(), String> {
+        while !bytes.is_empty() {
+            let n = self.read(bytes)?;
+            if n == 0 { return Err("backup proof ended early".into()); }
+            bytes = &mut bytes[n..];
+        }
+        Ok(())
+    }
+}
+impl BackupInput for Backup<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<usize, String> { Backup::read(self, bytes) }
+    fn exact(&mut self, bytes: &mut [u8]) -> Result<(), String> { Backup::exact(self, bytes) }
+}
 pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     streams_observed(source,target,ctl,None)
 }
-pub(super) fn streams_observed(source: &File, target: Option<&File>, ctl: &JobControl, mut alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
+pub(super) fn streams_observed(source: &File, target: Option<&File>, ctl: &JobControl, alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
+    let mut input = Backup { file: source, context: std::ptr::null_mut(), writing: false };
+    streams_with_input(source, target, ctl, &mut input, alternate_read)
+}
+// Complete parser shared by native copying and the create-only protected reader.
+// Native retains the original reader, with no additional enumeration or plan.
+fn streams_with_input(source: &File, target: Option<&File>, ctl: &JobControl,
+                      input: &mut dyn BackupInput, mut alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
     use super::file_workspace_compression as compression;
     use super::file_workspace_sparse as sparse;
     ctl.check()?;
     let main_compression = compression::get(source)?;
     let main_sparse = sparse::query(source, ctl)?;
     if let Some(target) = target { compression::set(target, main_compression)?; }
-    let mut input = Backup {
-        file: source,
-        context: std::ptr::null_mut(),
-        writing: false,
-    };
     let mut output = target.map(|file| Backup {
         file,
         context: std::ptr::null_mut(),
