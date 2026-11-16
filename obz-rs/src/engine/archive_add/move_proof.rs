@@ -140,11 +140,10 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
     }
     options.selected=wanted.iter().filter(|i|!i.directory).map(|i|i.member.clone()).collect();
     if options.selected.is_empty() {
-        // An explicitly absent name requests zero output handles while the
-        // worker still decodes and validates every member. Never use [] here.
-        let mut absent="qing-zip-no-materialized-members".to_owned();
-        while occupied.keys().any(|name|name==&key(&absent)||name.starts_with(&(key(&absent)+"/"))){absent.push('_');}
-        options.selected.push(absent);
+        // Worker requires at least one existing selection. Select only proven
+        // empty directory leaves, never a merged directory containing old data.
+        options.selected=wanted.iter().filter(|i|i.directory && !occupied.keys().any(|name|name.starts_with(&(key(&i.member)+"/")))).map(|i|i.member.clone()).collect();
+        if options.selected.is_empty(){return Err("没有可供固定句柄验证的文件或空目录，源保持不变".into());}
     }
     let stage=ShellDragDirectory::create_named("qing-zip-locked-move-proof-")?;
     let data=stage.path().join("verified");fs::create_dir(&data).map_err(|e|e.to_string())?;
@@ -281,6 +280,9 @@ mod tests {
         AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|assert!(!data.exists()))));
         let result=verify_candidate(&output,prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
         assert_eq!(result.verified_members,vec!["nested/target/empty"]);
+        drop(result);
+        AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|{assert!(!data.join("untouched.bin").exists());assert!(!data.join("folder/docs/a.txt").exists());})));
+        verify_locked_candidate(&strong(&output),prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
     }
     #[test]
     fn proof_real_sevenz_candidate_checks_selected_payload_and_full_archive() {
@@ -337,6 +339,57 @@ mod tests {
             let pin=strong(&output);assert!(verify_locked_candidate(&pin,plan.proof.as_ref().unwrap(),&opts).is_err(),"{mode}");
             assert!(local.join("docs/a.txt").exists());
         }
+    }
+
+    #[test]
+    fn proof_guarded_real_updates_fresh_private_callback_commit_and_rollback() {
+        for format in ["zip","7z"] {for policy in ["error","skip","rename","overwrite"] {for reject in [false,true] {
+            let (temp,zip,local,_)=fixture();let original=if format=="zip"{zip}else{
+                let seed=temp.path().join("seed");fs::create_dir_all(seed.join("folder/docs")).unwrap();fs::write(seed.join("folder/docs/a.txt"),b"old a").unwrap();
+                let a=temp.path().join("original.7z");create(a.to_str().unwrap(),&[seed.join("folder").display().to_string()],"7z",&EngineOptions::default()).unwrap();a
+            };
+            let before=fs::read(&original).unwrap();let inputs=vec![local.join("docs").display().to_string()];
+            let opts=EngineOptions{overwrite:policy.into(),..Default::default()};
+            let lock=update_lock(&original,&control(&opts)).unwrap();
+            let prepared=prepare_for_move_proof(&original,&inputs,"folder",&opts);
+            if policy=="error"{assert!(prepared.is_err());assert_eq!(fs::read(&original).unwrap(),before);continue;}
+            let prepared=prepared.unwrap();
+            let source=edit_source::EditSource::open_controlled(&original,&control(&opts)).unwrap();
+            let output=source.output().unwrap();fs::copy(&original,output.path()).unwrap();
+            // This invokes the production update transaction on the private
+            // candidate. The outer original remains pinned and unmodified.
+            archive_add(output.path().to_str().unwrap(),&inputs,"folder",&opts).unwrap();
+            let binding=edit_source::CandidateIdentityBinding::from_pinned(crate::engine_stream::pin(output.path()).unwrap()).unwrap();
+            let called=std::cell::Cell::new(false);
+            let result=source.commit_tracked_guarded(output,binding,&opts,|exact|{
+                called.set(true);verify_locked_candidate(exact,prepared.proof.as_ref().unwrap(),&opts)?;
+                if reject {Err("injected proof failure after fresh verification".into())}else{Ok(())}
+            });
+            assert!(called.get());
+            if reject{assert!(result.is_err());assert_eq!(fs::read(&original).unwrap(),before);}
+            else {
+                let guard=result.unwrap();assert!(File::options().write(true).open(&original).is_err());drop(guard);drop(lock);
+                let dest=temp.path().join("verify-final");extract(original.to_str().unwrap(),dest.to_str().unwrap(),&EngineOptions::default()).unwrap();
+                assert_eq!(fs::read(dest.join("folder/docs/b.txt")).unwrap(),b"new b");
+                let a=if policy=="rename"{"folder/docs/a (2).txt"}else{"folder/docs/a.txt"};
+                assert_eq!(fs::read(dest.join(a)).unwrap(),if policy=="skip"{b"old a".to_vec()}else{b"new a".to_vec()});
+            }
+            assert_eq!(fs::read(local.join("docs/a.txt")).unwrap(),b"new a");
+            assert!(local.join("docs/b.txt").exists());
+        }}}
+    }
+
+    #[test]
+    fn proof_guarded_encrypted_candidate_decline_restores_original_archive() {
+        let (temp,_,local,_)=fixture();let original=temp.path().join("encrypted.7z");
+        let opts=EngineOptions{password:Some("fixture-password".into()),overwrite:"overwrite".into(),..Default::default()};
+        create(original.to_str().unwrap(),&[local.join("docs").display().to_string()],"7z",&opts).unwrap();
+        let before=fs::read(&original).unwrap();let prepared=prepare_for_move_proof(&original,&[local.join("docs").display().to_string()],"nested",&opts).unwrap();
+        let source=edit_source::EditSource::open_controlled(&original,&control(&opts)).unwrap();let output=source.output().unwrap();fs::copy(&original,output.path()).unwrap();
+        archive_add(output.path().to_str().unwrap(),&[local.join("docs").display().to_string()],"nested",&opts).unwrap();
+        let binding=edit_source::CandidateIdentityBinding::from_pinned(crate::engine_stream::pin(output.path()).unwrap()).unwrap();
+        let result=source.commit_tracked_guarded(output,binding,&opts,|exact|verify_locked_candidate(exact,prepared.proof.as_ref().unwrap(),&opts));
+        assert!(result.is_err());assert_eq!(fs::read(&original).unwrap(),before);assert!(local.join("docs/a.txt").exists());
     }
 
 }
