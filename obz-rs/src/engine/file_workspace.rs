@@ -203,7 +203,7 @@ impl Backup<'_> {
 }
 // Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
-fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
+pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     use super::file_workspace_compression as compression;
     use super::file_workspace_sparse as sparse;
     ctl.check()?;
@@ -510,6 +510,29 @@ fn collect(
     }
     Ok(())
 }
+// Internal private input-copy route: iterative traversal, no local-manager
+// item/depth cap. Ordinary transfer/move continues using collect unchanged.
+fn collect_archive(root:&Path,nodes:&mut Vec<Source>,capture:&mut Vec<super::create_input::Snapshot>,ctl:&JobControl)->Result<(),String>{
+    let mut pending=vec![(root.to_owned(),PathBuf::from(root.file_name().ok_or("missing source name")?))];
+    while let Some((path,relative))=pending.pop(){
+        ctl.check()?;no_links(&path)?;
+        let handle=File::options().access_mode(0x80000000).share_mode(1).custom_flags(0x02200000).open(&path).map_err(|e|e.to_string())?;
+        let meta=crate::private_stage::checked_metadata(&handle)?;
+        if meta.file_attributes()&0x400!=0||(!meta.is_file()&&!meta.is_dir()){return Err("linked or special create input rejected".into());}
+        let directory=meta.is_dir();
+        let mut snapshot=super::create_input::Snapshot::capture(&path,&relative,&handle,&meta,ctl)?;
+        if directory {
+            check_directory_streams(&handle,ctl)?;
+            for child in fs::read_dir(&path).map_err(|e|e.to_string())?{
+                ctl.check()?;let child=child.map_err(|e|e.to_string())?;let name=child.file_name();
+                snapshot.children.push(name.clone());pending.push((child.path(),relative.join(name)));
+            }
+        }
+        capture.push(snapshot);nodes.push(Source{path,relative,handle:Some(handle),directory,skipped:false});
+    }
+    Ok(())
+}
+
 struct PublishedCopy {
     index: usize,
     path: PathBuf,
@@ -536,6 +559,12 @@ pub fn transfer(
     moving: bool,
     opts: &EngineOptions,
 ) -> Result<Transfer, String> {
+    transfer_inner(inputs,destination,moving,opts,None)
+}
+pub(super) fn copy_for_archive(inputs:&[String],destination:&str,opts:&EngineOptions,capture:&mut Vec<super::create_input::Snapshot>)->Result<Transfer,String>{
+    transfer_inner(inputs,destination,false,opts,Some(capture))
+}
+fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOptions,mut capture:Option<&mut Vec<super::create_input::Snapshot>>)->Result<Transfer,String>{
     let ctl = control(opts);
     ctl.check()?;
     if inputs.is_empty() {
@@ -575,6 +604,9 @@ pub fn transfer(
     let mut nodes = Vec::new();
     for path in &paths {
         sources.check(path.parent().ok_or("缺少源父目录")?)?;
+        if let Some(capture)=capture.as_deref_mut(){
+            collect_archive(path,&mut nodes,capture,&ctl)?;
+        }else{
         collect(
             path,
             PathBuf::from(path.file_name().unwrap()),
@@ -582,6 +614,7 @@ pub fn transfer(
             &mut nodes,
             &ctl,
         )?;
+        }
     }
     let mut result = Transfer {
         copied: 0,

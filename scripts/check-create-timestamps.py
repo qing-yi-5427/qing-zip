@@ -4,7 +4,7 @@ No machine configuration changes. Not a performance benchmark.
 import argparse,ctypes,hashlib,itertools,json,os,subprocess,tempfile
 from pathlib import Path
 ap=argparse.ArgumentParser();ap.add_argument('--cli',type=Path,required=True);ap.add_argument('--reference',type=Path,required=True);ap.add_argument('--old-cli',type=Path,required=True);ap.add_argument('--workspace',type=Path,required=True);ap.add_argument('--scope',choices=['full','without-atime'],default='full');a=ap.parse_args()
-OUT=Path(tempfile.mkdtemp(prefix='create-times-',dir=a.workspace));sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+OUT=Path(tempfile.mkdtemp(prefix='create-times-',dir=a.workspace)).resolve();sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 # Bind every executable/runtime file actually used; do not infer mixed-package
 # provenance from the top-level CLI alone. Freeze manifests, when present, are
 # included in the byte binding and declarations checked before any fixture work.
