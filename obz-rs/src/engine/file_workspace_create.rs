@@ -39,7 +39,7 @@ pub fn create_item(parent: &str, name: &str, directory: bool, opts: &EngineOptio
     if metadata.is_dir()!=directory || metadata.file_attributes()&0x400!=0 {
         return Err("新建项目类型验证失败".into());
     }
-    Ok(LocalEntry{name:name.into(),path:target.display().to_string(),is_dir:directory,linked:false,size:metadata.len()})
+    Ok(LocalEntry{name:name.into(),path:target.display().to_string(),is_dir:directory,linked:false,size:metadata.len(),revision:super::stamp::entry_revision(&metadata)})
 }
 
 #[cfg(test)]

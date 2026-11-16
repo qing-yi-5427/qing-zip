@@ -8,7 +8,7 @@ function harness(invoke=async()=>{throw Error('unexpected IO')}){
  const render=()=>{html=ws.page();nodes=ws.state.panes.flatMap((p,index)=>localTreeRows(p).map(r=>({dataset:{pane:String(index),path:r.path,fmTreeItem:'',fm:'tree'},closest:sel=>sel==='[data-fm-tree]'?{dataset:{fmTree:String(index)}}:sel.includes('data-fm')?nodes.find(n=>n.dataset.pane===String(index)&&n.dataset.path===r.path):null,focus(){focus.push([index,r.path]);global.document.activeElement=this},scrollIntoView(){}})));ws.mount(host);};
  ws=create({esc:String,icon:()=>'',render,invoke,error:e=>errors.push(e),archive:()=>({path:'outer.zip',entries:[]})});
  for(const p of ws.state.panes)p.loaded=true;
- const previous=global.document;global.document={activeElement:null};
+ const previous=global.document;global.document={activeElement:null,hasFocus:()=>true,querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
  const node=(path,index=0)=>nodes.find(n=>n.dataset.path===path&&n.dataset.pane===String(index));
  const key=(path,key,index=0)=>{global.document.activeElement=node(path,index);handlers.keydown({target:node(path,index),key,preventDefault(){},stopPropagation(){}})};
  return {ws,render,key,node,focus,errors,handlers,get html(){return html},close(){global.document=previous}};

@@ -97,8 +97,8 @@ try:
   b.wait("Array.from(document.querySelectorAll("+json.dumps(f'[data-fm-pane="{index}"] .fm-row.selected')+")).some(e=>e.textContent.includes("+json.dumps(name)+"))")
  create(0,'新建 文件夹',True);done(0,'新建 文件夹');assert (src/'新建 文件夹').is_dir();checked('left-folder-create-and-selected')
  create(1,'新建 文件.txt',False,True);done(1,'新建 文件.txt');assert (right/'新建 文件.txt').read_bytes()==b'';assert not (src/'新建 文件.txt').exists();checked('right-context-file-create-and-selected')
- create(0,'existing.txt');b.wait('!!document.querySelector(`[data-fm-new-name="0"]`) && !document.querySelector(`[data-fm-new-name="0"]`).disabled');assert (src/'existing.txt').read_bytes()==b'keep';assert b.js('document.querySelector(`[data-fm-new-name="0"]`).value')=='existing.txt';checked('conflict-preserves-existing-and-input')
- b.fill('[data-fm-new-name="0"]','纠正.txt');b.key('Enter','Enter',13);done(0,'纠正.txt');assert (src/'纠正.txt').read_bytes()==b'';checked('correct-name-retry')
+ create(0,'existing.txt');b.wait('!!document.querySelector(`[data-fm-new-name="0"]`) && !document.querySelector(`[data-fm-new-name="0"]`).disabled');b.wait('document.querySelector(".fm-create-error")?.textContent.includes("同名项目已存在")');assert (src/'existing.txt').read_bytes()==b'keep';assert b.js('document.querySelector(`[data-fm-new-name="0"]`).value')=='existing.txt';checked('conflict-preserves-existing-and-input')
+ b.fill('[data-fm-new-name="0"]','纠正.txt');assert not b.js('!!document.querySelector(".fm-create-error")');b.key('Enter','Enter',13);done(0,'纠正.txt');assert (src/'纠正.txt').read_bytes()==b'';checked('correct-name-retry')
  b.click('[data-fm-pane="1"] [data-fm="new-directory"]');b.fill('[data-fm-new-name="1"]','cancelled');b.key('Escape','Escape',27);b.wait('!document.querySelector(`[data-fm-create="1"]`)');assert not (right/'cancelled').exists();checked('escape-no-output')
  b.js('window.__holdCreate=true');create(1,'busy.txt');b.wait('window.__realCreateFinished===true');assert (right/'busy.txt').read_bytes()==b''
  b.key('Escape','Escape',27);assert b.js('!!document.querySelector(`[data-fm-create="1"]`)')

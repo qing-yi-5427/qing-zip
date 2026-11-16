@@ -4,6 +4,9 @@ use super::*;
 #[path = "file_workspace_create.rs"]
 mod create;
 pub use create::create_item;
+#[path = "file_workspace_stamp.rs"]
+mod stamp;
+pub use stamp::{directory_stamp,DirectoryStamp};
 use sha2::{Digest, Sha256};
 #[path = "file_workspace_preserved.rs"]
 mod preserved;
@@ -21,12 +24,14 @@ pub struct LocalEntry {
     pub is_dir: bool,
     pub linked: bool,
     pub size: u64,
+    pub revision: String,
 }
 #[derive(Serialize)]
 pub struct Directory {
     pub path: String,
     pub parent: Option<String>,
     pub entries: Vec<LocalEntry>,
+    pub revision: String,
 }
 // Ordinary Windows disk paths accept either separator. Normalize only that
 // spelling so existing directory guards can pin the path; preserve case, dot
@@ -58,6 +63,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
                     is_dir: true,
                     linked: false,
                     size: 0,
+                    revision: String::new(),
                 }
             })
             .collect();
@@ -65,6 +71,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
             path: String::new(),
             parent: None,
             entries,
+            revision: String::new(),
         });
     }
     let root = local_path(path)?;
@@ -73,6 +80,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
     if !root.is_dir() {
         return Err("不是文件夹".into());
     }
+    let revision=stamp::directory_revision(&guards.held.get(&root).ok_or("缺少目录锁")?.0)?;
     let mut entries = Vec::new();
     for child in fs::read_dir(&root).map_err(|e| e.to_string())? {
         let child = child.map_err(|e| e.to_string())?;
@@ -83,6 +91,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
             is_dir: meta.is_dir(),
             linked: meta.file_attributes() & 0x400 != 0,
             size: meta.len(),
+            revision: stamp::entry_revision(&meta),
         });
         if entries.len() > 100000 {
             return Err("目录项目过多，请选择更具体的位置".into());
@@ -97,6 +106,7 @@ pub fn browse(path: &str) -> Result<Directory, String> {
         path: root.display().to_string(),
         parent: root.parent().map(|p| p.display().to_string()),
         entries,
+        revision,
     })
 }
 
