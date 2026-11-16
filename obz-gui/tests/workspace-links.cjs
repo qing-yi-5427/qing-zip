@@ -37,3 +37,21 @@ test('Windows path spelling refreshes the matching destination and displays one 
 test('both panes showing the destination refresh with automatic refresh disabled',async()=>{
  const t=setup(async()=>({path:'C:/left/new'}));t.ws.state.panes[0].autoRefresh=false;Object.assign(t.ws.state.panes[1],{path:'C:/left',autoRefresh:false});t.click('link');t.edit('name','new');t.submit();await tick();assert.deepEqual(t.calls,['C:/left','C:/left']);
 });
+
+test('directory junction submits its typed kind without symbolic privilege guidance',async()=>{
+ const requests=[];const t=setup(async body=>{requests.push(body);return {path:'D:/right/junction'};},true);t.click('link');
+ assert.match(t.ws.page(),/value="junction"/);t.handlers.change({target:{value:'junction',hasAttribute:key=>key==='data-fm-link-kind'}});
+ assert.equal(t.ws.state.link.kind,'junction');assert.match(t.ws.page(),/无需符号链接创建权限/);t.edit('name','junction');t.submit();await tick();
+ assert.deepEqual(requests,[{operation:'fs-create-link',path:'C:/left/source<.txt',dest:'D:/right',name:'junction',link_kind:'junction',options:{overwrite:'error'}}]);assert.deepEqual(t.calls,['D:/right']);
+});
+
+test('junction target input accepts dangling directory text',async()=>{
+ const requests=[];const t=setup(async body=>{requests.push(body);return {path:'D:/right/new'};},true);t.click('link');t.handlers.change({target:{value:'junction',hasAttribute:key=>key==='data-fm-link-kind'}});
+ t.handlers.input({target:{value:'C:/missing/child',hasAttribute:key=>key==='data-fm-link-target',closest:()=>null}});t.edit('name','new');t.submit();await tick();assert.equal(requests[0].path,'C:/missing/child');assert.equal(requests[0].link_kind,'junction');
+});
+test('WSL raw target has its own field, validates empty input and retains failure input',async()=>{
+ const requests=[];const t=setup(async body=>{requests.push(body);throw Error('fixture failure');});t.click('link');t.handlers.change({target:{value:'wsl',hasAttribute:key=>key==='data-fm-link-kind'}});
+ assert.match(t.ws.page(),/WSL 目标路径/);assert.equal(t.ws.state.link.wslTarget,'');t.submit();assert.equal(requests.length,0);assert.match(t.ws.state.link.error,/WSL/);
+ t.handlers.input({target:{value:'../用户/target',hasAttribute:key=>key==='data-fm-link-wsl-target',closest:()=>null}});t.edit('name','wsl');t.submit();await tick();
+ assert.deepEqual(requests,[{operation:'fs-create-link',wsl_target:'../用户/target',dest:'D:/right',name:'wsl',link_kind:'wsl',options:{overwrite:'error'}}]);assert.equal(t.ws.state.link.wslTarget,'../用户/target');assert.equal(t.ws.state.link.kind,'wsl');assert.match(t.ws.state.link.error,/fixture failure/);
+});

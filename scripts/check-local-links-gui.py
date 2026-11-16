@@ -105,7 +105,7 @@ try:
  b.select('[data-fm-link-kind]','symbolic-file');b.fill('[data-fm-link-name]','file-symbolic.txt');b.click('[data-fm-link] [type=submit]');b.wait('!!document.querySelector(".fm-link-error")')
  assert any(('os error '+code) in b.js('document.querySelector(".fm-link-error").innerText') for code in ('1300','1314'));assert not (right/'file-symbolic.txt').exists();assert b.js('document.querySelector("[data-fm-link-name]").value')=='file-symbolic.txt';checked('actual-file-symbolic-permission-failure-no-residue');b.screenshot('file-symbolic-permission-failure')
  b.click('[data-fm="link-close"]');b.click('[data-fm-check="0"][aria-label="选择 source.txt"]');open_link('source-dir')
- assert b.js('Array.from(document.querySelector("[data-fm-link-kind]").options).map(v=>v.value)')==['symbolic-directory']
+ assert b.js('Array.from(document.querySelector("[data-fm-link-kind]").options).map(v=>v.value)')==['symbolic-directory','junction','wsl']
  b.fill('[data-fm-link-name]','dir-symbolic');b.click('[data-fm-link] [type=submit]');b.wait('!!document.querySelector(".fm-link-error")')
  assert any(('os error '+code) in b.js('document.querySelector(".fm-link-error").innerText') for code in ('1300','1314'));assert not (right/'dir-symbolic').exists();checked('actual-directory-symbolic-permission-failure-no-residue');b.screenshot('directory-symbolic-permission-failure')
  b.click('[data-fm="link-close"]');b.click('[data-fm-check="0"][aria-label="选择 source-dir"]')

@@ -16,6 +16,7 @@ pub struct Request {
     pub name: String,
     #[cfg(windows)]
     pub link_kind: Option<engine::file_workspace::LinkKind>,
+    pub wsl_target: Option<String>,
     pub label: String,
     pub password_id: Option<String>,
     pub candidates: Vec<String>,
@@ -167,7 +168,14 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         #[cfg(windows)]
         "fs-create-file" | "fs-create-directory" => Ok(serde_json::to_value(engine::file_workspace::create_item(&r.path,&r.name,r.operation=="fs-create-directory",&r.options)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
-        "fs-create-link" => Ok(serde_json::to_value(engine::file_workspace::create_link(&r.path,&r.dest,&r.name,r.link_kind.ok_or("请选择链接类型")?,&r.options)?).map_err(|e|e.to_string())?),
+        "fs-create-link" => {
+            let kind=r.link_kind.ok_or("请选择链接类型")?;
+            let target=if kind==engine::file_workspace::LinkKind::Wsl{
+                if !r.path.is_empty(){return Err("WSL 目标请使用独立的 wsl_target 字段".into());}
+                r.wsl_target.as_deref().ok_or("请输入 WSL 目标路径")?
+            }else{if r.wsl_target.is_some(){return Err("只有 WSL 链接接受 wsl_target".into());}&r.path};
+            Ok(serde_json::to_value(engine::file_workspace::create_link(target,&r.dest,&r.name,kind,&r.options)?).map_err(|e|e.to_string())?)
+        },
         #[cfg(windows)]
         "fs-copy" | "fs-move" => Ok(serde_json::to_value(engine::file_workspace::transfer(&r.inputs, &r.dest, r.operation == "fs-move", &r.options)?).map_err(|e|e.to_string())?),
         "capabilities" => {
@@ -347,7 +355,7 @@ fn base64(data: &[u8]) -> String {
     #[test] fn local_link_request_contract_and_no_replace(){
         let root=tempfile::tempdir().unwrap();let source=root.path().join("source");std::fs::write(&source,b"keep").unwrap();
         let base=json!({"operation":"fs-create-link","path":source,"dest":root.path(),"name":"link","link_kind":"hard","options":{"overwrite":"error"}});
-        for bad in [json!("junction"),json!("wsl"),json!("Hard"),json!(3),json!({})] {let mut request=base.clone();request["link_kind"]=bad;assert!(serde_json::from_value::<Request>(request).is_err());}
+        for bad in [json!("Wsl"),json!("Hard"),json!(3),json!({})] {let mut request=base.clone();request["link_kind"]=bad;assert!(serde_json::from_value::<Request>(request).is_err());}
         for field in ["path","dest","name","link_kind"] {
             let mut request=base.clone();request.as_object_mut().unwrap().remove(field);
             assert!(execute(serde_json::from_value(request).unwrap()).is_err(),"{field}");
@@ -356,6 +364,18 @@ fn base64(data: &[u8]) -> String {
         assert!(execute(serde_json::from_value(overwrite).unwrap()).is_err());assert!(!root.path().join("link").exists());
         let result=execute(serde_json::from_value(base.clone()).unwrap()).unwrap();assert_eq!(result["kind"],"hard");
         assert!(execute(serde_json::from_value(base).unwrap()).is_err());assert_eq!(std::fs::read(source).unwrap(),b"keep");
+        let target=root.path().join("directory");std::fs::create_dir(&target).unwrap();std::fs::write(target.join("child"),b"junction bytes").unwrap();
+        let junction=json!({"operation":"fs-create-link","path":target,"dest":root.path(),"name":"junction","link_kind":"junction","options":{"overwrite":"error"}});
+        let result=execute(serde_json::from_value(junction.clone()).unwrap()).unwrap();assert_eq!(result["kind"],"junction");
+        assert_eq!(std::fs::read(root.path().join("junction/child")).unwrap(),b"junction bytes");assert!(execute(serde_json::from_value(junction).unwrap()).is_err());
+        std::fs::remove_dir(root.path().join("junction")).unwrap();assert_eq!(std::fs::read(target.join("child")).unwrap(),b"junction bytes");
+        let wsl=json!({"operation":"fs-create-link","dest":root.path(),"name":"wsl","link_kind":"wsl","wsl_target":"../用户/target","options":{"overwrite":"error"}});
+        for change in ["missing","path","cross-kind"]{
+            let mut invalid=wsl.clone();match change{"missing"=>{invalid.as_object_mut().unwrap().remove("wsl_target");},"path"=>invalid["path"]=json!("C:/source"),_=>invalid["link_kind"]=json!("hard")};
+            assert!(execute(serde_json::from_value(invalid).unwrap()).is_err());assert!(std::fs::symlink_metadata(root.path().join("wsl")).is_err());
+        }
+        let result=execute(serde_json::from_value(wsl.clone()).unwrap()).unwrap();assert_eq!(result["kind"],"wsl");assert_eq!(result["target"],"../用户/target");
+        assert!(execute(serde_json::from_value(wsl).unwrap()).is_err());std::fs::remove_file(root.path().join("wsl")).unwrap();
     }
     #[test]
     fn preserve_input_atime_unsupported_operations_fail_before_output_or_source_reads(){

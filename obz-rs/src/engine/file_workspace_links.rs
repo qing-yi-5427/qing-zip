@@ -9,7 +9,7 @@ mod privilege;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all="kebab-case")]
-pub enum LinkKind { Hard, SymbolicFile, SymbolicDirectory }
+pub enum LinkKind { Hard, SymbolicFile, SymbolicDirectory, Junction, Wsl }
 #[derive(Debug, Serialize)]
 pub struct CreatedLink { pub path: String, pub target: String, pub kind: LinkKind }
 #[repr(C)] struct Unicode { length:u16, maximum:u16, buffer:*mut u16 }
@@ -47,16 +47,37 @@ fn checked_name(name:&str)->Result<PathBuf,String>{
 }
 // FILE_CREATE is atomic and returns the exact created object; OPEN_REPARSE_POINT
 // plus a single component relative to the pinned parent excludes traversal.
-fn child(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->Result<File,String>{
+fn child_io(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->std::io::Result<File>{
     let mut wide:Vec<_>=name.encode_wide().collect();
-    if wide.is_empty() || wide.len()>32767 || wide.iter().any(|v|matches!(*v,0|47|58|92)) {return Err("无效链接名称".into());}
+    if wide.is_empty() || wide.len()>32767 || wide.iter().any(|v|matches!(*v,0|47|58|92)) {return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"无效链接名称"));}
     let mut unicode=Unicode{length:(wide.len()*2) as u16,maximum:(wide.len()*2) as u16,buffer:wide.as_mut_ptr()};
     let attrs=Attributes{length:std::mem::size_of::<Attributes>() as u32,root:parent.as_raw_handle(),name:&mut unicode,flags:0x40,security:std::ptr::null_mut(),qos:std::ptr::null_mut()};
     let mut status=Status{status:0,information:0};let mut raw=std::ptr::null_mut();
     let result=unsafe{NtCreateFile(&mut raw,access,&attrs,&mut status,std::ptr::null(),0,sharing,
         if create.is_some(){2}else{1},0x200020|match create{Some(true)=>1,Some(false)=>0x40,None=>0},std::ptr::null_mut(),0)};
-    if result<0{return Err(nt_error("打开或创建链接项目",result));}
+    if result<0{return Err(std::io::Error::from_raw_os_error(unsafe{RtlNtStatusToDosError(result)} as i32));}
     Ok(unsafe{File::from_raw_handle(raw)})
+}
+fn child(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->Result<File,String>{
+    child_io(parent,name,create,access,sharing).map_err(|e|format!("打开或创建链接项目：{e}"))
+}
+// Observe only existing ordinary prefixes. Each open is relative to the
+// preceding no-follow handle; a missing component leaves the rest as text.
+fn check_junction_target(path:&Path)->Result<(),String>{
+    let mut components=path.components();let prefix=components.next().ok_or("无效本地路径")?;
+    if !matches!(components.next(),Some(Component::RootDir)){return Err("无效本地绝对路径".into());}
+    let mut root=PathBuf::from(prefix.as_os_str());root.push("\\");
+    let mut held=vec![File::options().access_mode(0x100080).share_mode(7).custom_flags(0x02200000).open(root).map_err(|e|e.to_string())?];
+    for component in components{
+        let Component::Normal(name)=component else{return Err("无效本地路径组件".into());};
+        match child_io(held.last().ok_or("缺少目标前缀句柄")?,name,None,0x100080,7){
+            Ok(file)=>{let meta=file.metadata().map_err(|e|e.to_string())?;
+                if !meta.is_dir() || meta.file_attributes()&0x400!=0{return Err("目录联接点的现有目标路径必须是普通目录".into());}held.push(file);
+            },
+            Err(error) if matches!(error.raw_os_error(),Some(2|3))=>return Ok(()),
+            Err(error)=>return Err(format!("检查目录联接点目标：{error}")),
+        }
+    }Ok(())
 }
 fn parent_pin(path:&Path,guards:&mut CheckedDirectories)->Result<File,String>{
     guards.check(path)?;
@@ -94,12 +115,25 @@ fn symbolic_data(target:&Path)->Result<Vec<u8>,String>{
     for value in substitute.into_iter().chain([0]).chain(print).chain([0]){data.extend(value.to_le_bytes());}
     Ok(data)
 }
+// Junctions use the mount-point reparse format: two UTF-16 names without
+// symbolic-link flags. Validate the buffer before creating an owned directory.
+fn junction_data(target:&Path)->Result<Vec<u8>,String>{
+    let print:Vec<_>=target.as_os_str().encode_wide().collect();
+    let substitute:Vec<_>="\\??\\".encode_utf16().chain(print.iter().copied()).collect();
+    let length=8+(substitute.len()+print.len()+2)*2;
+    if length+8>16384{return Err("目录联接点目标过长".into());}
+    let mut data=Vec::with_capacity(length+8);
+    data.extend(0xa0000003u32.to_le_bytes());data.extend((length as u16).to_le_bytes());data.extend(0u16.to_le_bytes());
+    for value in [0,(substitute.len()*2) as u16,((substitute.len()+1)*2) as u16,(print.len()*2) as u16]{data.extend(value.to_le_bytes());}
+    for value in substitute.into_iter().chain([0]).chain(print).chain([0]){data.extend(value.to_le_bytes());}
+    Ok(data)
+}
 fn ioctl(file:&File,code:u32,input:&[u8],output:&mut [u8])->Result<usize,String>{
     let mut returned=0;
     if unsafe{DeviceIoControl(file.as_raw_handle(),code,input.as_ptr(),input.len() as u32,output.as_mut_ptr(),output.len() as u32,&mut returned,std::ptr::null_mut())}==0 {
-        return Err(format!("设置或核验符号链接（需要当前账户已有的创建权限）：{}",std::io::Error::last_os_error()));
+        return Err(format!("设置或核验链接：{}",std::io::Error::last_os_error()));
     }
-    if returned as usize>output.len(){return Err("无效符号链接响应长度".into());}
+    if returned as usize>output.len(){return Err("无效链接响应长度".into());}
     Ok(returned as usize)
 }
 fn dispose_owned(file:&File)->Result<(),String>{
@@ -109,7 +143,51 @@ fn dispose_owned(file:&File)->Result<(),String>{
     }
     Ok(())
 }
+fn wsl_data(target:&str)->Result<Vec<u8>,String>{
+    if target.is_empty() || target.contains('\0'){return Err("请输入不含空字符的 WSL 目标路径".into());}
+    if target.len()+12>16384{return Err("WSL 链接目标过长".into());}
+    let mut data=Vec::with_capacity(target.len()+12);
+    data.extend(0xa000001du32.to_le_bytes());data.extend(((target.len()+4) as u16).to_le_bytes());data.extend(0u16.to_le_bytes());
+    data.extend(2u32.to_le_bytes());data.extend(target.as_bytes());Ok(data)
+}
+// Text-target links never open, read or pin a target for mutation. A missing
+// target is valid. Only the destination is a publication boundary.
+fn create_text_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineOptions)->Result<CreatedLink,String>{
+    if opts.overwrite!="error"{return Err("链接创建不允许覆盖".into());}
+    let (target,data)=match kind{
+        LinkKind::Junction=>{
+            let path=checked_path(target)?;
+            check_junction_target(&path)?;
+            let data=junction_data(&path)?;(path.display().to_string(),data)
+        },
+        LinkKind::Wsl=>(target.to_owned(),wsl_data(target)?),
+        _=>return Err("无效文本链接类型".into()),
+    };
+    let parent_path=checked_path(parent)?;let leaf=checked_name(name)?;let path=parent_path.join(&leaf);
+    let mut guards=CheckedDirectories::default();guards.check(&parent_path)?;guards.allow_publication(&parent_path)?;
+    let parent=parent_pin(&parent_path,&mut guards)?;let parent_id=directory_identity(&parent)?;
+    let transaction=super::super::file_workspace_transaction::Transaction::begin()
+        .map_err(|e|format!("当前安全实现需要可用的文件事务；尚未创建链接：{e}"))?;
+    let lease=transaction.lock_target(&parent_path,parent_id).map_err(|e|format!("无法取得创建位置的安全租约；尚未创建链接：{e}"))?;drop(lease);
+    let ctl=opts.control.clone().unwrap_or_default();ctl.check()?;
+    #[cfg(test)] BEFORE_LINK.with(|hook|{if let Some(run)=hook.borrow_mut().take(){run();}});
+    ctl.check()?;
+    let (id,attrs)=directory_identity_and_attributes(&parent)?;if id!=parent_id || attrs&0x410!=0x10{return Err("创建位置身份或类型已改变".into());}
+    let output=child(&parent,leaf.as_os_str(),Some(kind==LinkKind::Junction),0x110182,1)?;
+    let result=(||{
+        ioctl(&output,0x900a4,&data,&mut [])?;
+        #[cfg(test)] if FAIL_TEXT_VERIFY.with(|flag|flag.replace(false)){return Err("injected text-link verification failure".into());}
+        let mut observed=vec![0u8;16384];let size=ioctl(&output,0x900a8,&[],&mut observed)?;
+        if observed[..size]!=data{return Err("链接数据核验不符".into());}Ok(())
+    })();
+    if let Err(error)=result{return match dispose_owned(&output){Ok(())=>Err(error),Err(cleanup)=>Err(format!("{error}；{cleanup}"))};}
+    let (id,attrs)=directory_identity_and_attributes(&parent).map_err(|e|format!("链接已创建，位置核验失败；已保留：{e}"))?;
+    if id!=parent_id || attrs&0x410!=0x10{return Err("链接已创建，位置身份或类型核验失败；已保留".into());}
+    transaction.rollback().map_err(|e|format!("链接已创建，位置租约释放失败；已保留：{e}"))?;
+    Ok(CreatedLink{path:path.display().to_string(),target,kind})
+}
 pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineOptions)->Result<CreatedLink,String>{
+    if matches!(kind,LinkKind::Junction|LinkKind::Wsl){return create_text_link(target,parent,name,kind,opts);}
     if opts.overwrite!="error" {return Err("链接创建不允许覆盖".into());}
     let target=checked_path(target)?;let parent=checked_path(parent)?;let leaf=checked_name(name)?;
     let output_path=parent.join(&leaf);
@@ -137,7 +215,7 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
     let source=child(&source_parent_pin,source_name,None,0x100081,1)?;
     let metadata=source.metadata().map_err(|e|e.to_string())?;
     if metadata.file_attributes()&0x400!=0 || (!metadata.is_file()&&!metadata.is_dir()) {return Err("链接目标必须是普通文件或目录".into());}
-    if metadata.is_dir()!=(kind==LinkKind::SymbolicDirectory){return Err("链接类型与目标类型不符".into());}
+    if metadata.is_dir()!=matches!(kind,LinkKind::SymbolicDirectory|LinkKind::Junction){return Err("链接类型与目标类型不符".into());}
     let source_id=directory_identity(&source)?;
     let ctl=opts.control.clone().unwrap_or_default();ctl.check()?;
     #[cfg(test)] BEFORE_LINK.with(|hook|{if let Some(run)=hook.borrow_mut().take(){run();}});
@@ -145,6 +223,7 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
     let (current_id,current_attrs)=directory_identity_and_attributes(&parent)?;
     if current_id!=parent_id || current_attrs&0x410!=0x10 {return Err("创建位置身份或类型已改变".into());}
     match kind {
+        LinkKind::Junction|LinkKind::Wsl=>unreachable!("text links dispatched before source pinning"),
         LinkKind::Hard=>{
             if source_id.0!=directory_identity(&parent)?.0 {return Err("硬链接必须位于同一卷".into());}
             hard(&source,&parent,leaf.as_os_str())?;
@@ -186,6 +265,7 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
     transaction.rollback().map_err(|e|format!("链接已创建，位置租约释放失败；已保留：{e}"))?;
     Ok(CreatedLink{path:output_path.display().to_string(),target:target.display().to_string(),kind})
 }
+#[cfg(test)] thread_local!{static FAIL_TEXT_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 #[cfg(test)] thread_local!{static BEFORE_LINK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 #[cfg(test)] thread_local!{static FAIL_SYMBOLIC_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 #[cfg(test)] thread_local!{static PANIC_SYMBOLIC_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
@@ -235,6 +315,86 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
             println!("required symbolic acceptance passed: {kind:?}, native reparse tag/target/type, real target access, no-replace and owned-handle failure cleanup");
         }
         assert_eq!(fs::read_dir(&destination).unwrap().count(),2);
+    }
+    #[test] fn junction_creation_access_no_replace_and_owned_cleanup(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("目录目标");let parent=root.path().join("links");
+        fs::create_dir(&source).unwrap();fs::create_dir(&parent).unwrap();fs::write(source.join("child.txt"),b"keep child bytes").unwrap();
+        let before=fs::metadata(&source).unwrap();let caller=privilege::snapshot();let opts=EngineOptions::default();
+        let created=create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"联接点",LinkKind::Junction,&opts).unwrap();
+        assert_eq!(created.kind,LinkKind::Junction);let link=PathBuf::from(&created.path);
+        let metadata=fs::symlink_metadata(&link).unwrap();assert_eq!(metadata.file_attributes()&0x410,0x410);
+        assert_eq!(fs::read_link(&link).unwrap(),source);assert_eq!(fs::read(link.join("child.txt")).unwrap(),b"keep child bytes");
+        let pin=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(&parent).unwrap();
+        let output=child(&pin,link.file_name().unwrap(),None,0x100080,7).unwrap();let mut observed=vec![0u8;16384];
+        let size=ioctl(&output,0x900a8,&[],&mut observed).unwrap();assert_eq!(observed[..size],junction_data(&source).unwrap());drop((output,pin));
+        assert!(create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"联接点",LinkKind::Junction,&opts).is_err());
+        let foreign=parent.join("foreign");fs::create_dir(&foreign).unwrap();fs::write(foreign.join("payload"),b"foreign").unwrap();
+        assert!(create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"foreign",LinkKind::Junction,&opts).is_err());
+        assert_eq!(fs::read(foreign.join("payload")).unwrap(),b"foreign");
+        FAIL_TEXT_VERIFY.with(|flag|flag.set(true));
+        let error=create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"failed",LinkKind::Junction,&opts).unwrap_err();
+        assert!(error.contains("injected text-link verification failure"),"{error}");assert!(fs::symlink_metadata(parent.join("failed")).is_err());
+        let racing=parent.join("racing");let copy=racing.clone();
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{fs::create_dir(&copy).unwrap();fs::write(copy.join("payload"),b"racing foreign").unwrap();})));
+        assert!(create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"racing",LinkKind::Junction,&opts).is_err());
+        assert_eq!(fs::read(racing.join("payload")).unwrap(),b"racing foreign");
+        let file=source.join("child.txt");assert!(create_link(file.to_str().unwrap(),parent.to_str().unwrap(),"wrong",LinkKind::Junction,&opts).is_err());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(),3);assert_eq!(fs::read_dir(&source).unwrap().count(),1);
+        let after=fs::metadata(&source).unwrap();assert_eq!(after.file_attributes(),before.file_attributes());assert_eq!(after.modified().unwrap(),before.modified().unwrap());
+        assert_eq!(privilege::snapshot(),caller);fs::remove_dir(&link).unwrap();assert_eq!(fs::read(file).unwrap(),b"keep child bytes");
+        println!("junction acceptance: native mount-point bytes, Unicode target, real child access, no-replace/race protection, owned-handle failure cleanup, source and caller context preserved");
+    }
+    #[test] fn dangling_junction_checks_existing_prefixes_without_target_creation(){
+        use std::os::windows::process::CommandExt;
+        let root=tempfile::tempdir().unwrap();let parent=root.path().join("links");fs::create_dir(&parent).unwrap();
+        let missing=root.path().join("missing/child/目录");let opts=EngineOptions::default();
+        let made=create_link(missing.to_str().unwrap(),parent.to_str().unwrap(),"dangling",LinkKind::Junction,&opts).unwrap();
+        assert!(!root.path().join("missing").exists());assert_eq!(fs::read_link(&made.path).unwrap(),missing);
+        fs::create_dir_all(&missing).unwrap();fs::write(missing.join("payload"),b"later bytes").unwrap();assert_eq!(fs::read(Path::new(&made.path).join("payload")).unwrap(),b"later bytes");
+        let alias=root.path().join("alias");let output=std::process::Command::new("cmd.exe").args(["/c","mklink","/J"]).arg(&alias).arg(root.path().join("missing")).creation_flags(0x08000000).output().unwrap();assert!(output.status.success());
+        for target in [alias.clone(),alias.join("absent/subdir"),missing.join("payload"),missing.join("payload/absent")] {
+            assert!(create_link(target.to_str().unwrap(),parent.to_str().unwrap(),"rejected",LinkKind::Junction,&opts).is_err(),"{target:?}");
+        }
+        fs::remove_dir(&alias).unwrap();fs::remove_dir(&made.path).unwrap();assert_eq!(fs::read(missing.join("payload")).unwrap(),b"later bytes");
+    }
+    #[test] fn wsl_raw_targets_native_bytes_conflicts_and_cleanup(){
+        let root=tempfile::tempdir().unwrap();let opts=EngineOptions::default();let caller=privilege::snapshot();
+        for (i,target) in ["/home/用户/不存在", "../relative path/文件", "C:\\raw-text", "/mnt/g/sample"].iter().enumerate(){
+            let name=format!("wsl-{i}");let made=create_link(target,root.path().to_str().unwrap(),&name,LinkKind::Wsl,&opts).unwrap();
+            assert_eq!(&made.target,target);let meta=fs::symlink_metadata(&made.path).unwrap();assert_ne!(meta.file_attributes()&0x400,0);assert_eq!(meta.file_attributes()&0x10,0);
+            let parent=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(root.path()).unwrap();
+            let output=child(&parent,std::ffi::OsStr::new(&name),None,0x100080,7).unwrap();let mut observed=vec![0u8;16384];let size=ioctl(&output,0x900a8,&[],&mut observed).unwrap();
+            assert_eq!(u32::from_le_bytes(observed[..4].try_into().unwrap()),0xa000001d);assert_eq!(u32::from_le_bytes(observed[8..12].try_into().unwrap()),2);assert_eq!(&observed[12..size],target.as_bytes());drop((output,parent));
+            assert!(create_link(target,root.path().to_str().unwrap(),&name,LinkKind::Wsl,&opts).is_err());fs::remove_file(&made.path).unwrap();
+        }
+        for name in ["", "..", "x:ads", "a/b", "CON", "x."]{assert!(create_link("/target",root.path().to_str().unwrap(),name,LinkKind::Wsl,&opts).is_err());}
+        let mut overwrite=EngineOptions::default();overwrite.overwrite="overwrite".into();assert!(create_link("/target",root.path().to_str().unwrap(),"bad",LinkKind::Wsl,&overwrite).is_err());
+        let writer=File::options().access_mode(0x100).share_mode(7).custom_flags(0x02200000).open(root.path()).unwrap();
+        assert!(create_link("/target",root.path().to_str().unwrap(),"writer",LinkKind::Wsl,&opts).is_err());drop(writer);
+        for target in ["", "bad\0target", &"x".repeat(16373)]{assert!(create_link(target,root.path().to_str().unwrap(),"invalid",LinkKind::Wsl,&opts).is_err());}
+        let max="x".repeat(16372);let made=create_link(&max,root.path().to_str().unwrap(),"max",LinkKind::Wsl,&opts).unwrap();fs::remove_file(&made.path).unwrap();
+        fs::write(root.path().join("foreign"),b"foreign bytes").unwrap();assert!(create_link("/target",root.path().to_str().unwrap(),"foreign",LinkKind::Wsl,&opts).is_err());assert_eq!(fs::read(root.path().join("foreign")).unwrap(),b"foreign bytes");
+        FAIL_TEXT_VERIFY.with(|flag|flag.set(true));let error=create_link("../target",root.path().to_str().unwrap(),"failed",LinkKind::Wsl,&opts).unwrap_err();assert!(error.contains("injected text-link verification failure"));assert!(fs::symlink_metadata(root.path().join("failed")).is_err());
+        let racing=root.path().join("racing");let copy=racing.clone();BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||fs::write(copy,b"racing bytes").unwrap())));
+        assert!(create_link("/target",root.path().to_str().unwrap(),"racing",LinkKind::Wsl,&opts).is_err());assert_eq!(fs::read(racing).unwrap(),b"racing bytes");
+        let ctl=JobControl::new();let cancel=ctl.clone();let mut cancel_opts=EngineOptions::default();cancel_opts.control=Some(ctl);BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        assert!(create_link("/target",root.path().to_str().unwrap(),"cancelled",LinkKind::Wsl,&cancel_opts).is_err());assert!(fs::symlink_metadata(root.path().join("cancelled")).is_err());assert_eq!(fs::read_dir(root.path()).unwrap().count(),2);assert_eq!(privilege::snapshot(),caller);
+        println!("WSL native acceptance: LX tag/version2/raw UTF8, Unicode relative/absolute targets, maximum buffer, file shape, conflicts/race/cancel and owned-handle cleanup; Linux runtime not tested");
+    }
+    #[test] fn junction_parent_lease_rejects_mutation(){
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("target");let parent=root.path().join("links");
+        fs::create_dir(&source).unwrap();fs::create_dir(&parent).unwrap();let dst=parent.clone();
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{
+            assert!(fs::rename(&dst,dst.with_extension("moved")).is_err());
+            for access in [0x100,0x18,0x40000000]{assert!(File::options().access_mode(access).share_mode(7).custom_flags(0x02200000).open(&dst).is_err());}
+        })));
+        create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"link",LinkKind::Junction,&EngineOptions::default()).unwrap();fs::remove_dir(parent.join("link")).unwrap();
+        let writer=File::options().access_mode(0x100).share_mode(7).custom_flags(0x02200000).open(&parent).unwrap();
+        assert!(create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"blocked",LinkKind::Junction,&EngineOptions::default()).is_err());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(),0);drop(writer);
+        let ctl=JobControl::new();let cancel=ctl.clone();let mut opts=EngineOptions::default();opts.control=Some(ctl);
+        BEFORE_LINK.with(|hook|*hook.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+        assert!(create_link(source.to_str().unwrap(),parent.to_str().unwrap(),"cancelled",LinkKind::Junction,&opts).is_err());assert_eq!(fs::read_dir(&parent).unwrap().count(),0);
     }
     #[test] fn hard_link_identity_and_existing_data(){
         let root=tempfile::tempdir().unwrap();let source=root.path().join("原文件.txt");fs::write(&source,b"original bytes").unwrap();
@@ -347,8 +507,9 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
         assert!(create_link(junction.join("source").to_str().unwrap(),root.path().to_str().unwrap(),"rejected",LinkKind::Hard,&opts).is_err());
         assert!(create_link(junction.to_str().unwrap(),root.path().to_str().unwrap(),"rejected",LinkKind::SymbolicDirectory,&opts).is_err());
         assert!(create_link(real.join("source").to_str().unwrap(),junction.to_str().unwrap(),"rejected",LinkKind::Hard,&opts).is_err());
-        for kind in [LinkKind::Hard,LinkKind::SymbolicFile,LinkKind::SymbolicDirectory] {
-            let source=if kind==LinkKind::SymbolicDirectory{real.clone()}else{real.join("source")};
+        assert!(create_link("/home/target",junction.to_str().unwrap(),"rejected",LinkKind::Wsl,&opts).is_err());
+        for kind in [LinkKind::Hard,LinkKind::SymbolicFile,LinkKind::SymbolicDirectory,LinkKind::Junction] {
+            let source=if matches!(kind,LinkKind::SymbolicDirectory|LinkKind::Junction){real.clone()}else{real.join("source")};
             for name in ["real","junction"] {assert!(create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),name,kind,&opts).is_err());}
         }
         assert_eq!(fs::read(real.join("source")).unwrap(),b"keep");assert_eq!(fs::read_dir(&real).unwrap().count(),1);
