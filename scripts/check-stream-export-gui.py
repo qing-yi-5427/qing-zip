@@ -95,8 +95,12 @@ def source_inventory(path):return native({'operation':'fs-streams','path':str(pa
 file_streams={'notes.txt':b'notes original\n','empty':b''};directory_streams={'dir-note.log':b'directory notes'};special_streams={'bad?.txt':b'question original','bad*.txt':b'star original','trail. ':b'trailing original','CON':b'device original'}
 put_streams(source,file_streams);put_streams(directory,directory_streams);put_streams(special,special_streams);put_streams(cancel_source,{'a-first':b'first retained'})
 large_path=str(cancel_source)+':z-large';large_size=8*1024**3
-with open(large_path,'wb') as large:
- returned=ctypes.c_uint32();assert kernel.DeviceIoControl(msvcrt.get_osfhandle(large.fileno()),0x900c4,None,0,None,0,ctypes.byref(returned),None),ctypes.get_last_error();large.truncate(large_size)
+kernel.SetFilePointerEx.argtypes=[ctypes.c_void_p,ctypes.c_longlong,ctypes.c_void_p,ctypes.c_uint32];kernel.SetEndOfFile.argtypes=[ctypes.c_void_p]
+handle=kernel.CreateFileW(large_path,0xc0000000,7,None,2,0x00200000,None);assert handle not in (None,ctypes.c_void_p(-1).value),ctypes.get_last_error()
+try:
+ returned=ctypes.c_uint32();assert kernel.DeviceIoControl(handle,0x900c4,None,0,None,0,ctypes.byref(returned),None),ctypes.get_last_error();assert kernel.SetFilePointerEx(handle,large_size,None,0);assert kernel.SetEndOfFile(handle)
+ query=ctypes.create_string_buffer(struct.pack('<qq',0,large_size));ranges=ctypes.create_string_buffer(65536);assert kernel.DeviceIoControl(handle,0x940cf,query,16,ranges,len(ranges),ctypes.byref(returned),None),ctypes.get_last_error();assert returned.value==0,'cancellation source must have real sparse holes';report['native_sparse_ranges_before']=[];save()
+finally:kernel.CloseHandle(handle)
 original_inventory={str(path):source_inventory(path) for path in [source,directory,special,cancel_source]}
 native({'operation':'fs-create-link','dest':str(src),'name':'existing-wsl','link_kind':'wsl','wsl_target':'../original-target'})
 b=None
