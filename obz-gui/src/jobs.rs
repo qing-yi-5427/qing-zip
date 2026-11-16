@@ -291,6 +291,16 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         assert_eq!(serde_json::to_value(state.result).unwrap()["path"],root.path().join("link").display().to_string());
         assert_eq!(std::fs::read(source).unwrap(),b"keep");forget_operation(id).unwrap();
     }
+    #[test] fn real_ads_export_jobs_preserve_partial_cancellation_details(){
+        let _registry=test_registry_guard();let root=tempfile::tempdir().unwrap();let source=root.path().join("source");let dest=root.path().join("out");std::fs::write(&source,b"base untouched").unwrap();std::fs::create_dir(&dest).unwrap();
+        std::fs::write(format!("{}:first",source.display()),b"first").unwrap();let large=File::create(format!("{}:large",source.display())).unwrap();large.set_len(256*1024*1024).unwrap();drop(large);
+        let listed=obz_core::operations::execute(serde_json::from_value(serde_json::json!({"operation":"fs-streams","path":source})).unwrap()).unwrap();
+        let request:Request=serde_json::from_value(serde_json::json!({"operation":"fs-export-streams","path":source,"dest":dest,"stream_revision":listed["revision"],"stream_exports":[{"name":"first","size":5,"output_name":"first.txt"},{"name":"large","size":256*1024*1024,"output_name":"large.bin"}]})).unwrap();
+        let control=JobControl::new();let observer=control.clone();let id=start_controlled(request,false,control,|_|{}).unwrap();let job=registry().lock().unwrap().get(&id).cloned().unwrap();
+        let deadline=Instant::now()+Duration::from_secs(15);loop{let progress=observer.snapshot();if progress.message.contains("2 / 2"){observer.cancel();break;}assert!(Instant::now()<deadline,"second ADS never started");std::thread::sleep(Duration::from_millis(1));}
+        let state=wait_snapshot(&job,id,Duration::from_secs(15)).unwrap();assert_eq!(state.status,"cancelled");let error=state.error.unwrap();assert!(error.contains("已导出 1 / 2"),"{error}");assert!(error.contains("first.txt"),"{error}");assert!(error.contains("operation cancelled"));
+        assert_eq!(std::fs::read(dest.join("first.txt")).unwrap(),b"first");assert!(!dest.join("large.bin").exists());assert_eq!(std::fs::read_dir(&dest).unwrap().count(),1);assert_eq!(std::fs::read(&source).unwrap(),b"base untouched");forget_operation(id).unwrap();
+    }
     #[test] fn real_existing_link_jobs_inspect_edit_and_clear_without_sync_bridge(){
         let _registry=test_registry_guard();let root=tempfile::tempdir().unwrap();let path=root.path().join("wsl-link");
         let run=|body:serde_json::Value|{

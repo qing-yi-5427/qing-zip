@@ -93,6 +93,9 @@ pub(super) fn set(file: &File, value: u16) -> Result<(), String> {
 #[cfg(test)]
 thread_local! {pub(super) static FAIL_SET:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 pub(super) fn stream(file: &File, name: &[u16], write: bool) -> Result<File, String> {
+    stream_shared(file,name,write,7)
+}
+pub(super) fn stream_shared(file: &File, name: &[u16], write: bool, sharing:u32) -> Result<File, String> {
     #[repr(C)]
     struct Unicode {
         length: u16,
@@ -157,7 +160,7 @@ pub(super) fn stream(file: &File, name: &[u16], write: bool) -> Result<File, Str
             &mut status,
             std::ptr::null(),
             0,
-            7,
+            sharing,
             1,
             0x200020,
             std::ptr::null_mut(),

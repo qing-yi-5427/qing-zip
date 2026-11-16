@@ -20,6 +20,9 @@ pub struct Request {
     #[cfg(windows)]
     pub link_receipt: Option<engine::file_workspace::LinkReceipt>,
     pub link_target: Option<String>,
+    pub stream_revision: Option<String>,
+    #[cfg(windows)]
+    pub stream_exports: Vec<engine::file_workspace::StreamExportItem>,
     pub label: String,
     pub password_id: Option<String>,
     pub candidates: Vec<String>,
@@ -166,6 +169,8 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "archive-properties" => Ok(json!(engine::archive_properties::read(&r.path, &r.options)?)),
         #[cfg(windows)]
         "fs-streams" => Ok(serde_json::to_value(engine::file_workspace::list_streams(&r.path)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
+        "fs-export-streams" => Ok(serde_json::to_value(engine::file_workspace::export_streams(&r.path,r.stream_revision.as_deref().ok_or("请刷新附加数据流后重试")?,&r.stream_exports,&r.dest,&r.options)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
         "fs-list" => Ok(serde_json::to_value(engine::file_workspace::browse(&r.path)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]

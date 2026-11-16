@@ -11,7 +11,7 @@ pub use links::{create_link, LinkKind, CreatedLink,inspect_link,edit_link,LinkRe
 mod stamp;
 #[path = "file_workspace_streams.rs"]
 mod stream_inventory;
-pub use stream_inventory::{list_streams, StreamInventory};
+pub use stream_inventory::{list_streams, StreamInventory,export_streams,StreamExportItem,StreamExportReport};
 pub use stamp::{directory_stamp,DirectoryStamp};
 use sha2::{Digest, Sha256};
 #[path = "file_workspace_preserved.rs"]

@@ -58,7 +58,7 @@ fn child_io(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sh
     if result<0{return Err(std::io::Error::from_raw_os_error(unsafe{RtlNtStatusToDosError(result)} as i32));}
     Ok(unsafe{File::from_raw_handle(raw)})
 }
-fn child(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->Result<File,String>{
+pub(super) fn child(parent:&File,name:&std::ffi::OsStr,create:Option<bool>,access:u32,sharing:u32)->Result<File,String>{
     child_io(parent,name,create,access,sharing).map_err(|e|format!("打开或创建链接项目：{e}"))
 }
 // Observe only existing ordinary prefixes. Each open is relative to the

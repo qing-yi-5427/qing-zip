@@ -1,5 +1,8 @@
 //! Read-only named-stream metadata. No payload handle, write, or path-based ADS open.
 use super::*;
+#[path="file_workspace_stream_export.rs"]
+mod export;
+pub use export::{export_streams,StreamExportItem,StreamExportReport};
 use std::path::{Component, Prefix};
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAMS: usize = 4096;
@@ -71,6 +74,10 @@ fn query(file: &File) -> Result<Vec<StreamInfo>, String> {
         return Err(format!("无法读取数据流元数据：{e}"));
     }
 }
+fn inventory_revision(file:&File)->Result<String,String>{
+    let identity=directory_identity(file)?;let meta=file.metadata().map_err(|e|e.to_string())?;
+    Ok(format!("{}:{}:{}:{}",identity.0,identity.1,meta.creation_time(),stamp::entry_revision(&meta)))
+}
 pub fn list_streams(text: &str) -> Result<StreamInventory,String> {
     let path=checked_path(text)?;
     let mut guards=CheckedDirectories::default();
@@ -92,7 +99,7 @@ pub fn list_streams(text: &str) -> Result<StreamInventory,String> {
     let streams=query(&file)?;
     let after=file.metadata().map_err(|e|e.to_string())?;
     if identity!=directory_identity(&file)? || stamp::entry_revision(&before)!=stamp::entry_revision(&after) {return Err("项目在读取期间发生变化，请刷新".into());}
-    Ok(StreamInventory {path:path.display().to_string(),revision:format!("{}:{}:{}",identity.0,identity.1,stamp::entry_revision(&after)),streams})
+    Ok(StreamInventory {path:path.display().to_string(),revision:inventory_revision(&file)?,streams})
 }
 #[cfg(test)]
 mod tests {
