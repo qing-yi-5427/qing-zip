@@ -1,11 +1,13 @@
 //! Explicit file-workspace projection, prepared while the target edit lock is held.
 use super::*;
 use std::io::Write;
+mod move_proof;
 
 pub(super) struct Prepared {
     pub names: Vec<String>,
     pub cwd: PathBuf,
     _directory: ShellDragDirectory,
+    pub proof: Option<move_proof::Plan>,
 }
 
 fn key(name: &str) -> String {
@@ -53,6 +55,7 @@ fn plan(
     policy: &str,
     names: &mut Vec<String>,
     ctl: &JobControl,
+    proof: &mut Option<move_proof::Plan>,
 ) -> Result<(), String> {
     ctl.check()?;
     let mut relative = member(relative)?;
@@ -62,7 +65,7 @@ fn plan(
     if let Some(existing_dir) = occupied.get(&key(&relative)).copied() {
         if !is_dir || !existing_dir {
             match policy {
-                "skip" => return Ok(()),
+                "skip" => { if let Some(p)=proof { p.skip(&relative, "目标已存在，按设置跳过"); } return Ok(()); },
                 "rename" => {
                     let original = relative.clone();
                     let (parent, leaf) =
@@ -102,6 +105,7 @@ fn plan(
                         }
                     }
                     relative = found.ok_or("无法找到可用名称")?;
+                    if let Some(p)=proof { p.rename(&original, &relative); }
                     let renamed = directory.join(&relative);
                     fs::rename(&path, &renamed).map_err(|e| e.to_string())?;
                     path = renamed;
@@ -132,6 +136,7 @@ fn plan(
                     policy,
                     names,
                     ctl,
+                    proof,
                 )?;
             }
         }
@@ -148,6 +153,8 @@ fn snapshot(
     target: &Path,
     ctl: &JobControl,
     parents: &mut CheckedDirectories,
+    proof: &mut Option<move_proof::Plan>,
+    snapshot_root: &Path,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     use std::os::windows::{
@@ -166,12 +173,13 @@ fn snapshot(
     if meta.file_attributes() & 0x400 != 0 || (!meta.is_file() && !meta.is_dir()) {
         return Err("不能添加链接或特殊对象".into());
     }
+    let mut primary_sha = None;
     let output = if meta.is_dir() {
         fs::create_dir(target).map_err(|e| e.to_string())?;
         for child in fs::read_dir(source).map_err(|e| e.to_string())? {
             ctl.check()?;
             let child = child.map_err(|e| e.to_string())?;
-            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents)?;
+            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents, proof, snapshot_root)?;
         }
         File::options()
             .access_mode(0xc0000100)
@@ -212,9 +220,11 @@ fn snapshot(
             }
             verified.update(&buffer[..n]);
         }
-        if digest.finalize() != verified.finalize() {
+        let expected: [u8;32] = digest.finalize().into();
+        if expected != <[u8;32]>::from(verified.finalize()) {
             return Err("临时输入完整性验证失败".into());
         }
+        primary_sha=Some(expected);
         output
     };
     // Recreate inexpensive storage markers when the private filesystem supports
@@ -287,6 +297,9 @@ fn snapshot(
     {
         return Err(std::io::Error::last_os_error().to_string());
     }
+    if let Some(p)=proof {
+        p.capture(source, target.strip_prefix(snapshot_root).map_err(|e|e.to_string())?, &input, meta.is_dir(), meta.len(), primary_sha)?;
+    }
     ctl.check()
 }
 
@@ -296,6 +309,14 @@ pub(super) fn prepare(
     folder: &str,
     opts: &EngineOptions,
 ) -> Result<Prepared, String> {
+    prepare_internal(archive, inputs, folder, opts, None)
+}
+
+#[allow(dead_code)]
+pub(super) fn prepare_for_move_proof(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared,String> {
+    prepare_internal(archive, inputs, folder, opts, Some(move_proof::Plan::default()))
+}
+fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, mut proof: Option<move_proof::Plan>) -> Result<Prepared,String> {
     let ctl = control(opts);
     ctl.check()?;
     if !["error", "skip", "rename", "overwrite"].contains(&opts.overwrite.as_str()) {
@@ -326,10 +347,12 @@ pub(super) fn prepare(
             &dest.join(path.file_name().ok_or("missing input name")?),
             &ctl,
             &mut parents,
+            &mut proof,
+            directory.path(),
         )?;
     }
     let cwd = directory.path().to_owned();
-    finish_projection(directory, cwd, &folder, occupied, opts)
+    finish_projection(directory, cwd, &folder, occupied, opts, proof)
 }
 
 fn target_inventory(
@@ -393,7 +416,7 @@ pub(super) fn prepare_export(
         }
         fs::rename(root, &target).map_err(|e| e.to_string())?;
     }
-    finish_projection(directory, cwd, &folder, occupied, opts)
+    finish_projection(directory, cwd, &folder, occupied, opts, None)
 }
 
 fn finish_projection(
@@ -402,6 +425,7 @@ fn finish_projection(
     folder: &str,
     mut occupied: BTreeMap<String, bool>,
     opts: &EngineOptions,
+    mut proof: Option<move_proof::Plan>,
 ) -> Result<Prepared, String> {
     let ctl = control(opts);
     let dest = cwd.join(folder);
@@ -426,6 +450,7 @@ fn finish_projection(
             &opts.overwrite,
             &mut names,
             &ctl,
+            &mut proof,
         )?;
     }
     #[cfg(test)]
@@ -435,10 +460,12 @@ fn finish_projection(
         }
     });
     ctl.check()?;
+    if let Some(p)=&proof { p.validate_mapping()?; }
     Ok(Prepared {
         names,
         cwd,
         _directory: directory,
+        proof,
     })
 }
 
