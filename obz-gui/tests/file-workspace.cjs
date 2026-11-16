@@ -119,3 +119,9 @@ test('archive Move partial cancellation remains visible and refreshes both panes
  workspace.mount({querySelector:()=>({addEventListener:(type,fn)=>{if(type==='click')click=fn;}})});click({preventDefault(){},target:{closest:()=>({dataset:{fm:'move',pane:'0'}})}});await new Promise(setImmediate);
  assert.equal(requests[0].operation,'archive-move');assert.ok(requests.some(r=>r.operation==='list'));assert.deepEqual(browsed,['C:/source']);assert.deepEqual(errors,[summary]);assert.equal(workspace.state.busy,false);
 });
+
+test('archive Move notices identify retained sources without dumping technical fields',()=>{
+ const {archiveMoveNotice}=require('../frontend/file-workspace.js');
+ const message=archiveMoveNotice({summary:'部分移动完成，压缩包已保存',items:[{source:'C:/source/a.txt',status:'copied_retained',reason:'包含未归档的附加数据，保留来源'},{source:'C:/source/b.txt',status:'moved',reason:''},{source:'C:/source/c.txt',status:'uncertain',reason:'无法确认事务回滚，请核查来源和目标'}]});
+ assert.match(message,/a.txt：包含未归档的附加数据/);assert.match(message,/c.txt：无法确认事务回滚/);assert.ok(!message.includes('b.txt'));assert.ok(!message.includes('copied_retained'));
+});
