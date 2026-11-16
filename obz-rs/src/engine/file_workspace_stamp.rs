@@ -12,7 +12,10 @@ pub fn directory_stamp(path:&str,names:&[String])->Result<DirectoryStamp,String>
     if path.is_empty(){return Err("请选择一个文件夹".into());}
     if names.len()>200{return Err("刷新项目过多".into());}
     let root=local_path(path)?;
-    if !matches!(root.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_)|Prefix::VerbatimDisk(_))){return Err("此位置请使用手动刷新".into());}
+    let letter=match root.components().next(){Some(Component::Prefix(p))=>match p.kind(){Prefix::Disk(letter)|Prefix::VerbatimDisk(letter)=>letter,_=>return Err("此位置请使用手动刷新".into())},_=>return Err("此位置请使用手动刷新".into())};
+    #[link(name="kernel32")]unsafe extern "system"{fn GetDriveTypeW(root:*const u16)->u32;}
+    // A mapped network share has a Disk prefix too. Do not poll remote metadata.
+    if unsafe{GetDriveTypeW([letter as u16,58,92,0].as_ptr())}==4{return Err("此位置请使用手动刷新".into());}
     let mut leaves=Vec::with_capacity(names.len());
     for name in names{
         if name.is_empty()||name.len()>1024||name.contains(['/', '\\']){return Err("无效的刷新项目名称".into());}
