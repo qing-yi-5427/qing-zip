@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,37 @@ import zipfile
 
 import check_classic_shell
 from arm64_package_runtime import ROOT, NSIS, fetch, machine, sha, verify_layout, verify_private_imports
+
+def remove_fixture_shortcut(path, expected_sha, *, timeout=5.0, interval=0.05):
+    """Remove only a caller-owned ordinary shortcut with its original contents.
+
+    Explorer/antivirus may briefly deny deletion after shortcut inspection. Only
+    Windows sharing/lock violations are retryable; each attempt rechecks bytes.
+    Persistent locks and every other error remain failures of the CI harness.
+    """
+    path = Path(path).absolute()
+    if path.suffix.lower() != '.lnk' or len(expected_sha) != 64 or any(c not in '0123456789abcdef' for c in expected_sha):
+        raise ValueError('Expected an exact fixture shortcut path and SHA-256')
+    if not 0 <= timeout <= 5.0 or not 0 < interval <= 0.1:
+        raise ValueError('Fixture cleanup retry budget is invalid')
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or getattr(metadata, 'st_file_attributes', 0) & 0x400:
+                raise RuntimeError('Fixture shortcut is no longer an ordinary file')
+            if sha(path) != expected_sha:
+                raise RuntimeError('Fixture shortcut contents changed; refusing cleanup')
+            path.unlink()
+            return
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in (32, 33):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(interval, remaining))
+
 
 def run(args, *, data=None, check=True, cwd=None, timeout=120):
     p=subprocess.run(list(map(str,args)),input=data,capture_output=True,cwd=cwd,timeout=timeout)
@@ -155,7 +187,7 @@ def verify_retry(setup,inst,shortcuts,arp,scratch):
             winreg.DeleteValue(h,name)
     for path,digest in owned_links.items():
         assert sha(path)==digest
-        path.unlink()
+        remove_fixture_shortcut(path,digest)
     shortcuts.rmdir()
     return {'optional_association_failure_logged':True,'retained_candidate_values':len(entries),
             'locked_payload_returned_failure':True,'retry_removed_payload':True}
@@ -190,7 +222,7 @@ def verify_foreign_shortcuts(setup, installed, shortcuts, portable, arp, scratch
     assert not installed.exists()
     for path,digest in before.items():
         assert sha(path)==digest, f'Uninstall altered user shortcut {path.name}'
-        path.unlink()
+        remove_fixture_shortcut(path,digest)
     shortcuts.rmdir()
     return {'preexisting_start_preserved':True,'unselected_desktop_preserved':True,'reassigned_uninstall_preserved':True,'locked_shortcut_did_not_block_uninstall':True}
 
