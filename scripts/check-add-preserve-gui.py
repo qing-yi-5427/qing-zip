@@ -98,7 +98,7 @@ try:
  try:
   before=sd().raw;b.click('[data-fm="entry"][data-pane="0"][data-index="0"]');b.click('[data-fm="refresh"][data-pane="0"]');b.wait('Array.from(document.querySelectorAll(`[data-fm="entry"][data-pane="0"]`)).some(e=>e.textContent.includes("denied.txt"))')
   index=b.js('Array.from(document.querySelectorAll(`[data-fm="entry"][data-pane="0"]`)).find(e=>e.textContent.includes("denied.txt")).dataset.index');b.click(f'[data-fm="entry"][data-pane="0"][data-index="{index}"]');b.click('[data-fm="copy"]')
-  b.wait('document.querySelector(".qa-dialog")?.innerText.includes("未能启用访问时间保护")');report['fm_notice']=b.js('document.querySelector(".qa-dialog").innerText');b.screenshot('fm-denied-warning')
+  b.wait('document.querySelector(".qa-dialog")?.innerText.includes("操作提示") && document.querySelector(".qa-dialog")?.innerText.includes("未能启用访问时间保护")');report['fm_notice']=b.js('document.querySelector(".qa-dialog").innerText');b.screenshot('fm-denied-warning')
   with zipfile.ZipFile(archive) as z:assert z.read('denied.txt')==b'preserve denied fixture' and z.read('data.txt')==b'timestamp GUI proof' and z.read('base.txt')==b'base'
   assert denied.read_bytes()==b'preserve denied fixture';assert sd().raw==before;report['denied_acl_sha256']=hashlib.sha256(before).hexdigest();checked('file-manager-real-attribute-denial-success-with-persistent-warning-and-unchanged-acl')
  finally:assert adv.SetFileSecurityW(str(denied),0x20000004,original)
