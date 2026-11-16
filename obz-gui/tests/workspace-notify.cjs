@@ -12,7 +12,7 @@ function harness(watching=false){
  for(const p of ws.state.panes)Object.assign(p,{loaded:true,path:'C:/initial',revision:'initial'});
  const mount=()=>ws.mount({querySelector:()=>section});mount();
  const click=(action,path,index=0)=>handlers.click({preventDefault(){},target:{closest:s=>s==='[data-fm]'?{dataset:{fm:action,pane:String(index),path}}:null}});
- return {ws,calls,errors,click,mount,setEntries(v){entries=v},fail(v){failure=v},stamp(v){stamp=v},get renders(){return renders}};
+ return {ws,calls,errors,click,mount,handlers,setEntries(v){entries=v},fail(v){failure=v},stamp(v){stamp=v},get renders(){return renders}};
 }
 test('per-pane history is bounded, deduplicated and forward branch is replaced',async()=>{
  const h=harness();for(let i=0;i<55;i++){h.click('tree','C:/'+i);await tick();}
@@ -42,4 +42,12 @@ test('a delayed metadata result cannot trigger a browse after suspension',async(
  test('unchanged manual refresh resumes polling without a render',async()=>{
  const h=harness(true);await settle();const p=h.ws.state.panes[0];h.click('refresh');await tick();assert.ok(p.timer,'manual refresh must schedule next metadata probe');
  const probes=h.calls.filter(x=>x[0]==='probe').length;await new Promise(r=>setTimeout(r,2100));assert.ok(h.calls.filter(x=>x[0]==='probe').length>probes);h.ws.suspend();assert.equal(p.timer,null);
+});
+
+test('auto-refresh checkbox render preserves its focus without overwriting path text',()=>{
+ const old=global.document;let focused='';
+ const input=(attrs,value)=>({tagName:'INPUT',type:attrs.type||'text',value,hasAttribute:k=>Object.hasOwn(attrs,k),getAttribute:k=>attrs[k]??null,closest:s=>s==='.fm-workspace'?{}:null,focus(){focused=attrs['data-fm-auto']??'path'}});
+ const path=input({'aria-label':'左侧路径'},'C:/original'),box=input({type:'checkbox','data-fm-auto':'0'},'on');box.dataset={fmAuto:'0'};box.checked=false;
+ global.document={activeElement:box,hidden:false,hasFocus:()=>true,addEventListener(){},querySelectorAll:s=>s==='.fm-workspace input'?[path,box]:[],querySelector:()=>null};
+ try{const h=harness();h.handlers.change({target:box});assert.equal(path.value,'C:/original');assert.equal(focused,'0');assert.equal(h.ws.state.panes[0].autoRefresh,false);}finally{global.document=old;}
 });

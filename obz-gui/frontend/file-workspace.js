@@ -85,10 +85,10 @@ function create(ui){
    else if(active?.closest?.('.fm-workspace')){
     // A lazy tree response also redraws the other pane. Preserve the specific
     // control the user moved to, including unfinished path text and selection.
-    const markers=['id','data-view','aria-label','data-fm','data-pane','data-index','data-path','data-fm-check','data-fm-password','data-fm-codepage','data-entry-path'];
+    const markers=['id','data-view','aria-label','data-fm','data-pane','data-index','data-path','data-fm-check','data-fm-password','data-fm-codepage','data-entry-path','type','data-fm-auto','data-fm-history','data-fm-new-name'];
     const attrs=markers.filter(k=>active.hasAttribute(k)&&!(k==='data-index'&&active.hasAttribute('data-entry-path'))).map(k=>[k,active.getAttribute(k)]);
     const form=active.closest('[data-fm-path]'),details=active.closest('[data-fm-credentials]');
-    const tag=active.tagName,value=['INPUT','TEXTAREA'].includes(tag)?active.value:undefined;
+    const tag=active.tagName,value=(tag==='TEXTAREA'||tag==='INPUT'&&!['checkbox','radio','button','submit'].includes(active.type))?active.value:undefined;
     const start=active.selectionStart,end=active.selectionEnd,direction=active.selectionDirection;
     restore=()=>{
      const candidates=[...document.querySelectorAll('.fm-workspace '+tag.toLowerCase())];
