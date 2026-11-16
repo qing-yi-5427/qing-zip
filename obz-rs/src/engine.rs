@@ -2676,6 +2676,11 @@ impl PublicationJournal {
 
 #[cfg(test)]
 thread_local! { static BEFORE_VERIFIED_MEMORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)}; }
+#[cfg(test)]
+thread_local! {
+    static FORCE_SELECTED_TRANSACTION_FALLBACK: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
+    static BEFORE_SELECTED_DIRECTORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+}
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
     #[cfg(windows)]
     let _reuse_scope=opts.verification_capture.as_ref().map(verification_lease::Capture::scope);
@@ -2764,9 +2769,12 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         && opts.threads.is_none_or(|limit| limit >= 4) && using_process_token();
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     let selected_zip_candidate = false;
-    let defer_preflight = (opts.selected.is_empty() || selected_zip_candidate)
-        && !dest.try_exists().map_err(|e| e.to_string())?
+    // Record absence before any output can be created. A later competitor
+    // must fail the atomic claim, never turn this into an existing-root job.
+    let initially_absent_destination = !dest.try_exists().map_err(|e| e.to_string())?
         && dest.parent().is_some_and(Path::is_dir);
+    let defer_preflight = (opts.selected.is_empty() || selected_zip_candidate)
+        && initially_absent_destination;
     if !defer_preflight {
         preflight_output_targets(&entries, &dest, &opts.overwrite, &mut output_guards)?;
     }
@@ -2821,6 +2829,12 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let plan_selection = split_plan.is_some() && using_process_token();
     #[cfg(not(nana_selected_worker))]
     let plan_selection = false;
+    let selected_directory_claim = plan_selection && initially_absent_destination
+        && expected.len() <= 65_536;
+    #[cfg(test)]
+    let skip_selected_transaction = plan_selection && FORCE_SELECTED_TRANSACTION_FALLBACK.with(|flag| flag.replace(false));
+    #[cfg(not(test))]
+    let skip_selected_transaction = false;
     // Only decode_memory_zip has read every member to EOF and retained exactly
     // the selected file bytes. A fallback decoder may still produce the whole tree.
     let memory_selection = selected_zip_candidate && defer_preflight && memory.is_some();
@@ -2829,7 +2843,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
     let mut transaction = if memory_attempted && memory.is_some() { None }
-    else if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 {
+    else if queued_transaction.is_some() { queued_transaction } else if expected.len() <= 65_536 && !skip_selected_transaction {
         new_directory_stage(path, &dest, safe_projection, &mut output_guards,
             projected.as_deref().unwrap_or(&all_entries), projected.is_some() || memory.is_some())?
     } else {
@@ -2991,12 +3005,17 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     // A private decoder stage is optional. The verified output contract must
     // also hold on ordinary staging and memory routes, including short paths.
     #[cfg(windows)]
-    let claim_destination = transaction.is_some() || (defer_preflight && expected.len() <= 65_536);
+    let claim_destination = transaction.is_some() || (defer_preflight && expected.len() <= 65_536)
+        || (selected_directory_claim && split_streamed);
     #[cfg(not(windows))]
     let claim_destination = transaction.is_some();
     let journal=claim_destination.then(PublicationJournal::default);
     #[cfg(test)]
     if verified_memory_claim { BEFORE_VERIFIED_MEMORY_CLAIM.with(|hook| {
+        if let Some(run)=hook.borrow_mut().take() {run();}
+    }); }
+    #[cfg(test)]
+    if selected_directory_claim && split_streamed { BEFORE_SELECTED_DIRECTORY_CLAIM.with(|hook| {
         if let Some(run)=hook.borrow_mut().take() {run();}
     }); }
     let publication=(|| -> Result<usize,String> {

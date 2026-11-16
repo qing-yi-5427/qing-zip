@@ -266,11 +266,13 @@ mod tests {
 
     #[test]
     fn revocation_at_final_commit_rolls_back_or_follows_completed_task(){
-        for before in [true,false] {
+        for ordinary_stage in [false,true] { for before in [true,false] {
             let(t,first,bytes)=fixture();let c=Capture::default();engine::extract(first.to_str().unwrap(),t.path().join("full").to_str().unwrap(),&options(&c)).unwrap();let proof=c.take().unwrap();
             let out=t.path().join("target");let leaf=out.join("payload.bin");let held=proof.clone();let callback=Box::new(move||{assert!(leaf.is_file(),"hook must run after final output has actually published");held.revoke();});
             if before {BEFORE_REUSE_COMMIT.with(|h|*h.borrow_mut()=Some(callback));}else{AFTER_REUSE_COMMIT.with(|h|*h.borrow_mut()=Some(callback));}
+            engine::FORCE_SELECTED_TRANSACTION_FALLBACK.with(|flag|flag.set(ordinary_stage));
             let c=Capture::default();let mut opts=options(&c);opts.verification_reuse=Some(proof);let result=engine::extract(first.to_str().unwrap(),out.to_str().unwrap(),&opts);
+            assert!(c.1.load(Ordering::SeqCst),"test must exercise actual proof reuse");
             if before {
                 assert!(result.is_err(), "revocation before publication fence must fail: {result:?}");
                 let remaining=fs::read_dir(&out).map(|items|items.map(|item|match item {
@@ -280,7 +282,17 @@ mod tests {
                 assert!(!out.exists(),"owned new destination must roll back; result={result:?}; output={out:?}; remaining={remaining:?}; payload_exists={:?}",out.join("payload.bin").try_exists());
             }else{assert!(result.is_ok(),"revocation after publication fence must follow success: {result:?}");assert_eq!(fs::read(out.join("payload.bin")).unwrap(),bytes);}
             assert!(c.take().is_none());
-        }
+        } }
+    }
+    #[test]
+    fn ordinary_selected_stage_atomic_claim_rejects_foreign_destination(){
+        let(t,first,_)=fixture();let c=Capture::default();engine::extract(first.to_str().unwrap(),t.path().join("full").to_str().unwrap(),&options(&c)).unwrap();let proof=c.take().unwrap();
+        let out=t.path().join("competitor");let target=out.clone();
+        engine::FORCE_SELECTED_TRANSACTION_FALLBACK.with(|flag|flag.set(true));
+        engine::BEFORE_SELECTED_DIRECTORY_CLAIM.with(|hook|*hook.borrow_mut()=Some(Box::new(move||{fs::create_dir(&target).unwrap();fs::write(target.join("foreign.txt"),b"preserve competitor").unwrap();})));
+        let c=Capture::default();let mut opts=options(&c);opts.verification_reuse=Some(proof);let result=engine::extract(first.to_str().unwrap(),out.to_str().unwrap(),&opts);
+        assert!(result.is_err(),"foreign destination must reject publication: {result:?}");assert!(c.1.load(Ordering::SeqCst));
+        assert_eq!(fs::read(out.join("foreign.txt")).unwrap(),b"preserve competitor");assert!(!out.join("payload.bin").exists());assert!(c.take().is_none());
     }
 
     #[test]
