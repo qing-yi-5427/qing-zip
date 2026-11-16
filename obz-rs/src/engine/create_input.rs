@@ -20,6 +20,7 @@ fn digest(file:&File,ctl:&JobControl)->Result<[u8;32],String>{
 }
 impl Snapshot {
     pub(super) fn capture(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl)->Result<Self,String>{
+        if PhaseTimer::enabled() && relative.components().count()==1 {eprintln!("OA_TIME_CAPTURE atime={}",metadata.last_access_time());}
         // Metadata was obtained before streams or any child-name resolution.
         Ok(Self{path:path.to_owned(),relative:relative.to_owned(),source:source.try_clone().map_err(|e|e.to_string())?,
             metadata:metadata.clone(),identity:directory_identity(source)?,digest:digest(source,ctl)?,children:Vec::new()})
@@ -48,6 +49,28 @@ pub(super) struct Prepared {
     _stage:ShellDragDirectory,
 }
 impl Prepared {
+    pub(super) fn snapshot_manifest(&self)->Result<Vec<u8>,String>{
+        use std::os::windows::ffi::OsStrExt;
+        let mut out=Vec::new();
+        out.extend_from_slice(&u32::try_from(self.snapshots.len()).map_err(|_|"too many snapshot entries")?.to_le_bytes());
+        let mut seen=HashSet::new();
+        for s in &self.snapshots {
+            if !seen.insert(s.relative.clone()) {return Err("duplicate input projection".into());}
+            let units=s.relative.as_os_str().encode_wide().collect::<Vec<_>>();
+            if units.is_empty() || units.len()>32767 {return Err("snapshot path too long".into());}
+            out.extend_from_slice(&(units.len() as u32).to_le_bytes());
+            for u in units {out.extend_from_slice(&u.to_le_bytes());}
+            out.extend_from_slice(&u32::from(s.metadata.is_dir()).to_le_bytes());
+            for v in [s.metadata.creation_time(),s.metadata.last_access_time(),s.metadata.last_write_time()] {out.extend_from_slice(&v.to_le_bytes());}
+            if out.len()>64*1024*1024 {return Err("timestamp manifest exceeds bounded worker message budget".into());}
+        }
+        Ok(out)
+    }
+    pub(super) fn container(&self)->&Path {self._stage.path()}
+    pub(super) fn trace_root(&self,label:&str)->Result<(),String>{
+        if PhaseTimer::enabled(){for (s,t) in self.snapshots.iter().zip(&self.targets).filter(|(s,_)|s.relative.components().count()==1){eprintln!("OA_TIME_POINT stage={} expected={} actual={}",label,s.metadata.last_access_time(),t.metadata().map_err(|e|e.to_string())?.last_access_time());}}
+        Ok(())
+    }
     pub(super) fn verify(&self,ctl:&JobControl)->Result<(),String>{
         for ((snapshot,target),expected) in self.snapshots.iter().zip(&self.targets).zip(&self.target_digests) {
             snapshot.verify(ctl)?;
@@ -76,14 +99,8 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&Job
     // complete published digest instead of requiring identical certificate bytes.
     let target_digests=targets.iter().map(|file|digest(file,ctl)).collect::<Result<Vec<_>,_>>()?;
     let ready=Prepared{snapshots,targets,target_digests,roots,_stage:stage};ready.verify(ctl)?;
-    // No subsequent path traversal of the private tree before the encoder: even
-    // metadata lookups of child names can update parent directory access time.
-    let mut order:Vec<usize>=(0..ready.snapshots.len()).collect();
-    order.sort_by_key(|&i|std::cmp::Reverse(ready.snapshots[i].relative.components().count()));
-    #[link(name="kernel32")] extern "system" {fn SetFileTime(h:*mut std::ffi::c_void,c:*const u64,a:*const u64,m:*const u64)->i32;}
-    for i in order {
-        ctl.check()?;let m=&ready.snapshots[i].metadata;
-        if unsafe{SetFileTime(ready.targets[i].as_raw_handle(),&m.creation_time(),&m.last_access_time(),&m.last_write_time())}==0{return Err(std::io::Error::last_os_error().to_string());}
-    }
+    // Archive times are immutable protocol records. The private tree retains
+    // whatever times its safe publisher supplied; no filesystem timestamp is
+    // used to transport the snapshot to the encoder.
     let _=opts;Ok(ready)
 }

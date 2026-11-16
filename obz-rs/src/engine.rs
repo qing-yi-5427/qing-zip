@@ -4847,7 +4847,16 @@ pub fn create(
     a.push(staged.display().to_string());
     a.extend(paths.iter().map(|p| p.display().to_string()));
     ctl.set("compressing", None, "Creating archive");
-    run(&a, None, opts, None)?;
+    #[cfg(windows)]
+    if let Some(stage)=&input_stage {stage.trace_root("pre_run")?;}
+    #[cfg(nana_selected_worker)]
+    if let Some(stage)=&input_stage {
+        selected_worker::create_zip::create_from_snapshot(&staged,stage,format,opts,&ctl)?;
+    } else {run(&a,None,opts,None)?;}
+    #[cfg(not(nana_selected_worker))]
+    { if input_stage.is_some() {return Err("snapshot writer is unavailable in this build".into());} run(&a,None,opts,None)?; }
+    #[cfg(windows)]
+    if let Some(stage)=&input_stage {stage.trace_root("post_run")?;}
     #[cfg(windows)]
     if let Some(stage)=&input_stage {stage.verify(&ctl)?;}
     ctl.check()?;

@@ -1,5 +1,6 @@
 // Create new, single-volume Deflate archives from pinned local NTFS inputs.
 #include <array>
+#include <map>
 #include <winternl.h>
 
 namespace zip_create {
@@ -33,6 +34,9 @@ struct Record {
   HANDLE parent;
   uint64_t id, size, modified, created, accessed;
   DWORD attributes;
+  // Logical archive timestamps are separate from physical source proof.
+  bool snapshot_time = false;
+  std::array<uint64_t, 3> archive_time{}; // C, A, M
   bool directory() const {
     return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   }
@@ -318,6 +322,67 @@ public:
   }
 };
 
+// The parent captures times before any child lookup. Never round-trip that
+// snapshot through filesystem timestamps: legitimate readers can change atime.
+static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
+                                const std::wstring &container) {
+  if (!data || size < 4 || size > 64u * 1024 * 1024)
+    fail("invalid timestamp manifest");
+  auto read = [&](size_t n) -> const BYTE * {
+    if (n > size) fail("truncated timestamp manifest");
+    const BYTE *p = data; data += n; size -= n; return p;
+  };
+  auto u32 = [&]() { uint32_t v; memcpy(&v, read(4), 4); return v; };
+  auto u64 = [&]() { uint64_t v; memcpy(&v, read(8), 8); return v; };
+  struct Times { bool directory; std::array<uint64_t,3> values; };
+  std::map<std::wstring,Times> snapshots;
+  const uint32_t count = u32();
+  // Minimum record size also bounds count before allocating anything.
+  if (count > size / 30) fail("invalid timestamp manifest count");
+  for (uint32_t i=0; i<count; ++i) {
+    const uint32_t units=u32();
+    if (!units || units>32767) fail("invalid timestamp path length");
+    std::wstring path(units, L'\0');
+    memcpy(path.data(), read(size_t(units)*2), size_t(units)*2);
+    size_t start=0;
+    for (;;) {
+      const size_t end=path.find(L'\\',start);
+      if (!valid_leaf(std::wstring_view(path).substr(start,end==path.npos?path.size()-start:end-start)))
+        fail("invalid timestamp projection");
+      if (end==path.npos) break;
+      start=end+1;
+    }
+    const uint32_t dir=u32(); if (dir>1) fail("invalid timestamp type");
+    Times t{dir!=0,{u64(),u64(),u64()}};
+    if (!snapshots.emplace(std::move(path),t).second)
+      fail("duplicate timestamp projection");
+  }
+  if (size) fail("trailing timestamp manifest");
+  const std::wstring prefix=container+L"\\";
+  std::vector<Record> projected;
+  projected.reserve(src.items.size());
+  bool root=false;
+  for (auto &r:src.items) {
+    if (r.path==container) {
+      if (root || !r.directory()) fail("invalid snapshot container");
+      root=true; continue;
+    }
+    if (r.path.compare(0,prefix.size(),prefix)!=0)
+      fail("snapshot member escaped container");
+    const std::wstring path=r.path.substr(prefix.size());
+    auto it=snapshots.find(path);
+    if (it==snapshots.end() || it->second.directory!=r.directory())
+      fail("timestamp manifest differs from verified members");
+    r.path=path;
+    r.snapshot_time=true;
+    r.archive_time=it->second.values;
+    snapshots.erase(it);
+    projected.push_back(std::move(r));
+  }
+  if (!root || !snapshots.empty()) fail("incomplete timestamp manifest");
+  src.items=std::move(projected);
+}
+
 template <class I> class ComObject : public I {
   std::atomic<ULONG> refs_{1};
 
@@ -540,9 +605,9 @@ public:
     case kpidMTime:
     case kpidCTime:
     case kpidATime: {
-      const auto value = id == kpidMTime
-                             ? r.modified
-                             : (id == kpidCTime ? r.created : r.accessed);
+      const auto value = r.snapshot_time
+          ? r.archive_time[id == kpidCTime ? 0 : (id == kpidATime ? 1 : 2)]
+          : (id == kpidMTime ? r.modified : (id == kpidCTime ? r.created : r.accessed));
       v->vt = VT_FILETIME;
       v->filetime.dwLowDateTime = static_cast<DWORD>(value);
       v->filetime.dwHighDateTime = value >> 32;
@@ -582,7 +647,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0) noexcept {
   using namespace zip_create;
   bool started=false;
   try {
@@ -653,6 +718,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     }
     if (n) exact(settings->SetProperties(keys, props, n), "set archive compression options");
     src.enumerate(root, name);
+    if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name);
     // 7z stores zero-byte entries without requesting GetStream. Validate and
     // retain their deny-write/delete handles through UpdateItems as well.
     if (seven) for (const auto &r : src.items) {
@@ -677,7 +743,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
       fail("machine policy changed");
     if (times&64) {
       *latest=0;
-      for (const auto &record:src.items) *latest=std::max(*latest,record.modified);
+      for (const auto &record:src.items) *latest=std::max(*latest,record.snapshot_time ? record.archive_time[2] : record.modified);
     }
     return S_OK;
   } catch (const NotEligible &) {
@@ -709,4 +775,11 @@ extern "C" HRESULT qz_create_timed(const wchar_t *runtime,HANDLE owner,HANDLE ro
  DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,uint64_t *latest,char *message,size_t capacity) noexcept {
  if(seven>1) return E_INVALIDARG;
  return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest);
+}
+
+extern "C" HRESULT qz_create_snapshot(const wchar_t *runtime,HANDLE owner,HANDLE root,const wchar_t *name,HANDLE output,
+ DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,
+ const BYTE *snapshot,size_t snapshot_size,uint64_t *latest,char *message,size_t capacity) noexcept {
+ if(seven>1 || !snapshot) return E_INVALIDARG;
+ return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,snapshot,snapshot_size);
 }
