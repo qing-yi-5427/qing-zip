@@ -271,7 +271,14 @@ mod tests {
             let out=t.path().join("target");let leaf=out.join("payload.bin");let held=proof.clone();let callback=Box::new(move||{assert!(leaf.is_file(),"hook must run after final output has actually published");held.revoke();});
             if before {BEFORE_REUSE_COMMIT.with(|h|*h.borrow_mut()=Some(callback));}else{AFTER_REUSE_COMMIT.with(|h|*h.borrow_mut()=Some(callback));}
             let c=Capture::default();let mut opts=options(&c);opts.verification_reuse=Some(proof);let result=engine::extract(first.to_str().unwrap(),out.to_str().unwrap(),&opts);
-            if before {assert!(result.is_err());assert!(!out.exists(),"owned new destination must roll back");}else{assert!(result.is_ok());assert_eq!(fs::read(out.join("payload.bin")).unwrap(),bytes);}
+            if before {
+                assert!(result.is_err(), "revocation before publication fence must fail: {result:?}");
+                let remaining=fs::read_dir(&out).map(|items|items.map(|item|match item {
+                    Ok(item)=>format!("name={:?} type={:?} metadata={:?}",item.file_name(),item.file_type(),item.metadata().map(|m|(m.len(),m.permissions().readonly(),m.modified()))),
+                    Err(error)=>format!("read_dir entry error={error:?}"),
+                }).collect::<Vec<_>>());
+                assert!(!out.exists(),"owned new destination must roll back; result={result:?}; output={out:?}; remaining={remaining:?}; payload_exists={:?}",out.join("payload.bin").try_exists());
+            }else{assert!(result.is_ok(),"revocation after publication fence must follow success: {result:?}");assert_eq!(fs::read(out.join("payload.bin")).unwrap(),bytes);}
             assert!(c.take().is_none());
         }
     }
