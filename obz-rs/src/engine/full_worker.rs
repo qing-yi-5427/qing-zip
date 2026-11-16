@@ -11,6 +11,12 @@ pub(in crate::engine) struct Pending {
     verification: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    static BEFORE_RUNTIME: std::cell::RefCell<Option<Box<dyn FnOnce(&Session)->Option<PathBuf>>>> =
+        std::cell::RefCell::new(None);
+}
+
 fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
     let mut data=Fields(body);
     if data.take(16)? != nonce {return Err("full worker nonce mismatch".into());}
@@ -98,11 +104,23 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
     let helper=exe.with_file_name("obz-worker.exe");
     let exe=if helper.is_file(){helper}else{exe};
     if !exe.is_file(){return Ok(None);}
-    let runtime_pins=pin_runtime(&runtime,ctl)?;let image=crate::engine_stream::pin(&exe)?;
+    let image=crate::engine_stream::pin(&exe)?;
     let mut nonce=[0u8;16];if unsafe{BCryptGenRandom(std::ptr::null_mut(),nonce.as_mut_ptr(),16,2)}<0{return Err("full worker nonce failed".into());}
-    let mut session=Session::start_mode(&exe,3)?;
+    // The isolated child blocks on its first request. Pin its image before
+    // launch, then overlap loader startup with full runtime identity checks.
+    // No runtime path, parent/source/output handle or nonce is sent until every
+    // DLL is verified. Field order reaps the child before releasing any pin on
+    // failure, cancellation, fallback or success.
+    let mut pending=Pending{session:Session::start_mode(&exe,3)?,_runtime:Vec::new(),_image:image,
+        nonce,manifest:(0,Vec::new()),verification};
     #[cfg(test)]
-    TEST_CHILDREN.with(|children|children.borrow_mut().push(session.child.try_clone().unwrap()));
+    TEST_CHILDREN.with(|children|children.borrow_mut().push(pending.session.child.try_clone().unwrap()));
+    #[cfg(test)]
+    let runtime=BEFORE_RUNTIME.with(|slot|slot.borrow_mut().take())
+        .and_then(|hook|hook(&pending.session)).unwrap_or(runtime);
+    pending._runtime=pin_runtime(&runtime,ctl)?;
+    ctl.check()?;
+    let session=&mut pending.session;
     let mut request=nonce.to_vec();wide(&mut request,runtime.as_os_str())?;
     request.extend_from_slice(&duplicate(&session.child,unsafe{GetCurrentProcess()},0x100000)?.to_le_bytes());
     request.extend_from_slice(&1u32.to_le_bytes());request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081)?.to_le_bytes());
@@ -122,7 +140,8 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
                     // No output capability was granted. Session Drop reaps the waiting child.
                     return Ok(Some((entries,None)));
                 }
-                return Ok(Some((entries,Some(Pending{session,_runtime:runtime_pins,_image:image,nonce,manifest:frame,verification}))));
+                pending.manifest=frame;
+                return Ok(Some((entries,Some(pending))));
             },
             8=> {
                 acknowledge_threads(&frame.1,&nonce,opts.threads,threads_applied)?;
@@ -133,7 +152,7 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
             5=> {
                 if encrypted_header {return Ok(None);}
                 let mut stats=Stats{code:-1,..Default::default()};
-                let used=consume_session(&mut session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested)?;
+                let used=consume_session(session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested)?;
                 if used{return Err("full worker completed without manifest".into());}
                 return Ok(None);
             },
@@ -192,6 +211,81 @@ mod tests {
         let children=TEST_CHILDREN.with(|v|std::mem::take(&mut *v.borrow_mut()));assert!(!children.is_empty());
         for child in children {assert_eq!(unsafe{WaitForSingleObject(child.as_raw_handle(),0)},0,"worker must be reaped before returning");}
     }
+    fn assert_waiting_without_request(session:&Session) {
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(session.exit_code().unwrap().is_none());
+        #[link(name="psapi")]
+        extern "system" {
+            fn EnumProcessModulesEx(process:Handle, modules:*mut Handle, bytes:u32, needed:*mut u32, flags:u32)->i32;
+            fn GetModuleBaseNameW(process:Handle,module:Handle,name:*mut u16,size:u32)->u32;
+        }
+        let mut modules=[std::ptr::null_mut();1024];let mut needed=0;
+        assert_ne!(unsafe{EnumProcessModulesEx(session.child.as_raw_handle(),modules.as_mut_ptr(),
+            std::mem::size_of_val(&modules) as u32,&mut needed,3)},0);
+        assert!((needed as usize)<=std::mem::size_of_val(&modules));
+        for module in modules.iter().take(needed as usize/std::mem::size_of::<Handle>()) {
+            let mut name=[0u16;1024];
+            let used=unsafe{GetModuleBaseNameW(session.child.as_raw_handle(),*module,name.as_mut_ptr(),name.len() as u32)};
+            assert!(used>0);let name=String::from_utf16(&name[..used as usize]).unwrap().to_ascii_lowercase();
+            assert!(!name.starts_with("nanazip.")&&!name.starts_with("k7"),"unverified custom DLL loaded: {name}");
+        }
+        assert!(matches!(session.receiver.as_ref().unwrap().try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)), "no request or manifest before runtime verification");
+    }
+    #[test]
+    fn delayed_runtime_validation_sends_no_request_and_then_decodes() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        BEFORE_RUNTIME.with(|slot|*slot.borrow_mut()=Some(Box::new(|session|{
+            assert_waiting_without_request(session);None
+        })));
+        let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();let opts=EngineOptions::default();
+        let (entries,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        let stage=temp.path().join("stage");fs::create_dir(&stage).unwrap();
+        pending.unwrap().decode(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl).unwrap();
+        assert_eq!(fs::read(stage.join("a.txt")).unwrap(),b"abc");reap_proof();
+    }
+    #[test]
+    fn runtime_hash_failure_reaps_unapproved_child_without_outputs() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let broken=temp.path().join("runtime");fs::create_dir(&broken).unwrap();
+        fs::write(broken.join("K7Base.dll"),b"not the bundled DLL").unwrap();
+        BEFORE_RUNTIME.with(|slot|*slot.borrow_mut()=Some(Box::new(move |session|{
+            assert_waiting_without_request(session);Some(broken)
+        })));
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        let error=prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&JobControl::new()).err().unwrap();
+        assert!(error.contains("DLL identity mismatch"),"{error}");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(),2);reap_proof();
+    }
+    #[test]
+    fn runtime_validation_cancellation_reaps_unapproved_child() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let ctl=JobControl::new();let cancel=ctl.clone();
+        BEFORE_RUNTIME.with(|slot|*slot.borrow_mut()=Some(Box::new(move |session|{
+            assert_waiting_without_request(session);cancel.cancel();None
+        })));
+        let source=crate::engine_stream::pin(&archive).unwrap();
+        let error=prepare(archive.to_str().unwrap(),&source,&EngineOptions::default(),&ctl).err().unwrap();
+        assert!(error.contains("cancel"),"{error}");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(),1);reap_proof();
+    }
+    #[test]
+    fn overlapped_runtime_normal_7z_decodes_all_bytes() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.7z");
+        let payload=(0..10000).flat_map(|i:u32|i.to_le_bytes()).collect::<Vec<_>>();
+        fs::write(temp.path().join("a.bin"),&payload).unwrap();
+        let result=std::process::Command::new(executable().unwrap()).current_dir(temp.path())
+            .args(["a","-t7z","case.7z","a.bin"]).output().unwrap();assert!(result.status.success());
+        let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();
+        let opts=EngineOptions{threads:Some(4),..Default::default()};
+        let (entries,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        let stage=temp.path().join("stage");fs::create_dir(&stage).unwrap();
+        pending.unwrap().decode(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl).unwrap();
+        use sha2::Digest;
+        assert_eq!(sha2::Sha256::digest(fs::read(stage.join("a.bin")).unwrap()),sha2::Sha256::digest(payload));
+        reap_proof();
+    }
+
     #[test]
     fn verification_zero_outputs_and_large_inventory_enforce_actual_handle_budget() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("many.zip");
