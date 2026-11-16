@@ -4785,7 +4785,7 @@ pub fn create(
     format: &str,
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
-    if opts.preserve_input_atime{return Err("输入访问时间保护尚未覆盖新建压缩包，未创建输出".into());}
+    if opts.preserve_input_atime && !matches!(format,"zip"|"7z"|"sfx"){return Err("此格式尚未覆盖输入访问时间保护，未创建输出".into());}
     compression_parameters::switches(format, opts)?;
     compression_times::validate(format, opts)?;
     let policy = crate::machine_policy::scope();
@@ -4840,7 +4840,7 @@ pub fn create(
         ctl.set("complete",Some(100),"Archive created");
         return Ok(vec![absolute(out)?.display().to_string()]);
     }
-    let paths = if opts.store_atime==Some(true) {checked_input_roots(inputs)?}else{input_paths(inputs)?};
+    let paths = if opts.store_atime==Some(true) || opts.preserve_input_atime {checked_input_roots(inputs)?}else{input_paths(inputs)?};
     let out = absolute(out)?;
     no_links(&out)?;
     if out.exists() {
@@ -4858,7 +4858,7 @@ pub fn create(
         .path()
         .join(out.file_name().ok_or("output has no filename")?);
     #[cfg(windows)]
-    let input_stage=if opts.store_atime==Some(true) {Some(create_input::prepare(&paths,parent,opts,&ctl)?)}else{None};
+    let input_stage=if opts.store_atime==Some(true) || opts.preserve_input_atime {Some(create_input::prepare(&paths,parent,opts,&ctl)?)}else{None};
     #[cfg(windows)]
     let paths=input_stage.as_ref().map(|s|s.roots.clone()).unwrap_or(paths);
     let mut a = base("a", opts)?;

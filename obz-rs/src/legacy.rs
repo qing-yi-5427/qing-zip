@@ -182,6 +182,7 @@ pub fn create_lzh(
     inputs: &[String],
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    if opts.preserve_input_atime {return Err("此格式尚未覆盖输入访问时间保护，未创建输出".into());}
     engine::compression_times::validate("lzh", opts)?;
     let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {

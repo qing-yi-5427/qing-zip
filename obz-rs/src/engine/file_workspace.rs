@@ -225,6 +225,9 @@ pub(super) fn archive_primary_proof(source:&File,ctl:&JobControl)->Result<[u8;32
 // Copy and verify main data, named $DATA streams, and validated EA. Other backup
 // records fail before publication: never silently discard EFS/reparse metadata.
 pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
+    streams_observed(source,target,ctl,None)
+}
+pub(super) fn streams_observed(source: &File, target: Option<&File>, ctl: &JobControl, mut alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
     use super::file_workspace_compression as compression;
     use super::file_workspace_sparse as sparse;
     ctl.check()?;
@@ -308,6 +311,9 @@ pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) ->
         }
         let mut alternate = None;
         if id == 4 {
+            // BackupRead owns the payload reader; a caller can report this
+            // separately from suppression of its original primary handle.
+            if let Some(observer)=alternate_read.as_mut(){observer();}
             let units = name
                 .chunks_exact(2)
                 .map(|v| u16::from_le_bytes([v[0], v[1]]))

@@ -1,6 +1,7 @@
 // Create new, single-volume Deflate archives from pinned local NTFS inputs.
 #include <array>
 #include <map>
+#include <mutex>
 #include <winternl.h>
 
 namespace zip_create {
@@ -39,6 +40,8 @@ struct Record {
   DWORD volume = 0;
   bool snapshot_time = false;
   std::array<uint64_t, 3> archive_time{}; // C, A, M
+  HANDLE supplied_reader = nullptr;
+  std::shared_ptr<std::mutex> reader_mutex;
   bool directory() const {
     return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   }
@@ -183,6 +186,11 @@ public:
   }
   File open(const Record &r) const {
     live();
+    if(r.supplied_reader) {
+      HANDLE duplicate=nullptr;
+      win(DuplicateHandle(GetCurrentProcess(),r.supplied_reader,GetCurrentProcess(),&duplicate,0x100081,FALSE,0),"duplicate preserved reader");
+      return File(duplicate);
+    }
     if (r.direct_root) {
       // ReOpenFile keeps identity tied to the granted root but gives every
       // GetStream an independent file pointer (DuplicateHandle would not).
@@ -380,7 +388,7 @@ struct SnapshotOptions {
 // The parent captures times before any child lookup. Never round-trip that
 // snapshot through filesystem timestamps: legitimate readers can change atime.
 static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
-                                const std::wstring &container, bool direct=false) {
+                                const std::wstring &container, bool direct=false, bool preserve=false) {
   if (!data || size < 4 || size > 64u * 1024 * 1024)
     fail("invalid timestamp manifest");
   auto read = [&](size_t n) -> const BYTE * {
@@ -389,7 +397,7 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
   };
   auto u32 = [&]() { uint32_t v; memcpy(&v, read(4), 4); return v; };
   auto u64 = [&]() { uint64_t v; memcpy(&v, read(8), 8); return v; };
-  struct Times { bool directory; std::array<uint64_t,3> values; DWORD volume=0; uint64_t id=0,size=0; DWORD attributes=0; uint64_t created=0,modified=0; };
+  struct Times { bool directory; std::array<uint64_t,3> values; DWORD volume=0; uint64_t id=0,size=0; DWORD attributes=0; uint64_t created=0,modified=0; HANDLE reader=nullptr; };
   std::map<std::wstring,Times> snapshots;
   const uint32_t count = u32();
   // Minimum record size also bounds count before allocating anything.
@@ -410,6 +418,7 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
     const uint32_t dir=u32(); if (dir>1) fail("invalid timestamp type");
     Times t{dir!=0,{u64(),u64(),u64()}};
     if(direct) {t.volume=u32();t.id=u64();t.size=u64();t.attributes=u32();t.created=u64();t.modified=u64();}
+    if(preserve) {t.reader=reinterpret_cast<HANDLE>(static_cast<uintptr_t>(u64()));if(bool(t.reader)==t.directory)fail("invalid preserved reader type");}
     if (!snapshots.emplace(std::move(path),t).second)
       fail("duplicate timestamp projection");
   }
@@ -434,6 +443,10 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
       if(r.volume!=p.volume || r.id!=p.id || r.attributes!=p.attributes ||
           r.created!=p.created || r.modified!=p.modified || (!r.directory() && r.size!=p.size))
         fail("original source differs from parent physical manifest");
+    }
+    if(preserve && !r.directory()) {
+      BY_HANDLE_FILE_INFORMATION info{};Source::verify(it->second.reader,r,info);
+      r.supplied_reader=it->second.reader;r.reader_mutex=std::make_shared<std::mutex>();
     }
     r.path=path;
     r.snapshot_time=true;
@@ -525,6 +538,14 @@ public:
       DWORD got = 0, requested = static_cast<DWORD>(std::min<uint64_t>(
                          position_ >= record_.size ? 0 : record_.size - position_, n));
       if (requested) {
+        // Only repeated GetStream instances sharing this exact FILE_OBJECT
+        // serialize their seek+read. Different records retain independent IO.
+        std::unique_lock<std::mutex> lock;
+        if(record_.reader_mutex) {
+          lock=std::unique_lock<std::mutex>(*record_.reader_mutex);
+          LARGE_INTEGER at{};at.QuadPart=static_cast<LONGLONG>(position_);
+          win(SetFilePointerEx(f_.get(),at,nullptr,FILE_BEGIN),"preserved reader position");
+        }
         win(ReadFile(f_.get(), buf, requested, &got, nullptr), "source read");
         if (!got)
           fail("source unexpectedly shortened");
@@ -538,7 +559,15 @@ public:
   HRESULT STDMETHODCALLTYPE Seek(Int64 offset, UInt32 origin,
                                  UInt64 *pos) noexcept override {
     return boundary([&]() -> HRESULT {
+      source_.live();
       check();
+      if(record_.reader_mutex) {
+        if(origin>2)return STG_E_INVALIDFUNCTION;
+        const uint64_t base=origin==0?0:origin==1?position_:record_.size;
+        if((offset<0 && uint64_t(-(offset+1))+1>base) || (offset>=0 && uint64_t(offset)>uint64_t(INT64_MAX)-base))return STG_E_INVALIDFUNCTION;
+        position_=offset<0?base-(uint64_t(-(offset+1))+1):base+uint64_t(offset);
+        if(pos)*pos=position_;return S_OK;
+      }
       LARGE_INTEGER d{}, result{};
       d.QuadPart = offset;
       if (!SetFilePointerEx(f_.get(), d, &result, origin))
@@ -732,7 +761,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0, const zip_create::SnapshotOptions *snapshot_options=nullptr, uint64_t output_base=0, const std::vector<std::pair<HANDLE,std::wstring>> *direct_roots=nullptr) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0, const zip_create::SnapshotOptions *snapshot_options=nullptr, uint64_t output_base=0, const std::vector<std::pair<HANDLE,std::wstring>> *direct_roots=nullptr, bool preserve=false) noexcept {
   using namespace zip_create;
   bool started=false;
   try {
@@ -815,7 +844,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
       std::sort(src.items.begin(),src.items.end(),[](const Record &a,const Record &b){return path_order(a.path,b.path)<0;});
       for(size_t i=1;i<src.items.size();++i) if(!path_order(src.items[i-1].path,src.items[i].path)) fail("duplicate direct source projection");
     } else src.enumerate(root, name);
-    if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name,direct_roots!=nullptr);
+    if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name,direct_roots!=nullptr,preserve);
     // 7z stores zero-byte entries without requesting GetStream. Validate and
     // retain their deny-write/delete handles through UpdateItems as well.
     if (seven) for (const auto &r : src.items) {
@@ -890,8 +919,8 @@ extern "C" HRESULT qz_create_snapshot(const wchar_t *runtime,HANDLE owner,HANDLE
 // property/password section and a physical+logical manifest generated by parent.
 extern "C" HRESULT qz_create_direct(const wchar_t *runtime,HANDLE owner,HANDLE root,const wchar_t *name,HANDLE output,
  DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,
- const BYTE *snapshot,size_t snapshot_size,uint64_t output_base,uint64_t *latest,char *message,size_t capacity) noexcept {
- if(seven>1 || !snapshot || snapshot_size>64u*1024*1024) return E_INVALIDARG;
+ const BYTE *snapshot,size_t snapshot_size,uint64_t output_base,DWORD preserve,uint64_t *latest,char *message,size_t capacity) noexcept {
+ if(seven>1 || preserve>1 || !snapshot || snapshot_size>64u*1024*1024) return E_INVALIDARG;
  try {
    auto take=[&](size_t n){if(n>snapshot_size)fail("truncated direct source roots");const BYTE *p=snapshot;snapshot+=n;snapshot_size-=n;return p;};
    auto u32=[&](){uint32_t v;memcpy(&v,take(4),4);return v;};
@@ -905,7 +934,7 @@ extern "C" HRESULT qz_create_direct(const wchar_t *runtime,HANDLE owner,HANDLE r
      roots.emplace_back(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle)),std::move(name));
    }
    zip_create::SnapshotOptions options(snapshot,snapshot_size);
-   return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,options.manifest,options.manifest_size,&options,output_base,&roots);
+   return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,options.manifest,options.manifest_size,&options,output_base,&roots,preserve!=0);
  } catch(const Failure &e) {if(message&&capacity)strncpy_s(message,capacity,e.reason,_TRUNCATE);return FAILED(e.hr)?e.hr:E_FAIL;}
  catch(...) {return E_FAIL;}
 }
@@ -922,7 +951,7 @@ extern "C" HRESULT qz_create_input_open(HANDLE parent,const wchar_t *name,DWORD 
    OBJECT_ATTRIBUTES object{};object.Length=sizeof(object);object.RootDirectory=parent;object.ObjectName=&text;object.Attributes=0x1000;
    IO_STATUS_BLOCK io{};HANDLE handle=nullptr;
    NTSTATUS status=open(&handle,access|SYNCHRONIZE,&object,&io,nullptr,0,share,FILE_OPEN,0x00200000|0x20|0x4000,nullptr,0);
-   if(status<0)return HRESULT_FROM_NT(status);
+   if(status<0) {using Convert=ULONG(WINAPI *)(NTSTATUS);auto convert=reinterpret_cast<Convert>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"RtlNtStatusToDosError"));return convert?HRESULT_FROM_WIN32(convert(status)):HRESULT_FROM_NT(status);}
    *result=handle;return S_OK;
  }catch(const Failure &e){return FAILED(e.hr)?e.hr:E_FAIL;}catch(...){return E_FAIL;}
 }

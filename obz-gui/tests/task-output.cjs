@@ -136,3 +136,22 @@ test('directory content merge shows retained metadata in both task presentations
   const html=context[name]();assert.match(html,/部分完成/);assert.match(html,/已复制 3 个文件/);assert.match(html,/附加数据未合并/);assert.ok(html.includes('C:/source/folder'));
  }
 });
+
+
+test('access-time warnings survive task cleanup without marking archive data failed',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+ for(const uncertain of [false,true]){
+  const result={outputs:['C:/out.zip'],input_atime:{applied_handles:1,unavailable_handles:0,unconfirmed_sources:uncertain?1:0,warnings:uncertain?[{source:'C:/input.txt',phase:'alternate_stream_proof'}]:[]}};
+  const state={jobs:[]};const context=vm.createContext({s:state,esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
+  vm.runInContext(source.split('\n').find(line=>line.startsWith('async function run(')),context);
+  await context.run({operation:'create'},'新建压缩文件',{silent:true});
+  assert.equal(state.jobs[0].partial,false);
+  for(const name of ['jobs','historyPage']){
+   vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'()')),context);
+   const html=context[name]();assert.match(html,/已完成/);assert.ok(!html.includes('部分完成'));
+   assert.equal(html.includes('部分文件的访问时间未能保留'),uncertain);
+   assert.equal(html.includes('C:/input.txt'),uncertain);
+   assert.ok(!html.includes('读取句柄'));
+  }
+ }
+});

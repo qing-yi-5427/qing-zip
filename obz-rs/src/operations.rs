@@ -128,7 +128,7 @@ pub fn execute(r: Request) -> Result<Value, String> {
 
 /// No shell commands or arbitrary application execution are accepted here.
 pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
-    if r.options.preserve_input_atime && !matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move") {
+    if r.options.preserve_input_atime && !matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move"|"create") {
         return Err("此操作尚未覆盖输入访问时间保护，未执行操作".into());
     }
     if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
@@ -145,7 +145,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
         return Ok(OperationResponse::Listing { entries: list_archive(&r.path, &r.options)? });
     }
     #[cfg(windows)]
-    let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move") {
+    let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move"|"create") {
         let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));r.options.input_atime_report=Some(report.clone());Some(report)
     }else{None};
     let mut result=execute_json(r, restricted)?;
@@ -203,6 +203,7 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         },
         "create" => {
             let format = if r.format.is_empty() { infer_format(&r.path)? } else { r.format.as_str() };
+            if r.options.preserve_input_atime && !matches!(format,"zip"|"7z"|"sfx"){return Err("此格式尚未覆盖输入访问时间保护，未创建输出".into());}
             engine::compression_times::validate(format, &r.options)?;
             engine::compression_parameters::switches(format, &r.options)?;
             if format=="lzh" {return Ok(json!({"outputs":crate::legacy::create_lzh(&r.path,&r.inputs,&r.options)?}));}
@@ -337,12 +338,12 @@ fn base64(data: &[u8]) -> String {
     #[test]
     fn preserve_input_atime_unsupported_operations_fail_before_output_or_source_reads(){
         let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source.txt");std::fs::write(&source,b"original").unwrap();let output=temp.path().join("not-created/archive.zip");
-        for operation in ["create","list","test","extract","archive-copy","archive-export","delete","rename","hash"]{
+        for operation in ["list","test","extract","archive-copy","archive-export","delete","rename","hash"]{
             let r:Request=serde_json::from_value(json!({"operation":operation,"path":output,"dest":temp.path().join("not-created"),"inputs":[source],"options":{"preserve_input_atime":true}})).unwrap();
             let error=execute_request(r).err().unwrap();assert!(error.contains("输入访问时间保护"),"{operation}: {error}");assert!(!output.parent().unwrap().exists());assert_eq!(std::fs::read(&source).unwrap(),b"original");
         }
         let options=engine::EngineOptions{preserve_input_atime:true,..Default::default()};
-        for format in ["zip","7z","tar","gzip","iso"]{let error=engine::create(output.to_str().unwrap(),&[source.display().to_string()],format,&options).unwrap_err();assert!(error.contains("输入访问时间保护"));assert!(!output.parent().unwrap().exists());}
+        for format in ["tar","gzip","iso","lzh","zipx"]{let error=engine::create(output.to_str().unwrap(),&[source.display().to_string()],format,&options).unwrap_err();assert!(error.contains("输入访问时间保护"));assert!(!output.parent().unwrap().exists());}
         let plain=temp.path().join("ordinary.zip");engine::create(plain.to_str().unwrap(),&[source.display().to_string()],"zip",&engine::EngineOptions::default()).unwrap();assert!(plain.is_file());engine::test(plain.to_str().unwrap(),&engine::EngineOptions::default()).unwrap();
     }
     #[test]

@@ -34,7 +34,7 @@ USAGE:
 Options: --method NAME, --encryption NAME, --dictionary-bytes N,
   --solid / --no-solid, --header-encryption / --no-header-encryption,
   --store-mtime / --no-store-mtime, --store-ctime / --no-store-ctime,
-  --store-atime / --no-store-atime, --archive-time default|latest,
+  --store-atime / --no-store-atime, --archive-time default|latest, --preserve-input-atime,
   --password-stdin, --password-id ID, --level N (method-dependent), --threads N,
          --volume BYTES, --codepage N, --overwrite error|skip|rename|overwrite,
          --store, --include ENTRY (repeatable); -- ends option parsing.
@@ -275,6 +275,7 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
                 "--no-store-mtime" => r.options.store_mtime=Some(false),
                 "--store-ctime" => r.options.store_ctime=Some(true),
                 "--no-store-ctime" => r.options.store_ctime=Some(false),
+                "--preserve-input-atime" => r.options.preserve_input_atime=true,
                 "--store-atime" => r.options.store_atime=Some(true),
                 "--no-store-atime" => r.options.store_atime=Some(false),
                 "--smart" => r.smart=true,

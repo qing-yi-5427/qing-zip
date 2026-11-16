@@ -12,13 +12,16 @@ extern "C" {
     fn qz_create_input_open(parent:Handle,name:*const u16,access:u32,share:u32,result:*mut Handle)->i32;
     fn qz_create_input_names(directory:Handle,restart:u32,names:*mut u8,capacity:u32,used:*mut u32)->i32;
 }
-fn open_child(parent:&File,name:&std::ffi::OsStr,access:u32,share:u32)->Result<File,String>{
+fn open_child_io(parent:&File,name:&std::ffi::OsStr,access:u32,share:u32)->std::io::Result<File>{
     use std::os::windows::{ffi::OsStrExt,io::FromRawHandle};
     let name=name.encode_wide().chain(Some(0)).collect::<Vec<_>>();let mut handle=std::ptr::null_mut();
     let hr=unsafe{qz_create_input_open(parent.as_raw_handle(),name.as_ptr(),access,share,&mut handle)};
-    if hr<0{return Err(format!("relative source open failed: {hr:#x}"));}
-    if handle.is_null(){return Err("relative source handle missing".into());}
+    if hr<0 {return Err(if (hr as u32)&0xffff0000==0x80070000 {std::io::Error::from_raw_os_error(hr&0xffff)}else{std::io::Error::other(format!("relative source open failed: {hr:#x}"))});}
+    if handle.is_null(){return Err(std::io::Error::other("relative source handle missing"));}
     Ok(unsafe{File::from_raw_handle(handle)})
+}
+fn open_child(parent:&File,name:&std::ffi::OsStr,access:u32,share:u32)->Result<File,String>{
+    open_child_io(parent,name,access,share).map_err(|e|e.to_string())
 }
 fn each_name(directory:&File,ctl:&JobControl,mut visit:impl FnMut(OsString)->Result<(),String>)->Result<(),String>{
     use std::os::windows::ffi::OsStringExt;
@@ -55,10 +58,18 @@ fn digest(file:&File,ctl:&JobControl)->Result<[u8;32],String>{
 }
 impl Snapshot {
     pub(super) fn capture(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl)->Result<Self,String>{
+        Self::capture_reported(path,relative,source,metadata,ctl,None)
+    }
+    fn capture_reported(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<Self,String>{
+        let mut uncertain=None;
+        let proof=if metadata.file_attributes()&0x4000!=0 {
+            uncertain=Some(crate::source_access::Phase::EncryptedSourceProof);file_workspace_efs::archive_input_digest(source,ctl)?
+        }else{file_workspace::streams_observed(source,None,ctl,Some(&mut ||{uncertain=Some(crate::source_access::Phase::AlternateStreamProof);}))?};
+        if let (Some(report),Some(phase))=(report,uncertain){report.lock().unwrap_or_else(|e|e.into_inner()).record_unconfirmed(path,phase);}
         if PhaseTimer::enabled() && relative.components().count()==1 {eprintln!("OA_TIME_CAPTURE atime={}",metadata.last_access_time());}
         // Metadata was obtained before streams or any child-name resolution.
         Ok(Self{path:path.to_owned(),relative:relative.to_owned(),source:source.try_clone().map_err(|e|e.to_string())?,
-            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:digest(source,ctl)?,children:Vec::new()})
+            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:proof,children:Vec::new()})
     }
     fn verify(&self,ctl:&JobControl)->Result<(),String>{
         ctl.check()?;let now=self.source.metadata().map_err(|e|e.to_string())?;
@@ -87,12 +98,13 @@ impl Prepared {
     pub(super) fn root_handles(&self)->impl Iterator<Item=(&Path,&File)> {
         self.root_indices.iter().map(|&i| (self.snapshots[i].path.as_path(),&self.snapshots[i].source))
     }
-    pub(super) fn snapshot_manifest(&self)->Result<Vec<u8>,String>{
+    pub(super) fn snapshot_manifest(&self,readers:Option<&[u64]>)->Result<Vec<u8>,String>{
         use std::os::windows::ffi::OsStrExt;
         let mut out=Vec::new();
         out.extend_from_slice(&u32::try_from(self.snapshots.len()).map_err(|_|"too many snapshot entries")?.to_le_bytes());
         let mut seen=HashSet::new();
-        for s in &self.snapshots {
+        if readers.is_some_and(|v|v.len()!=self.snapshots.len()){return Err("reader manifest count mismatch".into());}
+        for (index,s) in self.snapshots.iter().enumerate() {
             if !seen.insert(s.relative.clone()) {return Err("duplicate input projection".into());}
             let units=s.relative.as_os_str().encode_wide().collect::<Vec<_>>();
             if units.is_empty() || units.len()>32767 {return Err("snapshot path too long".into());}
@@ -107,9 +119,13 @@ impl Prepared {
             out.extend_from_slice(&s.metadata.file_attributes().to_le_bytes());
             out.extend_from_slice(&s.metadata.creation_time().to_le_bytes());
             out.extend_from_slice(&s.metadata.last_write_time().to_le_bytes());
+            if let Some(readers)=readers {out.extend_from_slice(&readers[index].to_le_bytes());}
             if out.len()>64*1024*1024 {return Err("timestamp manifest exceeds bounded worker message budget".into());}
         }
         Ok(out)
+    }
+    pub(super) fn readers(&self)->impl Iterator<Item=Option<&File>> {
+        self.snapshots.iter().map(|s|(!s.metadata.is_dir()).then_some(&s.source))
     }
     pub(super) fn trace_root(&self,_label:&str)->Result<(),String>{Ok(())}
     pub(super) fn verify(&self,ctl:&JobControl)->Result<(),String>{
@@ -122,7 +138,7 @@ impl Prepared {
         Ok(())
     }
 }
-pub(super) fn prepare(paths:&[PathBuf],parent:&Path,_opts:&EngineOptions,ctl:&JobControl)->Result<Prepared,String>{
+pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&JobControl)->Result<Prepared,String>{
     use std::os::windows::ffi::OsStrExt;
     ctl.check()?;reject_output_in_inputs(parent,paths)?;
     let mut ancestors:Vec<File>=Vec::new();let mut held=std::collections::HashMap::new();
@@ -153,10 +169,18 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,_opts:&EngineOptions,ctl:&Jo
             ctl.check()?;
             budget=budget.checked_add((path.as_os_str().encode_wide().count()+relative.as_os_str().encode_wide().count())*2+256).ok_or("source pin budget overflow")?;
             if budget>64*1024*1024{return Err("source pin metadata budget exceeded".into());}
-            let file=open_child(&parent_pin,path.file_name().ok_or("missing source leaf")?,0x80000000,1)?;
+            let name=path.file_name().ok_or("missing source leaf")?;
+            // Apply suppression before the first full-stream proof read. Only
+            // parent owns WRITE_ATTRIBUTES; the child receives a read-only dup.
+            let opened=crate::source_access::open_with(0x80000000,opts.preserve_input_atime,
+                |access|open_child_io(&parent_pin,name,access,1)).map_err(|e|e.to_string())?;
+            let file=opened.file;
             let metadata=crate::private_stage::checked_metadata(&file)?;
             if metadata.file_attributes()&0x400!=0 || (!metadata.is_dir()&&!metadata.is_file()){return Err("linked or special create input rejected".into());}
-            let mut snapshot=Snapshot::capture(&path,&relative,&file,&metadata,ctl)?;
+            if !metadata.is_dir() {
+                if let Some(report)=&opts.input_atime_report {report.lock().unwrap_or_else(|e|e.into_inner()).record(&path,opened.preservation);}
+            }
+            let mut snapshot=Snapshot::capture_reported(&path,&relative,&file,&metadata,ctl,if opts.preserve_input_atime{opts.input_atime_report.as_ref()}else{None})?;
             // A physical file may legitimately appear at several logical paths
             // (overlapping input roots or hardlinks). Keep its first time snapshot.
             snapshot.logical_time=*first_times.entry(snapshot.identity).or_insert(snapshot.logical_time);
@@ -172,7 +196,7 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,_opts:&EngineOptions,ctl:&Jo
         }
     }
     let ready=Prepared{snapshots,ancestors,root_indices,roots:paths.to_vec()};
-    ready.snapshot_manifest()?;ready.verify(ctl)?;Ok(ready)
+    ready.snapshot_manifest(None)?;ready.verify(ctl)?;Ok(ready)
 }
 
 #[cfg(test)]
