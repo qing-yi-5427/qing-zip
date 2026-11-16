@@ -161,6 +161,8 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         #[cfg(windows)]
         "fs-list" => Ok(serde_json::to_value(engine::file_workspace::browse(&r.path)?).map_err(|e|e.to_string())?),
         #[cfg(windows)]
+        "fs-create-file" | "fs-create-directory" => Ok(serde_json::to_value(engine::file_workspace::create_item(&r.path,&r.name,r.operation=="fs-create-directory",&r.options)?).map_err(|e|e.to_string())?),
+        #[cfg(windows)]
         "fs-copy" | "fs-move" => Ok(serde_json::to_value(engine::file_workspace::transfer(&r.inputs, &r.dest, r.operation == "fs-move", &r.options)?).map_err(|e|e.to_string())?),
         "capabilities" => {
             if restricted {

@@ -1,6 +1,9 @@
 //! Local dual-location tasks. Sources remain pinned until verified copies are
 //! published. Moves use atomic no-replace renames; copy fallbacks retain sources.
 use super::*;
+#[path = "file_workspace_create.rs"]
+mod create;
+pub use create::create_item;
 use sha2::{Digest, Sha256};
 #[path = "file_workspace_preserved.rs"]
 mod preserved;
