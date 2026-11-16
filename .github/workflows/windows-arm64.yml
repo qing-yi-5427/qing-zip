@@ -83,12 +83,12 @@ jobs:
       - name: Native read-only ADS metadata regressions
         shell: pwsh
         run: |
-          $listed = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::file_workspace_streams::tests -- --list | Out-String)
+          $listed = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::file_workspace::stream_inventory::tests -- --list | Out-String)
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           foreach ($test in 'parser_rejects_malformed_and_unbounded_records','metadata_only_inventory_covers_file_directory_empty_unicode_and_releases_pins','rejects_stream_paths_namespaces_and_reparse_without_disrupting_writers','attributes_permission_is_required_but_payload_read_permission_is_not') {
             if (!$listed.Contains($test)) { throw "missing native ADS regression: $test" }
           }
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::file_workspace_streams::tests -- --nocapture
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::file_workspace::stream_inventory::tests -- --nocapture
           exit $LASTEXITCODE
       - name: Check native ARM64 ZIP creation and real file symbolic links
         shell: pwsh
