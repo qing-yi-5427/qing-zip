@@ -182,6 +182,7 @@ pub fn create_lzh(
     inputs: &[String],
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
+    engine::compression_times::validate("lzh", opts)?;
     let _policy = crate::machine_policy::native("legacy archive adapter")?;
     guarded(|| {
         check(opts)?;

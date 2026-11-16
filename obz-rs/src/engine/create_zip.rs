@@ -1,6 +1,8 @@
 use super::*;
 
 extern "C" {
+    fn qz_create_timed(runtime:*const u16,owner:Handle,root:Handle,name:*const u16,output:Handle,
+        level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
     pub(super) fn qing_spawn_create_worker(
         exe: *const u16,
         process: *mut Handle,
@@ -273,7 +275,7 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
             source_guards.held.remove(&p);
         }
     }
-    let result = encode.and_then(|encoded| {
+    let result = encode.and_then(|(encoded, latest)| {
         ctl.check()?;
         policy.unchanged()?;
         if !encoded {
@@ -282,6 +284,7 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
         guards.check_prepared(parent)?;
         reject_output_in_inputs(parent, &inputs)?;
         output.file().sync_all().map_err(|e| e.to_string())?;
+        if let Some(value)=latest {output.set_modified_filetime(value)?;}
         ctl.check()?;
         policy.unchanged()?;
         output.publish(target.file_name().ok_or("missing output name")?, || {
@@ -307,17 +310,21 @@ const CREATE_HELLO: u8 = 49;
 const CREATE_CHALLENGE: u8 = 50;
 const CREATE_ACK: u8 = 51;
 const CREATE_VERSION: u32 = 1;
-const CREATE_CAPABILITIES: u32 = 3; // ZIP + single-volume LZMA2 7z
+const CREATE_CAPABILITIES: u32 = 7; // ZIP + single-volume LZMA2 7z + typed TIMES
+const CREATE_TIMES: u32 = 4;
 
 struct CreateSession {
     // Drop/reap the child before releasing its pinned executable image.
     session: Session,
     _image: Option<crate::engine_stream::PinnedSource>,
 }
-fn check_create_hello(kind: u8, body: &[u8]) -> Result<(), String> {
-    let expected = [CREATE_VERSION.to_le_bytes(), CREATE_CAPABILITIES.to_le_bytes()].concat();
-    if kind != CREATE_HELLO || body != expected { return Err("incompatible create helper handshake".into()); }
-    Ok(())
+fn check_create_hello(kind: u8, body: &[u8]) -> Result<u32, String> {
+    if kind != CREATE_HELLO || body.len()!=8 || body[..4]!=CREATE_VERSION.to_le_bytes() {
+        return Err("incompatible create helper handshake".into());
+    }
+    let capabilities=u32::from_le_bytes(body[4..].try_into().unwrap());
+    if !matches!(capabilities,3|7) {return Err("incompatible create helper capabilities".into());}
+    Ok(capabilities)
 }
 fn check_create_ack(kind: u8, body: &[u8], nonce: &[u8; 16]) -> Result<(), String> {
     if kind != CREATE_ACK || body != nonce { return Err("create helper response identity mismatch".into()); }
@@ -346,7 +353,7 @@ fn legacy_create_exit(session: &Session, ctl: &JobControl) -> Result<(), String>
         thread::sleep(Duration::from_millis(1));
     }
 }
-fn create_session(exe: &Path, ctl: &JobControl) -> Result<CreateSession, String> {
+fn create_session(exe: &Path, ctl: &JobControl, need_times: bool) -> Result<CreateSession, String> {
     let helper = exe.with_file_name("obz-worker.exe");
     match fs::symlink_metadata(&helper) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -362,7 +369,14 @@ fn create_session(exe: &Path, ctl: &JobControl) -> Result<CreateSession, String>
                     drop(session);
                 }
                 Some((kind, body)) => {
-                    check_create_hello(kind, &body)?;
+                    let capabilities=check_create_hello(kind, &body)?;
+                    if need_times && capabilities & CREATE_TIMES == 0 {
+                        // Recognized legacy protocol, but no TIMES capability. No
+                        // nonce or privileged source/output handles were granted.
+                        drop(session);
+                        drop(image);
+                        return Ok(CreateSession {session:Session::start(exe,true)?,_image:None});
+                    }
                     let mut nonce = [0u8;16];
                     if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
                         return Err("create helper nonce failed".into());
@@ -403,10 +417,12 @@ fn encode(
     seven: bool,
     opts: &EngineOptions,
     ctl: &JobControl,
-) -> Result<bool, String> {
-    let mut prepared = create_session(exe, ctl)?;
+) -> Result<(bool, Option<u64>), String> {
+    let times=compression_times::native_flags(opts);
+    let mut prepared = create_session(exe, ctl, times!=0)?;
     let session = &mut prepared.session;
     let mut data = Vec::new();
+    if times!=0 {data.extend_from_slice(&u32::from(seven).to_le_bytes());}
     for (handle, access) in [
         (unsafe { GetCurrentProcess() }, 0x100000),
         (root.as_raw_handle(), 0x100081),
@@ -422,8 +438,10 @@ fn encode(
         data.extend_from_slice(&(opts.dictionary_bytes.unwrap_or(0) as u32).to_le_bytes());
         data.extend_from_slice(&opts.solid.map(|s|u32::from(s)+1).unwrap_or(0).to_le_bytes());
     }
-    session.send(if seven {48} else {42}, data, ctl)?;
+    if times!=0 {data.extend_from_slice(&times.to_le_bytes());}
+    session.send(if times!=0 {52}else if seven {48} else {42}, data, ctl)?;
     let mut began = false;
+    let mut latest=None;
     let encoded = loop {
         let (kind, body) = session
             .next(ctl)?
@@ -439,6 +457,7 @@ fn encode(
             (46, [percent]) if began && *percent <= 99 => {
                 ctl.set("compressing", Some(*percent), "Creating archive")
             }
+            (53, value) if began && times&64!=0 && latest.is_none() && value.len()==8 => { latest=Some(u64::from_le_bytes(value.try_into().unwrap())); }
             (41, []) if !began => break false,
             (43, []) if began => break true,
             (43, msg) if !msg.is_empty() => return Err(String::from_utf8_lossy(msg).into_owned()),
@@ -459,17 +478,19 @@ fn encode(
             }
         }
     }
-    Ok(encoded)
+    if encoded && (times&64!=0)!=latest.is_some() {return Err("missing archive timestamp receipt".into());}
+    Ok((encoded,latest))
 }
 
-fn run_worker() -> Result<bool, String> {
+fn run_worker() -> Result<(bool, Option<u64>), String> {
     let runtime = runtime_dir()?.ok_or("missing ZIP runtime")?;
     let runtime: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
     let (kind, bytes) = read_frame(&mut std::io::stdin().lock(), 1024)?.ok_or("no ZIP request")?;
-    if kind != 42 && kind != 48 {
+    if kind != 42 && kind != 48 && kind != 52 {
         return Err("invalid ZIP request".into());
     }
     let mut frame = Fields(&bytes);
+    let seven=if kind==52 {frame.bit()?}else{kind==48};
     let owner = frame.u64()? as usize as Handle;
     let root = frame.u64()? as usize as Handle;
     let output = frame.u64()? as usize as Handle;
@@ -477,12 +498,16 @@ fn run_worker() -> Result<bool, String> {
     let level = frame.u32()?;
     let threads = frame.u32()?;
     let explicit = frame.bit()?;
-    let (dictionary,solid) = if kind == 48 {(frame.u32()?,frame.u32()?)} else {(0,0)};
-    if kind == 48 && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
+    let (dictionary,solid) = if seven {(frame.u32()?,frame.u32()?)} else {(0,0)};
+    if seven && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
+    let times=if kind==52 {frame.u32()?}else{0};
+    if !compression_times::valid_native(times) {return Err("invalid timestamp options".into());}
     frame.end()?;
+    let mut latest=0u64;
     let mut error = [0u8; 256];
     let status = unsafe {
-        if kind == 48 { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
+        if kind==52 {qz_create_timed(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,&mut latest,error.as_mut_ptr(),error.len())}
+        else if seven { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
         else { qz_create_zip(
             runtime.as_ptr(),
             owner,
@@ -497,7 +522,7 @@ fn run_worker() -> Result<bool, String> {
         ) }
     };
     if status == 1 {
-        return Ok(false);
+        return Ok((false,None));
     }
     if status != 0 {
         let n = error.iter().position(|b| *b == 0).unwrap_or(error.len());
@@ -506,14 +531,17 @@ fn run_worker() -> Result<bool, String> {
             String::from_utf8_lossy(&error[..n])
         ));
     }
-    Ok(true)
+    Ok((true,if times&64!=0 {Some(latest)}else{None}))
 }
 
 pub fn worker() -> u8 {
     let r = run_worker();
     let err = r.as_ref().err().map(String::as_bytes).unwrap_or_default();
     let mut out = std::io::stdout().lock();
-    let unsupported = matches!(r, Ok(false));
+    let unsupported = matches!(r, Ok((false,_)));
+    if let Ok((true,Some(value)))=&r {
+        if out.write_all(&[53]).and_then(|_|out.write_all(&8u32.to_le_bytes())).and_then(|_|out.write_all(&value.to_le_bytes())).is_err(){return 2;}
+    }
     if out
         .write_all(&[if unsupported { 41 } else { 43 }])
         .and_then(|_| out.write_all(&(err.len() as u32).to_le_bytes()))

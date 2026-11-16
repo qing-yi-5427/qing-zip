@@ -582,7 +582,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr) noexcept {
   using namespace zip_create;
   bool started=false;
   try {
@@ -590,6 +590,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
         (level != UINT32_MAX && (level < 1 || level > 9)) || threads > 64 ||
         explicit_method > 1 || solid > 2 || (dictionary && (dictionary < 4096 || dictionary > (1u<<30))))
       fail("invalid ZIP request");
+    if ((times & ~127u) || (times&3)==3 || ((times>>2)&3)==3 || ((times>>4)&3)==3 || ((times&64)&&!latest)) fail("invalid timestamp request");
     if (qing_machine_policy_restricts_native())
       fail("machine policy rejects native route");
     CPINFO oem{};
@@ -610,8 +611,8 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     exact(archive->QueryInterface(IID_ISetProperties,
                                   reinterpret_cast<void **>(settings.put())),
           "ZIP options interface");
-    const wchar_t *keys[5]{};
-    PROPVARIANT props[5]{};
+    const wchar_t *keys[8]{};
+    PROPVARIANT props[8]{};
     unsigned n = 0;
     if (level != UINT32_MAX) {
       keys[n] = L"x";
@@ -645,6 +646,11 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     if (seven && solid) {
       keys[n]=L"s";props[n].vt=VT_BOOL;props[n++].boolVal=solid==2 ? VARIANT_TRUE : VARIANT_FALSE;
     }
+    const wchar_t *time_keys[]={L"tm",L"tc",L"ta"};
+    for(unsigned i=0;i<3;++i) {
+      const auto value=(times>>(i*2))&3;
+      if(value) { keys[n]=time_keys[i];props[n].vt=VT_BOOL;props[n++].boolVal=value==2?VARIANT_TRUE:VARIANT_FALSE; }
+    }
     if (n) exact(settings->SetProperties(keys, props, n), "set archive compression options");
     src.enumerate(root, name);
     // 7z stores zero-byte entries without requesting GetStream. Validate and
@@ -669,6 +675,10 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     src.live();
     if (qing_machine_policy_restricts_native())
       fail("machine policy changed");
+    if (times&64) {
+      *latest=0;
+      for (const auto &record:src.items) *latest=std::max(*latest,record.modified);
+    }
     return S_OK;
   } catch (const NotEligible &) {
     // A started encoder can never become an unsupported/fallback receipt.
@@ -693,4 +703,10 @@ extern "C" HRESULT qz_create_7z(const wchar_t *runtime, HANDLE owner, HANDLE roo
  const wchar_t *name, HANDLE output, DWORD level, DWORD threads, DWORD explicit_method,
  DWORD dictionary, DWORD solid, char *message, size_t capacity) noexcept {
  return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,true,dictionary,solid);
+}
+
+extern "C" HRESULT qz_create_timed(const wchar_t *runtime,HANDLE owner,HANDLE root,const wchar_t *name,HANDLE output,
+ DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,uint64_t *latest,char *message,size_t capacity) noexcept {
+ if(seven>1) return E_INVALIDARG;
+ return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest);
 }

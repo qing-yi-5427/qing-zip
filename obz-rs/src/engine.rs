@@ -124,9 +124,16 @@ impl UpdateMode {
     }
 }
 
+pub(crate) mod compression_times;
+pub use compression_times::ArchiveTimestamp;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
+    pub store_mtime: Option<bool>,
+    pub store_ctime: Option<bool>,
+    pub store_atime: Option<bool>,
+    pub archive_timestamp: ArchiveTimestamp,
     pub update_mode: UpdateMode,
     pub password: Option<String>,
     pub codepage: Option<u32>,
@@ -154,6 +161,8 @@ pub struct EngineOptions {
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
+            store_mtime: None, store_ctime: None, store_atime: None,
+            archive_timestamp: ArchiveTimestamp::Default,
             update_mode: UpdateMode::Add,
             password: None,
             codepage: None,
@@ -4704,6 +4713,7 @@ fn compression(args: &mut Vec<String>, format: &str, opts: &EngineOptions) -> Re
         args.push(format!("-md={bytes}b"));
     }
     args.extend(compression_parameters::switches(format, opts)?);
+    args.extend(compression_times::switches(format, opts)?);
     if opts.solid_block_bytes.is_none() {
         if let Some(solid) = opts.solid {
             args.push(format!("-ms={}", if solid { "on" } else { "off" }));
@@ -4754,6 +4764,7 @@ pub fn create(
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
     compression_parameters::switches(format, opts)?;
+    compression_times::validate(format, opts)?;
     let policy = crate::machine_policy::scope();
     if policy.restricted() && matches!(format, "zipx" | "sfx" | "iso" | "lzh") {
         return Err(format!("{format} creation uses a separate writer and is unavailable under NanaZip machine format policy"));
@@ -4849,7 +4860,7 @@ pub fn create(
     let mut result = Vec::new();
     for p in produced {
         let target = parent.join(p.file_name().unwrap());
-        publish_new(&p, &target, &ctl)?;
+        publish_new_with_time(&p, &target, &ctl, opts.archive_timestamp==ArchiveTimestamp::Latest)?;
         result.push(target.display().to_string());
     }
     ctl.set("complete", Some(100), "Archive created");
@@ -4967,6 +4978,7 @@ fn archive_import(path: &str, export: archive_export::Export, folder: &str, opts
 }
 
 fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>) -> Result<(), String> {
+    if compression_times::requested(opts) {return Err("时间保存选项仅用于新建压缩包".into());}
     let _policy = crate::machine_policy::scope();
     if workspace.is_some() && opts.update_mode != UpdateMode::Add {
         return Err("文件管理添加仅支持保留其他成员的添加模式".into());
@@ -5551,6 +5563,9 @@ fn create_libarchive(
 }
 
 fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), String> {
+    publish_new_with_time(staged,target,ctl,false)
+}
+fn publish_new_with_time(staged: &Path, target: &Path, ctl: &JobControl, preserve_time: bool) -> Result<(), String> {
     ctl.check()?;
     no_links(target)?;
     // Same-volume hard-link publication is atomic and never replaces an existing name.
@@ -5564,6 +5579,7 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
     let parent = target.parent().ok_or("output parent missing")?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     let mut source = File::open(staged).map_err(|e| e.to_string())?;
+    let modified=if preserve_time {Some(source.metadata().map_err(|e|e.to_string())?.modified().map_err(|e|e.to_string())?)}else{None};
     let mut buffer = vec![0; 1024 * 1024];
     loop {
         ctl.check()?;
@@ -5575,6 +5591,7 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
     }
     ctl.check()?;
     no_links(target)?;
+    if let Some(modified)=modified {temp.as_file().set_times(fs::FileTimes::new().set_modified(modified)).map_err(|e|e.to_string())?;}
     temp.persist_noclobber(target)
         .map_err(|e| e.error.to_string())?;
     Ok(())

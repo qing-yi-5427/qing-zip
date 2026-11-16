@@ -59,6 +59,17 @@ impl ArchiveOutput {
     pub(crate) fn file(&self) -> &File {
         self.temp.as_ref().unwrap().as_file()
     }
+    pub(crate) fn set_modified_filetime(&self, value:u64)->Result<(),String> {
+        #[link(name="kernel32")]
+        extern "system" {fn SetFileTime(file:Handle,created:*const u64,accessed:*const u64,modified:*const u64)->i32;}
+        // Reopen this owned object by handle; never widen the child's grant or
+        // reopen the public destination pathname to set metadata.
+        let metadata=output::metadata_handle(self.file(),7)?;
+        if unsafe{SetFileTime(metadata.as_raw_handle(),std::ptr::null(),std::ptr::null(),&value)}==0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
     pub(crate) fn publish(
         &mut self,
         name: &OsStr,

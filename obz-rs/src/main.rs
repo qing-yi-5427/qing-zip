@@ -33,6 +33,8 @@ USAGE:
 
 Options: --method NAME, --encryption NAME, --dictionary-bytes N,
   --solid / --no-solid, --header-encryption / --no-header-encryption,
+  --store-mtime / --no-store-mtime, --store-ctime / --no-store-ctime,
+  --store-atime / --no-store-atime, --archive-time default|latest,
   --password-stdin, --password-id ID, --level N (method-dependent), --threads N,
          --volume BYTES, --codepage N, --overwrite error|skip|rename|overwrite,
          --store, --include ENTRY (repeatable); -- ends option parsing.
@@ -269,11 +271,18 @@ fn cmd_operation(args: &[String]) -> Result<(), String> {
                 "--no-solid" => r.options.solid=Some(false),
                 "--header-encryption" => r.options.header_encryption=Some(true),
                 "--no-header-encryption" => r.options.header_encryption=Some(false),
+                "--store-mtime" => r.options.store_mtime=Some(true),
+                "--no-store-mtime" => r.options.store_mtime=Some(false),
+                "--store-ctime" => r.options.store_ctime=Some(true),
+                "--no-store-ctime" => r.options.store_ctime=Some(false),
+                "--store-atime" => r.options.store_atime=Some(true),
+                "--no-store-atime" => r.options.store_atime=Some(false),
                 "--smart" => r.smart=true,
                 "--password-stdin" => {let mut p=String::new(); std::io::stdin().read_line(&mut p).map_err(|e|e.to_string())?; r.options.password=Some(p.trim_end_matches(['\r','\n']).to_string());},
-                "--method"|"--encryption"|"--dictionary-bytes"|"--hash"|"--format"|"--password-id"|"--codepage"|"--threads"|"--level"|"--volume"|"--include"|"--overwrite"|"--name"|"--label"|"--candidates"|"--max-attempts"|"--charset"|"--min-length"|"--max-length" => {
+                "--archive-time"|"--method"|"--encryption"|"--dictionary-bytes"|"--hash"|"--format"|"--password-id"|"--codepage"|"--threads"|"--level"|"--volume"|"--include"|"--overwrite"|"--name"|"--label"|"--candidates"|"--max-attempts"|"--charset"|"--min-length"|"--max-length" => {
                     i+=1; let v=args.get(i).ok_or_else(||format!("{a} requires a value"))?;
                     match a.as_str() {
+                        "--archive-time"=>r.options.archive_timestamp=match v.as_str(){"default"=>obz_core::engine::ArchiveTimestamp::Default,"latest"=>obz_core::engine::ArchiveTimestamp::Latest,_=>return Err("archive time must be default or latest".into())},
                         "--hash"=>r.hashes.push(v.clone()),
                         "--method"=>r.options.method=Some(v.clone()),
                         "--encryption"=>r.options.encryption=Some(v.clone()),
