@@ -6,7 +6,7 @@ use std::io::Read;
     let symbolic=symbolic_data(Path::new("C:\\real")).unwrap();let mut mismatch=symbolic.clone();let start=20+u16_at(&mismatch,12).unwrap() as usize;
     for (i,word) in "C:\\fake".encode_utf16().enumerate(){mismatch[start+i*2..start+i*2+2].copy_from_slice(&word.to_le_bytes());}
     let parsed=parse(&mismatch,false).unwrap();assert_eq!(parsed.target,"C:\\real");assert_eq!(parsed.print,"C:\\fake");
-    let relative=Parsed{kind:LinkKind::SymbolicFile,target:"../old".into(),print:String::new(),relative:true};let data=replacement(&relative,"..\\相对目标").unwrap();let parsed=parse(&data,false).unwrap();assert_eq!(parsed.target,"..\\相对目标");assert!(parsed.relative);
+    let relative=Parsed{kind:LinkKind::SymbolicFile,target:"../old".into(),print:String::new(),relative:true};let data=replacement(&relative,"..\\相对目标").unwrap();let parsed=parse(&data,false).unwrap();assert_eq!(parsed.target,"..\\相对目标");assert!(parsed.relative);assert_eq!(parsed.print,"..\\相对目标");assert!(u16_at(&data,14).unwrap()>0);
     for rooted in ["\\rooted", "/rooted", "C:drive-relative"]{assert!(replacement(&relative,rooted).is_err(),"{rooted}");}
     assert!(parse(&[],false).is_err());assert!(parse(&symbolic[..19],false).is_err());
     for (pos,bytes) in [(0,0xa0000042u32.to_le_bytes().to_vec()),(4,0u16.to_le_bytes().to_vec()),(6,1u16.to_le_bytes().to_vec()),(8,1u16.to_le_bytes().to_vec()),(10,1u16.to_le_bytes().to_vec()),(12,0xfffeu16.to_le_bytes().to_vec()),(16,2u32.to_le_bytes().to_vec()),(20,0xd800u16.to_le_bytes().to_vec())]{let mut data=symbolic.clone();data[pos..pos+bytes.len()].copy_from_slice(&bytes);assert!(parse(&data,false).is_err(),"offset {pos}");}
@@ -107,4 +107,20 @@ fn require_symbolic_inspect_edit_clear_success(){
     let result=hard(&source,&parent,std::ffi::OsStr::new("foreign-alias"));println!("concurrent hardlink while reparse TxF active: {result:?}");assert!(result.is_err(),"a hardlink must not be introduced through a metadata-only source handle during edit");
  })));
  edit_link(f.path.to_str().unwrap(),&before.receipt,Some("/updated"),&opts).unwrap();assert!(!f.root.path().join("foreign-alias").exists());assert_eq!(inspect_link(f.path.to_str().unwrap(),&opts).unwrap().target,"/updated");f.check(true);
+}
+
+#[test] fn relative_reparse_buffer_is_validated_by_kernel_before_privilege_check(){
+ let root=tempfile::tempdir().unwrap();let path=root.path().join("relative-fixture");fs::write(&path,b"owned payload").unwrap();let file=raw(&path,0x100100);
+ let parsed=Parsed{kind:LinkKind::SymbolicFile,target:"..\\missing".into(),print:String::new(),relative:true};let valid=replacement(&parsed,"..\\missing").unwrap();
+ let sub_len=u16_at(&valid,10).unwrap() as usize;let mut invalid=valid[..20+sub_len].to_vec();let old_len=(invalid.len()-8) as u16;invalid[4..6].copy_from_slice(&old_len.to_le_bytes());invalid[12..16].fill(0);let old=ioctl(&file,0x900a4,&invalid,&mut []);println!("relative old zero-print layout: {old:?}");
+ let current=ioctl(&file,0x900a4,&valid,&mut []);println!("relative corrected two-name layout: {current:?}");
+ assert!(old.is_err());if let Err(error)=current{assert!(error.contains("os error 1314"),"valid format must reach privilege boundary instead of invalid-buffer rejection: {error}");}
+}
+
+#[test] fn relative_layout_offsets_lengths_flags_and_non_bmp_utf16_units(){
+ let target="..\\🌌目标";let parsed=Parsed{kind:LinkKind::SymbolicFile,target:String::new(),print:String::new(),relative:true};let data=replacement(&parsed,target).unwrap();let words=target.encode_utf16().count();let bytes=(words*2) as u16;
+ assert_eq!(u32_at(&data,0).unwrap(),0xa000000c);assert_eq!(u16_at(&data,4).unwrap() as usize+8,data.len());assert_eq!(data.len(),20+(words+1)*4);
+ assert_eq!([u16_at(&data,8).unwrap(),u16_at(&data,10).unwrap(),u16_at(&data,12).unwrap(),u16_at(&data,14).unwrap()],[0,bytes,bytes+2,bytes]);assert_eq!(u32_at(&data,16).unwrap(),1);
+ let decoded=parse(&data,false).unwrap();assert_eq!(decoded.target,target);assert_eq!(decoded.print,target);assert!(decoded.relative);
+ assert_eq!(replacement(&parsed,&"x".repeat(4090)).unwrap().len(),16384);assert!(replacement(&parsed,&"x".repeat(4091)).is_err());
 }

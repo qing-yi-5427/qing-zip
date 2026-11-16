@@ -85,10 +85,10 @@ fn replacement(parsed:&Parsed,target:&str)->Result<Vec<u8>,String>{
             if !parsed.relative{return symbolic_data(&checked_path(target)?);}
             if target.is_empty() || target.contains('\0') || Path::new(target).components().any(|c|matches!(c,Component::Prefix(_)|Component::RootDir)){return Err("请输入相对 Windows 目标路径；保持原链接的相对模式".into());}
             for name in target.split(['\\','/']).filter(|v|!v.is_empty()&&!matches!(*v,"."|"..")){checked_name(name)?;}
-            let name=target.encode_utf16().collect::<Vec<_>>();let length=12+name.len()*2;
+            let name=target.encode_utf16().collect::<Vec<_>>();let length=12+(name.len()*2+2)*2;
             if length+8>16384{return Err("符号链接目标过长".into());}
             let mut data=Vec::with_capacity(length+8);data.extend(0xa000000cu32.to_le_bytes());data.extend((length as u16).to_le_bytes());data.extend(0u16.to_le_bytes());
-            for value in [0,(name.len()*2) as u16,0,0]{data.extend(value.to_le_bytes());}data.extend(1u32.to_le_bytes());for word in name{data.extend(word.to_le_bytes());}Ok(data)
+            for value in [0,(name.len()*2) as u16,((name.len()+1)*2) as u16,(name.len()*2) as u16]{data.extend(value.to_le_bytes());}data.extend(1u32.to_le_bytes());for word in name.iter().copied().chain([0]).chain(name.iter().copied()).chain([0]){data.extend(word.to_le_bytes());}Ok(data)
         },_=>Err(invalid()),
     }
 }
