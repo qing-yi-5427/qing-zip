@@ -20,8 +20,8 @@ test('new local item binds pane, ignores transfer overwrite, then selects publis
  assert.equal(t.ws.state.panes[0].selected.size,0);assert.equal(t.ws.state.busy,false);
 });
 test('failed create keeps name and folder mode for correction',async()=>{
- const t=setup(async()=>{throw Error('exists');});t.click('new-directory',0);t.input(0,'existing');t.submit(0);await tick();
- assert.equal(t.ws.state.panes[0].creating,'directory');assert.equal(t.ws.state.panes[0].newName,'existing');assert.equal(t.errors.length,1);assert.equal(t.calls.length,0);
+ const t=setup(async()=>{throw Error('commit private output: exists (os error 183)');});t.click('new-directory',0);t.input(0,'existing');t.submit(0);await tick();
+ assert.equal(t.ws.state.panes[0].creating,'directory');assert.equal(t.ws.state.panes[0].newName,'existing');assert.equal(t.errors.length,0);assert.equal(t.ws.state.panes[0].createError,'同名项目已存在，请换一个名称。');assert.equal(t.calls.length,0);
 });
 test('a completed create cannot navigate or select in a newer pane path',async()=>{
  let done;const t=setup(()=>new Promise(r=>done=r));t.click('new-file',0);t.input(0,'新文件.txt');t.submit(0);
