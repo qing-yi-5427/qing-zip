@@ -339,6 +339,13 @@ pub(crate) struct PinnedSource {
     file: File,
     _parents: Vec<File>,
 }
+impl PinnedSource {
+    // Used only for a continuous handle-to-handle edit handoff: the caller
+    // establishes its replacement guard before releasing this leaf.
+    pub(crate) fn into_handle_parts(self) -> (File, Vec<File>) {
+        (self.file, self._parents)
+    }
+}
 impl std::ops::Deref for PinnedSource {
     type Target = File;
     fn deref(&self) -> &File {
