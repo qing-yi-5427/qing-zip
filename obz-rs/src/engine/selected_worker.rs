@@ -551,6 +551,7 @@ impl Drop for Session {
 
 #[derive(Default)]
 struct Stats {
+    reused: bool,
     decoded: u64,
     selected: u64,
     completed: u32,
@@ -650,6 +651,7 @@ fn set_times(file: &File, times: &[Option<u64>; 3]) -> Result<(), String> {
 
 #[allow(clippy::too_many_arguments)]
 fn run(
+    path: &str,
     exe: &Path,
     runtime: &Path,
     leaf: &str,
@@ -691,14 +693,24 @@ fn run(
         );
         wide(&mut request, OsStr::new(&format!("{prefix}{:03}", i + 1)))?;
     }
+    let reuse=opts.verification_reuse.as_ref().is_some_and(|p|p.matches(path,first,parts,entries,opts)
+        && opts.verification_capture.as_ref().is_some_and(|c|c.begin_reuse(p.clone(),ctl)));
     let password = opts.password.as_deref();
+    stats.reused=reuse;
     let units = password.map_or(0, |p| p.encode_utf16().count() as u32);
     request.extend_from_slice(&units.to_le_bytes());
+    request.extend_from_slice(&u32::from(reuse).to_le_bytes());
     session.send(1, request, ctl)?;
     if let Some(password) = password {
         session.send(6, SecretFrame::new(password), ctl)?;
     }
-    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested,false)
+    let result=consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested,false,reuse)?;
+    #[cfg(test)]
+    if reuse {super::verification_lease::BEFORE_REUSE_FINISH.with(|h|{if let Some(f)=h.borrow_mut().take(){f();}});}
+    if reuse && !opts.verification_reuse.as_ref().is_some_and(|p|p.matches(path,first,parts,entries,opts)) {
+        return Err("archive verification lease changed during selected extraction".into());
+    }
+    Ok(result)
 }
 #[path="verification_sink.rs"]
 mod verification_sink;
@@ -711,7 +723,7 @@ enum OutputPlan<'a> { Requested, None, Hashes(&'a mut HashSink) }
 #[allow(clippy::too_many_arguments)]
 fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&EngineOptions,
     root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,stats:&mut Stats,
-    mut initial:Frame, mut output:OutputPlan,verification:bool)->Result<bool,String> {
+    mut initial:Frame, mut output:OutputPlan,verification:bool,reuse:bool)->Result<bool,String> {
     let mut ack_writer=if matches!(&output,OutputPlan::Hashes(_)){Some(worker_ack::AckWriter::new(session)?)}else{None};
     let password = opts.password.as_deref();
     let full_bytes = entries
@@ -808,12 +820,12 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
                     && hr == 0
                     && outcome == 2
                     && count as usize == entries.len()
-                    && stats.completed == count
+                    && if reuse {stats.completed <= count && stats.completed as usize >= accepted.as_ref().unwrap().iter().filter(|m|m.chosen).count()} else {stats.completed == count}
                     && stats.item_errors == 0
                     && stats.block_errors == 0
                     && stats.code == -1
                     && open == 0
-                    && stats.decoded == full_bytes
+                    && if reuse {stats.decoded >= selected_bytes && stats.decoded <= full_bytes} else {stats.decoded == full_bytes}
                     && stats.selected == selected_bytes;
                 // A positively identified valid format feature outside the supported
                 // subset can use the original decoder only before any stage grant.
@@ -874,6 +886,7 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
 }
 
 pub(super) struct WorkerPlan<'a> {
+    path: &'a str,
     leaf: &'a str,
     exe: PathBuf,
     runtime: PathBuf,
@@ -890,7 +903,7 @@ pub(super) fn plan<'a>(path: &'a str, first: &File, parts: &[File], entries: &[E
     let Some(runtime) = runtime_dir()? else { return Ok(None); };
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = current.with_file_name("obz.exe");
-    Ok(exe.is_file().then_some(WorkerPlan { leaf, exe, runtime }))
+    Ok(exe.is_file().then_some(WorkerPlan { path, leaf, exe, runtime }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -904,17 +917,17 @@ pub(super) fn decode(
     guards: &mut CheckedDirectories,
     ctl: &JobControl,
 ) -> Result<bool, String> {
-    let WorkerPlan { leaf, exe, runtime } = plan;
+    let WorkerPlan { path, leaf, exe, runtime } = plan;
     let mut stats = Stats {
         code: -1,
         ..Default::default()
     };
     let result = run(
-        &exe, &runtime, leaf, first, parts, entries, opts, root, guards, ctl, &mut stats,
+        path, &exe, &runtime, leaf, first, parts, entries, opts, root, guards, ctl, &mut stats,
     );
     if PhaseTimer::enabled() {
-        eprintln!("OA_SELECTED_WORKER status={} volumes={} decoded={} selected={} discarded={} completed={} item_errors={} block_errors={} code={}",
-            match result { Ok(true) => "ok", Ok(false) => "ineligible", Err(_) => "error" }, parts.len()+1, stats.decoded, stats.selected,
+        eprintln!("OA_SELECTED_WORKER status={} reused={} volumes={} decoded={} selected={} discarded={} completed={} item_errors={} block_errors={} code={}",
+            match result { Ok(true) => "ok", Ok(false) => "ineligible", Err(_) => "error" }, stats.reused, parts.len()+1, stats.decoded, stats.selected,
             stats.decoded.saturating_sub(stats.selected), stats.completed, stats.item_errors, stats.block_errors, stats.code);
     }
     result
@@ -941,12 +954,20 @@ mod tests {
     }
 
     #[test]
+    fn invalid_reuse_wire_mode_exits_before_manifest_or_output_grant(){
+        let t=tempfile::tempdir().unwrap();let source=t.path().join("test.7z.001");fs::write(&source,b"test").unwrap();let source=crate::engine_stream::pin(&source).unwrap();
+        let exe=std::env::current_exe().unwrap().with_file_name("obz.exe");let runtime=runtime_dir().unwrap().unwrap();let ctl=JobControl::new();let mut session=Session::start(&exe,false).unwrap();let mut request=vec![0u8;16];
+        wide(&mut request,runtime.as_os_str()).unwrap();request.extend_from_slice(&duplicate(&session.child,unsafe{GetCurrentProcess()},0x100000).unwrap().to_le_bytes());request.extend_from_slice(&1u32.to_le_bytes());
+        request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081).unwrap().to_le_bytes());request.extend_from_slice(&4u64.to_le_bytes());wide(&mut request,OsStr::new("test.7z.001")).unwrap();request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&2u32.to_le_bytes());
+        session.send(1,request,&ctl).unwrap();assert!(session.next(&ctl).unwrap().is_none());assert_ne!(session.wait_exit(&ctl).unwrap(),0);
+    }
+    #[test]
     fn native_manifest_capacity_uses_utf16_and_total_wire_size() {
         let long = entry("a".repeat(32767));
         assert!(manifest_fits(&vec![long.clone(); 255]));
         assert!(!manifest_fits(&vec![long; 256]));
         // Each supplementary character occupies two UTF-16 code units.
-        assert!(!manifest_fits(&[entry("馃梽".repeat(16384))]));
+        assert!(!manifest_fits(&[entry("\u{1F5DC}".repeat(16384))]));
     }
 
     #[test]

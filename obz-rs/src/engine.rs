@@ -139,6 +139,9 @@ pub struct EngineOptions {
     #[cfg(windows)]
     #[serde(skip)]
     pub verification_capture: Option<verification_lease::Capture>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub verification_reuse: Option<std::sync::Arc<verification_lease::VerifiedArchive>>,
     pub store_mtime: Option<bool>,
     pub store_ctime: Option<bool>,
     pub store_atime: Option<bool>,
@@ -178,6 +181,8 @@ impl Default for EngineOptions {
         Self {
             #[cfg(windows)]
             verification_capture: None,
+            #[cfg(windows)]
+            verification_reuse: None,
             store_mtime: None, store_ctime: None, store_atime: None,
             archive_timestamp: ArchiveTimestamp::Default,
             preserve_input_atime: false,
@@ -246,7 +251,7 @@ impl JobControl {
 }
 fn known_entry_size() -> bool { true }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub size: u64,
@@ -2672,6 +2677,8 @@ impl PublicationJournal {
 #[cfg(test)]
 thread_local! { static BEFORE_VERIFIED_MEMORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)}; }
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    #[cfg(windows)]
+    let _reuse_scope=opts.verification_capture.as_ref().map(verification_lease::Capture::scope);
     let policy = crate::machine_policy::scope();
     let ctl = control(opts);
     ctl.check()?;
@@ -3150,6 +3157,8 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         restore_metadata(&path,e).map_err(|e|format!("directory metadata: {e}"))?;
     }
     #[cfg(windows)]
+    if let Some(capture)=&opts.verification_capture {capture.finish_reuse()?;}
+    #[cfg(windows)]
     output_guards.created_output_dirs.clear();
     drop(stage_guards);
     if let Some([moved, copied]) = publication_receipt {
@@ -3168,9 +3177,9 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             return Err(format!("{reason}; partial destination retained (foreign, changed, or unremovable entries): {} {examples}",dest.display()));
         }
     }
-    // Only the isolated split worker proves every member, including unselected
-    // data, before it returns true. Retain its ORIGINAL source handles only
-    // after normal output commit also succeeded. No decoder behavior changes.
+    // Full split decoding can retain its ORIGINAL pins after successful output
+    // commit. Capture suppresses issuance for a partial reuse operation: only
+    // the continuously held original full proof can authorize future reuse.
     #[cfg(windows)]
     if publication.is_ok() && split_streamed && ctl.check().is_ok() {
         if let Some(capture)=&opts.verification_capture {

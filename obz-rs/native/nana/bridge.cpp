@@ -137,6 +137,7 @@ struct Shared {
   std::atomic<uint64_t> decoded{0}, selected_bytes{0}, total{0};
   std::atomic<uint32_t> item_errors{0}, block_errors{0}, streams_open{0};
   uint32_t current = NONE;
+  bool reuse = false;
   explicit Shared(std::shared_ptr<OperationStatus> s) : operation(std::move(s)), host(operation->host) {}
   HRESULT check() const { return operation->check(); }
   void record(HRESULT hr) noexcept { operation->finish(hr); }
@@ -376,7 +377,7 @@ public:
     return state_->operation->provide_password(out);
   }
   HRESULT STDMETHODCALLTYPE SetTotal(UInt64 total) noexcept override {
-    if (total != state_->total.load()) { state_->record(E_FAIL); return E_FAIL; }
+    if (state_->reuse ? total > state_->total.load() : total != state_->total.load()) { state_->record(E_FAIL); return E_FAIL; }
     return state_->check();
   }
   HRESULT STDMETHODCALLTYPE SetCompleted(const UInt64 *) noexcept override {
@@ -390,11 +391,11 @@ public:
       exact(state_->operation->observe(20, index, mode), "trace failure");
       {
         std::lock_guard<std::mutex> lock(state_->ledger);
-        if (index >= state_->items.size() || mode != NArchive::NExtract::NAskMode::kExtract ||
+        if (index >= state_->items.size() || (mode != NArchive::NExtract::NAskMode::kExtract && !(state_->reuse && mode==NArchive::NExtract::NAskMode::kSkip && !state_->selected[index])) ||
             state_->current != NONE || state_->gotten[index]) return E_FAIL;
         state_->gotten[index] = 1; state_->current = index;
       }
-      if (state_->items[index].value.is_dir) return S_OK;
+      if (state_->items[index].value.is_dir || (state_->reuse && mode==NArchive::NExtract::NAskMode::kSkip)) return S_OK;
       bool disk = state_->selected[index] != 0;
       uint64_t token = 0;
       // Allocate before opening a host file, so allocation failure cannot leak a token.
@@ -416,7 +417,7 @@ public:
       std::lock_guard<std::mutex> lock(state_->ledger);
       uint32_t i = state_->current;
       exact(state_->operation->observe(21, i, mode), "trace failure");
-      if (mode != NArchive::NExtract::NAskMode::kExtract || i == NONE || state_->prepared[i]) return E_FAIL;
+      if (i == NONE || state_->prepared[i] || (mode != NArchive::NExtract::NAskMode::kExtract && !(state_->reuse && mode==NArchive::NExtract::NAskMode::kSkip && !state_->selected[i]))) return E_FAIL;
       state_->prepared[i] = 1; return S_OK;
     });
     state_->record(hr); return hr;
@@ -430,7 +431,7 @@ public:
       if (result != NArchive::NExtract::NOperationResult::kOK) {
         ++state_->item_errors; return E_FAIL;
       }
-      if (state_->bytes[i] != state_->items[i].value.size) return E_FAIL;
+      if ((!state_->reuse || state_->selected[i]) && state_->bytes[i] != state_->items[i].value.size) return E_FAIL;
       state_->done[i] = 1; state_->current = NONE;
       return state_->check();
     });
@@ -683,7 +684,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false, uint32_t cp_present = 0, uint32_t codepage = 0) {
+static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false, uint32_t cp_present = 0, uint32_t codepage = 0, bool reuse = false) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -752,16 +753,21 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     exact(inner->Open(joined.get(), &start, inner_callback.get()), "7z Open failed");
     }
     state = std::make_shared<Shared>(operation);
+    state->reuse=reuse;
+    if(reuse && (verification || request->reserved || units)) fail("invalid reuse configuration");
     manifest(inner.get(), *state, map.total, request->reserved, verification);
     exact(state->check(), "cancelled");
     exact(host.prepare_private_tree(host.context), "private selected directory preparation");
     Ref<IArchiveExtractCallback> callback(new ExtractCallback(state));
-    exact(inner->Extract(nullptr, UINT32_MAX, 0, callback.get()), "official all-item extraction failed");
+    std::vector<UInt32> indices;
+    if(reuse){for(UInt32 i=0;i<state->selected.size();++i)if(state->selected[i])indices.push_back(i);if(indices.empty())fail("empty reuse selection");}
+    exact(inner->Extract(reuse ? indices.data() : nullptr, reuse ? UInt32(indices.size()) : UINT32_MAX, 0, callback.get()), "official extraction failed");
     exact(state->check(), "source callback failed or cancelled");
     archive_health(inner.get());
     if (state->current != NONE || state->streams_open.load() || state->item_errors.load() || state->block_errors.load() ||
-        state->decoded.load() != state->total.load() || std::find(state->done.begin(), state->done.end(), 0) != state->done.end())
+        (!reuse && (state->decoded.load() != state->total.load() || std::find(state->done.begin(), state->done.end(), 0) != state->done.end())))
       fail("incomplete all-item completion ledger");
+    if(reuse) for(UInt32 i:indices) if(!state->done[i] || state->bytes[i]!=state->items[i].value.size) fail("incomplete selected completion ledger");
     exact(inner->Close(), "archive Close failed"); if (split.get()) exact(split->Close(), "Split Close failed");
     exact(operation->check(), "callback failed or cancelled during Close");
     if (state->streams_open.load()) fail("output streams retained after Close");
@@ -789,6 +795,10 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
   return receipt->result;
 }
 
+extern "C" HRESULT __stdcall qz_extract_selected_reusing_verified(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t reuse) {
+  if(reuse>1)return E_INVALIDARG;
+  return extract_selected_impl(request,receipt,password,units,0,false,0,0,reuse!=0);
+}
 extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
   return extract_selected_impl(request, receipt, password, units, 0);
 }

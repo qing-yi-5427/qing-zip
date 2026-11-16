@@ -120,6 +120,8 @@ HRESULT __stdcall qz_verify_single_with_threads(
 HRESULT __stdcall qz_extract_selected_with_password(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *, const wchar_t *, uint32_t);
 
+HRESULT __stdcall qz_extract_selected_reusing_verified(const struct QzSelectedRequest *, struct QzSelectedReceipt *, const wchar_t *, uint32_t, uint32_t);
+
 // Read-only ZIP listing. Property ids are stable protocol ordinals, not SDK ids.
 // No output or volume-discovery callback exists in this capability surface.
 struct QzZipListProperty {

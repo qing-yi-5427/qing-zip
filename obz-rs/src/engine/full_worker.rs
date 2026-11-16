@@ -166,7 +166,7 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
             5=> {
                 if encrypted_header && !verification {return Ok(None);}
                 let mut stats=Stats{code:-1,..Default::default()};
-                let used=consume_session(session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested,verification)?;
+                let used=consume_session(session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested,verification,false)?;
                 if used{return Err("full worker completed without manifest".into());}
                 return Ok(None);
             },
@@ -190,7 +190,7 @@ impl Pending {
     }
     fn decode_impl(mut self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,output:OutputPlan)->Result<(),String> {
         let mut stats=Stats{code:-1,..Default::default()};
-        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest),output,self.verification)?;
+        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest),output,self.verification,false)?;
         if !used {return Err("full worker declined after approved manifest".into());}
         if PhaseTimer::enabled(){eprintln!("OA_FULL_WORKER decoded={} completed={}",stats.decoded,stats.completed);}
         Ok(())

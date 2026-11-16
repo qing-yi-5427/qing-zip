@@ -1,20 +1,24 @@
 //! Bounded GUI-owned verification lifetimes; no frontend token grants trust.
 use obz_core::{engine::verification_lease::{Capture, VerifiedArchive}, operations::Request};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Default)]
-struct Registry { generation: u128, proofs: Vec<VerifiedArchive> }
+struct Registry { generation: u128, proofs: Vec<Arc<VerifiedArchive>> }
 static REGISTRY: OnceLock<Mutex<Registry>>=OnceLock::new();
 fn registry()->&'static Mutex<Registry>{REGISTRY.get_or_init(Default::default)}
 pub(crate) struct Pending { generation:u128, capture:Capture }
 pub(crate) fn prepare(request:&mut Request,recycle:bool)->Option<Pending>{
-    // First-stage invalidation includes listing/reopening and all edits. No
-    // alias spelling can preserve a proof across a mutating request.
+    // Listing is the UI's non-mutating refresh. Full metadata is still compared
+    // again before reuse; every other non-extract request revokes before work.
+    if request.operation=="list" && !recycle{return None;}
     if request.operation!="extract" || recycle {revoke();return None;}
     if request.options.selected.is_empty(){return None;}
     let capture=Capture::default();
     request.options.verification_capture=Some(capture.clone());
-    let generation=registry().lock().unwrap_or_else(|e|e.into_inner()).generation;
+    let state=registry().lock().unwrap_or_else(|e|e.into_inner());
+    let path=std::fs::canonicalize(&request.path).ok();
+    request.options.verification_reuse=state.proofs.iter().find(|p|Some(p.path())==path.as_deref()).cloned();
+    let generation=state.generation;
     Some(Pending{generation,capture})
 }
 impl Pending {
@@ -22,11 +26,11 @@ impl Pending {
         let Some(proof)=self.capture.take().filter(|_|success) else{return};
         let mut state=registry().lock().unwrap_or_else(|e|e.into_inner());
         if self.generation!=state.generation{return;}
-        state.proofs.retain(|old|old.path()!=proof.path());
+        state.proofs.retain(|old|{if old.path()==proof.path(){old.revoke();false}else{true}});
         while !state.proofs.is_empty() && (state.proofs.len()>=4 ||
-            state.proofs.iter().map(VerifiedArchive::retained_handle_count).sum::<usize>()+proof.retained_handle_count()>4096 ||
-            state.proofs.iter().map(VerifiedArchive::retained_metadata_bytes).sum::<usize>()+proof.retained_metadata_bytes()>16*1024*1024){
-            state.proofs.remove(0);
+            state.proofs.iter().map(|p|p.retained_handle_count()).sum::<usize>()+proof.retained_handle_count()>4096 ||
+            state.proofs.iter().map(|p|p.retained_metadata_bytes()).sum::<usize>()+proof.retained_metadata_bytes()>16*1024*1024){
+            state.proofs.remove(0).revoke();
         }
         state.proofs.push(proof);
     }
@@ -34,6 +38,7 @@ impl Pending {
 pub(crate) fn revoke(){
     let mut state=registry().lock().unwrap_or_else(|e|e.into_inner());
     state.generation=state.generation.checked_add(1).expect("verification generation exhausted");
+    for proof in &state.proofs {proof.revoke();}
     state.proofs.clear();
 }
 /// Revocation only; JavaScript cannot create or authorize reuse of a proof.
@@ -94,4 +99,19 @@ mod tests {
         operations::execute_request(r).unwrap();pending.finish(false);
         assert!(registry().lock().unwrap().proofs.is_empty());assert!(fs::OpenOptions::new().write(true).open(&first).is_ok());
     }
+    #[test]
+    fn consecutive_real_jobs_reuse_native_proof_without_reissuing_it(){
+        let _serial=crate::jobs::test_registry_guard();revoke();let(t,first)=fixture();
+        let mut previous=None;
+        for round in 0..2 {
+            let out=t.path().join(format!("round-{round}"));let id=crate::jobs::start_operation(request(&first,&out),None).unwrap();
+            loop {let snap=serde_json::to_value(crate::jobs::operation_status(id).unwrap()).unwrap();if snap["status"]!="running"{assert_eq!(snap["status"],"complete","{snap}");break;}std::thread::sleep(Duration::from_millis(10));}
+            crate::jobs::forget_operation(id).unwrap();assert_eq!(fs::read(out.join("payload.bin")).unwrap(),fs::read(t.path().join("payload.bin")).unwrap());
+            let current=registry().lock().unwrap().proofs[0].clone();
+            if let Some(prior)=previous {assert!(Arc::ptr_eq(&prior,&current),"reuse must retain original proof, never issue fresh evidence from partial decoding");}
+            previous=Some(current);
+        }
+        drop(previous);revoke();assert!(fs::OpenOptions::new().write(true).open(first).is_ok());
+    }
+
 }
