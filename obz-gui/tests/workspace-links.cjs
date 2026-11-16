@@ -34,3 +34,6 @@ test('archive and linked selections never launch link creation',()=>{
 test('Windows path spelling refreshes the matching destination and displays one separator',async()=>{
  const t=setup(async()=>({path:'D:/right/new'}));t.ws.state.panes[1].path='D:\\right';t.click('link');t.edit('name','new');assert.ok(t.ws.page().includes('新链接：D:\\right\\new'));t.edit('parent','D:/right');t.submit();await tick();assert.deepEqual(t.calls,['D:\\right']);
 });
+test('both panes showing the destination refresh with automatic refresh disabled',async()=>{
+ const t=setup(async()=>({path:'C:/left/new'}));t.ws.state.panes[0].autoRefresh=false;Object.assign(t.ws.state.panes[1],{path:'C:/left',autoRefresh:false});t.click('link');t.edit('name','new');t.submit();await tick();assert.deepEqual(t.calls,['C:/left','C:/left']);
+});

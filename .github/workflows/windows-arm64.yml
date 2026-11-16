@@ -90,6 +90,15 @@ jobs:
           }
           cargo test --locked --manifest-path obz-rs/Cargo.toml --lib engine::file_workspace::stream_inventory::tests -- --nocapture
           exit $LASTEXITCODE
+      - name: Require native ARM64 local file and directory symbolic-link creation
+        shell: pwsh
+        run: |
+          $test = 'engine::file_workspace::links::tests::require_symbolic_file_and_directory_success'
+          $listed = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $test -- --ignored --list | Out-String)
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (!$listed.Contains("${test}: test")) { throw "missing required symbolic-link acceptance: $test" }
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $test -- --ignored --exact --nocapture
+          exit $LASTEXITCODE
       - name: Check native ARM64 ZIP creation and real file symbolic links
         shell: pwsh
         run: |

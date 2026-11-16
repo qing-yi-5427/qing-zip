@@ -151,12 +151,12 @@ function create(ui){
   const v=state.link;if(!v||state.busy)return;
   if(!v.name||/[\\/]/.test(v.name)||v.name==='.'||v.name==='..'){v.error='请输入单个新链接名称。';render();return;}
   if(!v.parent.trim()){v.error='请选择创建文件夹。';render();return;}
-  const destination=state.panes.findIndex(p=>p.kind==='local'&&p.path.replace(/\\/g,'/').toLowerCase()===v.parent.replace(/\\/g,'/').toLowerCase());
-  const destinationToken=destination<0?null:state.panes[destination].requestId;
+  const matches=p=>p.kind==='local'&&p.path.replace(/\\/g,'/').toLowerCase()===v.parent.replace(/\\/g,'/').toLowerCase();
+  const destinations=state.panes.flatMap((p,index)=>matches(p)?[{index,requestId:p.requestId}]:[]);
   state.busy=true;v.error='';render();
   try{const result=await ui.run({operation:'fs-create-link',path:v.target,dest:v.parent,name:v.name,link_kind:v.kind,options:{overwrite:'error'}},'创建链接',{silent:true});
    if(state.link!==v)return;state.link=null;
-   if(destination>=0&&state.panes[destination].requestId===destinationToken){await refreshLocal(destination);}
+   for(const destination of destinations){const p=state.panes[destination.index];if(matches(p)&&p.requestId===destination.requestId)await refreshLocal(destination.index);}
    ui.toast?.('已创建链接：'+result.path);
   }catch(error){if(state.link===v){const message=String(error).replace(/^Error:\s*/,'');v.error=/os error (?:80|183)\b/.test(message)?'同名项目已存在，请换一个名称。':message;}else ui.error(error);}
   finally{state.busy=false;render();}

@@ -157,6 +157,8 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
             let output=child(&parent,leaf.as_os_str(),Some(kind==LinkKind::SymbolicDirectory),0x110182,1)?;
             let result=(||{
                 ioctl(&output,0x900a4,&data,&mut [])?;
+                #[cfg(test)]
+                if FAIL_SYMBOLIC_VERIFY.with(|flag|flag.replace(false)){return Err("injected symbolic verification failure".into());}
                 let mut observed=vec![0u8;16384];let size=ioctl(&output,0x900a8,&[],&mut observed)?;
                 if observed[..size]!=data{return Err("符号链接数据核验不符".into());}
                 Ok(())
@@ -172,8 +174,44 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
     Ok(CreatedLink{path:output_path.display().to_string(),target:target.display().to_string(),kind})
 }
 #[cfg(test)] thread_local!{static BEFORE_LINK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
+#[cfg(test)] thread_local!{static FAIL_SYMBOLIC_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]
+    #[ignore = "Requires an existing enabled symbolic-link privilege; native CI must run explicitly"]
+    fn require_symbolic_file_and_directory_success(){
+        let root=tempfile::tempdir().unwrap();let sources=root.path().join("sources");let destination=root.path().join("links");
+        fs::create_dir(&sources).unwrap();fs::create_dir(&destination).unwrap();
+        for directory in [false,true] {
+            let target=sources.join(if directory{"目录目标"}else{"文件目标.txt"});
+            if directory{fs::create_dir(&target).unwrap();fs::write(target.join("child.txt"),b"directory child bytes").unwrap();}
+            else{fs::write(&target,b"file target bytes").unwrap();}
+            let metadata=fs::metadata(&target).unwrap();let attrs=metadata.file_attributes();let modified=metadata.modified().unwrap();
+            let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};let name=if directory{"directory-link"}else{"file-link"};
+            // No privilege probe, alternate API result, or skip branch can turn
+            // permission denial into success in this required acceptance test.
+            let created=create_link(target.to_str().unwrap(),destination.to_str().unwrap(),name,kind,&EngineOptions::default()).expect("native CI must create both symbolic-link kinds with its existing permission");
+            let link=PathBuf::from(&created.path);let link_meta=fs::symlink_metadata(&link).unwrap();
+            assert_ne!(link_meta.file_attributes()&0x400,0);assert_eq!(link_meta.file_attributes()&0x10!=0,directory);assert_eq!(fs::read_link(&link).unwrap(),target);
+            let parent=File::options().access_mode(0x81).share_mode(3).custom_flags(0x02200000).open(&destination).unwrap();
+            let reparse=child(&parent,link.file_name().unwrap(),None,0x100080,7).unwrap();
+            let mut data=vec![0u8;16384];let length=ioctl(&reparse,0x900a8,&[],&mut data).unwrap();
+            assert_eq!(u32::from_le_bytes(data[..4].try_into().unwrap()),0xa000000c);assert_eq!(data[..length],symbolic_data(&target).unwrap());drop((reparse,parent));
+            assert_eq!(fs::read(if directory{link.join("child.txt")}else{link.clone()}).unwrap(),if directory{b"directory child bytes".as_slice()}else{b"file target bytes".as_slice()});
+            assert!(create_link(target.to_str().unwrap(),destination.to_str().unwrap(),name,kind,&EngineOptions::default()).is_err());
+            assert_eq!(fs::read_link(&link).unwrap(),target);
+            let conflict=destination.join(if directory{"directory-conflict"}else{"file-conflict"});fs::write(&conflict,b"foreign bytes").unwrap();
+            assert!(create_link(target.to_str().unwrap(),destination.to_str().unwrap(),conflict.file_name().unwrap().to_str().unwrap(),kind,&EngineOptions::default()).is_err());assert_eq!(fs::read(&conflict).unwrap(),b"foreign bytes");
+            let failing=if directory{"directory-failed"}else{"file-failed"};FAIL_SYMBOLIC_VERIFY.with(|flag|flag.set(true));
+            let error=create_link(target.to_str().unwrap(),destination.to_str().unwrap(),failing,kind,&EngineOptions::default()).unwrap_err();
+            assert!(error.contains("injected symbolic verification failure"),"{error}");assert!(fs::symlink_metadata(destination.join(failing)).is_err());
+            let after=fs::metadata(&target).unwrap();assert_eq!(after.file_attributes(),attrs);assert_eq!(after.modified().unwrap(),modified);assert_eq!(after.len(),metadata.len());
+            assert_eq!(fs::read(if directory{target.join("child.txt")}else{target.clone()}).unwrap(),if directory{b"directory child bytes".as_slice()}else{b"file target bytes".as_slice()});
+            if directory{assert_eq!(fs::read_dir(&target).unwrap().count(),1);fs::remove_dir(&link).unwrap();}else{fs::remove_file(&link).unwrap();}
+            println!("required symbolic acceptance passed: {kind:?}, native reparse tag/target/type, real target access, no-replace and owned-handle failure cleanup");
+        }
+        assert_eq!(fs::read_dir(&destination).unwrap().count(),2);
+    }
     #[test] fn hard_link_identity_and_existing_data(){
         let root=tempfile::tempdir().unwrap();let source=root.path().join("原文件.txt");fs::write(&source,b"original bytes").unwrap();
         let result=create_link(source.to_str().unwrap(),root.path().to_str().unwrap(),"新链接.txt",LinkKind::Hard,&EngineOptions::default()).unwrap();
