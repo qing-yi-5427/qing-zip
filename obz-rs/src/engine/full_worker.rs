@@ -233,6 +233,25 @@ mod tests {
             Err(std::sync::mpsc::TryRecvError::Empty)), "no request or manifest before runtime verification");
     }
     #[test]
+    fn verification_overlap_keeps_zero_capabilities_until_runtime_is_verified() {
+        for action in 0..3 {
+            let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+            let broken=temp.path().join("runtime");fs::create_dir(&broken).unwrap();fs::write(broken.join("K7Base.dll"),b"wrong runtime").unwrap();
+            let ctl=JobControl::new();let cancel=ctl.clone();
+            BEFORE_RUNTIME.with(|slot|*slot.borrow_mut()=Some(Box::new(move |session|{
+                assert_waiting_without_request(session);
+                if action==1{cancel.cancel();}if action==2{Some(broken)}else{None}
+            })));
+            let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions::default();
+            let result=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl);
+            if action!=0{let error=result.err().unwrap();assert!(error.contains(if action==1{"cancel"}else{"DLL identity mismatch"}),"{error}");}
+            else{let (entries,pending)=result.unwrap().unwrap();let stage=temp.path().join("stage");fs::create_dir(&stage).unwrap();
+                pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::None).unwrap();
+                assert_eq!(fs::read_dir(stage).unwrap().count(),0);}
+            reap_proof();
+        }
+    }
+    #[test]
     fn delayed_runtime_validation_sends_no_request_and_then_decodes() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
         BEFORE_RUNTIME.with(|slot|*slot.borrow_mut()=Some(Box::new(|session|{
