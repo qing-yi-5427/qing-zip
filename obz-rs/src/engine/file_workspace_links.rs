@@ -4,6 +4,8 @@
 use super::*;
 use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
 use std::path::{Component, Prefix};
+#[path="file_workspace_link_privilege.rs"]
+mod privilege;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all="kebab-case")]
@@ -154,16 +156,27 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
         },
         LinkKind::SymbolicFile|LinkKind::SymbolicDirectory=>{
             let data=symbolic_data(&target)?;
-            let output=child(&parent,leaf.as_os_str(),Some(kind==LinkKind::SymbolicDirectory),0x110182,1)?;
-            let result=(||{
-                ioctl(&output,0x900a4,&data,&mut [])?;
-                #[cfg(test)]
-                if FAIL_SYMBOLIC_VERIFY.with(|flag|flag.replace(false)){return Err("injected symbolic verification failure".into());}
-                let mut observed=vec![0u8;16384];let size=ioctl(&output,0x900a8,&[],&mut observed)?;
+            // Capture the caller's thread-local test hook before the helper.
+            #[cfg(test)] let fail_verify=FAIL_SYMBOLIC_VERIFY.with(|flag|flag.replace(false));
+            #[cfg(test)] let panic_verify=PANIC_SYMBOLIC_VERIFY.with(|flag|flag.replace(false));
+            // The caller retains the exact created handle across helper errors,
+            // including restore failure/panic. Cleanup never reopens a pathname.
+            let output=std::sync::Mutex::new(None::<File>);
+            let result=privilege::run(||{
+                let mut receipt=output.lock().unwrap_or_else(|poison|poison.into_inner());
+                *receipt=Some(child(&parent,leaf.as_os_str(),Some(kind==LinkKind::SymbolicDirectory),0x110182,1)?);
+                let file=receipt.as_ref().ok_or("缺少符号链接创建句柄")?;
+                ioctl(file,0x900a4,&data,&mut [])?;
+                #[cfg(test)] if panic_verify{panic!("injected symbolic helper panic");}
+                #[cfg(test)] if fail_verify{return Err("injected symbolic verification failure".into());}
+                let mut observed=vec![0u8;16384];let size=ioctl(file,0x900a8,&[],&mut observed)?;
                 if observed[..size]!=data{return Err("符号链接数据核验不符".into());}
                 Ok(())
-            })();
-            if let Err(error)=result{return match dispose_owned(&output){Ok(())=>Err(error),Err(cleanup)=>Err(format!("{error}；{cleanup}"))};}
+            });
+            let output=output.into_inner().unwrap_or_else(|poison|poison.into_inner());
+            if let Err(error)=result {return match output {
+                Some(file)=>match dispose_owned(&file){Ok(())=>Err(error),Err(cleanup)=>Err(format!("{error}；{cleanup}"))},None=>Err(error),
+            };}
         }
     }
     let (current_id,current_attrs)=directory_identity_and_attributes(&parent)
@@ -175,14 +188,17 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
 }
 #[cfg(test)] thread_local!{static BEFORE_LINK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 #[cfg(test)] thread_local!{static FAIL_SYMBOLIC_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+#[cfg(test)] thread_local!{static PANIC_SYMBOLIC_VERIFY:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 #[cfg(test)] mod tests {
     use super::*;
     #[test]
-    #[ignore = "Requires an existing enabled symbolic-link privilege; native CI must run explicitly"]
+    #[ignore = "Requires an already-held symbolic-link privilege; native CI must run explicitly"]
     fn require_symbolic_file_and_directory_success(){
+        privilege::require_existing_thread_contexts();
         let root=tempfile::tempdir().unwrap();let sources=root.path().join("sources");let destination=root.path().join("links");
         fs::create_dir(&sources).unwrap();fs::create_dir(&destination).unwrap();
         for directory in [false,true] {
+            let caller_before=privilege::snapshot();
             let target=sources.join(if directory{"目录目标"}else{"文件目标.txt"});
             if directory{fs::create_dir(&target).unwrap();fs::write(target.join("child.txt"),b"directory child bytes").unwrap();}
             else{fs::write(&target,b"file target bytes").unwrap();}
@@ -205,9 +221,17 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
             let failing=if directory{"directory-failed"}else{"file-failed"};FAIL_SYMBOLIC_VERIFY.with(|flag|flag.set(true));
             let error=create_link(target.to_str().unwrap(),destination.to_str().unwrap(),failing,kind,&EngineOptions::default()).unwrap_err();
             assert!(error.contains("injected symbolic verification failure"),"{error}");assert!(fs::symlink_metadata(destination.join(failing)).is_err());
+            for panic in [false,true] {
+                if panic{PANIC_SYMBOLIC_VERIFY.with(|flag|flag.set(true));}else{privilege::FAIL_RESTORE.with(|flag|flag.set(true));}
+                let failed=if panic{"panic-cleanup"}else{"restore-cleanup"};
+                let error=create_link(target.to_str().unwrap(),destination.to_str().unwrap(),failed,kind,&EngineOptions::default()).unwrap_err();
+                assert!(error.contains(if panic{"操作线程异常结束"}else{"injected thread identity restore failure"}),"{error}");
+                assert!(fs::symlink_metadata(destination.join(failed)).is_err());assert_eq!(privilege::snapshot(),caller_before);
+            }
             let after=fs::metadata(&target).unwrap();assert_eq!(after.file_attributes(),attrs);assert_eq!(after.modified().unwrap(),modified);assert_eq!(after.len(),metadata.len());
             assert_eq!(fs::read(if directory{target.join("child.txt")}else{target.clone()}).unwrap(),if directory{b"directory child bytes".as_slice()}else{b"file target bytes".as_slice()});
             if directory{assert_eq!(fs::read_dir(&target).unwrap().count(),1);fs::remove_dir(&link).unwrap();}else{fs::remove_file(&link).unwrap();}
+            assert_eq!(privilege::snapshot(),caller_before);
             println!("required symbolic acceptance passed: {kind:?}, native reparse tag/target/type, real target access, no-replace and owned-handle failure cleanup");
         }
         assert_eq!(fs::read_dir(&destination).unwrap().count(),2);
@@ -259,7 +283,12 @@ pub fn create_link(target:&str,parent:&str,name:&str,kind:LinkKind,opts:&EngineO
                 let entry=fs::symlink_metadata(&created.path).unwrap();assert_ne!(entry.file_attributes()&0x400,0);
                 assert_eq!(fs::read_link(&created.path).unwrap(),target);
                 if directory{fs::remove_dir(&created.path).unwrap();}else{fs::remove_file(&created.path).unwrap();}
-            }else{assert!(!root.path().join(if directory{"candidate-dir"}else{"candidate-file"}).try_exists().unwrap());}
+            }else{
+                let error=candidate.as_ref().unwrap_err();
+                assert!(error.contains("os error 1300")||error.contains("os error 1314"),"unexpected candidate failure: {error}");
+                assert_eq!(api_error,Some(Some(1314)),"official API did not report missing symbolic-link privilege");
+                assert!(!root.path().join(if directory{"candidate-dir"}else{"candidate-file"}).try_exists().unwrap());
+            }
             if api_ok {if directory{fs::remove_dir(&api).unwrap();}else{fs::remove_file(&api).unwrap();}}
             if !directory{assert_eq!(fs::read(&target).unwrap(),b"keep");}
         }
