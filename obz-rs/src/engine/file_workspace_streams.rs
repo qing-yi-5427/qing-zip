@@ -7,7 +7,7 @@ use std::path::{Component, Prefix};
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAMS: usize = 4096;
 #[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct StreamInfo { pub name: String, pub size: u64, pub allocated_size: u64 }
+pub struct StreamInfo { pub name: String, pub size: u64, pub allocated_size: u64, pub export_name: String }
 #[derive(Debug, Serialize)]
 pub struct StreamInventory { pub path: String, pub revision: String, pub streams: Vec<StreamInfo> }
 #[link(name="kernel32")]
@@ -50,7 +50,7 @@ fn parse(data: &[u8]) -> Result<Vec<StreamInfo>, String> {
             if name.is_empty() || name.chars().any(|c| matches!(c, ':' | '/' | '\\' | '\0')) {
                 return Err("无效或重复的数据流名称".into());
             }
-            result.push(StreamInfo {name:name.into(),size:size as u64,allocated_size:allocation as u64});
+            result.push(StreamInfo {name:name.into(),size:size as u64,allocated_size:allocation as u64,export_name:export::default_output_name(name)});
         }
         if next == 0 { result.sort_by(|a,b|a.name.cmp(&b.name)); return Ok(result); }
         if next % 8 != 0 || next < 24+len || next > data.len()-at { return Err("无效的数据流记录偏移".into()); }

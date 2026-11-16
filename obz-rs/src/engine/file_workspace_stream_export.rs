@@ -8,6 +8,20 @@ pub struct StreamExportItem { pub name: String, pub size: u64, pub output_name: 
 #[derive(Debug, Serialize)]
 pub struct StreamExportReport { pub destination: String, pub outputs: Vec<String>, pub summary: String }
 
+// NanaZip Get_Correct_FsFile_Name: replace invalid Windows characters and
+// trailing dots/spaces, prefix reserved device names, use '_' for dot/empty.
+// Keep our existing output-path policy's extra control/device-name protections.
+pub(super) fn default_output_name(name:&str)->String {
+    let mut result=if matches!(name,"."|".."){String::new()}else{name.chars().map(|c|if c.is_control() || "<>:\"/\\|?*".contains(c){'_'}else{c}).collect::<String>()};
+    let trimmed=result.trim_end_matches(['.',' ']).len();
+    if trimmed<result.len(){result=format!("{}{}",&result[..trimmed],"_".repeat(result[trimmed..].chars().count()));}
+    if result.is_empty(){result.push('_');}
+    let stem=result.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    let numbered=stem.strip_prefix("COM").or_else(||stem.strip_prefix("LPT")).is_some_and(|n|matches!(n,"0"|"1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9"|"¹"|"²"|"³"));
+    if matches!(stem.as_str(),"CON"|"PRN"|"AUX"|"NUL") || numbered || matches!(result.to_ascii_uppercase().as_str(),"CONIN$"|"CONOUT$"){result.insert(0,'_');}
+    result
+}
+
 fn valid_stream(name: &str) -> Result<Vec<u16>, String> {
     if name.is_empty() || name.encode_utf16().count() > 32760 || name.chars().any(|c| matches!(c, ':' | '/' | '\\' | '\0')) {
         return Err("无效的附加数据流名称".into());
@@ -154,6 +168,20 @@ thread_local! {
         let mut invalid=body.clone();invalid["stream_exports"][0]["extra"]=true.into();assert!(serde_json::from_value::<crate::operations::Request>(invalid).is_err());
         let result=crate::operations::execute(serde_json::from_value(body).unwrap()).unwrap();assert_eq!(result["outputs"].as_array().unwrap().len(),129);assert_eq!(fs::read_dir(&f.dest).unwrap().count(),129);
         for i in 0..129 {assert_eq!(fs::read(f.dest.join(format!("s{i:03}"))).unwrap(),b"");assert_eq!(fs::read(format!("{}:s{i:03}",f.source.display())).unwrap(),b"");}
+    }
+    #[test] fn native_special_stream_names_export_with_corrected_and_editable_mappings(){
+        assert_eq!(default_output_name("."),"_");assert_eq!(default_output_name(".."),"_");assert_eq!(default_output_name(""),"_");
+        for (name,expected) in [("x?.txt","x_.txt"),("end. ","end__"),("CON.txt","_CON.txt"),("COM0","_COM0"),("COM¹","_COM¹"),("CONIN$","_CONIN$")]{assert_eq!(default_output_name(name),expected);assert!(output_leaf(expected).is_ok());}
+        let f=Fixture::new(false);let names=["bad?.txt","bad*.txt","trail. ","CON"];
+        let source=File::options().write(true).share_mode(7).open(&f.source).unwrap();
+        {let mut backup=Backup{file:&source,context:std::ptr::null_mut(),writing:true};for name in names {
+            let stream=format!(":{name}:$DATA").encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();let payload=name.as_bytes();let mut header=vec![0u8;20];header[..4].copy_from_slice(&4u32.to_le_bytes());header[8..16].copy_from_slice(&(payload.len() as u64).to_le_bytes());header[16..20].copy_from_slice(&(stream.len() as u32).to_le_bytes());backup.write(&header).unwrap();backup.write(&stream).unwrap();backup.write(payload).unwrap();
+        }}drop(source);
+        let inventory=list_streams(f.source.to_str().unwrap()).unwrap();let mut items=inventory.streams.iter().filter(|s|names.contains(&s.name.as_str())).map(|s|StreamExportItem{name:s.name.clone(),size:s.size,output_name:s.export_name.clone()}).collect::<Vec<_>>();assert_eq!(items.len(),4);
+        assert!(f.run(&inventory.revision,&items,&EngineOptions::default()).unwrap_err().contains("重复"));assert_eq!(fs::read_dir(&f.dest).unwrap().count(),0);
+        items.iter_mut().find(|s|s.name=="bad*.txt").unwrap().output_name="edited.txt".into();
+        let before=f.proof();f.run(&inventory.revision,&items,&EngineOptions::default()).unwrap();assert_eq!(f.proof(),before);assert_eq!(fs::read_dir(&f.dest).unwrap().count(),4);
+        for item in items {assert!(output_leaf(&item.output_name).is_ok());assert_eq!(fs::read(f.dest.join(item.output_name)).unwrap(),item.name.as_bytes());}
     }
     #[test] fn same_size_content_changed_before_pinning_is_current_content_not_a_snapshot(){
         let f=Fixture::new(false);let (revision,items)=f.plan();let old_time=fs::metadata(&f.source).unwrap().last_write_time();

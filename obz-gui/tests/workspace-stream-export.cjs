@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
-const {create}=require('../frontend/file-workspace.js');
+const {create,localDirectoryKey}=require('../frontend/file-workspace.js');
 const tick=()=>new Promise(setImmediate);
-function setup(run,{streams=[{name:'a<.txt',size:5,allocated_size:4096},{name:'empty',size:0,allocated_size:0}],directory=false}={}){
+function setup(run,{streams=[{name:'a<.txt',size:5,allocated_size:4096,export_name:'a_.txt'},{name:'empty',size:0,allocated_size:0,export_name:'empty'}],directory=false}={}){
  const handlers={},requests=[],refreshes=[],errors=[];
  const ws=create({esc:s=>String(s).replaceAll('<','&lt;'),icon:()=>'',render(){},error:e=>errors.push(e),run:async body=>{requests.push(body);return run(body);},invoke:async(name,value)=>{
   if(name==='local_streams')return {path:value.path,revision:'identity:revision',streams};
@@ -12,7 +12,7 @@ function setup(run,{streams=[{name:'a<.txt',size:5,allocated_size:4096},{name:'e
  ws.mount({querySelector:()=>({addEventListener:(name,fn)=>handlers[name]=fn})});
  const click=action=>handlers.click({preventDefault(){},target:{closest:s=>s==='[data-fm]'?{dataset:{fm:action,pane:'0'}}:null}});
  const check=(index,checked=true)=>handlers.change({target:{dataset:{fmStreamCheck:String(index)},checked}});
- const edit=(field,value)=>handlers.input({target:{value,hasAttribute:key=>key==='data-fm-stream-'+field,closest:()=>null,dataset:{}}});
+ const edit=(field,value,index=0)=>handlers.input({target:{value,hasAttribute:key=>key==='data-fm-stream-'+field,closest:()=>null,dataset:field==='name'?{fmStreamName:String(index)}:{}}});
  const submit=()=>handlers.submit({preventDefault(){},target:{closest:s=>s==='[data-fm-stream-export]'?{}:null}});
  return {ws,handlers,requests,refreshes,errors,click,check,edit,submit};
 }
@@ -23,8 +23,21 @@ test('single stream export has editable name, opposite local destination, receip
  assert.deepEqual(t.refreshes,['D:/out']);assert.match(t.ws.page(),/已导出 1 项/);assert.equal(t.ws.state.busy,false);
 });
 test('directory ADS and multi-select export show exact output mapping and zero-length streams',async()=>{
- const t=setup(async()=>({summary:'ok'}),{directory:true});t.click('streams');await tick();t.click('streams-select-all');assert.match(t.ws.page(),/a&lt;\.txt → a&lt;\.txt/);assert.match(t.ws.page(),/empty → empty/);assert.doesNotMatch(t.ws.page(),/data-fm-stream-name/);
+ const t=setup(async()=>({summary:'ok'}),{directory:true});t.click('streams');await tick();t.click('streams-select-all');assert.match(t.ws.page(),/a&lt;\.txt → <input[^>]+value="a_\.txt"/);assert.match(t.ws.page(),/empty → <input[^>]+value="empty"/);assert.equal((t.ws.page().match(/data-fm-stream-name=/g)||[]).length,2);
  t.click('streams-pick');await tick();t.submit();await tick();assert.equal(t.requests[0].dest,'E:/chosen');assert.equal(t.requests[0].stream_exports.length,2);assert.deepEqual(t.requests[0].stream_exports[1],{name:'empty',size:0,output_name:'empty'});
+ assert.equal(t.requests[0].stream_exports[0].output_name,'a_.txt');
+});
+test('directory comparison preserves volume roots and refreshes either trailing-separator spelling',async()=>{
+ assert.equal(localDirectoryKey('C:\\'),'c:/');assert.equal(localDirectoryKey('c:////'),'c:/');assert.notEqual(localDirectoryKey('C:'),localDirectoryKey('C:/'));
+ for(const [left,right,dest] of [['C:\\','c:/','C:/'],['D:/out/','d:\\out\\','D:/out'],['D:/out','d:\\out','d:\\out\\']]){
+  const t=setup(async()=>({summary:'ok'}));t.ws.state.panes[0].path=left;t.ws.state.panes[1].path=right;t.click('streams');await tick();t.check(0);t.edit('dest',dest);t.submit();await tick();assert.deepEqual(t.refreshes,[left,right]);
+ }
+});
+test('default corrected-name collisions require edits and each mapping survives selection changes and errors',async()=>{
+ const streams=[{name:'a?.txt',size:1,allocated_size:1,export_name:'a_.txt'},{name:'a*.txt',size:2,allocated_size:2,export_name:'a_.txt'}];
+ const t=setup(async()=>{throw Error('existing output');},{streams});t.click('streams');await tick();t.click('streams-select-all');t.submit();assert.equal(t.requests.length,0);assert.match(t.ws.state.streams.exportError,/同一输出文件名/);
+ t.edit('name','second.txt',1);t.check(1,false);t.check(1,true);assert.equal(t.ws.state.streams.outputNames.get('a*.txt'),'second.txt');t.submit();await tick();assert.equal(t.requests.length,1);assert.deepEqual(t.requests[0].stream_exports.map(e=>e.output_name),['a_.txt','second.txt']);assert.equal(t.ws.state.streams.outputNames.get('a*.txt'),'second.txt');assert.match(t.ws.state.streams.exportError,/existing output/);
+ t.edit('name','A_.TXT',1);t.submit();assert.equal(t.requests.length,1);assert.match(t.ws.state.streams.exportError,/同一输出文件名/);
 });
 test('failed or cancelled partial export keeps selection and inputs and refreshes both matching panes with auto-refresh off',async()=>{
  let reject;const t=setup(()=>new Promise((_,r)=>reject=r));t.ws.state.panes[1].path='C:\\source';t.click('streams');await tick();t.click('streams-select-all');t.edit('dest','C:/source/');t.submit();t.submit();t.click('streams-close');t.click('streams-refresh');
