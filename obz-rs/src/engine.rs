@@ -4415,6 +4415,7 @@ pub fn test_with_control(path: &str, opts: &EngineOptions, ctl: &JobControl) -> 
 // encoder runs. They do not provide a snapshot across validation/encoding.
 #[cfg(windows)]
 struct SourceValidationGuards {
+    preserve_atime: bool,
     held: std::collections::HashMap<PathBuf, File>,
     limit: usize,
 }
@@ -4422,6 +4423,7 @@ struct SourceValidationGuards {
 impl SourceValidationGuards {
     fn new() -> Self {
         Self {
+            preserve_atime: false,
             held: std::collections::HashMap::new(),
             limit: 4096,
         }
@@ -4460,7 +4462,7 @@ impl SourceValidationGuards {
         // Unusual namespaces and every unpinnable branch retain the complete
         // original ancestor walk; never treat an unsuccessful pin as a cache hit.
         if attribute_query_path(path).is_none() {
-            return validate_tree(path);
+            return if self.preserve_atime {validate_tree_with_atime(path)}else{validate_tree(path)};
         }
         for parent in path
             .ancestors()
@@ -4470,7 +4472,7 @@ impl SourceValidationGuards {
             .rev()
         {
             if !self.pin_directory(parent)? {
-                return validate_tree(path);
+                return if self.preserve_atime {validate_tree_with_atime(path)}else{validate_tree(path)};
             }
         }
         self.validate_child(path)
@@ -4480,9 +4482,11 @@ impl SourceValidationGuards {
     fn validate_child(&mut self, path: &Path) -> Result<(), String> {
         let mut leaves = Vec::new();
         self.collect_checked(path, &mut leaves)?;
-        Self::validate_leaves(&leaves)
+        Self::validate_leaves_with_time(&leaves,self.preserve_atime)
     }
-    fn validate_leaves(leaves: &[PathBuf]) -> Result<(), String> {
+    #[cfg(test)]
+    fn validate_leaves(leaves: &[PathBuf]) -> Result<(), String> {Self::validate_leaves_with_time(leaves,false)}
+    fn validate_leaves_with_time(leaves: &[PathBuf],preserve_atime:bool) -> Result<(), String> {
         // Directory pins remain owned by self until every scoped worker joins.
         // Enumeration only schedules work; each leaf receives a new OS query.
         let workers = if leaves.len() >= 512 {
@@ -4502,6 +4506,7 @@ impl SourceValidationGuards {
                                 // Unlike output validation, source validation must
                                 // fail if an enumerated input has disappeared.
                                 fs::symlink_metadata(path).map_err(|e|e.to_string())?;
+                                if preserve_atime {validate_tree_with_atime(path)?;continue;}
                                 validate_tree(path)?;
                             },
                         }
@@ -4523,7 +4528,7 @@ impl SourceValidationGuards {
             None => {
                 // Unsupported namespace/query failure keeps the original walk.
                 fs::symlink_metadata(path).map_err(|e|e.to_string())?;
-                return validate_tree(path);
+                return if self.preserve_atime {validate_tree_with_atime(path)}else{validate_tree(path)};
             }
         };
         if attrs & 0x400 != 0 {
@@ -4533,7 +4538,21 @@ impl SourceValidationGuards {
             // Recheck the opened directory itself after the path metadata read:
             // an intervening replacement must not turn into a trusted reparse.
             if !self.pin_directory(path)? {
-                return validate_tree(path);
+                return if self.preserve_atime {validate_tree_with_atime(path)}else{validate_tree(path)};
+            }
+            if self.preserve_atime {
+                let pinned=self.held.get(path).ok_or("missing source directory pin")?.try_clone().map_err(|e|e.to_string())?;
+                compression_times::directory_entries(path,&pinned,|child,directory| {
+                    if directory {self.collect_checked(&child,leaves)?;} else {
+                        leaves.push(child);
+                        if leaves.len()==4096 {Self::validate_leaves_with_time(leaves,true)?;leaves.clear();}
+                    }
+                    Ok(())
+                })?;
+                // All descendants are checked before releasing their strong pin.
+                Self::validate_leaves_with_time(leaves,true)?;leaves.clear();
+                self.held.remove(path);
+                return Ok(());
             }
             for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
                 let entry = entry.map_err(|e| e.to_string())?;
@@ -4543,7 +4562,7 @@ impl SourceValidationGuards {
                     leaves.push(entry.path());
                     // Bound retained paths even for very large source trees.
                     if leaves.len() == 4096 {
-                        Self::validate_leaves(leaves)?;
+                        Self::validate_leaves_with_time(leaves,self.preserve_atime)?;
                         leaves.clear();
                     }
                 }
@@ -4578,11 +4597,14 @@ fn checked_input_roots(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
     Ok(result)
 }
 
-fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
+fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {input_paths_with_time(inputs,false)}
+fn input_paths_with_time(inputs: &[String],preserve_atime:bool) -> Result<Vec<PathBuf>, String> {
     let _timer = PhaseTimer::new("input-preflight");
     let paths = checked_input_roots(inputs)?;
     #[cfg(windows)]
     let mut source_guards = SourceValidationGuards::new();
+    #[cfg(windows)]
+    {source_guards.preserve_atime=preserve_atime;}
     for path in &paths {
         #[cfg(windows)]
         source_guards.validate(path)?;
@@ -4590,6 +4612,21 @@ fn input_paths(inputs: &[String]) -> Result<Vec<PathBuf>, String> {
         validate_tree(path)?;
     }
     Ok(paths)
+}
+#[cfg(windows)]
+fn validate_tree_with_atime(path:&Path)->Result<(),String>{
+    use std::os::windows::fs::OpenOptionsExt;
+    // Same full ancestor walk as the original non-cached fallback; no unpinned
+    // path is treated as a cache hit. Current directory remains pinned during
+    // its children and each leaf gets a fresh check.
+    no_links(path)?;
+    let meta=fs::symlink_metadata(path).map_err(|e|e.to_string())?;
+    if meta.is_dir() {
+        let pin=fs::OpenOptions::new().access_mode(0x81).share_mode(1).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
+        if directory_attributes(&pin)?&0x410!=0x10 {return Err("linked input directory rejected".into());}
+        compression_times::directory_entries(path,&pin,|child,_|validate_tree_with_atime(&child))?;
+    }
+    Ok(())
 }
 fn validate_tree(path: &Path) -> Result<(), String> {
     no_links(path)?;
@@ -4817,7 +4854,7 @@ pub fn create(
         ctl.set("complete",Some(100),"Archive created");
         return Ok(vec![absolute(out)?.display().to_string()]);
     }
-    let paths = input_paths(inputs)?;
+    let paths = input_paths_with_time(inputs,opts.store_atime==Some(true))?;
     let out = absolute(out)?;
     no_links(&out)?;
     if out.exists() {

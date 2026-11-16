@@ -170,6 +170,9 @@ pub(in crate::engine) fn try_create(
     try_create_impl(out,names,opts,ctl,false)
 }
 fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobControl, seven: bool) -> Result<bool,String> {
+    // Console preflight uses atime-suppressed enumeration. A native attempt can
+    // enumerate before declining; that would lose the original directory atime.
+    if opts.store_atime==Some(true) {return Ok(false);}
     let policy = crate::machine_policy::scope();
     ctl.check()?;
     if policy.restricted() {

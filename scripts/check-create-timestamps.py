@@ -3,7 +3,7 @@ No machine configuration changes. Not a performance benchmark.
 """
 import argparse,ctypes,hashlib,itertools,json,os,subprocess,tempfile
 from pathlib import Path
-ap=argparse.ArgumentParser();ap.add_argument('--cli',type=Path,required=True);ap.add_argument('--reference',type=Path,required=True);ap.add_argument('--old-cli',type=Path,required=True);ap.add_argument('--workspace',type=Path,required=True);a=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--cli',type=Path,required=True);ap.add_argument('--reference',type=Path,required=True);ap.add_argument('--old-cli',type=Path,required=True);ap.add_argument('--workspace',type=Path,required=True);ap.add_argument('--scope',choices=['full','without-atime'],default='full');a=ap.parse_args()
 OUT=Path(tempfile.mkdtemp(prefix='create-times-',dir=a.workspace));sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 # Bind every executable/runtime file actually used; do not infer mixed-package
 # provenance from the top-level CLI alone. Freeze manifests, when present, are
@@ -28,7 +28,7 @@ def bind_dependencies():
  for f in files:assert not (f.lstat().st_file_attributes&0x400),f
  return {str(f):sha(f) for f in sorted(files)}
 dependencies=bind_dependencies()
-report={'dependency_sha256':dependencies,'passed':False,'binaries':{k:sha(getattr(a,k)) for k in ['cli','reference','old_cli']},'script_sha256':sha(Path(__file__)),'rows':[]}
+report={'scope':a.scope,'dependency_sha256':dependencies,'passed':False,'binaries':{k:sha(getattr(a,k)) for k in ['cli','reference','old_cli']},'script_sha256':sha(Path(__file__)),'rows':[]}
 def save():(OUT/'receipt.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
 def run(cmd,input=None):
  p=subprocess.run([str(x) for x in cmd],input=input,capture_output=True,timeout=180);assert p.returncode==0,(cmd,p.returncode,p.stderr.decode(errors='replace'));return p
@@ -50,12 +50,13 @@ for count in [3,2050]:
  src=OUT/f'source-{count}';src.mkdir();(src/'空目录').mkdir()
  for i in range(count):(src/f'{i:04}.txt').write_bytes(b'' if i==0 else (f'fixed-content-{i}'*10).encode())
  expected={src.name+'/'+k:v for k,v in manifest(src).items()}
+ reset_paths=sorted(list(src.rglob('*')),key=lambda p:(p.is_dir(),-len(p.parts)))
  for fmt in ['zip','7z']:
-  for choice in [None,*itertools.product([False,True],repeat=3)]:
+  for choice in [None,*[x for x in itertools.product([False,True],repeat=3) if a.scope=='full' or not x[2]]]:
    for latest in [False,True]:
     outputs=[];tag=f'{count}-{fmt}-{choice}-{latest}'.replace(' ','')
     for tool in ['reference','candidate']+(['old'] if choice is None and not latest else []):
-     for p in src.rglob('*'):set_times(p)
+     for p in reset_paths:set_times(p)
      set_times(src,86400) # latest directory, not latest regular file
      archive=OUT/f'{tag}-{tool}.{fmt}';q=[];n=[]
      if choice is not None:
@@ -67,7 +68,7 @@ for count in [3,2050]:
      p=subprocess.run([str(x) for x in cmd],capture_output=True,timeout=180,env=env);assert p.returncode==0,p.stderr
      if tool=='candidate':
       log=p.stderr.decode(errors='replace');native='OA_CREATE_WORKER status=complete' in log
-      assert native==(count==2050),(tag,'unexpected creation route',log)
+      assert native==(count==2050 and not (choice is not None and choice[2])),(tag,'unexpected creation route',log)
      md=metadata(archive);dest=OUT/(tag+'-'+tool+'-decoded');run([a.reference,'x','-y','-o'+str(dest),'--',archive]);assert manifest(dest)==expected
      row={'case':tag,'tool':tool,'argv':list(map(str,cmd)),'metadata':md,'archive_mtime_ns':archive.stat().st_mtime_ns,'archive_sha256':sha(archive),'verified_content':True,'stderr':p.stderr.decode(errors='replace')};report['rows'].append(row);save();outputs.append(row)
     assert all(x['metadata']==outputs[0]['metadata'] for x in outputs),tag
@@ -75,10 +76,11 @@ for count in [3,2050]:
      bytool={x['tool']:x for x in outputs};assert bytool['candidate']['archive_sha256']==bytool['old']['archive_sha256'],(tag,'default archive bytes changed')
     if latest:assert all(x['archive_mtime_ns']==outputs[0]['archive_mtime_ns'] for x in outputs),tag
 # Additional console publication routes: volumes, encrypted headers, and SFX.
-for mode,fmt in [('split','zip'),('split','7z'),('encrypted','7z'),('sfx','sfx')]:
+for mode,fmt in ([('split','zip'),('split','7z'),('encrypted','7z'),('sfx','sfx')] if a.scope=='full' else []):
  src=OUT/'source-3';expected={src.name+'/'+k:v for k,v in manifest(src).items()};results=[]
+ reset_paths=sorted(list(src.rglob('*')),key=lambda p:(p.is_dir(),-len(p.parts)))
  for tool in ['reference','candidate']:
-  for p in src.rglob('*'):set_times(p)
+  for p in reset_paths:set_times(p)
   set_times(src,86400)
   directory=OUT/(mode+'-'+fmt+'-'+tool);directory.mkdir();archive=directory/('output.exe' if fmt=='sfx' else 'output.'+fmt)
   q=['--store-ctime','--store-atime','--archive-time','latest'];n=['-mtc=on','-mta=on','-stl']

@@ -29,7 +29,7 @@ for mode in ['caps3actual','new','missing','old','legacycaps','version','caps','
  if helper.exists():helper.unlink() # exact test-owned ordinary file, no recursive deletion
  if mode!='missing':shutil.copy2(NEW if mode=='new' else OLDHELPER if mode=='old' else a.caps3_helper if mode=='caps3actual' else stub,helper)
  trace=OUT/(mode+'.trace');dest=OUT/(mode+'.7z');env={**os.environ,'OPEN_ARCHIVE_PROFILE':'1','QING_CREATE_FAULT':mode,'QING_CREATE_TRACE':str(trace)}
- p=run([PKG/'obz.exe','create',dest,src,'--format','7z','--level','5','--threads','4','--store-ctime','--store-atime','--archive-time','latest'],env=env)
+ p=run([PKG/'obz.exe','create',dest,src,'--format','7z','--level','5','--threads','4','--store-ctime','--no-store-atime','--archive-time','latest'],env=env)
  expected=mode in ['caps3actual','new','missing','old','legacycaps','exit3'];err=p.stderr.decode(errors='replace');frames=trace.read_text().splitlines() if trace.exists() else []
  row={'mode':mode,'exit':p.returncode,'stderr':err,'received_frames':frames,'expected_success':expected};report['rows'].append(row);save()
  assert (p.returncode==0)==expected,row
