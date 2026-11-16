@@ -117,15 +117,32 @@ def desktop_state():
         raise RuntimeError('Display layout changed during comparison: '+str(value))
     return value
 
+def owned_tree(proc):
+    """Validate each immediate edge, never infer ownership from a PID alone."""
+    result=[];seen=set();stack=[(proc,None)]
+    while stack:
+        current,parent_created=stack.pop()
+        try:
+            if not current.is_running():continue
+            created=current.create_time();key=(current.pid,created)
+            if key in seen or (parent_created is not None and created<parent_created):continue
+            # psutil is_running checks PID reuse against this Process identity.
+            children=current.children(recursive=False)
+            if not current.is_running():continue
+            seen.add(key);result.append(current)
+            stack.extend((child,created) for child in children)
+        except (psutil.NoSuchProcess,psutil.ZombieProcess):pass
+    return result
+
 def remember(proc,owned):
-    for p in [proc,*proc.children(recursive=True)]:
-        try:owned[(p.pid,p.create_time())]=p
-        except psutil.NoSuchProcess:pass
+    for current in owned_tree(proc):
+        try:owned[(current.pid,current.create_time())]=current
+        except (psutil.NoSuchProcess,psutil.ZombieProcess):pass
 
 def snap(proc,owned):
     remember(proc,owned)
     rows = []
-    for p in [proc, *proc.children(recursive=True)]:
+    for p in owned_tree(proc):
         try:
             with p.oneshot():
                 m, cpu = p.memory_info(), p.cpu_times()
