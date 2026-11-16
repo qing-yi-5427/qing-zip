@@ -9,5 +9,6 @@ function wordRange(format,method=''){
  if(name==='ppmd')return [2,format==='zip'?16:32];
  return null;
 }
-window.qingCompression=Object.freeze({levels:compressionLevels,wordRange});
+function timeSupported(format){return ['zip','7z','sfx'].includes(format);}
+window.qingCompression=Object.freeze({levels:compressionLevels,wordRange,timeSupported});
 })();

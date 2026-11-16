@@ -126,9 +126,18 @@ impl UpdateMode {
     }
 }
 
+pub(crate) mod compression_times;
+#[cfg(windows)]
+mod create_input;
+pub use compression_times::ArchiveTimestamp;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
+    pub store_mtime: Option<bool>,
+    pub store_ctime: Option<bool>,
+    pub store_atime: Option<bool>,
+    pub archive_timestamp: ArchiveTimestamp,
     pub update_mode: UpdateMode,
     pub password: Option<String>,
     pub codepage: Option<u32>,
@@ -156,6 +165,8 @@ pub struct EngineOptions {
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {
+            store_mtime: None, store_ctime: None, store_atime: None,
+            archive_timestamp: ArchiveTimestamp::Default,
             update_mode: UpdateMode::Add,
             password: None,
             codepage: None,
@@ -1152,6 +1163,10 @@ pub(crate) fn directory_attributes(file: &File) -> Result<u32, String> {
 // Ancestors are checked root-first and file/missing leaves are never cached.
 #[derive(Default)]
 struct CheckedDirectories {
+    // Internal creation snapshots retain a known complete directory inventory.
+    // This changes storage capacity only, never private/owned qualification.
+    #[cfg(windows)]
+    archive_snapshot_pin_limit: Option<usize>,
     #[cfg(windows)]
     held: std::collections::HashMap<PathBuf, (File, bool)>,
     #[cfg(windows)]
@@ -1429,7 +1444,10 @@ impl CheckedDirectories {
                             if meta.is_dir() && in_claim && !self.owned_dirs.contains(part) {
                                 return Err(format!("foreign directory appeared in new destination: {}",part.display()));
                             }
-                            if meta.is_dir() && (self.held.len() < 4096 || in_claim) {
+                            if meta.is_dir() && self.archive_snapshot_pin_limit.is_some_and(|limit|self.held.len()>=limit) {
+                                return Err("creation snapshot directory pin budget exhausted".into());
+                            }
+                            if meta.is_dir() && (self.held.len() < self.archive_snapshot_pin_limit.unwrap_or(4096) || in_claim) {
                                 let owned = self.owned_dirs.contains(part)
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories
@@ -4708,6 +4726,7 @@ fn compression(args: &mut Vec<String>, format: &str, opts: &EngineOptions) -> Re
         args.push(format!("-md={bytes}b"));
     }
     args.extend(compression_parameters::switches(format, opts)?);
+    args.extend(compression_times::switches(format, opts)?);
     if opts.solid_block_bytes.is_none() {
         if let Some(solid) = opts.solid {
             args.push(format!("-ms={}", if solid { "on" } else { "off" }));
@@ -4758,6 +4777,7 @@ pub fn create(
     opts: &EngineOptions,
 ) -> Result<Vec<String>, String> {
     compression_parameters::switches(format, opts)?;
+    compression_times::validate(format, opts)?;
     let policy = crate::machine_policy::scope();
     if policy.restricted() && matches!(format, "zipx" | "sfx" | "iso" | "lzh") {
         return Err(format!("{format} creation uses a separate writer and is unavailable under NanaZip machine format policy"));
@@ -4810,7 +4830,8 @@ pub fn create(
         ctl.set("complete",Some(100),"Archive created");
         return Ok(vec![absolute(out)?.display().to_string()]);
     }
-    let paths = input_paths(inputs)?;
+    let original_paths = checked_input_roots(inputs)?;
+    let paths = if opts.store_atime==Some(true) {original_paths.clone()}else{input_paths(inputs)?};
     let out = absolute(out)?;
     no_links(&out)?;
     if out.exists() {
@@ -4827,14 +4848,38 @@ pub fn create(
     let staged = temp
         .path()
         .join(out.file_name().ok_or("output has no filename")?);
+    #[cfg(windows)]
+    let input_stage=if opts.store_atime==Some(true) {Some(create_input::prepare(&original_paths,parent,opts,&ctl)?)}else{None};
+    #[cfg(windows)]
+    let paths=input_stage.as_ref().map(|s|s.roots.clone()).unwrap_or(paths);
     let mut a = base("a", opts)?;
     compression(&mut a, format, opts)?;
     a.push("--".into());
     a.push(staged.display().to_string());
     a.extend(paths.iter().map(|p| p.display().to_string()));
     ctl.set("compressing", None, "Creating archive");
-    run(&a, None, opts, None)?;
+    #[cfg(windows)]
+    if let Some(stage)=&input_stage {stage.trace_root("pre_run")?;}
+    #[cfg(nana_selected_worker)]
+    if let Some(stage)=&input_stage {
+        let mut encoder_options=opts.clone();encoder_options.volume_bytes=None;
+        selected_worker::create_zip::create_from_snapshot(&staged,stage,format,&encoder_options,&ctl)?;
+    } else {run(&a,None,opts,None)?;}
+    #[cfg(not(nana_selected_worker))]
+    { if input_stage.is_some() {return Err("snapshot writer is unavailable in this build".into());} run(&a,None,opts,None)?; }
+    #[cfg(windows)]
+    if let Some(stage)=&input_stage {stage.trace_root("post_run")?;}
+    #[cfg(windows)]
+    if let Some(stage)=&input_stage {stage.verify(&ctl)?;}
     ctl.check()?;
+    #[cfg(windows)]
+    if input_stage.is_some() {
+        if let Some(bytes)=opts.volume_bytes {
+            let result=create_input::split_and_publish(&staged,&out,bytes,opts,&ctl)?;
+            ctl.set("complete",Some(100),"Archive created");
+            return Ok(result);
+        }
+    }
     let mut produced = fs::read_dir(temp.path())
         .map_err(|e| e.to_string())?
         .map(|e| e.map(|e| e.path()).map_err(|e| e.to_string()))
@@ -4853,7 +4898,7 @@ pub fn create(
     let mut result = Vec::new();
     for p in produced {
         let target = parent.join(p.file_name().unwrap());
-        publish_new(&p, &target, &ctl)?;
+        publish_new_with_time(&p, &target, &ctl, opts.archive_timestamp==ArchiveTimestamp::Latest)?;
         result.push(target.display().to_string());
     }
     ctl.set("complete", Some(100), "Archive created");
@@ -4984,6 +5029,8 @@ type ArchiveMoveReport=archive_move::Report;
 #[cfg(not(windows))]
 type ArchiveMoveReport=();
 fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>, mut move_report:Option<&mut ArchiveMoveReport>) -> Result<(), String> {
+    if compression_times::requested(opts) {return Err("时间保存选项仅用于新建压缩包".into());}
+
     let _policy = crate::machine_policy::scope();
     if workspace.is_some() && opts.update_mode != UpdateMode::Add {
         return Err("文件管理添加仅支持保留其他成员的添加模式".into());
@@ -5585,6 +5632,9 @@ fn create_libarchive(
 }
 
 fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), String> {
+    publish_new_with_time(staged,target,ctl,false)
+}
+fn publish_new_with_time(staged: &Path, target: &Path, ctl: &JobControl, preserve_time: bool) -> Result<(), String> {
     ctl.check()?;
     no_links(target)?;
     // Same-volume hard-link publication is atomic and never replaces an existing name.
@@ -5595,9 +5645,17 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
     if target.exists() {
         return Err(format!("output exists: {}", target.display()));
     }
+    publish_new_copy(staged,target,ctl,preserve_time)
+}
+// Kept separate so the copy fallback can be exercised deterministically without
+// changing volume settings or weakening the production hard-link attempt.
+fn publish_new_copy(staged:&Path,target:&Path,ctl:&JobControl,preserve_time:bool)->Result<(),String>{
+    ctl.check()?;
+    no_links(target)?;
     let parent = target.parent().ok_or("output parent missing")?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     let mut source = File::open(staged).map_err(|e| e.to_string())?;
+    let modified=if preserve_time {Some(source.metadata().map_err(|e|e.to_string())?.modified().map_err(|e|e.to_string())?)}else{None};
     let mut buffer = vec![0; 1024 * 1024];
     loop {
         ctl.check()?;
@@ -5609,6 +5667,7 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
     }
     ctl.check()?;
     no_links(target)?;
+    if let Some(modified)=modified {temp.as_file().set_times(fs::FileTimes::new().set_modified(modified)).map_err(|e|e.to_string())?;}
     temp.persist_noclobber(target)
         .map_err(|e| e.error.to_string())?;
     Ok(())
@@ -5617,6 +5676,21 @@ fn publish_new(staged: &Path, target: &Path, ctl: &JobControl) -> Result<(), Str
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn copy_publication_preserves_requested_time_and_never_replaces() {
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source");
+        fs::write(&source,b"timestamp fixture").unwrap();
+        let fixed=std::time::UNIX_EPOCH+Duration::from_secs(1_577_836_800);
+        File::options().write(true).open(&source).unwrap().set_times(fs::FileTimes::new().set_modified(fixed)).unwrap();
+        let target=root.path().join("target");let ctl=control(&EngineOptions::default());
+        publish_new_copy(&source,&target,&ctl,true).unwrap();
+        assert_eq!(fs::read(&target).unwrap(),b"timestamp fixture");
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(),fixed);
+        fs::write(&target,b"competitor").unwrap();
+        assert!(publish_new_copy(&source,&target,&ctl,true).is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"competitor");
+        assert_eq!(fs::read(&source).unwrap(),b"timestamp fixture");
+    }
     #[test]
     fn canonical_empty_zip_keeps_options_selection_and_destination_checks() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("empty.zip");

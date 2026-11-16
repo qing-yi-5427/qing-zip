@@ -1,6 +1,10 @@
 use super::*;
 
 extern "C" {
+    fn qz_create_snapshot(runtime:*const u16,owner:Handle,root:Handle,name:*const u16,output:Handle,
+        level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,snapshot:*const u8,snapshot_size:usize,output_base:u64,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
+    fn qz_create_timed(runtime:*const u16,owner:Handle,root:Handle,name:*const u16,output:Handle,
+        level:u32,threads:u32,explicit:u32,dictionary:u32,solid:u32,seven:u32,times:u32,latest:*mut u64,error:*mut u8,capacity:usize)->i32;
     pub(super) fn qing_spawn_create_worker(
         exe: *const u16,
         process: *mut Handle,
@@ -168,6 +172,9 @@ pub(in crate::engine) fn try_create(
     try_create_impl(out,names,opts,ctl,false)
 }
 fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobControl, seven: bool) -> Result<bool,String> {
+    // Explicit atime uses the immutable snapshot route. A fast-path attempt can
+    // enumerate before declining; that would lose the original directory atime.
+    if opts.store_atime==Some(true) {return Ok(false);}
     let policy = crate::machine_policy::scope();
     ctl.check()?;
     if policy.restricted() {
@@ -267,13 +274,15 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
         seven,
         opts,
         ctl,
+        None,
+        0,
     );
     for (p, overlap) in shared {
         if overlap {
             source_guards.held.remove(&p);
         }
     }
-    let result = encode.and_then(|encoded| {
+    let result = encode.and_then(|(encoded, latest)| {
         ctl.check()?;
         policy.unchanged()?;
         if !encoded {
@@ -282,6 +291,7 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
         guards.check_prepared(parent)?;
         reject_output_in_inputs(parent, &inputs)?;
         output.file().sync_all().map_err(|e| e.to_string())?;
+        if let Some(value)=latest {output.set_modified_filetime(value)?;}
         ctl.check()?;
         policy.unchanged()?;
         output.publish(target.file_name().ok_or("missing output name")?, || {
@@ -301,23 +311,84 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
     }
 }
 
+// Snapshot mode is mandatory once requested: unsupported cannot fall through
+// to a filesystem-atime encoder after the source has already been traversed.
+pub(in crate::engine) fn create_from_snapshot(target:&Path, prepared:&create_input::Prepared,
+    format:&str, opts:&EngineOptions, ctl:&JobControl)->Result<(),String>{
+    if !matches!(format,"zip"|"7z"|"sfx") || opts.volume_bytes.is_some() {
+        return Err("snapshot volume publication is not yet implemented".into());
+    }
+    let mut switches=base("a",opts)?;compression(&mut switches,format,opts)?;
+    let properties=switches.iter().filter_map(|s|s.strip_prefix("-m")).map(|s|s.split_once('=').ok_or("invalid compression property")).collect::<Result<Vec<_>,_>>()?;
+    let mut manifest=Vec::new();manifest.extend_from_slice(&(properties.len() as u32).to_le_bytes());
+    for (key,value) in properties {wide(&mut manifest,OsStr::new(key))?;wide(&mut manifest,OsStr::new(value))?;}
+    manifest.extend_from_slice(&u32::from(opts.password.is_some()).to_le_bytes());
+    if let Some(password)=&opts.password {wide(&mut manifest,OsStr::new(password))?;}
+    manifest.extend_from_slice(&prepared.snapshot_manifest()?);
+    let policy=crate::machine_policy::scope();
+    if policy.restricted(){return Err("machine policy rejects native snapshot writer".into());}
+    prepared.verify(ctl)?;
+    let source=File::options().access_mode(0x100081).share_mode(1).custom_flags(0x02200000)
+        .open(prepared.container()).map_err(|e|e.to_string())?;
+    no_links(target)?;
+    if target.exists(){return Err("snapshot archive already exists".into());}
+    let parent=target.parent().ok_or("output has no parent")?;
+    let mut guards=CheckedDirectories::default();guards.check(parent)?;
+    let parent_pin=File::options().access_mode(0x200a0).share_mode(3).custom_flags(0x02200000)
+        .open(parent).map_err(|e|e.to_string())?;
+    let expected=&guards.held.get(parent).ok_or("missing output parent pin")?.0;
+    if directory_identity(&parent_pin)?!=directory_identity(expected)? {return Err("output parent changed".into());}
+    let runtime=runtime_dir()?.ok_or("missing native runtime")?;
+    let _runtime=pin_runtime(&runtime,ctl)?;
+    let exe=std::env::current_exe().map_err(|e|e.to_string())?.with_file_name("obz.exe");
+    let _image=crate::engine_stream::pin(&exe)?;
+    let mut output=crate::private_stage::ArchiveOutput::try_new(parent,&parent_pin)?.ok_or("private snapshot output unavailable")?;
+    let result=(||{
+        let mut stub_pin=None;
+        let output_base=if format=="sfx" {
+            let mut stub=crate::engine_stream::pin(&sfx_stub()?)?;
+            let length=stub.metadata().map_err(|e|e.to_string())?.len();
+            if length==0 || length>16*1024*1024 {return Err("invalid SFX stub size".into());}
+            let mut writer=output.file().try_clone().map_err(|e|e.to_string())?;
+            let mut buffer=[0u8;64*1024];let mut copied=0u64;
+            while copied<length {ctl.check()?;let n=stub.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{return Err("SFX stub shortened".into());}writer.write_all(&buffer[..n]).map_err(|e|e.to_string())?;copied+=n as u64;}
+            if copied!=length {return Err("SFX stub changed".into());}
+            stub_pin=Some(stub);length
+        }else{0};
+        let (encoded,latest)=encode(&exe,prepared.container(),&source,output.file(),format!="zip",opts,ctl,Some(&manifest),output_base)?;
+        drop(stub_pin);
+        if !encoded {return Err("native snapshot writer declined verified input".into());}
+        prepared.verify(ctl)?;policy.unchanged()?;ctl.check()?;
+        output.file().sync_all().map_err(|e|e.to_string())?;
+        if let Some(value)=latest {output.set_modified_filetime(value)?;}
+        output.publish(target.file_name().ok_or("output name missing")?,||{guards.check_prepared(parent)?;policy.unchanged()?;ctl.check()})?;
+        if PhaseTimer::enabled(){eprintln!("OA_CREATE_SNAPSHOT status=complete");}
+        Ok(())
+    })();
+    match (result,output.cleanup()) {(Err(e),Err(c))=>Err(format!("{e}; cleanup: {c}")),(Err(e),_)=>Err(e),(_,Err(e))=>Err(e),_=>Ok(())}
+}
+
 // The optional small image negotiates before receiving ANY privileged handles.
 // Only an older image's clean unsupported-entry exit is a compatibility fallback.
 const CREATE_HELLO: u8 = 49;
 const CREATE_CHALLENGE: u8 = 50;
 const CREATE_ACK: u8 = 51;
 const CREATE_VERSION: u32 = 1;
-const CREATE_CAPABILITIES: u32 = 3; // ZIP + single-volume LZMA2 7z
+const CREATE_CAPABILITIES: u32 = 15; // ZIP + single-volume LZMA2 7z + typed TIMES + SNAPSHOT
+const CREATE_TIMES: u32 = 4;
 
 struct CreateSession {
     // Drop/reap the child before releasing its pinned executable image.
     session: Session,
     _image: Option<crate::engine_stream::PinnedSource>,
 }
-fn check_create_hello(kind: u8, body: &[u8]) -> Result<(), String> {
-    let expected = [CREATE_VERSION.to_le_bytes(), CREATE_CAPABILITIES.to_le_bytes()].concat();
-    if kind != CREATE_HELLO || body != expected { return Err("incompatible create helper handshake".into()); }
-    Ok(())
+fn check_create_hello(kind: u8, body: &[u8]) -> Result<u32, String> {
+    if kind != CREATE_HELLO || body.len()!=8 || body[..4]!=CREATE_VERSION.to_le_bytes() {
+        return Err("incompatible create helper handshake".into());
+    }
+    let capabilities=u32::from_le_bytes(body[4..].try_into().unwrap());
+    if !matches!(capabilities,3|7|15) {return Err("incompatible create helper capabilities".into());}
+    Ok(capabilities)
 }
 fn check_create_ack(kind: u8, body: &[u8], nonce: &[u8; 16]) -> Result<(), String> {
     if kind != CREATE_ACK || body != nonce { return Err("create helper response identity mismatch".into()); }
@@ -346,7 +417,7 @@ fn legacy_create_exit(session: &Session, ctl: &JobControl) -> Result<(), String>
         thread::sleep(Duration::from_millis(1));
     }
 }
-fn create_session(exe: &Path, ctl: &JobControl) -> Result<CreateSession, String> {
+fn create_session(exe: &Path, ctl: &JobControl, need_times: bool, need_snapshot: bool) -> Result<CreateSession, String> {
     let helper = exe.with_file_name("obz-worker.exe");
     match fs::symlink_metadata(&helper) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -362,7 +433,14 @@ fn create_session(exe: &Path, ctl: &JobControl) -> Result<CreateSession, String>
                     drop(session);
                 }
                 Some((kind, body)) => {
-                    check_create_hello(kind, &body)?;
+                    let capabilities=check_create_hello(kind, &body)?;
+                    if (need_times && capabilities & CREATE_TIMES == 0) || (need_snapshot && capabilities & 8 == 0) {
+                        // Recognized legacy protocol, but no TIMES capability. No
+                        // nonce or privileged source/output handles were granted.
+                        drop(session);
+                        drop(image);
+                        return Ok(CreateSession {session:Session::start(exe,true)?,_image:None});
+                    }
                     let mut nonce = [0u8;16];
                     if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
                         return Err("create helper nonce failed".into());
@@ -403,10 +481,14 @@ fn encode(
     seven: bool,
     opts: &EngineOptions,
     ctl: &JobControl,
-) -> Result<bool, String> {
-    let mut prepared = create_session(exe, ctl)?;
+    snapshot: Option<&[u8]>,
+    output_base:u64,
+) -> Result<(bool, Option<u64>), String> {
+    let times=compression_times::native_flags(opts);
+    let mut prepared = create_session(exe, ctl, times!=0, snapshot.is_some())?;
     let session = &mut prepared.session;
     let mut data = Vec::new();
+    if times!=0 || snapshot.is_some() {data.extend_from_slice(&u32::from(seven).to_le_bytes());}
     for (handle, access) in [
         (unsafe { GetCurrentProcess() }, 0x100000),
         (root.as_raw_handle(), 0x100081),
@@ -422,8 +504,11 @@ fn encode(
         data.extend_from_slice(&(opts.dictionary_bytes.unwrap_or(0) as u32).to_le_bytes());
         data.extend_from_slice(&opts.solid.map(|s|u32::from(s)+1).unwrap_or(0).to_le_bytes());
     }
-    session.send(if seven {48} else {42}, data, ctl)?;
+    if times!=0 {data.extend_from_slice(&times.to_le_bytes());}
+    if let Some(snapshot)=snapshot {data.extend_from_slice(&output_base.to_le_bytes());data.extend_from_slice(snapshot);}
+    session.send(if snapshot.is_some() {54}else if times!=0 {52}else if seven {48} else {42}, data, ctl)?;
     let mut began = false;
+    let mut latest=None;
     let encoded = loop {
         let (kind, body) = session
             .next(ctl)?
@@ -439,6 +524,7 @@ fn encode(
             (46, [percent]) if began && *percent <= 99 => {
                 ctl.set("compressing", Some(*percent), "Creating archive")
             }
+            (53, value) if began && times&64!=0 && latest.is_none() && value.len()==8 => { latest=Some(u64::from_le_bytes(value.try_into().unwrap())); }
             (41, []) if !began => break false,
             (43, []) if began => break true,
             (43, msg) if !msg.is_empty() => return Err(String::from_utf8_lossy(msg).into_owned()),
@@ -459,17 +545,19 @@ fn encode(
             }
         }
     }
-    Ok(encoded)
+    if encoded && (times&64!=0)!=latest.is_some() {return Err("missing archive timestamp receipt".into());}
+    Ok((encoded,latest))
 }
 
-fn run_worker() -> Result<bool, String> {
+fn run_worker() -> Result<(bool, Option<u64>), String> {
     let runtime = runtime_dir()?.ok_or("missing ZIP runtime")?;
     let runtime: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
-    let (kind, bytes) = read_frame(&mut std::io::stdin().lock(), 1024)?.ok_or("no ZIP request")?;
-    if kind != 42 && kind != 48 {
+    let (kind, bytes) = read_frame(&mut std::io::stdin().lock(), 64*1024*1024+1024)?.ok_or("no ZIP request")?;
+    if kind != 42 && kind != 48 && kind != 52 && kind != 54 {
         return Err("invalid ZIP request".into());
     }
     let mut frame = Fields(&bytes);
+    let seven=if kind==52 || kind==54 {frame.bit()?}else{kind==48};
     let owner = frame.u64()? as usize as Handle;
     let root = frame.u64()? as usize as Handle;
     let output = frame.u64()? as usize as Handle;
@@ -477,12 +565,19 @@ fn run_worker() -> Result<bool, String> {
     let level = frame.u32()?;
     let threads = frame.u32()?;
     let explicit = frame.bit()?;
-    let (dictionary,solid) = if kind == 48 {(frame.u32()?,frame.u32()?)} else {(0,0)};
-    if kind == 48 && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
+    let (dictionary,solid) = if seven {(frame.u32()?,frame.u32()?)} else {(0,0)};
+    if seven && (solid>2 || (dictionary!=0 && !(4096..=1024*1024*1024).contains(&dictionary))) { return Err("invalid 7z create options".into()); }
+    let times=if kind==52 || kind==54 {frame.u32()?}else{0};
+    if !compression_times::valid_native(times) {return Err("invalid timestamp options".into());}
+    let output_base=if kind==54 {frame.u64()?}else{0};
+    let snapshot=if kind==54 {let remaining=frame.0.len();frame.take(remaining)?}else{&[]};
     frame.end()?;
+    let mut latest=0u64;
     let mut error = [0u8; 256];
     let status = unsafe {
-        if kind == 48 { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
+        if kind==54 {qz_create_snapshot(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,snapshot.as_ptr(),snapshot.len(),output_base,&mut latest,error.as_mut_ptr(),error.len())}
+        else if kind==52 {qz_create_timed(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,u32::from(seven),times,&mut latest,error.as_mut_ptr(),error.len())}
+        else if seven { qz_create_7z(runtime.as_ptr(),owner,root,name.as_ptr(),output,level,threads,u32::from(explicit),dictionary,solid,error.as_mut_ptr(),error.len()) }
         else { qz_create_zip(
             runtime.as_ptr(),
             owner,
@@ -497,7 +592,7 @@ fn run_worker() -> Result<bool, String> {
         ) }
     };
     if status == 1 {
-        return Ok(false);
+        return Ok((false,None));
     }
     if status != 0 {
         let n = error.iter().position(|b| *b == 0).unwrap_or(error.len());
@@ -506,14 +601,17 @@ fn run_worker() -> Result<bool, String> {
             String::from_utf8_lossy(&error[..n])
         ));
     }
-    Ok(true)
+    Ok((true,if times&64!=0 {Some(latest)}else{None}))
 }
 
 pub fn worker() -> u8 {
     let r = run_worker();
     let err = r.as_ref().err().map(String::as_bytes).unwrap_or_default();
     let mut out = std::io::stdout().lock();
-    let unsupported = matches!(r, Ok(false));
+    let unsupported = matches!(r, Ok((false,_)));
+    if let Ok((true,Some(value)))=&r {
+        if out.write_all(&[53]).and_then(|_|out.write_all(&8u32.to_le_bytes())).and_then(|_|out.write_all(&value.to_le_bytes())).is_err(){return 2;}
+    }
     if out
         .write_all(&[if unsupported { 41 } else { 43 }])
         .and_then(|_| out.write_all(&(err.len() as u32).to_le_bytes()))
@@ -534,8 +632,15 @@ mod tests {
     use super::*;
     #[test]
     fn create_helper_identity_requires_exact_version_capabilities_and_nonce() {
+        let mut oversized=std::io::Cursor::new([50u8,1,4,0,0]);
+        assert!(read_frame(&mut oversized,1024).is_err());
+
         let hello = [1u32.to_le_bytes(), 3u32.to_le_bytes()].concat();
-        assert!(check_create_hello(CREATE_HELLO, &hello).is_ok());
+        assert_eq!(check_create_hello(CREATE_HELLO, &hello).unwrap(),3);
+        let timed=[1u32.to_le_bytes(),7u32.to_le_bytes()].concat();
+        assert_eq!(check_create_hello(CREATE_HELLO,&timed).unwrap(),7);
+        assert_eq!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),15u32.to_le_bytes()].concat()).unwrap(),15);
+        assert!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),31u32.to_le_bytes()].concat()).is_err());
         for kind in [0, CREATE_ACK, 41, 43, 47] { assert!(check_create_hello(kind, &hello).is_err()); }
         for body in [vec![], [2u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
             [1u32.to_le_bytes(), 1u32.to_le_bytes()].concat(), [hello.as_slice(), &[0]].concat()] {

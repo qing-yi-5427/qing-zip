@@ -1425,3 +1425,5 @@ mod tests {
     }
 
 }
+
+pub(super) fn archive_input_digest(file:&File,ctl:&JobControl)->Result<[u8;32],String>{Ok(snapshot(file,ctl)?.digest)}
