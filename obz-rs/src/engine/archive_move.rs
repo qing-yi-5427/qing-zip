@@ -40,14 +40,39 @@ pub(super) fn finish(plan:&Plan,_target:&edit_source::CommittedTargetGuard,opts:
     // make the OS reject deletion; skipped/retained descendants keep the parent.
     let mut directories:Vec<_>=plan.items.iter().enumerate().filter(|(_,i)|i.directory&&i.skipped.is_none()).map(|(n,_)|n).collect();
     directories.sort_by_key(|i|std::cmp::Reverse(plan.items[*i].source.components().count()));
+    // Count retained descendants once. Scanning the entire plan for each
+    // directory makes large, mostly empty trees quadratic.
+    let mut retained=RetainedDescendants::new(plan.items.iter().zip(&report.items)
+        .filter(|(_,result)|!matches!(result.status,Status::Moved))
+        .map(|(item,_)|item.source.as_path()));
     for index in directories{
         if ctl.check().is_err(){report.cancelled=true;return;}
         let source=&plan.items[index].source;
-        if plan.items.iter().enumerate().any(|(child,item)|child!=index&&item.source.starts_with(source)&&!matches!(report.items[child].status,Status::Moved)){
+        if retained.contains(source){
             report.items[index].reason="部分子项目仍保留，源文件夹未删除".into();continue;
         }
         cleanup_batch(plan,&[index],&ctl,report);
+        if matches!(report.items[index].status,Status::Moved){retained.removed(source);}
         if report.cancelled{return;}
+    }
+}
+// This is only a plan lookup optimization. The transaction still validates
+// every source and the OS still rejects deletion of a nonempty directory.
+struct RetainedDescendants(BTreeMap<PathBuf,usize>);
+impl RetainedDescendants {
+    fn new<'a>(paths:impl IntoIterator<Item=&'a Path>)->Self {
+        let mut counts=BTreeMap::new();
+        for path in paths {for parent in path.ancestors().skip(1){
+            *counts.entry(parent.to_owned()).or_insert(0)+=1;
+        }}
+        Self(counts)
+    }
+    fn contains(&self,path:&Path)->bool {self.0.get(path).is_some_and(|count|*count!=0)}
+    fn removed(&mut self,path:&Path){
+        for parent in path.ancestors().skip(1){
+            let count=self.0.get_mut(parent).expect("retained source ancestor was counted");
+            debug_assert!(*count>0);*count-=1;
+        }
     }
 }
 fn cleanup_batch(plan:&Plan,indices:&[usize],ctl:&JobControl,report:&mut Report){
@@ -91,6 +116,24 @@ fn cleanup_batch(plan:&Plan,indices:&[usize],ctl:&JobControl,report:&mut Report)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_descendants_keep_component_boundaries_and_release_completed_trees(){
+        let root=PathBuf::from(r"C:\move");
+        let empty=root.join("empty");let nested=root.join("nested");
+        let child=nested.join("retained.txt");let sibling=PathBuf::from(r"C:\move-other\file.txt");
+        let mut counts=RetainedDescendants::new([empty.as_path(),nested.as_path(),child.as_path(),sibling.as_path()]);
+        assert!(counts.contains(&root));assert!(counts.contains(&nested));assert!(!counts.contains(&empty));
+        counts.removed(&empty);assert!(counts.contains(&root));
+        counts.removed(&child);assert!(!counts.contains(&nested));assert!(counts.contains(&root));
+        counts.removed(&nested);assert!(!counts.contains(&root));
+        assert!(counts.contains(sibling.parent().unwrap()));
+        let paths:Vec<_>=(0..10000).map(|i|root.join(format!("dir-{i}"))).collect();
+        let mut counts=RetainedDescendants::new(paths.iter().map(PathBuf::as_path));
+        for (index,path) in paths.iter().enumerate(){
+            assert!(!counts.contains(path));counts.removed(path);
+            assert_eq!(counts.contains(&root),index+1<paths.len());
+        }
+    }
     fn fixture(format:&str,collision:bool)->(tempfile::TempDir,PathBuf,PathBuf){
         let t=tempfile::tempdir().unwrap();let old=t.path().join("seed");fs::create_dir_all(old.join("target/docs")).unwrap();
         fs::write(old.join("old.txt"),b"unrelated").unwrap();if collision{fs::write(old.join("target/docs/a.txt"),b"old-a").unwrap();}
