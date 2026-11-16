@@ -542,7 +542,7 @@ bool single_lzma_coder(std::wstring_view method) {
 // these display tokens only constrain eligibility, never replace codec property,
 // dictionary, graph, CRC or completion checks in the handler. Keep the ordinary
 // extraction subset unchanged. Reject unknown/truncated chains before any ACK.
-bool verification_method(std::wstring_view method, bool zip, bool encrypted) {
+constexpr bool verification_method(std::wstring_view method, bool zip, bool encrypted) {
   if (method.size() > 512) return false;
   unsigned count=0, ciphers=0;
   while (!method.empty()) {
@@ -566,6 +566,12 @@ bool verification_method(std::wstring_view method, bool zip, bool encrypted) {
   }
   return count!=0 && (ciphers!=0)==encrypted && (!zip||count==(encrypted?2u:1u));
 }
+static_assert(!verification_method(L"Unknown", false, false));
+static_assert(!verification_method(L"Unknown", true, false));
+static_assert(!verification_method(L"Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy Copy", false, false));
+static_assert(!verification_method(L"LZMA2:" L"111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111", false, false));
+static_assert(!verification_method(L"AES-256 Deflate Extra", true, true));
+static_assert(!verification_method(L"BCJ2 LZMA2:19 7zAES:19", false, false));
 void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0, bool verification = false) {
   // Only the new single-archive fast path declines wrappers/tails. The original
   // listing and complete decoder retain authority over their compatibility;
@@ -622,22 +628,15 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
         if (!(method.empty() && item.value.size==0 && !encrypted) && !verification_method(method,single_mode==2,encrypted))
           throw UnsupportedLayout{"unsupported verification coder chain"};
       } else if (single_mode == 2) {
-        if (encrypted && verification) {
-          if (state.operation->password.empty()) fail("password required");
-          auto space=method.find(L' ');
-          auto cipher=method.substr(0,space);
-          auto codec=space==std::wstring::npos?std::wstring{}:method.substr(space+1);
-          if ((cipher!=L"AES-128" && cipher!=L"AES-192" && cipher!=L"AES-256" && cipher!=L"ZipCrypto") || (codec!=L"Store" && codec!=L"Deflate")) throw UnsupportedLayout{"unsupported encrypted ZIP method"};
-        } else if (!method.empty() && method != L"Store" && method != L"Deflate")
+        if (!method.empty() && method != L"Store" && method != L"Deflate")
           throw UnsupportedLayout{"unsupported ZIP method"};
       } else if (encrypted) {
         auto pos = method.find(L" 7zAES:");
-        const bool pure_aes = verification && method.starts_with(L"7zAES:");
-        auto rounds = pure_aes ? std::wstring_view(method).substr(6) : pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
+        auto rounds = pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
         auto coder = std::wstring_view(method).substr(0, pos);
         if (state.operation->password.empty() || rounds.empty() || rounds.size() > 2 ||
             !std::all_of(rounds.begin(), rounds.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }) ||
-            !(single_lzma_coder(coder) || (verification && (pure_aes || coder==L"Copy")))) fail("unexpected encrypted item method");
+            !single_lzma_coder(coder)) fail("unexpected encrypted item method");
         has_compressed = true;
       } else if (item.value.size && !state.operation->password.empty() && !verification) fail("mixed encrypted item layout");
       else if (method == L"Copy") has_copy = true;
