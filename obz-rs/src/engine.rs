@@ -5014,7 +5014,6 @@ pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOpt
 }
 #[cfg(windows)]
 pub fn archive_move(path:&str,inputs:&[String],folder:&str,opts:&EngineOptions)->Result<archive_move::Report,String>{
-    if opts.preserve_input_atime{return Err("输入访问时间保护暂未覆盖移动事务读取，请使用添加并保留来源".into());}
     let mut options=opts.clone();options.selected.clear();let mut report=archive_move::Report::default();
     update_impl_with_move(path,"add",inputs,&options,Some(WorkspaceAdd{folder,export:None}),Some(&mut report))?;
     Ok(report)

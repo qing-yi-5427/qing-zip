@@ -23,7 +23,7 @@ impl Report {
     pub(super) fn plan(&mut self,plan:&Plan){self.items=plan.items.iter().map(|item|Item{source:item.source.display().to_string(),member:item.member.clone(),directory:item.directory,status:if item.skipped.is_some(){Status::Skipped}else{Status::CopiedRetained},reason:item.skipped.clone().unwrap_or_else(||"目标副本已保留，来源尚未清理".into())}).collect();}
 }
 #[cfg(test)]
-thread_local! {pub(super) static BEFORE_CLEANUP:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};pub(super) static AFTER_SOURCE_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};pub(super) static BEFORE_SOURCE_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
+thread_local! {static BEFORE_PROOF:std::cell::RefCell<Option<Box<dyn FnMut(&Path,&File,crate::source_access::Preservation)>>>=const{std::cell::RefCell::new(None)};pub(super) static BEFORE_CLEANUP:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};pub(super) static AFTER_SOURCE_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};pub(super) static BEFORE_SOURCE_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const{std::cell::RefCell::new(None)};}
 /// The target guard is required by type and remains borrowed until every source
 /// transaction has reached a known outcome. Cancellation never deletes the target.
 pub(super) fn finish(plan:&Plan,_target:&edit_source::CommittedTargetGuard,opts:&EngineOptions,report:&mut Report){
@@ -33,7 +33,7 @@ pub(super) fn finish(plan:&Plan,_target:&edit_source::CommittedTargetGuard,opts:
     for (index,item) in plan.items.iter().enumerate(){if item.skipped.is_none()&&!item.directory{volumes.entry(item.source_id.0).or_default().push(index);}}
     for indices in volumes.values(){for batch in indices.chunks(128){
         if ctl.check().is_err(){report.cancelled=true;return;}
-        cleanup_batch(plan,batch,&ctl,report);
+        cleanup_batch(plan,batch,&ctl,opts,report);
         if report.cancelled{return;}
     }}
     // Directory cleanup is nonrecursive and bottom-up. Unknown/new children
@@ -51,7 +51,7 @@ pub(super) fn finish(plan:&Plan,_target:&edit_source::CommittedTargetGuard,opts:
         if retained.contains(source){
             report.items[index].reason="部分子项目仍保留，源文件夹未删除".into();continue;
         }
-        cleanup_batch(plan,&[index],&ctl,report);
+        cleanup_batch(plan,&[index],&ctl,opts,report);
         if matches!(report.items[index].status,Status::Moved){retained.removed(source);}
         if report.cancelled{return;}
     }
@@ -75,7 +75,7 @@ impl RetainedDescendants {
         }
     }
 }
-fn cleanup_batch(plan:&Plan,indices:&[usize],ctl:&JobControl,report:&mut Report){
+fn cleanup_batch(plan:&Plan,indices:&[usize],ctl:&JobControl,opts:&EngineOptions,report:&mut Report){
     use super::file_workspace_transaction::Transaction;
     // Unbounded parent-name pins: unlike CheckedDirectories this cannot fall
     // back to an unpinned path after a cache limit or sharing conflict.
@@ -90,9 +90,12 @@ fn cleanup_batch(plan:&Plan,indices:&[usize],ctl:&JobControl,report:&mut Report)
         for &index in &eligible{
             ctl.check()?;let item=&plan.items[index];
             let result=(||->Result<(),String>{
-                let source=transaction.lock(&item.source,item.source_id)?;
+                let mut source=transaction.lock(&item.source,item.source_id)?;
                 let meta=source.reader().metadata().map_err(|e|e.to_string())?;
                 if meta.is_dir()!=item.directory || meta.file_attributes()&0x4400!=0{return Err("来源类型或属性已改变，保留来源".into());}
+                let preservation=if opts.preserve_input_atime{source.preserve_reader_atime()?}else{crate::source_access::Preservation::Disabled};
+                if let Some(evidence)=&opts.input_atime_report{evidence.lock().unwrap_or_else(|e|e.into_inner()).record_cleanup(&item.source,preservation);}
+                #[cfg(test)] BEFORE_PROOF.with(|h|if let Some(check)=h.borrow_mut().as_mut(){check(&item.source,source.reader(),preservation);});
                 let digest=file_workspace::archive_primary_proof(source.reader(),ctl)?;
                 if !item.directory&&(meta.len()!=item.bytes||Some(digest)!=item.sha256){return Err("来源内容已改变，目标保留快照，来源保持不变".into());}
                 touched.push(index);source.delete()?;Ok(())
@@ -141,6 +144,22 @@ mod tests {
         let local=t.path().join("docs");fs::create_dir(&local).unwrap();fs::write(local.join("a.txt"),b"new-a").unwrap();fs::write(local.join("b.txt"),b"new-b").unwrap();(t,archive,local)
     }
     #[test]
+    fn move_atime_attempts_each_exact_backup_reader_and_reports_retained_ads(){
+        use std::os::windows::io::AsRawHandle;
+        for cancel in [false,true]{let(_temp,archive,local)=fixture("zip",false);let a=local.join("a.txt");let b=local.join("b.txt");fs::write(format!("{}:extra",a.display()),b"keep this").unwrap();
+            let seen=std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));let capture=seen.clone();
+            BEFORE_PROOF.with(|h|*h.borrow_mut()=Some(Box::new(move|path,reader,status|{match status{
+                crate::source_access::Preservation::Applied=>assert!(crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow_mut().pop())==Some(reader.as_raw_handle() as usize)),
+                crate::source_access::Preservation::Unavailable{phase:crate::source_access::Phase::EnhancedReopen,..}=>assert!(crate::source_access::REOPEN_CALLS.with(|v|v.borrow_mut().pop())==Some(reader.as_raw_handle() as usize)),
+                _=>panic!("unexpected fixture preservation status: {status:?}"),
+            }capture.borrow_mut().push(path.to_owned());})));
+            let ctl=JobControl::new();if cancel{let control=ctl.clone();BEFORE_SOURCE_COMMIT.with(|h|*h.borrow_mut()=Some(Box::new(move||control.cancel())));}
+            let response=crate::operations::execute(crate::operations::Request{operation:"archive-move".into(),path:archive.display().to_string(),dest:"target".into(),inputs:vec![a.display().to_string(),b.display().to_string()],options:EngineOptions{preserve_input_atime:true,control:Some(ctl),..Default::default()},..Default::default()}).unwrap();
+            BEFORE_PROOF.with(|h|h.borrow_mut().take());assert_eq!(seen.borrow().len(),2);assert_eq!(response["target_committed"],true);assert_eq!(response["cancelled"],cancel);assert!(a.exists());assert_eq!(b.exists(),cancel);assert_eq!(fs::read(format!("{}:extra",a.display())).unwrap(),b"keep this");
+            let evidence=&response["input_atime"];assert_eq!(evidence["applied_handles"].as_u64().unwrap()+evidence["unavailable_handles"].as_u64().unwrap(),4);assert_eq!(evidence["input"]["applied"],2);assert_eq!(evidence["move_cleanup"]["applied"].as_u64().unwrap()+evidence["move_cleanup"]["unavailable"].as_u64().unwrap(),2);assert!(evidence["summary"].as_str().unwrap().contains("已尝试"));assert_eq!(evidence["backend_best_effort"],false);assert_eq!(evidence["directory_enumeration_covered"],false);test(archive.to_str().unwrap(),&EngineOptions::default()).unwrap();
+        }
+    }
+    #[test]
     fn archive_move_fresh_verifier_rejects_unselected_crc_and_cancel_without_source_cleanup(){
         use std::io::Write;
         for cancel in [false,true]{
@@ -187,10 +206,14 @@ mod tests {
         use std::os::windows::{fs::OpenOptionsExt,io::AsRawHandle};
         #[repr(C)]struct Io{status:usize,information:usize}
         #[link(name="ntdll")]unsafe extern "system"{fn NtSetEaFile(handle:*mut std::ffi::c_void,io:*mut Io,buffer:*const u8,length:u32)->i32;}
+        for preserve in [false,true]{
+        crate::source_access::REOPEN_CALLS.with(|v|v.borrow_mut().clear());
         let(_t,archive,local)=fixture("zip",false);let file=File::options().access_mode(0x10).share_mode(7).open(local.join("a.txt")).unwrap();
         let ea=[0u8,0,0,0,0,1,2,0,b'A',0,b'x',b'y'];let mut io=Io{status:0,information:0};assert!(unsafe{NtSetEaFile(file.as_raw_handle(),&mut io,ea.as_ptr(),ea.len()as u32)}>=0);drop(file);
-        let report=super::super::archive_move(archive.to_str().unwrap(),&[local.display().to_string()],"target",&EngineOptions::default()).unwrap();assert!(report.target_committed);assert!(local.join("a.txt").exists());assert!(!local.join("b.txt").exists());
+        let report=super::super::archive_move(archive.to_str().unwrap(),&[local.display().to_string()],"target",&EngineOptions{preserve_input_atime:preserve,..Default::default()}).unwrap();assert!(report.target_committed);assert!(local.join("a.txt").exists());assert!(!local.join("b.txt").exists());
         assert!(report.items.iter().any(|i|i.member.ends_with("a.txt")&&matches!(i.status,Status::CopiedRetained)&&i.reason.contains("附加数据")),"{:?}",report);
+        assert_eq!(crate::source_access::REOPEN_CALLS.with(|v|v.borrow().len()),if preserve{2}else{0},"disabled option must not introduce extra reopens");
+        }
     }
     #[test]
     fn archive_move_actual_zip_and_sevenz_four_policies_and_safe_directory_cleanup(){

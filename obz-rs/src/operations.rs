@@ -128,7 +128,7 @@ pub fn execute(r: Request) -> Result<Value, String> {
 
 /// No shell commands or arbitrary application execution are accepted here.
 pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
-    if r.options.preserve_input_atime && !matches!(r.operation.as_str(),"add"|"archive-add") {
+    if r.options.preserve_input_atime && !matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move") {
         return Err("此操作尚未覆盖输入访问时间保护，未执行操作".into());
     }
     if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
@@ -145,12 +145,12 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
         return Ok(OperationResponse::Listing { entries: list_archive(&r.path, &r.options)? });
     }
     #[cfg(windows)]
-    let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add") {
+    let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move") {
         let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));r.options.input_atime_report=Some(report.clone());Some(report)
     }else{None};
     let mut result=execute_json(r, restricted)?;
     #[cfg(windows)]
-    if let Some(report)=atime{result["input_atime"]=serde_json::to_value(&*report.lock().unwrap_or_else(|e|e.into_inner())).map_err(|e|e.to_string())?;}
+    if let Some(report)=atime{let report=report.lock().unwrap_or_else(|e|e.into_inner());result["input_atime"]=serde_json::to_value(&*report).map_err(|e|e.to_string())?;result["input_atime"]["summary"]=report.summary().into();}
     Ok(OperationResponse::Json(result))
 }
 
@@ -337,7 +337,7 @@ fn base64(data: &[u8]) -> String {
     #[test]
     fn preserve_input_atime_unsupported_operations_fail_before_output_or_source_reads(){
         let temp=tempfile::tempdir().unwrap();let source=temp.path().join("source.txt");std::fs::write(&source,b"original").unwrap();let output=temp.path().join("not-created/archive.zip");
-        for operation in ["create","list","test","extract","archive-copy","archive-export","archive-move","delete","rename","hash"]{
+        for operation in ["create","list","test","extract","archive-copy","archive-export","delete","rename","hash"]{
             let r:Request=serde_json::from_value(json!({"operation":operation,"path":output,"dest":temp.path().join("not-created"),"inputs":[source],"options":{"preserve_input_atime":true}})).unwrap();
             let error=execute_request(r).err().unwrap();assert!(error.contains("输入访问时间保护"),"{operation}: {error}");assert!(!output.parent().unwrap().exists());assert_eq!(std::fs::read(&source).unwrap(),b"original");
         }

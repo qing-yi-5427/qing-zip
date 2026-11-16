@@ -233,6 +233,15 @@ pub(super) struct Locked<'a> {
     _transaction: PhantomData<&'a Transaction>,
 }
 impl Locked<'_> {
+    pub(super) fn preserve_reader_atime(&mut self)->Result<crate::source_access::Preservation,String>{
+        use crate::source_access::{self,OpenSpec,Preservation};
+        let next=match source_access::protect_reader(&self.reader,OpenSpec{access:0x80000000,share:5,flags:0x02200000}){Ok(file)=>file,Err(status)=>return Ok(status)};
+        let before=crate::private_stage::checked_metadata(&self.reader)?;
+        let after=crate::private_stage::checked_metadata(&next)?;
+        if directory_identity(&next)?!=directory_identity(&self.transactional)? || after.is_dir()!=before.is_dir() || after.file_attributes()&0x4400!=0 {return Err("访问时间保护读取句柄身份改变，保留来源".into());}
+        self.reader=next;
+        Ok(Preservation::Applied)
+    }
     pub(super) fn reader(&self) -> &File {
         &self.reader
     }
@@ -609,3 +618,20 @@ thread_local!{pub(super) static FAIL_BEGIN:std::cell::Cell<bool>=const{std::cell
 
 #[cfg(test)]
 thread_local!{pub(super) static FAIL_COMMIT:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+
+#[cfg(test)]
+mod atime_tests{
+    use super::*;
+    #[test]
+    fn exact_committed_reader_reopen_under_plain_transaction_lease(){
+        use std::io::Read;
+        let temp=tempfile::tempdir().unwrap();let path=temp.path().join("source");std::fs::write(&path,b"payload").unwrap();
+        let id=directory_identity(&File::open(&path).unwrap()).unwrap();let transaction=Transaction::begin().unwrap();let mut source=transaction.lock(&path,id).unwrap();let status=source.preserve_reader_atime().unwrap();eprintln!("transaction reader preservation: {status:?}");
+        let additional=crate::source_access::protect_reader(source.reader(),crate::source_access::OpenSpec{access:0x80000000,share:7,flags:0x02200000});
+        match &additional{Ok(file)=>{assert_eq!(directory_identity(file).unwrap(),id);eprintln!("additional reader with retained share5 guard: Applied");},Err(status)=>eprintln!("additional reader with retained share5 guard: {status:?}")};
+        assert!(std::fs::rename(&path,temp.path().join("renamed")).is_err());drop(additional);
+
+        let mut reader=source.reader().try_clone().unwrap();let mut data=Vec::new();reader.read_to_end(&mut data).unwrap();assert_eq!(data,b"payload");
+        assert!(File::options().write(true).share_mode(7).open(&path).is_err());drop(reader);drop(source);transaction.rollback().unwrap();assert_eq!(std::fs::read(&path).unwrap(),b"payload");
+    }
+}

@@ -7,7 +7,7 @@ use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all="snake_case")]
-pub enum Phase { EnhancedOpen, SuppressUpdates }
+pub enum Phase { EnhancedOpen, EnhancedReopen, SuppressUpdates }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Preservation {
     Disabled,
@@ -19,6 +19,8 @@ pub(crate) enum Preservation {
 /// only because its own attribute-permission fallback is not observable.
 #[derive(Clone, Default, Serialize)]
 pub struct Report {
+    pub input: StageCounts,
+    pub move_cleanup: StageCounts,
     pub applied_handles: usize,
     pub unavailable_handles: usize,
     pub backend_best_effort: bool,
@@ -26,13 +28,26 @@ pub struct Report {
     pub warnings: Vec<Warning>,
     pub omitted_warnings: usize,
 }
+#[derive(Clone, Default, Serialize)]
+pub struct StageCounts {pub applied:usize,pub unavailable:usize}
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all="snake_case")]
+pub enum Stage {Input,MoveCleanup}
 #[derive(Clone, Serialize)]
-pub struct Warning {pub source:String,pub phase:Phase,pub os_error:Option<i32>}
+pub struct Warning {pub source:String,pub stage:Stage,pub phase:Phase,pub os_error:Option<i32>}
 impl Report {
-    pub(crate) fn record(&mut self,path:&Path,status:Preservation){match status{
-        Preservation::Disabled=>(),Preservation::Applied=>self.applied_handles+=1,
-        Preservation::Unavailable{phase,os_error}=>{self.unavailable_handles+=1;if self.warnings.len()<64{self.warnings.push(Warning{source:path.display().to_string(),phase,os_error});}else{self.omitted_warnings+=1;}}
-    }}
+    pub(crate) fn record(&mut self,path:&Path,status:Preservation){self.record_stage(path,status,Stage::Input)}
+    pub(crate) fn record_cleanup(&mut self,path:&Path,status:Preservation){self.record_stage(path,status,Stage::MoveCleanup)}
+    fn record_stage(&mut self,path:&Path,status:Preservation,stage:Stage){
+        let count=match stage{Stage::Input=>&mut self.input,Stage::MoveCleanup=>&mut self.move_cleanup};
+        match status{
+            Preservation::Disabled=>(),Preservation::Applied=>{self.applied_handles+=1;count.applied+=1;},
+            Preservation::Unavailable{phase,os_error}=>{self.unavailable_handles+=1;count.unavailable+=1;if self.warnings.len()<64{self.warnings.push(Warning{source:path.display().to_string(),stage,phase,os_error});}else{self.omitted_warnings+=1;}}
+        }
+    }
+    pub(crate) fn summary(&self)->String{
+        format!("已尝试保护输入文件主流读取的访问时间；{} 个读取句柄已启用，{} 个未能启用{}。不包含目录枚举或其他程序的访问。",self.applied_handles,self.unavailable_handles,if self.backend_best_effort{"，外部引擎仅尽力保护，无法逐项确认"}else{""})
+    }
 }
 pub(crate) struct Opened { pub file: File, pub preservation: Preservation }
 /// Preserve the caller's exact access/share/flags. The caller must keep its
@@ -47,11 +62,12 @@ impl OpenSpec {
 }
 #[link(name="kernel32")]
 extern "system" {
+    fn ReOpenFile(file:*mut std::ffi::c_void,access:u32,share:u32,flags:u32)->*mut std::ffi::c_void;
     fn SetFileTime(file: *mut std::ffi::c_void, created: *const u64,
                    accessed: *const u64, modified: *const u64) -> i32;
 }
 #[cfg(test)]
-thread_local! {pub(crate) static SUPPRESS_CALLS:std::cell::RefCell<Vec<usize>>=const{std::cell::RefCell::new(Vec::new())};pub(crate) static FAIL_SUPPRESS: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
+thread_local! {pub(crate) static REOPEN_CALLS:std::cell::RefCell<Vec<usize>>=const{std::cell::RefCell::new(Vec::new())};pub(crate) static SUPPRESS_CALLS:std::cell::RefCell<Vec<usize>>=const{std::cell::RefCell::new(Vec::new())};pub(crate) static FAIL_SUPPRESS: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 fn suppress(file: &File) -> io::Result<()> {
     #[cfg(test)] SUPPRESS_CALLS.with(|v|v.borrow_mut().push(file.as_raw_handle() as usize));
     #[cfg(test)]
@@ -60,6 +76,17 @@ fn suppress(file: &File) -> io::Result<()> {
     if unsafe{SetFileTime(file.as_raw_handle(),std::ptr::null(),&sentinel,std::ptr::null())}==0 {
         Err(io::Error::last_os_error())
     }else{Ok(())}
+}
+/// Reopen the already-held object; no pathname lookup or release of the caller's
+/// transaction/namespace lease. The caller validates identity before replacement.
+pub(crate) fn protect_reader(file:&File,spec:OpenSpec)->Result<File,Preservation>{
+    use std::os::windows::io::FromRawHandle;
+    #[cfg(test)] REOPEN_CALLS.with(|v|v.borrow_mut().push(file.as_raw_handle() as usize));
+    let raw=unsafe{ReOpenFile(file.as_raw_handle(),spec.access|0x100,spec.share,spec.flags)};
+    if raw.is_null()||raw as isize == -1{return Err(Preservation::Unavailable{phase:Phase::EnhancedReopen,os_error:io::Error::last_os_error().raw_os_error()});}
+    let reopened=unsafe{File::from_raw_handle(raw)};
+    suppress(&reopened).map_err(|e|Preservation::Unavailable{phase:Phase::SuppressUpdates,os_error:e.raw_os_error()})?;
+    Ok(reopened)
 }
 pub(crate) fn open(path:&Path,spec:OpenSpec,preserve:bool)->io::Result<Opened>{
     if !preserve{return spec.open(path,spec.access).map(|file|Opened{file,preservation:Preservation::Disabled});}
