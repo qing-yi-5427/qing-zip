@@ -563,7 +563,10 @@ mod tests {
     #[test]
     fn create_helper_identity_requires_exact_version_capabilities_and_nonce() {
         let hello = [1u32.to_le_bytes(), 3u32.to_le_bytes()].concat();
-        assert!(check_create_hello(CREATE_HELLO, &hello).is_ok());
+        assert_eq!(check_create_hello(CREATE_HELLO, &hello).unwrap(),3);
+        let timed=[1u32.to_le_bytes(),7u32.to_le_bytes()].concat();
+        assert_eq!(check_create_hello(CREATE_HELLO,&timed).unwrap(),7);
+        assert!(check_create_hello(CREATE_HELLO,&[1u32.to_le_bytes(),15u32.to_le_bytes()].concat()).is_err());
         for kind in [0, CREATE_ACK, 41, 43, 47] { assert!(check_create_hello(kind, &hello).is_err()); }
         for body in [vec![], [2u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
             [1u32.to_le_bytes(), 1u32.to_le_bytes()].concat(), [hello.as_slice(), &[0]].concat()] {

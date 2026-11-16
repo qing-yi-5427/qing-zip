@@ -5576,6 +5576,13 @@ fn publish_new_with_time(staged: &Path, target: &Path, ctl: &JobControl, preserv
     if target.exists() {
         return Err(format!("output exists: {}", target.display()));
     }
+    publish_new_copy(staged,target,ctl,preserve_time)
+}
+// Kept separate so the copy fallback can be exercised deterministically without
+// changing volume settings or weakening the production hard-link attempt.
+fn publish_new_copy(staged:&Path,target:&Path,ctl:&JobControl,preserve_time:bool)->Result<(),String>{
+    ctl.check()?;
+    no_links(target)?;
     let parent = target.parent().ok_or("output parent missing")?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     let mut source = File::open(staged).map_err(|e| e.to_string())?;
@@ -5600,6 +5607,21 @@ fn publish_new_with_time(staged: &Path, target: &Path, ctl: &JobControl, preserv
 #[cfg(test)]
 mod staging_tests {
     use super::*;
+    #[test]
+    fn copy_publication_preserves_requested_time_and_never_replaces() {
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("source");
+        fs::write(&source,b"timestamp fixture").unwrap();
+        let fixed=std::time::UNIX_EPOCH+Duration::from_secs(1_577_836_800);
+        File::options().write(true).open(&source).unwrap().set_times(fs::FileTimes::new().set_modified(fixed)).unwrap();
+        let target=root.path().join("target");let ctl=control(&EngineOptions::default());
+        publish_new_copy(&source,&target,&ctl,true).unwrap();
+        assert_eq!(fs::read(&target).unwrap(),b"timestamp fixture");
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(),fixed);
+        fs::write(&target,b"competitor").unwrap();
+        assert!(publish_new_copy(&source,&target,&ctl,true).is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"competitor");
+        assert_eq!(fs::read(&source).unwrap(),b"timestamp fixture");
+    }
     #[test]
     fn canonical_empty_zip_keeps_options_selection_and_destination_checks() {
         let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("empty.zip");
