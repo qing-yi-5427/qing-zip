@@ -301,6 +301,100 @@ fn try_create_impl(out: &str, names: &[String], opts: &EngineOptions, ctl: &JobC
     }
 }
 
+// The optional small image negotiates before receiving ANY privileged handles.
+// Only an older image's clean unsupported-entry exit is a compatibility fallback.
+const CREATE_HELLO: u8 = 49;
+const CREATE_CHALLENGE: u8 = 50;
+const CREATE_ACK: u8 = 51;
+const CREATE_VERSION: u32 = 1;
+const CREATE_CAPABILITIES: u32 = 3; // ZIP + single-volume LZMA2 7z
+
+struct CreateSession {
+    // Drop/reap the child before releasing its pinned executable image.
+    session: Session,
+    _image: Option<crate::engine_stream::PinnedSource>,
+}
+fn check_create_hello(kind: u8, body: &[u8]) -> Result<(), String> {
+    let expected = [CREATE_VERSION.to_le_bytes(), CREATE_CAPABILITIES.to_le_bytes()].concat();
+    if kind != CREATE_HELLO || body != expected { return Err("incompatible create helper handshake".into()); }
+    Ok(())
+}
+fn check_create_ack(kind: u8, body: &[u8], nonce: &[u8; 16]) -> Result<(), String> {
+    if kind != CREATE_ACK || body != nonce { return Err("create helper response identity mismatch".into()); }
+    Ok(())
+}
+fn create_handshake_frame(session: &Session, ctl: &JobControl) -> Result<Frame, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        ctl.check()?;
+        if std::time::Instant::now() >= deadline { return Err("create helper handshake timed out".into()); }
+        match session.receiver.as_ref().ok_or("create helper receiver closed")?.recv_timeout(Duration::from_millis(25)) {
+            Ok(frame) => return frame,
+            Err(mpsc::RecvTimeoutError::Timeout) => (),
+            Err(_) => return Err("create helper control channel failed".into()),
+        }
+    }
+}
+fn legacy_create_exit(session: &Session, ctl: &JobControl) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        ctl.check()?;
+        if let Some(code) = session.exit_code()? {
+            return if code == 3 { Ok(()) } else { Err("create helper exited without a handshake".into()) };
+        }
+        if std::time::Instant::now() >= deadline { return Err("create helper handshake timed out".into()); }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+fn create_session(exe: &Path, ctl: &JobControl) -> Result<CreateSession, String> {
+    let helper = exe.with_file_name("obz-worker.exe");
+    match fs::symlink_metadata(&helper) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.to_string()),
+        Ok(_) => {
+            let image = crate::engine_stream::pin(&helper)?;
+            let mut session = Session::start(&helper, true)?;
+            match create_handshake_frame(&session, ctl)? {
+                None => {
+                    legacy_create_exit(&session, ctl)?;
+                    // No frame, no handles granted, exact legacy unsupported exit.
+                    // Drop joins the reader and reaps before starting the old entry.
+                    drop(session);
+                }
+                Some((kind, body)) => {
+                    check_create_hello(kind, &body)?;
+                    let mut nonce = [0u8;16];
+                    if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
+                        return Err("create helper nonce failed".into());
+                    }
+                    session.send(CREATE_CHALLENGE, nonce.to_vec(), ctl)?;
+                    let (kind, body) = create_handshake_frame(&session, ctl)?.ok_or("create helper exited before identity acknowledgement")?;
+                    check_create_ack(kind, &body, &nonce)?;
+                    return Ok(CreateSession { session, _image: Some(image) });
+                }
+            }
+        }
+    }
+    Ok(CreateSession { session: Session::start(exe, true)?, _image: None })
+}
+
+// New optional-image entry. The original obz.exe entry deliberately keeps its
+// original protocol, so a missing/older helper can still use it safely.
+pub fn helper_worker() -> u8 {
+    fn handshake() -> Result<(), String> {
+        let hello = [CREATE_VERSION.to_le_bytes(), CREATE_CAPABILITIES.to_le_bytes()].concat();
+        let mut output = std::io::stdout().lock();
+        output.write_all(&[CREATE_HELLO]).and_then(|_| output.write_all(&(hello.len() as u32).to_le_bytes()))
+            .and_then(|_| output.write_all(&hello)).and_then(|_| output.flush()).map_err(|e| e.to_string())?;
+        let (kind, nonce) = read_frame(&mut std::io::stdin().lock(), 1024)?.ok_or("missing create challenge")?;
+        if kind != CREATE_CHALLENGE || nonce.len() != 16 { return Err("invalid create challenge".into()); }
+        output.write_all(&[CREATE_ACK]).and_then(|_| output.write_all(&16u32.to_le_bytes()))
+            .and_then(|_| output.write_all(&nonce)).and_then(|_| output.flush()).map_err(|e| e.to_string())
+    }
+    if handshake().is_err() { return 2; }
+    worker()
+}
+
 fn encode(
     exe: &Path,
     src: &Path,
@@ -310,7 +404,8 @@ fn encode(
     opts: &EngineOptions,
     ctl: &JobControl,
 ) -> Result<bool, String> {
-    let mut session = Session::start(exe, true)?;
+    let mut prepared = create_session(exe, ctl)?;
+    let session = &mut prepared.session;
     let mut data = Vec::new();
     for (handle, access) in [
         (unsafe { GetCurrentProcess() }, 0x100000),
@@ -437,6 +532,21 @@ pub fn worker() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn create_helper_identity_requires_exact_version_capabilities_and_nonce() {
+        let hello = [1u32.to_le_bytes(), 3u32.to_le_bytes()].concat();
+        assert!(check_create_hello(CREATE_HELLO, &hello).is_ok());
+        for kind in [0, CREATE_ACK, 41, 43, 47] { assert!(check_create_hello(kind, &hello).is_err()); }
+        for body in [vec![], [2u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
+            [1u32.to_le_bytes(), 1u32.to_le_bytes()].concat(), [hello.as_slice(), &[0]].concat()] {
+            assert!(check_create_hello(CREATE_HELLO, &body).is_err());
+        }
+        let nonce = [42u8;16];
+        assert!(check_create_ack(CREATE_ACK, &nonce, &nonce).is_ok());
+        assert!(check_create_ack(CREATE_HELLO, &nonce, &nonce).is_err());
+        assert!(check_create_ack(CREATE_ACK, &[41u8;16], &nonce).is_err());
+        assert!(check_create_ack(CREATE_ACK, &nonce[..15], &nonce).is_err());
+    }
     #[test]
     fn only_supported_7z_options_enter_the_pinned_create_worker() {
         let inputs=["source".to_owned()];let normal=EngineOptions::default();

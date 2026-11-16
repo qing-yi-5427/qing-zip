@@ -16,10 +16,14 @@ use std::{
 fn solid_7z_create_reports_progress_and_cancels_without_publication() {
     const CHILD: &str = "QING_TEST_PACKAGED_7Z_CONTROL";
     if std::env::var_os(CHILD).is_none() {
+        for with_helper in [false, true] {
         let package = tempfile::tempdir().unwrap();
         let host = package.path().join("test-host.exe");
         fs::copy(std::env::current_exe().unwrap(), &host).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_obz"), package.path().join("obz.exe")).unwrap();
+        if with_helper {
+            fs::copy(env!("CARGO_BIN_EXE_obz-worker"), package.path().join("obz-worker.exe")).unwrap();
+        }
         let result = Command::new(host)
             .args([
                 "--exact",
@@ -36,6 +40,7 @@ fn solid_7z_create_reports_progress_and_cancels_without_publication() {
             errors.contains("OA_CREATE_WORKER status=complete"),
             "{errors}"
         );
+        }
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
@@ -89,6 +94,11 @@ fn solid_7z_create_reports_progress_and_cancels_without_publication() {
             "no running native progress"
         );
         thread::sleep(Duration::from_millis(2));
+    }
+    let helper = std::env::current_exe().unwrap().with_file_name("obz-worker.exe");
+    if helper.exists() {
+        // The small image remains pinned while the acknowledged worker encodes.
+        assert!(fs::File::options().write(true).open(&helper).is_err());
     }
     control.cancel();
     assert!(job.join().unwrap().unwrap_err().contains("cancelled"));
