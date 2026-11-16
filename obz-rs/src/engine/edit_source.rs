@@ -237,6 +237,37 @@ impl EditOutput {
     }
 }
 
+/// Binds a caller-held private candidate object to one edit transaction.
+/// Content may change during ReplaceFileW. A fresh locked verification is
+/// mandatory after replacement and before publication; no old SHA is carried.
+pub(crate) struct CandidateIdentityBinding {
+    bridge: File,
+    identity: FileId,
+    original_name: Vec<u16>,
+    _parents: Vec<File>,
+}
+impl CandidateIdentityBinding {
+    pub(crate) fn from_pinned(candidate: PinnedSource) -> Result<Self, String> {
+        let identity = id(&candidate)?;
+        let original_name = actual_name(&candidate)?;
+        // ReplaceFileW requires candidate write access. Keep only the original
+        // object association; this bridge deliberately is NOT a content proof.
+        let bridge = reopen(&candidate, 0, 7)?;
+        let (leaf, parents) = candidate.into_handle_parts();
+        drop(leaf);
+        Ok(Self { bridge, identity, original_name, _parents: parents })
+    }
+}
+
+/// Owns the exact published object and its public namespace guards.
+/// Denies other main-data writes/deletes; does not freeze ACL/EA/ADS metadata.
+/// Dropping only releases handles and never deletes the committed archive.
+pub(crate) struct CommittedTargetGuard {
+    _candidate: File,
+    _parent: File,
+    _ancestors: CheckedDirectories,
+}
+
 pub(crate) struct EditSource {
     path: PathBuf,
     original_name: Vec<u16>,
@@ -312,6 +343,22 @@ impl EditSource {
         receipt.record(revision);
         Ok(())
     }
+    pub(crate) fn commit_tracked_guarded(
+        self,
+        output: EditOutput,
+        binding: CandidateIdentityBinding,
+        options: &super::EngineOptions,
+        verify: impl FnOnce(&File) -> Result<(), String>,
+    ) -> Result<CommittedTargetGuard, String> {
+        let revision = if options.edit_receipt.is_some() {
+            Some(super::nested::ArchiveRevision::new(&self.path, output.path())?)
+        } else { None };
+        let guard = self.commit_bound_with(output, Some(binding), Some(Box::new(verify)), || {}, || {})?;
+        if let (Some(receipt), Some(revision)) = (&options.edit_receipt, revision) {
+            receipt.record(revision);
+        }
+        Ok(guard)
+    }
     pub(crate) fn commit(self, output: EditOutput) -> Result<(), String> {
         self.commit_with(output, || {}, || {})
     }
@@ -321,11 +368,30 @@ impl EditSource {
         before_replace: impl FnOnce(),
         after_replace: impl FnOnce(),
     ) -> Result<(), String> {
+        self.commit_bound_with(output, None, None, before_replace, after_replace).map(drop)
+    }
+    fn commit_bound_with(
+        self,
+        output: EditOutput,
+        mut binding: Option<CandidateIdentityBinding>,
+        verify: Option<Box<dyn FnOnce(&File) -> Result<(), String> + '_>>,
+        before_replace: impl FnOnce(),
+        after_replace: impl FnOnce(),
+    ) -> Result<CommittedTargetGuard, String> {
+        // EditOutput and EditSource already retain the transaction namespace.
+        // Release redundant verification ancestors before any fallible work,
+        // so an early rejection cannot obstruct private-stage cleanup. The
+        // exact candidate bridge stays alive throughout the handoff.
+        if let Some(bound) = &mut binding { bound._parents.clear(); }
         let EditOutput {
             stage,
             path: staged,
             output_pin,
         } = output;
+        // Locals drop in reverse declaration order. On every early error the
+        // bridge must close before stage cleanup attempts to remove its parent.
+        // Keep the strong published candidate alive separately on success.
+        let mut binding = binding;
         let path = &self.path;
         let staged = &staged;
         // ReplaceFileW may briefly vacate its target and then overwrite a file
@@ -347,6 +413,14 @@ impl EditSource {
         let proposed = leaf(staged, 0, 7)?;
         let identity = id_checked(&self.read, Some(&self.control))?;
         let proposed_id = id_checked(&proposed, Some(&self.control))?;
+        if let Some(bound) = &binding {
+            if proposed_id != bound.identity
+                || actual_name(&bound.bridge)? != bound.original_name
+                || actual_name(&proposed)? != bound.original_name
+            {
+                return Err("Bound private candidate changed before commit".into());
+            }
+        }
         let intent = journal::Intent::write(
             &stage,
             &self.parent,
@@ -375,15 +449,39 @@ impl EditSource {
         let mut recovery = PreserveOnDrop(Some(stage));
         drop(original);
         after_replace();
-        let publish: Result<(), String> = (|| {
+        let publish: Result<File, String> = (|| {
             self.control.check()?;
-            atomic_replace(&merge_path, staged, &backup).map_err(|e| e.to_string())?;
-            let candidate = leaf(&merge_path, 0x10080, 1)?;
+            atomic_replace(&merge_path, staged, &backup).map_err(|e| {
+                if binding.is_some() { format!("Bound candidate ReplaceFileW: {e}") }
+                else { e.to_string() }
+            })?;
+            let candidate = if let Some(bound) = &binding {
+                let candidate = reopen(&bound.bridge, 0x80010080, 1)
+                    .map_err(|e| format!("Bound candidate final handle: {e}"))?;
+                // Only the private namespace is inspected. The guard itself is
+                // derived from the original verified object, never a public open.
+                let named = leaf(&merge_path, 0, 7)?;
+                if actual_name(&candidate)? != actual_name(&named)?
+                    || id_checked(&named, Some(&self.control))? != bound.identity
+                {
+                    return Err("Bound candidate was moved during commit".into());
+                }
+                candidate
+            } else { leaf(&merge_path, 0x10080, 1)? };
             if id_checked(&candidate, Some(&self.control))? != proposed_id {
                 return Err("Private replacement archive changed".into());
             }
             drop(proposed);
+            // The exact candidate now denies deletion itself. Release private
+            // ancestor pins before ordinary stage cleanup, never public guards.
+            drop(binding.take());
             self.control.check()?;
+            if let Some(verify) = verify {
+                // No path-based recapture: this same readable, deny-write/delete
+                // object stays locked through verification and publication.
+                verify(&candidate)?;
+                self.control.check()?;
+            }
             let scratch = scratch_path(recovery.path(), path, false)?;
             publish_with_live_permissions(
                 &candidate,
@@ -403,10 +501,13 @@ impl EditSource {
                     self.control.check()
                 },
             )?;
-            Ok(())
+            Ok(candidate)
         })();
+        drop(binding.take());
         drop(self.bridge);
-        if let Err(reason) = publish {
+        let candidate = match publish {
+            Ok(candidate) => candidate,
+            Err(reason) => {
             // ReplaceFileW can fail with the original at either private name.
             // Restore by verified handle, and only into a vacant public name.
             let original_scratch = scratch_path(recovery.path(), path, true)?;
@@ -454,13 +555,18 @@ impl EditSource {
             }
             return Err(format!("{reason}. Archive: {}. Private recovery directory (original filename preserved): {}",
                 path.display(), recovery.path().display()));
-        }
+            }
+        };
         drop(recovery_parent);
         drop(merge_parent);
         drop(output_pin);
         intent.disarm();
         recovery.finished();
-        Ok(())
+        Ok(CommittedTargetGuard {
+            _candidate: candidate,
+            _parent: self.parent,
+            _ancestors: self._ancestors,
+        })
     }
 }
 
@@ -550,6 +656,163 @@ impl Drop for PreserveOnDrop {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn guarded_commit_keeps_exact_public_object_until_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"verified proposal").unwrap();
+        let pin = pin(output.path()).unwrap();
+        let expected = id(&pin).unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin).unwrap();
+        // The identity-only binding does not promise unchanged content.
+        assert!(File::options().write(true).open(output.path()).is_ok());
+        let guard = edit.commit_tracked_guarded(output, binding, &Default::default(), |_| Ok(())).unwrap();
+        assert!(id(&guard._candidate).unwrap() == expected);
+        assert_eq!(fs::read(&path).unwrap(), b"verified proposal");
+        assert!(File::options().write(true).open(&path).is_err());
+        assert!(fs::rename(&path, temp.path().join("stolen.zip")).is_err());
+        assert!(fs::remove_file(&path).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        drop(guard);
+        fs::write(&path, b"editable again").unwrap();
+    }
+
+    #[test]
+    fn guarded_commit_fresh_verification_observes_actual_bytes_under_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"before").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        fs::write(output.path(), b"actual replacement").unwrap();
+        let mut observed = false;
+        let guard = edit.commit_tracked_guarded(output, binding, &Default::default(), |candidate| {
+            let mut bytes = [0; 64];
+            let count = candidate.seek_read(&mut bytes, 0).map_err(|e| e.to_string())?;
+            assert_eq!(&bytes[..count], b"actual replacement");
+            let private = PathBuf::from(String::from_utf16(&actual_name(candidate)?).unwrap());
+            assert_ne!(private, path);
+            assert!(!path.exists(), "must verify before publication");
+            assert!(File::options().write(true).open(&private).is_err());
+            assert!(fs::rename(&private, temp.path().join("stolen")).is_err());
+            assert!(fs::remove_file(&private).is_err());
+            // A reader reopened from this exact object can coexist with the
+            // strong DELETE-access guard if its share mode permits DELETE.
+            let reader = reopen(candidate, 0x80000000, 5)?;
+            let count = reader.seek_read(&mut bytes, 0).map_err(|e| e.to_string())?;
+            assert_eq!(&bytes[..count], b"actual replacement");
+            observed = true;
+            Ok(())
+        }).unwrap();
+        assert!(observed);
+        assert_eq!(fs::read(&path).unwrap(), b"actual replacement");
+        drop(guard);
+    }
+
+    #[test]
+    fn guarded_commit_fresh_verification_failure_restores_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"proposal").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        let error = edit.commit_tracked_guarded(output, binding, &Default::default(), |_| {
+            assert!(!path.exists());
+            Err("fresh payload verification rejected".into())
+        }).err().expect("verification must fail");
+        assert!(error.contains("fresh payload verification rejected"), "{error}");
+        assert!(error.contains("Original archive restored"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn guarded_commit_rejects_binding_from_another_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"proposal").unwrap();
+        let other = temp.path().join("other.zip");
+        fs::write(&other, b"proposal").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(&other).unwrap()).unwrap();
+        assert!(edit.commit_tracked_guarded(output, binding, &Default::default(), |_| Ok(())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read(other).unwrap(), b"proposal");
+    }
+
+    #[test]
+    fn guarded_commit_cancel_before_claim_leaves_no_private_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let ctl = super::super::JobControl::new();
+        let edit = EditSource::open_controlled(&path, &ctl).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"verified proposal").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        ctl.cancel();
+        assert!(edit.commit_tracked_guarded(output, binding, &Default::default(), |_| Ok(())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn guarded_commit_early_namespace_failure_leaves_no_private_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"verified proposal").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        // Force an early create_dir error while the correct bound candidate is
+        // still held. Cleanup must close its bridge before removing the stage.
+        fs::write(output.stage.path().join("merge"), b"blocked").unwrap();
+        assert!(edit.commit_tracked_guarded(output, binding, &Default::default(), |_| Ok(())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn guarded_commit_cancel_after_original_claim_restores_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let ctl = super::super::JobControl::new();
+        let edit = EditSource::open_controlled(&path, &ctl).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"proposal").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        assert!(edit.commit_bound_with(output, Some(binding), Some(Box::new(|_| Ok(()))), || {}, || ctl.cancel()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn guarded_commit_bridge_rename_does_not_accept_a_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("guard.zip");
+        fs::write(&path, b"old").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        fs::write(output.path(), b"verified").unwrap();
+        let binding = CandidateIdentityBinding::from_pinned(pin(output.path()).unwrap()).unwrap();
+        let moved = output.path().with_extension("moved");
+        fs::rename(output.path(), &moved).unwrap();
+        fs::write(output.path(), b"impostor").unwrap();
+        assert!(edit.commit_tracked_guarded(output, binding, &Default::default(), |_| Ok(())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old");
+    }
 
     #[test]
     fn replacing_writers_and_in_place_writers_are_denied_while_preparing() {

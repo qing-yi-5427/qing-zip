@@ -339,6 +339,13 @@ pub(crate) struct PinnedSource {
     file: File,
     _parents: Vec<File>,
 }
+impl PinnedSource {
+    // Used only for a continuous handle-to-handle edit handoff: the caller
+    // establishes its replacement guard before releasing this leaf.
+    pub(crate) fn into_handle_parts(self) -> (File, Vec<File>) {
+        (self.file, self._parents)
+    }
+}
 impl std::ops::Deref for PinnedSource {
     type Target = File;
     fn deref(&self) -> &File {
@@ -394,7 +401,7 @@ fn open_name(path: &Path, directory: bool) -> std::io::Result<File> {
 }
 
 #[cfg(windows)]
-fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
+pub(crate) fn pin_parent_names(path: &Path) -> std::io::Result<Vec<File>> {
     let mut parents = Vec::new();
     for ancestor in path.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
         parents.push(open_name(ancestor, true)?);

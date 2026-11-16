@@ -351,7 +351,7 @@ fn save_impl(
 pub fn track(request: &mut Request) -> Option<EditReceipt> {
     if !matches!(
         request.operation.as_str(),
-        "add" | "archive-add" | "archive-copy" | "delete" | "rename" | "comment-set"
+        "add" | "archive-add" | "archive-move" | "archive-copy" | "delete" | "rename" | "comment-set"
     ) {
         return None;
     }
@@ -508,6 +508,7 @@ mod tests {
 
     #[test]
     fn session_graph_saves_siblings_and_descendants_and_retains_external_conflicts() {
+        let _registry = crate::jobs::test_registry_guard();
         cleanup();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

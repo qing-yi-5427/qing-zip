@@ -107,3 +107,21 @@ test('partial copied moves show committed counts and the reason sources remain',
  await new Promise(setImmediate);
  assert.equal(errors.length,1);assert.match(errors[0],/已移动 2 项/);assert.match(errors[0],/1 个源项目仍保留/);assert.match(errors[0],/不支持文件事务/);
 });
+
+test('local to archive Move keeps target folder, credentials and conflict policy',()=>{
+ const body=request(local('C:/source',['C:/source/a.txt']),{...archive(),codepage:936},true,'skip');
+ assert.equal(body.operation,'archive-move');assert.equal(body.dest,'folder/');assert.deepEqual(body.inputs,['C:/source/a.txt']);assert.equal(body.options.password,'secret');assert.equal(body.options.codepage,936);assert.equal(body.options.overwrite,'skip');
+});
+test('archive Move partial cancellation remains visible and refreshes both panes',async()=>{
+ let click;const errors=[],requests=[],browsed=[];const summary='已取消后续移动，压缩包已保存；已移动 1 项，保留来源 2 项';
+ const workspace=create({esc:String,icon:()=>'',render(){},error:e=>errors.push(e),updated(){},run:async body=>{requests.push(body);return body.operation==='list'?{entries:[]}:{target_committed:true,cancelled:true,partial:true,summary,items:[]};},invoke:async(_,v)=>{browsed.push(v.path);return{path:v.path,parent:null,entries:[]};}});
+ Object.assign(workspace.state.panes[0],{loaded:true,path:'C:/source'});Object.assign(workspace.state.panes[1],{loaded:true,kind:'archive',archive:'C:/target.zip',path:'folder/'});workspace.state.panes[0].selected.add('C:/source/a.txt');
+ workspace.mount({querySelector:()=>({addEventListener:(type,fn)=>{if(type==='click')click=fn;}})});click({preventDefault(){},target:{closest:()=>({dataset:{fm:'move',pane:'0'}})}});await new Promise(setImmediate);
+ assert.equal(requests[0].operation,'archive-move');assert.ok(requests.some(r=>r.operation==='list'));assert.deepEqual(browsed,['C:/source']);assert.deepEqual(errors,[summary]);assert.equal(workspace.state.busy,false);
+});
+
+test('archive Move notices identify retained sources without dumping technical fields',()=>{
+ const {archiveMoveNotice}=require('../frontend/file-workspace.js');
+ const message=archiveMoveNotice({summary:'部分移动完成，压缩包已保存',items:[{source:'C:/source/a.txt',status:'copied_retained',reason:'包含未归档的附加数据，保留来源'},{source:'C:/source/b.txt',status:'moved',reason:''},{source:'C:/source/c.txt',status:'uncertain',reason:'无法确认事务回滚，请核查来源和目标'}]});
+ assert.match(message,/a.txt：包含未归档的附加数据/);assert.match(message,/c.txt：无法确认事务回滚/);assert.ok(!message.includes('b.txt'));assert.ok(!message.includes('copied_retained'));
+});

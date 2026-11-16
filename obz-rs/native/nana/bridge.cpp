@@ -22,7 +22,7 @@
 #include <vector>
 
 static_assert(sizeof(QzSelectedTime) == 16);
-static_assert(sizeof(QzSelectedItem) == 96 && offsetof(QzSelectedItem, ctime) == 48);
+static_assert(sizeof(QzSelectedItem) == 96 && offsetof(QzSelectedItem, encrypted) == 44 && offsetof(QzSelectedItem, ctime) == 48);
 static_assert(sizeof(QzSelectedVolume) == 24);
 static_assert(sizeof(QzSelectedHost) == 88 && offsetof(QzSelectedHost, trace) == 80);
 static_assert(sizeof(QzSelectedRequest) == 40);
@@ -538,7 +538,7 @@ bool single_lzma_coder(std::wstring_view method) {
   return !method.empty() && std::all_of(method.begin(), method.end(),
       [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
-void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0) {
+void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0, bool verification = false) {
   // Only the new single-archive fast path declines wrappers/tails. The original
   // listing and complete decoder retain authority over their compatibility;
   // no output handle has been requested. Split and post-decode health stay strict.
@@ -561,8 +561,8 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   { Variant v; exact(arc->GetArchiveProperty(kpidSolid, &v.v), "archive solid flag");
     solid = boolean(v.v, single_mode == 2); }
   UInt32 n = 0; exact(arc->GetNumberOfItems(&n), "manifest item count");
-  if (!n && single_mode) throw UnsupportedLayout{"empty single archive"};
-  if (!n || n > MAX_ITEMS) fail("manifest size limit");
+  if (!n && single_mode && !verification) throw UnsupportedLayout{"empty single archive"};
+  if ((!n && !verification) || n > MAX_ITEMS) fail("manifest size limit");
   state.items.reserve(n); uint64_t name_units = 0, total = 0;
   for (UInt32 i = 0; i < n; ++i) {
     exact(state.check(), "cancelled");
@@ -585,21 +585,29 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
     { Variant v; exact(arc->GetProperty(i, kpidNtSecure, &v.v), "item security property");
       if (v.v.vt != VT_EMPTY) throw UnsupportedLayout{"archived security descriptor"}; }
     { Variant flag; exact(arc->GetProperty(i, kpidEncrypted, &flag.v), "item encryption");
-      bool encrypted = boolean(flag.v);
+      bool encrypted = boolean(flag.v); item.value.encrypted = encrypted;
       Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
-      if (single_mode && encrypted) throw UnsupportedLayout{"encrypted single archive"};
+      if (single_mode && encrypted && !verification) throw UnsupportedLayout{"encrypted single archive"};
       if (single_mode == 2) {
-        if (!method.empty() && method != L"Store" && method != L"Deflate")
+        if (encrypted && verification) {
+          if (state.operation->password.empty()) fail("password required");
+          auto space=method.find(L' ');
+          auto cipher=method.substr(0,space);
+          auto codec=space==std::wstring::npos?std::wstring{}:method.substr(space+1);
+          if ((cipher!=L"AES-128" && cipher!=L"AES-192" && cipher!=L"AES-256" && cipher!=L"ZipCrypto") || (codec!=L"Store" && codec!=L"Deflate")) throw UnsupportedLayout{"unsupported encrypted ZIP method"};
+        } else if (!method.empty() && method != L"Store" && method != L"Deflate")
           throw UnsupportedLayout{"unsupported ZIP method"};
       } else if (encrypted) {
         auto pos = method.find(L" 7zAES:");
-        auto rounds = pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
+        const bool pure_aes = verification && method.starts_with(L"7zAES:");
+        auto rounds = pure_aes ? std::wstring_view(method).substr(6) : pos == std::wstring::npos ? std::wstring_view{} : std::wstring_view(method).substr(pos + 7);
+        auto coder = std::wstring_view(method).substr(0, pos);
         if (state.operation->password.empty() || rounds.empty() || rounds.size() > 2 ||
             !std::all_of(rounds.begin(), rounds.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }) ||
-            !single_lzma_coder(std::wstring_view(method).substr(0, pos))) fail("unexpected encrypted item method");
+            !(single_lzma_coder(coder) || (verification && (pure_aes || coder==L"Copy")))) fail("unexpected encrypted item method");
         has_compressed = true;
-      } else if (item.value.size && !state.operation->password.empty()) fail("mixed encrypted item layout");
+      } else if (item.value.size && !state.operation->password.empty() && !verification) fail("mixed encrypted item layout");
       else if (method == L"Copy") has_copy = true;
       else if (single_lzma_coder(method)) has_compressed = true;
       else if (item.value.size || !method.empty()) {
@@ -638,13 +646,13 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   exact(state.host.accept_manifest(state.host.context, values.data(), n, acknowledgement.data()), "manifest rejected by trusted host");
   bool any = false;
   for (uint8_t b : acknowledgement) { if (b > 1) fail("incomplete or invalid selection acknowledgement"); any |= b != 0; }
-  if (!any) fail("no requested archive entries matched");
+  if (!any && !verification) fail("no requested archive entries matched");
   state.selected.assign(acknowledgement.begin(), acknowledgement.end()); // Host never saw this storage.
 }
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit) {
+static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false, uint32_t cp_present = 0, uint32_t codepage = 0) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -654,6 +662,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     if (called.exchange(true)) fail("one task per isolated worker required");
     if (!request || request->abi_version != 1 || request->struct_bytes != sizeof(QzSelectedRequest) || !request->host)
       fail("invalid request ABI");
+    if (verification && request->reserved != 1 && request->reserved != 2) fail("verification requires single archive mode");
     const auto host_snapshot = *request->host;
     const auto &host = host_snapshot;
     if (host.abi_version != 1 || host.struct_bytes != sizeof(QzSelectedHost) || !host.read_volume_at ||
@@ -683,15 +692,16 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     Ref<IInStream> joined;
     UInt64 start = 0;
     if (request->reserved) {
-      if (units) throw UnsupportedLayout{"password on single archive"};
+      if (units && !verification) throw UnsupportedLayout{"password on single archive"};
       runtime.handler(request->reserved == 1 ? L"7z" : L"zip", request->reserved == 1 ? "7z" : "zip", inner.put());
-      if (thread_limit) {
+      if (thread_limit || cp_present) {
         Ref<ISetProperties> properties;
         exact(inner->QueryInterface(IID_ISetProperties, reinterpret_cast<void **>(properties.put())), "decoder thread property interface");
-        const wchar_t *names[] = {L"mt"};
-        Variant value; value.v.vt = VT_UI4; value.v.ulVal = thread_limit;
-        exact(properties->SetProperties(names, &value.v, 1), "decoder thread limit rejected");
-        exact(host.trace(host.context, QZ_TRACE_THREADS_APPLIED, 0, 0, S_OK, thread_limit), "thread limit acknowledgement failed");
+        const wchar_t *names[2]; PROPVARIANT values[2]{}; uint32_t count=0;
+        if(thread_limit){names[count]=L"mt";values[count].vt=VT_UI4;values[count++].ulVal=thread_limit;}
+        if(cp_present){names[count]=L"cp";values[count].vt=VT_UI4;values[count++].ulVal=codepage;}
+        exact(properties->SetProperties(names, values, count), "decoder properties rejected");
+        if(thread_limit) exact(host.trace(host.context, QZ_TRACE_THREADS_APPLIED, 0, 0, S_OK, thread_limit), "thread limit acknowledgement failed");
       }
       exact(inner->Open(first.get(), &start, inner_callback.get()), "single archive Open failed");
     } else {
@@ -711,7 +721,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     exact(inner->Open(joined.get(), &start, inner_callback.get()), "7z Open failed");
     }
     state = std::make_shared<Shared>(operation);
-    manifest(inner.get(), *state, map.total, request->reserved);
+    manifest(inner.get(), *state, map.total, request->reserved, verification);
     exact(state->check(), "cancelled");
     exact(host.prepare_private_tree(host.context), "private selected directory preparation");
     Ref<IArchiveExtractCallback> callback(new ExtractCallback(state));
@@ -750,6 +760,9 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
 
 extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
   return extract_selected_impl(request, receipt, password, units, 0);
+}
+extern "C" HRESULT __stdcall qz_verify_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads, const wchar_t *password, uint32_t units, uint32_t cp_present, uint32_t codepage) {
+  return extract_selected_impl(request, receipt, password, units, threads, true, cp_present, codepage);
 }
 extern "C" HRESULT __stdcall qz_extract_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads) {
   return extract_selected_impl(request, receipt, nullptr, 0, threads);

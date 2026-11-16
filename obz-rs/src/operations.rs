@@ -131,7 +131,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     if r.operation != "add" && r.options.update_mode != engine::UpdateMode::Add {
         return Err("更新模式仅适用于添加文件".into());
     }
-    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "archive-add" | "archive-copy" | "archive-export" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
+    let archive_operation = matches!(r.operation.as_str(), "capabilities" | "archive-properties" | "list" | "test" | "extract" | "create" | "add" | "archive-add" | "archive-move" | "archive-copy" | "archive-export" | "delete" | "rename" | "preview" | "repair" | "comment-get" | "comment-set" | "recover");
     let policy = archive_operation.then(crate::machine_policy::scope);
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
@@ -208,7 +208,7 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             let source = r.source_archive.as_ref().ok_or("缺少源压缩包参数")?;
             Ok(serde_json::to_value(engine::archive_export_local::copy(&r.path,source,&r.dest,&r.options)?).map_err(|e|e.to_string())?)
         },
-        "add" | "archive-add" | "archive-copy" | "delete" | "rename" => {
+        "add" | "archive-add" | "archive-move" | "archive-copy" | "delete" | "rename" => {
             if !restricted && (crate::installer::recognize(&r.path)?.is_some() || crate::korean::is_supported(&r.path) || crate::legacy::is_supported(&r.path) || crate::stream_formats::is_supported(&r.path) || crate::envelopes::is_supported(&r.path) || crate::rare::supports(&r.path)) {
                 return Err("this archive type is read-only; extract its files and create a new archive".into());
             }
@@ -217,6 +217,11 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
                 engine::archive_export::copy(r.source_archive.as_ref().ok_or("缺少源压缩包参数")?, &r.path, &r.dest, &r.options)?;
                 #[cfg(not(windows))]
                 return Err("文件管理复制仅支持 Windows".into());
+            } else if r.operation == "archive-move" {
+                #[cfg(windows)]
+                return serde_json::to_value(engine::archive_move(&r.path,&r.inputs,&r.dest,&r.options)?).map_err(|e|e.to_string());
+                #[cfg(not(windows))]
+                return Err("文件管理移动仅支持 Windows".into());
             } else if r.operation == "archive-add" {
                 #[cfg(windows)]
                 engine::archive_add(&r.path, &r.inputs, &r.dest, &r.options)?;
