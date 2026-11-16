@@ -102,6 +102,18 @@ try:
   with zipfile.ZipFile(archive) as z:assert z.read('denied.txt')==b'preserve denied fixture' and z.read('data.txt')==b'timestamp GUI proof' and z.read('base.txt')==b'base'
   assert denied.read_bytes()==b'preserve denied fixture';assert sd().raw==before;report['denied_acl_sha256']=hashlib.sha256(before).hexdigest();checked('file-manager-real-attribute-denial-success-with-persistent-warning-and-unchanged-acl')
  finally:assert adv.SetFileSecurityW(str(denied),0x20000004,original)
+ b.click('.qa-dialog-header [data-action=close]')
+ moving=src/'move-me.txt';moving.write_bytes(b'move preservation GUI proof')
+ # Navigate through the actual path form to clear the previous selection.
+ b.fill('[data-fm-path="0"] input',src);b.click('[data-fm="go"][data-pane="0"]');b.wait('Array.from(document.querySelectorAll(`[data-fm="entry"][data-pane="0"]`)).some(e=>e.textContent.includes("move-me.txt"))')
+ index=b.js('Array.from(document.querySelectorAll(`[data-fm="entry"][data-pane="0"]`)).find(e=>e.textContent.includes("move-me.txt")).dataset.index');b.click(f'[data-fm="entry"][data-pane="0"][data-index="{index}"]');b.click('[data-fm="move"]')
+ b.wait('Array.from(document.querySelectorAll(`[data-fm="entry"][data-pane="1"]`)).some(e=>e.textContent.includes("move-me.txt")) && !document.querySelector(`[data-fm="move"]`).disabled')
+ assert not moving.exists()
+ with zipfile.ZipFile(archive) as z:
+  expected={'base.txt':b'base','data.txt':b'timestamp GUI proof','denied.txt':b'preserve denied fixture','move-me.txt':b'move preservation GUI proof'};assert set(z.namelist())==set(expected)
+  for name,payload in expected.items():assert hashlib.sha256(z.read(name)).digest()==hashlib.sha256(payload).digest()
+ b.screenshot('fm-move-completed');checked('real-file-manager-move-removes-only-source-after-full-archive-verification')
+ b.close();assert b.proc.poll() is not None;b=Browser();b.wait('!document.querySelector("[data-action=add]").disabled');b.click('[data-action=add]');b.click('.qa-advanced > summary');assert b.js('document.querySelector("#oa-add-preserve-atime").checked');b.screenshot('remembered-after-process-restart');checked('choice-persists-after-real-process-restart-in-isolated-profile')
  assert dependencies()==bound;report['passed']=True
 except Exception as error:
  report['error']=str(error)

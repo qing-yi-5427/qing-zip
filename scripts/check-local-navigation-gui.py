@@ -127,7 +127,10 @@ try:
  b.click('[data-view="tools"]');time.sleep(.3);stopped=len(metrics()['probes']);time.sleep(4.2);assert len(metrics()['probes'])==stopped;checked('leaving-page-stops-probes');b.click('[data-view="filemanager"]');b.wait('window.__metrics.probes.length>'+str(stopped))
  b.wait('window.__metrics.inflight===0');newsrc=src.with_name('left-renamed');src.rename(newsrc);b.wait('document.querySelector(`[data-fm-pane="0"]`).textContent.includes("无法读取此文件夹")');goto(0,newsrc);checked('watched-root-rename-is-not-blocked-and-old-path-errors')
  goto(1,ancestor/'child');b.wait('window.__metrics.inflight===0');moved=ancestor.with_name('renamed-parent');ancestor.rename(moved);b.wait('document.querySelector(`[data-fm-pane="1"]`).textContent.includes("无法读取此文件夹")');goto(1,moved/'child');assert (moved/'child'/'proof.txt').read_bytes()==b'kept';checked('ancestor-rename-is-not-blocked')
- b.click('[data-fm-auto="1"]');newfile=moved/'child'/'manual.txt';newfile.write_bytes(b'manual');time.sleep(2.3);assert not b.js(has(1,newfile.name));b.click('[data-fm="refresh"][data-pane="1"]');b.wait(has(1,newfile.name));b.click('[data-fm-auto="1"]');checked('auto-off-manual-refresh-and-resume')
+ path_values=b.js('Array.from(document.querySelectorAll("[data-fm-path] input")).map(e=>e.value)')
+ b.click('[data-fm-auto="1"]');assert b.js('Array.from(document.querySelectorAll("[data-fm-path] input")).map(e=>e.value)')==path_values;newfile=moved/'child'/'manual.txt';newfile.write_bytes(b'manual');time.sleep(2.3);assert not b.js(has(1,newfile.name));b.click('[data-fm="refresh"][data-pane="1"]');b.wait(has(1,newfile.name));b.click('[data-fm-auto="1"]');checked('auto-off-manual-refresh-and-resume')
+ assert b.js('Array.from(document.querySelectorAll("[data-fm-path] input")).map(e=>e.value)')==path_values
+ b.click('[data-fm="refresh"][data-pane="1"]');time.sleep(.3);before_probe=len(metrics()['probes']);time.sleep(2.2);assert len(metrics()['probes'])>before_probe;checked('unchanged-manual-refresh-keeps-polling-and-control-values')
  # Inspect only this live GUI process; the largest client area excludes its
  # small hidden/auxiliary windows. Restore no unrelated application.
  U=ctypes.WinDLL('user32');from ctypes import wintypes as W
