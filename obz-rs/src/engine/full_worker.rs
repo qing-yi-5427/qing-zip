@@ -78,9 +78,9 @@ pub(in crate::engine) fn prepare_verification(path:&str,source:&File,opts:&Engin
 fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verification:bool)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
     if opts.threads==Some(0) {return Err("invalid compression settings".into());}
-    if let Some(password)=opts.password.as_deref(){crate::engine_password::validate(password)?;if password.encode_utf16().count()>MAX_PASSWORD_UNITS{return Err("password input length exceeds limit".into());}}
     if !opts.selected.is_empty() || (!verification && (opts.password.is_some() || opts.codepage.is_some())) ||
         crate::machine_policy::scope().restricted() {return Ok(None);}
+    if verification {if let Some(password)=opts.password.as_deref(){crate::engine_password::validate(password)?;if password.encode_utf16().count()>MAX_PASSWORD_UNITS{return Err("password input length exceeds limit".into());}}}
     let mut probe=source.try_clone().map_err(|e|e.to_string())?;
     let mut magic=[0u8;4];probe.rewind().map_err(|e|e.to_string())?;
     if probe.read_exact(&mut magic).is_err(){return Ok(None);}
@@ -256,6 +256,7 @@ mod tests {
         let archive=temp.path().join("good.zip");fixture(&archive,false);let source=crate::engine_stream::pin(&archive).unwrap();
         for password in ["x".repeat(32768),"😀".repeat(16384)]{
             let opts=EngineOptions{password:Some(password),..Default::default()};
+            assert!(prepare(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).unwrap().is_none());
             let error=prepare_verification(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).err().unwrap();assert_eq!(error,"password input length exceeds limit");
             assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
         }
