@@ -538,6 +538,34 @@ bool single_lzma_coder(std::wstring_view method) {
   return !method.empty() && std::all_of(method.begin(), method.end(),
       [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
+// Verification uses the official handler for every coder and every member;
+// these display tokens only constrain eligibility, never replace codec property,
+// dictionary, graph, CRC or completion checks in the handler. Keep the ordinary
+// extraction subset unchanged. Reject unknown/truncated chains before any ACK.
+bool verification_method(std::wstring_view method, bool zip, bool encrypted) {
+  if (method.size() > 512) return false;
+  unsigned count=0, ciphers=0;
+  while (!method.empty()) {
+    auto end=method.find(L' ');auto token=method.substr(0,end);
+    if (token.empty() || ++count>16 || token.size()>128) return false;
+    if (!std::all_of(token.begin(),token.end(),[](wchar_t c){return (c>=L'A'&&c<=L'Z')||(c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9')||c==L':'||c==L'-';})) return false;
+    auto colon=token.find(L':');auto name=token.substr(0,colon);
+    bool cipher=zip ? (name==L"AES-128"||name==L"AES-192"||name==L"AES-256"||name==L"ZipCrypto") : name==L"7zAES";
+    if (cipher) {
+      ++ciphers;if(!encrypted || (zip&&(ciphers>1||count!=1))) return false;
+      if(zip) {if(colon!=token.npos) return false;}
+      else {if(colon==token.npos) return false;auto rounds=token.substr(colon+1);
+        if(rounds.empty()||rounds.size()>2||!std::all_of(rounds.begin(),rounds.end(),[](wchar_t c){return c>=L'0'&&c<=L'9';})) return false;}
+    }
+    else if (zip) {
+      if (name!=L"Store"&&name!=L"Deflate"&&name!=L"Deflate64"&&name!=L"BZip2"&&name!=L"LZMA"&&name!=L"PPMd"&&name!=L"zstd"&&name!=L"xz") return false;
+      if (count!=(encrypted?2u:1u) || end!=method.npos) return false;
+    } else if (name!=L"Copy"&&name!=L"LZMA"&&name!=L"LZMA2"&&name!=L"PPMD"&&name!=L"BZip2"&&name!=L"Deflate"&&name!=L"Deflate64"&&name!=L"ZSTD"&&name!=L"BCJ"&&name!=L"BCJ2"&&name!=L"Delta"&&name!=L"ARM"&&name!=L"ARMT"&&name!=L"ARM64"&&name!=L"IA64"&&name!=L"PPC"&&name!=L"SPARC"&&name!=L"RISCV") return false;
+    if(end==method.npos) break;
+    method.remove_prefix(end+1);if(method.empty()) return false;
+  }
+  return count!=0 && (ciphers!=0)==encrypted && (!zip||count==(encrypted?2u:1u));
+}
 void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0, bool verification = false) {
   // Only the new single-archive fast path declines wrappers/tails. The original
   // listing and complete decoder retain authority over their compatibility;
@@ -589,7 +617,11 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
       Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
       if (single_mode && encrypted && !verification) throw UnsupportedLayout{"encrypted single archive"};
-      if (single_mode == 2) {
+      if (verification) {
+        if (encrypted && state.operation->password.empty()) fail("password required");
+        if (!(method.empty() && item.value.size==0 && !encrypted) && !verification_method(method,single_mode==2,encrypted))
+          throw UnsupportedLayout{"unsupported verification coder chain"};
+      } else if (single_mode == 2) {
         if (encrypted && verification) {
           if (state.operation->password.empty()) fail("password required");
           auto space=method.find(L' ');
@@ -633,7 +665,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   }
   // Only positive layout identifications may defer to the existing decoder.
   // Decide before the manifest ACK, granting output handles, or extracting.
-  if ((solid && !has_compressed) || (has_copy && has_compressed))
+  if (!verification && ((solid && !has_compressed) || (has_copy && has_compressed)))
     throw UnsupportedLayout{"unsupported 7z method combination"};
   state.total = total;
   state.gotten.resize(n); state.prepared.resize(n); state.done.resize(n); state.bytes.resize(n);

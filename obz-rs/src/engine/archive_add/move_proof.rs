@@ -270,6 +270,50 @@ mod tests {
         verify_locked_candidate(&strong(&output),prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
     }
     #[test]
+    fn locked_verification_official_codec_matrix(){
+        use sha2::{Digest,Sha256};
+        let engine=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+        for (format,methods) in [("zip",vec!["Copy","Deflate","Deflate64","BZip2","LZMA","PPMd","ZSTD","XZ"]),("7z",vec!["Copy","LZMA","LZMA2","PPMd","BZip2","Deflate","Deflate64","ZSTD","BCJ","BCJ2","Delta"])]{
+            for method in methods {
+                let temp=tempfile::tempdir().unwrap();let archive=temp.path().join(format!("case.{format}"));let payload=b"codec payload \xe8\0\0\0\0".repeat(8192);fs::write(temp.path().join("a.txt"),&payload).unwrap();
+                let mut args=vec!["a".to_string(),format!("-t{format}"),"-mmt=2".into()];
+                if format=="zip"{args.push(format!("-mm={method}"));}else{args.push(format!("-m0={method}"));if ["BCJ","BCJ2","Delta"].contains(&method){args.push("-m1=LZMA2".into());}}
+                args.extend([archive.display().to_string(),"a.txt".into()]);let output=std::process::Command::new(&engine).current_dir(temp.path()).args(args).output().unwrap();assert!(output.status.success(),"{format}/{method}: {}",String::from_utf8_lossy(&output.stderr));
+                let mut expected=item("a.txt",false);expected.bytes=payload.len() as u64;expected.sha256=Some(Sha256::digest(&payload).into());
+                verify_locked_candidate(&strong(&archive),&Plan{items:vec![expected]},&EngineOptions{threads:Some(2),..Default::default()}).unwrap_or_else(|e|panic!("{format}/{method}: {e}"));
+                eprintln!("verified {format}/{method}");
+            }
+        }
+    }
+    #[test]
+    fn expanded_codecs_actual_move_encryption_corruption_and_cancel(){
+        let engine=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+        for (format,methods) in [("zip",vec!["Deflate64","BZip2","LZMA","PPMd","ZSTD","XZ"]),("7z",vec!["PPMd","BZip2","Deflate","Deflate64","ZSTD","BCJ","BCJ2","Delta"])]{
+            for method in methods {for encrypted in [false,true]{
+                let temp=tempfile::tempdir().unwrap();let archive=temp.path().join(format!("case.{format}"));let payload=b"old payload \xe8\0\0\0\0".repeat(8192);fs::write(temp.path().join("old.txt"),&payload).unwrap();
+                let mut args=vec!["a".to_string(),format!("-t{format}"),"-mmt=2".into()];
+                if format=="zip"{args.push(format!("-mm={method}"));}else{args.push(format!("-m0={method}"));if ["BCJ","BCJ2","Delta"].contains(&method){args.push("-m1=LZMA2".into());}}
+                if encrypted{args.push("-pcodec-fixture".into());args.push(if format=="zip"{"-mem=AES256".into()}else{"-mhe=on".into()});}
+                args.extend([archive.display().to_string(),"old.txt".into()]);let output=std::process::Command::new(&engine).current_dir(temp.path()).args(args).output().unwrap();assert!(output.status.success(),"{format}/{method}/{encrypted}: {}",String::from_utf8_lossy(&output.stderr));
+                let source=temp.path().join("new.txt");fs::write(&source,b"new payload").unwrap();let before=fs::read(&archive).unwrap();
+                let ctl=JobControl::new();let opts=EngineOptions{threads:Some(2),password:encrypted.then(||"codec-fixture".into()),control:Some(ctl.clone()),..Default::default()};
+                // Fresh post-replace verification cancellation must restore the
+                // original bytes, even when the old entry uses a different codec.
+                let cancel=ctl.clone();AFTER_VERIFY.with(|h|*h.borrow_mut()=Some(Box::new(move||cancel.cancel())));
+                assert!(crate::engine::archive_move(archive.to_str().unwrap(),&[source.display().to_string()],"folder",&opts).is_err());assert_eq!(fs::read(&archive).unwrap(),before);assert!(source.exists());
+                let opts=EngineOptions{control:None,..opts};
+                if encrypted{let wrong=EngineOptions{password:Some("wrong-fixture".into()),..opts.clone()};assert!(crate::engine::archive_move(archive.to_str().unwrap(),&[source.display().to_string()],"folder",&wrong).is_err());assert_eq!(fs::read(&archive).unwrap(),before);assert!(source.exists());}
+                let result=crate::engine::archive_move(archive.to_str().unwrap(),&[source.display().to_string()],"folder",&opts).unwrap_or_else(|e|panic!("{format}/{method}/{encrypted}: {e}"));assert!(result.target_committed&&!result.partial,"{result:?}");assert!(!source.exists());
+                let dest=temp.path().join("extract");extract(archive.to_str().unwrap(),dest.to_str().unwrap(),&opts).unwrap();assert_eq!(fs::read(dest.join("old.txt")).unwrap(),payload);assert_eq!(fs::read(dest.join("folder/new.txt")).unwrap(),b"new payload");
+                // Damage actual compressed/encrypted data, leaving the header
+                // inventory readable whenever the native format permits it.
+                let mut corrupt=before;if format=="zip"{let start=30+u16::from_le_bytes(corrupt[26..28].try_into().unwrap()) as usize+u16::from_le_bytes(corrupt[28..30].try_into().unwrap()) as usize;let packed=u32::from_le_bytes(corrupt[18..22].try_into().unwrap()) as usize;assert!(packed>10);corrupt[start+packed/2]^=0x55;}else{corrupt[40]^=0x55;}
+                fs::write(&archive,&corrupt).unwrap();assert!(test(archive.to_str().unwrap(),&opts).is_err(),"fixture corruption must be independently rejected {format}/{method}/{encrypted}");fs::write(&source,b"new payload").unwrap();assert!(crate::engine::archive_move(archive.to_str().unwrap(),&[source.display().to_string()],"folder",&opts).is_err(),"corrupt {format}/{method}/{encrypted}");assert_eq!(fs::read(&archive).unwrap(),corrupt);assert!(source.exists());
+                eprintln!("real Move {format}/{method}/encrypted={encrypted}: cancel, success, CRC rejection");
+            }}
+        }
+    }
+    #[test]
     fn locked_merge_only_directory_verifies_all_content_without_outputs() {
         for format in ["zip","7z"] {
             let temp=tempfile::tempdir().unwrap();let seed=temp.path().join("docs");fs::create_dir(&seed).unwrap();fs::write(seed.join("old.txt"),b"old content").unwrap();
