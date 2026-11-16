@@ -538,7 +538,7 @@ bool single_lzma_coder(std::wstring_view method) {
   return !method.empty() && std::all_of(method.begin(), method.end(),
       [](wchar_t c) { return c >= L'0' && c <= L'9'; });
 }
-void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0) {
+void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0, bool verification = false) {
   // Only the new single-archive fast path declines wrappers/tails. The original
   // listing and complete decoder retain authority over their compatibility;
   // no output handle has been requested. Split and post-decode health stay strict.
@@ -638,13 +638,13 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   exact(state.host.accept_manifest(state.host.context, values.data(), n, acknowledgement.data()), "manifest rejected by trusted host");
   bool any = false;
   for (uint8_t b : acknowledgement) { if (b > 1) fail("incomplete or invalid selection acknowledgement"); any |= b != 0; }
-  if (!any) fail("no requested archive entries matched");
+  if (!any && !verification) fail("no requested archive entries matched");
   state.selected.assign(acknowledgement.begin(), acknowledgement.end()); // Host never saw this storage.
 }
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit) {
+static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -654,6 +654,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     if (called.exchange(true)) fail("one task per isolated worker required");
     if (!request || request->abi_version != 1 || request->struct_bytes != sizeof(QzSelectedRequest) || !request->host)
       fail("invalid request ABI");
+    if (verification && request->reserved != 1 && request->reserved != 2) fail("verification requires single archive mode");
     const auto host_snapshot = *request->host;
     const auto &host = host_snapshot;
     if (host.abi_version != 1 || host.struct_bytes != sizeof(QzSelectedHost) || !host.read_volume_at ||
@@ -711,7 +712,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     exact(inner->Open(joined.get(), &start, inner_callback.get()), "7z Open failed");
     }
     state = std::make_shared<Shared>(operation);
-    manifest(inner.get(), *state, map.total, request->reserved);
+    manifest(inner.get(), *state, map.total, request->reserved, verification);
     exact(state->check(), "cancelled");
     exact(host.prepare_private_tree(host.context), "private selected directory preparation");
     Ref<IArchiveExtractCallback> callback(new ExtractCallback(state));
@@ -750,6 +751,9 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
 
 extern "C" HRESULT __stdcall qz_extract_selected_with_password(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units) {
   return extract_selected_impl(request, receipt, password, units, 0);
+}
+extern "C" HRESULT __stdcall qz_verify_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads) {
+  return extract_selected_impl(request, receipt, nullptr, 0, threads, true);
 }
 extern "C" HRESULT __stdcall qz_extract_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads) {
   return extract_selected_impl(request, receipt, nullptr, 0, threads);

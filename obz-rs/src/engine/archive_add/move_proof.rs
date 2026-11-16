@@ -130,7 +130,7 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
     let mut options=opts.clone();options.selected.clear();options.overwrite="error".into();
     // Name is a decoder hint only. prepare obtains every input byte through
     // reader; the existing single-volume probe chooses ZIP or 7z by content.
-    let (entries,pending)=selected_worker::full_worker::prepare("move-proof-candidate",&reader,&options,&ctl)?
+    let (entries,pending)=selected_worker::full_worker::prepare_verification("move-proof-candidate",&reader,&options,&ctl)?
         .ok_or("当前候选格式、密码、编码或策略不支持固定句柄验证，原包与源文件保持不变")?;
     let pending=pending.ok_or("候选成员数超过固定句柄验证上限，原包与源文件保持不变")?;
     let occupied=inventory(entries.clone())?;
@@ -139,16 +139,12 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
         if occupied.get(&key(&item.member))!=Some(&item.directory){return Err("Candidate member/type mismatch".into());}
     }
     options.selected=wanted.iter().filter(|i|!i.directory).map(|i|i.member.clone()).collect();
-    if options.selected.is_empty() {
-        // Worker requires at least one existing selection. Select only proven
-        // empty directory leaves, never a merged directory containing old data.
-        options.selected=wanted.iter().filter(|i|i.directory && !occupied.keys().any(|name|name.starts_with(&(key(&i.member)+"/")))).map(|i|i.member.clone()).collect();
-        if options.selected.is_empty(){return Err("没有可供固定句柄验证的文件或空目录，源保持不变".into());}
-    }
+    use selected_worker::full_worker::VerificationOutput;
+    let output=if options.selected.is_empty(){VerificationOutput::None}else{VerificationOutput::Members};
     let stage=ShellDragDirectory::create_named("qing-zip-locked-move-proof-")?;
     let data=stage.path().join("verified");fs::create_dir(&data).map_err(|e|e.to_string())?;
     let mut guards=CheckedDirectories::default();
-    pending.decode(&entries,&options,&data,&mut guards,&ctl)?;
+    pending.verify(&entries,&options,&data,&mut guards,&ctl,output)?;
     #[cfg(test)]
     AFTER_EXTRACT.with(|hook| {if let Some(run)=hook.borrow_mut().take(){run(&data);}});
     for item in wanted {
@@ -283,6 +279,18 @@ mod tests {
         drop(result);
         AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|{assert!(!data.join("untouched.bin").exists());assert!(!data.join("folder/docs/a.txt").exists());})));
         verify_locked_candidate(&strong(&output),prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
+    }
+    #[test]
+    fn locked_merge_only_directory_verifies_all_content_without_outputs() {
+        for format in ["zip","7z"] {
+            let temp=tempfile::tempdir().unwrap();let seed=temp.path().join("docs");fs::create_dir(&seed).unwrap();fs::write(seed.join("old.txt"),b"old content").unwrap();
+            let archive=temp.path().join(format!("candidate.{format}"));
+            create(archive.to_str().unwrap(),&[seed.display().to_string()],format,&EngineOptions::default()).unwrap();
+            let plan=Plan{items:vec![item("docs",true)]};
+            AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|assert_eq!(fs::read_dir(data).unwrap().count(),0))));
+            verify_locked_candidate(&strong(&archive),&plan,&EngineOptions::default()).unwrap();
+            assert_eq!(fs::read(seed.join("old.txt")).unwrap(),b"old content");
+        }
     }
     #[test]
     fn proof_real_sevenz_candidate_checks_selected_payload_and_full_archive() {

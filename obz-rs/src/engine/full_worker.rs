@@ -8,6 +8,7 @@ pub(in crate::engine) struct Pending {
     _image: crate::engine_stream::PinnedSource,
     nonce: [u8;16],
     manifest: (u8,Vec<u8>),
+    verification: bool,
 }
 
 fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
@@ -55,6 +56,17 @@ fn acknowledge_threads(body:&[u8],nonce:&[u8;16],requested:Option<u32>,already_a
 
 pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
+    prepare_impl(path,source,opts,ctl,false)
+}
+// Verification grants capabilities only after the complete manifest is checked.
+// Unlike full extraction, its handle budget depends on requested outputs, not
+// total entries. Password, policy, format and inventory limits remain unchanged.
+pub(in crate::engine) fn prepare_verification(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl)
+    ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
+    prepare_impl(path,source,opts,ctl,true)
+}
+fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verification:bool)
+    ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
     if opts.threads==Some(0) {return Err("invalid compression settings".into());}
     if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() ||
         crate::machine_policy::scope().restricted() {return Ok(None);}
@@ -65,7 +77,7 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
         // Exclusion only: this EOCD count grants no payload or output access.
         // Ineligible jobs retain the original complete listing and CRC checks;
         // avoid rewalking every central/local header solely to decline them.
-        if zip_volume_view::single_disk_record(&mut probe)?
+        if !verification && zip_volume_view::single_disk_record(&mut probe)?
             .is_some_and(|record| !record.zip64 && usize::from(record.entries)>MAX_OUTPUT_HANDLES) {
             return Ok(None);
         }
@@ -73,7 +85,7 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
         // This is a decline-only hint, never authority to publish. Counts include
         // directories; conservative declines retain the complete original listing
         // and CRC-verified decoder. Do not spawn a child we cannot grant outputs to.
-        if layout.first_local!=0 || layout.count==0 || layout.count>MAX_OUTPUT_HANDLES as u64 {return Ok(None);}
+        if layout.first_local!=0 || layout.count==0 || layout.count>MAX_ITEMS as u64 || (!verification && layout.count>MAX_OUTPUT_HANDLES as u64) {return Ok(None);}
         2
     } else if zip_input_probe::signature(&mut probe)?==Some("7z") {1}else{return Ok(None)};
     // Existing positioned ZIP listing handles SFX/extension aliases; preserve it.
@@ -96,7 +108,7 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
     request.extend_from_slice(&1u32.to_le_bytes());request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081)?.to_le_bytes());
     request.extend_from_slice(&source.metadata().map_err(|e|e.to_string())?.len().to_le_bytes());
     wide(&mut request,OsStr::new(if mode==1{"input.7z"}else{"input.zip"}))?;
-    request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&mode.to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());session.send(11,request,ctl)?;
+    request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&(mode+if verification{2}else{0}).to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());session.send(11,request,ctl)?;
     let mut encrypted_header=false;
     let mut threads_applied=opts.threads.is_none();
     loop {
@@ -106,11 +118,11 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
             2=> {
                 if !threads_applied {return Err("worker did not confirm decoder thread limit".into());}
                 let entries=manifest_entries(&frame.1,&nonce)?;
-                if entries.iter().filter(|e|!e.is_dir).count()>MAX_OUTPUT_HANDLES {
+                if !verification && entries.iter().filter(|e|!e.is_dir).count()>MAX_OUTPUT_HANDLES {
                     // No output capability was granted. Session Drop reaps the waiting child.
                     return Ok(Some((entries,None)));
                 }
-                return Ok(Some((entries,Some(Pending{session,_runtime:runtime_pins,_image:image,nonce,manifest:frame}))));
+                return Ok(Some((entries,Some(Pending{session,_runtime:runtime_pins,_image:image,nonce,manifest:frame,verification}))));
             },
             8=> {
                 acknowledge_threads(&frame.1,&nonce,opts.threads,threads_applied)?;
@@ -121,7 +133,7 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
             5=> {
                 if encrypted_header {return Ok(None);}
                 let mut stats=Stats{code:-1,..Default::default()};
-                let used=consume_session(&mut session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame))?;
+                let used=consume_session(&mut session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested)?;
                 if used{return Err("full worker completed without manifest".into());}
                 return Ok(None);
             },
@@ -129,10 +141,18 @@ pub(in crate::engine) fn prepare(path:&str,source:&File,opts:&EngineOptions,ctl:
         }
     }
 }
+pub(in crate::engine) enum VerificationOutput { None, Members }
 impl Pending {
-    pub(in crate::engine) fn decode(mut self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl)->Result<(),String> {
+    pub(in crate::engine) fn decode(self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl)->Result<(),String> {
+        self.decode_impl(entries,opts,root,guards,ctl,OutputPlan::Requested)
+    }
+    pub(in crate::engine) fn verify(self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,output:VerificationOutput)->Result<(),String> {
+        if !self.verification{return Err("verification requires dedicated worker mode".into());}
+        self.decode_impl(entries,opts,root,guards,ctl,match output{VerificationOutput::None=>OutputPlan::None,VerificationOutput::Members=>OutputPlan::Requested})
+    }
+    fn decode_impl(mut self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,output:OutputPlan)->Result<(),String> {
         let mut stats=Stats{code:-1,..Default::default()};
-        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest))?;
+        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest),output)?;
         if !used {return Err("full worker declined after approved manifest".into());}
         if PhaseTimer::enabled(){eprintln!("OA_FULL_WORKER decoded={} completed={}",stats.decoded,stats.completed);}
         Ok(())
@@ -171,6 +191,58 @@ mod tests {
     fn reap_proof() {
         let children=TEST_CHILDREN.with(|v|std::mem::take(&mut *v.borrow_mut()));assert!(!children.is_empty());
         for child in children {assert_eq!(unsafe{WaitForSingleObject(child.as_raw_handle(),0)},0,"worker must be reaped before returning");}
+    }
+    #[test]
+    fn verification_zero_outputs_and_large_inventory_enforce_actual_handle_budget() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("many.zip");
+        let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());
+        for i in 0..600 {zip.start_file(format!("{i}.txt"),zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();zip.write_all(b"abc").unwrap();}
+        zip.finish().unwrap();let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();
+        let opts=EngineOptions::default();assert!(prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().is_none());
+        for mode in 0..3 {
+            let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+            assert_eq!(entries.len(),600);let stage=temp.path().join(format!("stage-{mode}"));fs::create_dir(&stage).unwrap();
+            let mut options=opts.clone();if mode==1{options.selected=vec!["599.txt".into()];}
+            let result=pending.unwrap().verify(&entries,&options,&stage,&mut CheckedDirectories::default(),&ctl,
+                if mode==0{VerificationOutput::None}else{VerificationOutput::Members});
+            if mode==2 {assert!(result.unwrap_err().contains("handle budget"));assert_eq!(fs::read_dir(&stage).unwrap().count(),0);}
+            else {result.unwrap();assert_eq!(fs::read_dir(&stage).unwrap().count(),mode);if mode==1{assert_eq!(fs::read(stage.join("599.txt")).unwrap(),b"abc");}}
+            reap_proof();
+        }
+    }
+    #[test]
+    fn verification_large_sevenz_materializes_only_the_requested_file() {
+        let temp=tempfile::tempdir().unwrap();let input=temp.path().join("inputs");fs::create_dir(&input).unwrap();
+        for i in 0..513{fs::write(input.join(format!("{i}.txt")),b"abc").unwrap();}
+        let archive=temp.path().join("many.7z");crate::engine::create(archive.to_str().unwrap(),&[input.display().to_string()],"7z",&EngineOptions::default()).unwrap();
+        let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();let opts=EngineOptions::default();
+        let (_,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();assert!(pending.is_none());reap_proof();
+        let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        let selected=entries.iter().find(|e|e.name.ends_with("/512.txt")).unwrap().name.clone();
+        let stage=temp.path().join("stage");fs::create_dir(&stage).unwrap();
+        let options=EngineOptions{selected:vec![selected.clone()],..Default::default()};
+        pending.unwrap().verify(&entries,&options,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::Members).unwrap();reap_proof();
+        assert_eq!(fs::read(stage.join(selected)).unwrap(),b"abc");assert_eq!(fs::read_dir(stage.join("inputs")).unwrap().count(),1);
+    }
+    #[test]
+    fn verification_zero_outputs_rejects_corruption_cancel_and_wrong_mode() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let opts=EngineOptions::default();let ctl=JobControl::new();let stage=temp.path().join("stage");fs::create_dir(&stage).unwrap();
+        {
+            let source=crate::engine_stream::pin(&archive).unwrap();
+            let (entries,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+            assert!(pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::None).unwrap_err().contains("dedicated"));reap_proof();
+            let (entries,pending)=prepare(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+            // Deliberately bypass the typed public guard to exercise native mode 1/2 rejection.
+            assert!(pending.unwrap().decode_impl(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,OutputPlan::None).is_err());reap_proof();
+            let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();ctl.cancel();
+            assert!(pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::None).is_err());reap_proof();
+        }
+        let mut bytes=fs::read(&archive).unwrap();let offset=bytes.windows(3).position(|b|b==b"abc").unwrap();bytes[offset]^=1;fs::write(&archive,bytes).unwrap();
+        let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();
+        let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();
+        assert!(pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::None).is_err());
+        assert_eq!(fs::read_dir(&stage).unwrap().count(),0);reap_proof();
     }
     #[test]
     fn pending_manifest_grants_nothing_until_approval_and_cancel_reaps_child() {

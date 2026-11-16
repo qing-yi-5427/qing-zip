@@ -694,12 +694,14 @@ fn run(
     if let Some(password) = password {
         session.send(6, SecretFrame::new(password), ctl)?;
     }
-    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None)
+    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested)
 }
+#[derive(Clone,Copy)]
+enum OutputPlan { Requested, None }
 #[allow(clippy::too_many_arguments)]
 fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&EngineOptions,
     root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,stats:&mut Stats,
-    mut initial:Frame)->Result<bool,String> {
+    mut initial:Frame, output:OutputPlan)->Result<bool,String> {
     let password = opts.password.as_deref();
     let full_bytes = entries
         .iter()
@@ -717,7 +719,11 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
         }
         match kind {
             2 if accepted.is_none() => {
-                let members = acknowledge(&mut data, entries, opts)?;
+                let mut members = acknowledge(&mut data, entries, opts)?;
+                if matches!(output,OutputPlan::None){for member in &mut members{member.chosen=false;}}
+                if members.iter().filter(|m|m.chosen && !entries[m.entry].is_dir).count()>MAX_OUTPUT_HANDLES {
+                    return Err("verification output handle budget exceeded".into());
+                }
                 let mut ack = nonce.to_vec();
                 ack.extend_from_slice(&(members.len() as u32).to_le_bytes());
                 for member in &members {
@@ -778,7 +784,7 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
                 let selection = Selection::new(&opts.selected);
                 let selected_bytes = entries
                     .iter()
-                    .filter(|e| selection.contains(&e.name))
+                    .filter(|e| matches!(output,OutputPlan::Requested) && selection.contains(&e.name))
                     .map(|e| e.size)
                     .sum::<u64>();
                 let valid = accepted.is_some()

@@ -110,6 +110,11 @@ HRESULT __stdcall qz_extract_selected(
 HRESULT __stdcall qz_extract_single_with_threads(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *, uint32_t);
 
+// Internal worker verification mode: all-item decode/CRC with explicit zero
+// output permitted. Ordinary extraction continues to reject empty selections.
+HRESULT __stdcall qz_verify_single_with_threads(
+    const struct QzSelectedRequest *, struct QzSelectedReceipt *, uint32_t);
+
 // Borrowed only until return. Decoders may request a caller-owned BSTR.
 HRESULT __stdcall qz_extract_selected_with_password(
     const struct QzSelectedRequest *, struct QzSelectedReceipt *, const wchar_t *, uint32_t);
