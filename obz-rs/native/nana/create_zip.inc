@@ -35,6 +35,8 @@ struct Record {
   uint64_t id, size, modified, created, accessed;
   DWORD attributes;
   // Logical archive timestamps are separate from physical source proof.
+  HANDLE direct_root = nullptr;
+  DWORD volume = 0;
   bool snapshot_time = false;
   std::array<uint64_t, 3> archive_time{}; // C, A, M
   bool directory() const {
@@ -181,6 +183,13 @@ public:
   }
   File open(const Record &r) const {
     live();
+    if (r.direct_root) {
+      // ReOpenFile keeps identity tied to the granted root but gives every
+      // GetStream an independent file pointer (DuplicateHandle would not).
+      HANDLE h=ReOpenFile(r.direct_root,0x100081,FILE_SHARE_READ,FILE_FLAG_OPEN_REPARSE_POINT);
+      win(h!=INVALID_HANDLE_VALUE,"cannot reopen granted file root");
+      return File(h);
+    }
     UNICODE_STRING name{};
     name.Buffer = const_cast<wchar_t *>(r.name.data());
     name.Length = name.MaximumLength =
@@ -218,14 +227,14 @@ public:
         (i.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
       fail("source is not an ordinary disk entry");
     if (((i.dwFileAttributes ^ r.attributes) & FILE_ATTRIBUTE_DIRECTORY) ||
-        id != r.id)
+        id != r.id || (r.volume && i.dwVolumeSerialNumber!=r.volume))
       fail("source identity changed");
     if (!r.directory() &&
         (i.dwFileAttributes != r.attributes ||
          ticks(i.ftLastWriteTime) != r.modified || size != r.size))
       fail("source size or timestamp changed");
   }
-  void enumerate(HANDLE root, std::wstring name) {
+  void enumerate(HANDLE root, std::wstring name, bool direct=false) {
     wchar_t fs[32]{};
     win(GetVolumeInformationByHandleW(root, nullptr, 0, nullptr, nullptr,
                                       nullptr, fs, 32),
@@ -234,14 +243,20 @@ public:
       throw NotEligible{};
     BY_HANDLE_FILE_INFORMATION i{};
     win(GetFileInformationByHandle(root, &i), "root metadata");
-    if ((i.dwFileAttributes &
-         (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) !=
-        FILE_ATTRIBUTE_DIRECTORY)
+    if ((i.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+        (!direct && !(i.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) || GetFileType(root)!=FILE_TYPE_DISK)
       fail("invalid source root");
+    if (direct && !(i.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      append({name,name,nullptr,(uint64_t(i.nFileIndexHigh)<<32)|i.nFileIndexLow,
+        (uint64_t(i.nFileSizeHigh)<<32)|i.nFileSizeLow,ticks(i.ftLastWriteTime),ticks(i.ftCreationTime),ticks(i.ftLastAccessTime),i.dwFileAttributes});
+      items.back().direct_root=root;items.back().volume=i.dwVolumeSerialNumber;
+      return;
+    }
     append({name, name, nullptr,
             (uint64_t(i.nFileIndexHigh) << 32) | i.nFileIndexLow, 0,
             ticks(i.ftLastWriteTime), ticks(i.ftCreationTime),
             ticks(i.ftLastAccessTime), i.dwFileAttributes});
+    items.back().volume=i.dwVolumeSerialNumber;
     struct Folder {
       HANDLE h;
       std::wstring path;
@@ -291,6 +306,7 @@ public:
                      uint64_t(e.CreationTime.QuadPart),
                      uint64_t(e.LastAccessTime.QuadPart),
                      e.FileAttributes};
+            r.volume=i.dwVolumeSerialNumber;
             append(std::move(r));
             auto &entry = items.back();
             if (entry.directory()) {
@@ -364,7 +380,7 @@ struct SnapshotOptions {
 // The parent captures times before any child lookup. Never round-trip that
 // snapshot through filesystem timestamps: legitimate readers can change atime.
 static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
-                                const std::wstring &container) {
+                                const std::wstring &container, bool direct=false) {
   if (!data || size < 4 || size > 64u * 1024 * 1024)
     fail("invalid timestamp manifest");
   auto read = [&](size_t n) -> const BYTE * {
@@ -373,7 +389,7 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
   };
   auto u32 = [&]() { uint32_t v; memcpy(&v, read(4), 4); return v; };
   auto u64 = [&]() { uint64_t v; memcpy(&v, read(8), 8); return v; };
-  struct Times { bool directory; std::array<uint64_t,3> values; };
+  struct Times { bool directory; std::array<uint64_t,3> values; DWORD volume=0; uint64_t id=0,size=0; DWORD attributes=0; uint64_t created=0,modified=0; };
   std::map<std::wstring,Times> snapshots;
   const uint32_t count = u32();
   // Minimum record size also bounds count before allocating anything.
@@ -393,6 +409,7 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
     }
     const uint32_t dir=u32(); if (dir>1) fail("invalid timestamp type");
     Times t{dir!=0,{u64(),u64(),u64()}};
+    if(direct) {t.volume=u32();t.id=u64();t.size=u64();t.attributes=u32();t.created=u64();t.modified=u64();}
     if (!snapshots.emplace(std::move(path),t).second)
       fail("duplicate timestamp projection");
   }
@@ -402,23 +419,29 @@ static void apply_time_snapshot(Source &src, const BYTE *data, size_t size,
   projected.reserve(src.items.size());
   bool root=false;
   for (auto &r:src.items) {
-    if (r.path==container) {
+    if (!direct && r.path==container) {
       if (root || !r.directory()) fail("invalid snapshot container");
       root=true; continue;
     }
-    if (r.path.compare(0,prefix.size(),prefix)!=0)
+    if (!direct && r.path.compare(0,prefix.size(),prefix)!=0)
       fail("snapshot member escaped container");
-    const std::wstring path=r.path.substr(prefix.size());
+    const std::wstring path=direct?r.path:r.path.substr(prefix.size());
     auto it=snapshots.find(path);
     if (it==snapshots.end() || it->second.directory!=r.directory())
       fail("timestamp manifest differs from verified members");
+    if(direct) {
+      const auto &p=it->second;
+      if(r.volume!=p.volume || r.id!=p.id || r.attributes!=p.attributes ||
+          r.created!=p.created || r.modified!=p.modified || (!r.directory() && r.size!=p.size))
+        fail("original source differs from parent physical manifest");
+    }
     r.path=path;
     r.snapshot_time=true;
     r.archive_time=it->second.values;
     snapshots.erase(it);
     projected.push_back(std::move(r));
   }
-  if (!root || !snapshots.empty()) fail("incomplete timestamp manifest");
+  if ((!direct && !root) || !snapshots.empty()) fail("incomplete timestamp manifest");
   src.items=std::move(projected);
 }
 
@@ -709,7 +732,7 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
                                  HANDLE root, const wchar_t *name,
                                  HANDLE output, DWORD level, DWORD threads,
                                  DWORD explicit_method, char *message,
-                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0, const zip_create::SnapshotOptions *snapshot_options=nullptr, uint64_t output_base=0) noexcept {
+                                 size_t capacity, bool seven, DWORD dictionary, DWORD solid, DWORD times=0, uint64_t *latest=nullptr, const BYTE *snapshot=nullptr, size_t snapshot_size=0, const zip_create::SnapshotOptions *snapshot_options=nullptr, uint64_t output_base=0, const std::vector<std::pair<HANDLE,std::wstring>> *direct_roots=nullptr) noexcept {
   using namespace zip_create;
   bool started=false;
   try {
@@ -787,8 +810,12 @@ static HRESULT qz_create_archive(const wchar_t *runtime, HANDLE owner,
     }
     if (n) exact(settings->SetProperties(keys, props, n), "set archive compression options");
     }
-    src.enumerate(root, name);
-    if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name);
+    if(direct_roots) {
+      for(const auto &r:*direct_roots) src.enumerate(r.first,r.second,true);
+      std::sort(src.items.begin(),src.items.end(),[](const Record &a,const Record &b){return path_order(a.path,b.path)<0;});
+      for(size_t i=1;i<src.items.size();++i) if(!path_order(src.items[i-1].path,src.items[i].path)) fail("duplicate direct source projection");
+    } else src.enumerate(root, name);
+    if (snapshot) apply_time_snapshot(src,snapshot,snapshot_size,name,direct_roots!=nullptr);
     // 7z stores zero-byte entries without requesting GetStream. Validate and
     // retain their deny-write/delete handles through UpdateItems as well.
     if (seven) for (const auto &r : src.items) {
@@ -857,4 +884,71 @@ extern "C" HRESULT qz_create_snapshot(const wchar_t *runtime,HANDLE owner,HANDLE
    return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,options.manifest,options.manifest_size,&options,output_base);
  } catch(const Failure &e) {if(message&&capacity)strncpy_s(message,capacity,e.reason,_TRUNCATE);return FAILED(e.hr)?e.hr:E_FAIL;}
  catch(...) {return E_FAIL;}
+}
+
+// Direct-source protocol: independently bounded roots followed by the existing
+// property/password section and a physical+logical manifest generated by parent.
+extern "C" HRESULT qz_create_direct(const wchar_t *runtime,HANDLE owner,HANDLE root,const wchar_t *name,HANDLE output,
+ DWORD level,DWORD threads,DWORD explicit_method,DWORD dictionary,DWORD solid,DWORD seven,DWORD times,
+ const BYTE *snapshot,size_t snapshot_size,uint64_t output_base,uint64_t *latest,char *message,size_t capacity) noexcept {
+ if(seven>1 || !snapshot || snapshot_size>64u*1024*1024) return E_INVALIDARG;
+ try {
+   auto take=[&](size_t n){if(n>snapshot_size)fail("truncated direct source roots");const BYTE *p=snapshot;snapshot+=n;snapshot_size-=n;return p;};
+   auto u32=[&](){uint32_t v;memcpy(&v,take(4),4);return v;};
+   uint32_t count=u32();if(!count || count>snapshot_size/14)fail("invalid source root count");
+   std::vector<std::pair<HANDLE,std::wstring>> roots;roots.reserve(count);
+   for(uint32_t i=0;i<count;++i) {
+     uint64_t handle;memcpy(&handle,take(8),8);uint32_t units=u32();
+     if(!units || units>255)fail("invalid source root projection");
+     std::wstring name(units,L'\0');memcpy(name.data(),take(size_t(units)*2),size_t(units)*2);
+     if(!zip_create::valid_leaf(name) || !handle)fail("invalid source root");
+     roots.emplace_back(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handle)),std::move(name));
+   }
+   zip_create::SnapshotOptions options(snapshot,snapshot_size);
+   return qz_create_archive(runtime,owner,root,name,output,level,threads,explicit_method,message,capacity,seven!=0,dictionary,solid,times,latest,options.manifest,options.manifest_size,&options,output_base,&roots);
+ } catch(const Failure &e) {if(message&&capacity)strncpy_s(message,capacity,e.reason,_TRUNCATE);return FAILED(e.hr)?e.hr:E_FAIL;}
+ catch(...) {return E_FAIL;}
+}
+
+// Parent-side traversal helpers. Relative, non-reparse opens never re-resolve
+// an ancestor pathname; enumeration returns one bounded page of actual names.
+extern "C" HRESULT qz_create_input_open(HANDLE parent,const wchar_t *name,DWORD access,DWORD share,HANDLE *result) noexcept {
+ if(!parent||!name||!result)return E_INVALIDARG;*result=nullptr;
+ try {
+   std::wstring_view leaf(name);if(!zip_create::valid_leaf(leaf))fail("invalid source leaf");
+   using Open=NTSTATUS(NTAPI *)(PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES,PIO_STATUS_BLOCK,PLARGE_INTEGER,ULONG,ULONG,ULONG,ULONG,PVOID,ULONG);
+   auto open=reinterpret_cast<Open>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"NtCreateFile"));if(!open)return E_NOTIMPL;
+   UNICODE_STRING text{};text.Buffer=const_cast<wchar_t *>(name);text.Length=text.MaximumLength=static_cast<USHORT>(leaf.size()*2);
+   OBJECT_ATTRIBUTES object{};object.Length=sizeof(object);object.RootDirectory=parent;object.ObjectName=&text;object.Attributes=0x1000;
+   IO_STATUS_BLOCK io{};HANDLE handle=nullptr;
+   NTSTATUS status=open(&handle,access|SYNCHRONIZE,&object,&io,nullptr,0,share,FILE_OPEN,0x00200000|0x20|0x4000,nullptr,0);
+   if(status<0)return HRESULT_FROM_NT(status);
+   *result=handle;return S_OK;
+ }catch(const Failure &e){return FAILED(e.hr)?e.hr:E_FAIL;}catch(...){return E_FAIL;}
+}
+extern "C" HRESULT qz_create_input_names(HANDLE directory,DWORD restart,BYTE *names,DWORD capacity,DWORD *used) noexcept {
+ if(!directory||!names||!used||capacity<65536||restart>1)return E_INVALIDARG;*used=0;
+ try {
+   alignas(8) std::array<BYTE,65536> buffer{};
+   if(!GetFileInformationByHandleEx(directory,restart?FileIdBothDirectoryRestartInfo:FileIdBothDirectoryInfo,buffer.data(),DWORD(buffer.size()))) {
+     DWORD error=GetLastError();return error==ERROR_NO_MORE_FILES?S_FALSE:HRESULT_FROM_WIN32(error);
+   }
+   size_t offset=0;
+   for(;;) {
+     constexpr size_t header=offsetof(FILE_ID_BOTH_DIR_INFO,FileName);
+     if(offset>buffer.size()-header)fail("invalid directory page");
+     auto &e=*reinterpret_cast<const FILE_ID_BOTH_DIR_INFO *>(buffer.data()+offset);
+     if(e.FileNameLength%2||e.FileNameLength>buffer.size()-offset-header)fail("invalid directory name");
+     std::wstring_view name(e.FileName,e.FileNameLength/2);
+     if(name!=L"."&&name!=L"..") {
+       if(!zip_create::valid_leaf(name))fail("invalid source leaf");
+       if(e.FileNameLength>capacity-*used || capacity-*used-e.FileNameLength<4)fail("directory page exceeds bound");
+       DWORD units=e.FileNameLength/2;memcpy(names+*used,&units,4);memcpy(names+*used+4,name.data(),e.FileNameLength);*used+=4+e.FileNameLength;
+     }
+     if(!e.NextEntryOffset)break;
+     if(e.NextEntryOffset<header||e.NextEntryOffset%8||e.NextEntryOffset>buffer.size()-offset)fail("invalid directory offset");
+     offset+=e.NextEntryOffset;
+   }
+   return S_OK;
+ }catch(const Failure &e){return FAILED(e.hr)?e.hr:E_FAIL;}catch(...){return E_FAIL;}
 }

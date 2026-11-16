@@ -1,14 +1,14 @@
 import os,sys,json,hashlib,shutil,subprocess,time,argparse,tempfile
 from pathlib import Path
 ap=argparse.ArgumentParser(description='Native create helper handshake, safe fallback and mixed-version acceptance; synthetic files only')
-ap.add_argument('--caps7-helper',type=Path,required=True);ap.add_argument('--caps3-helper',type=Path,required=True);ap.add_argument('--cli',type=Path,required=True);ap.add_argument('--old-cli',type=Path,required=True);ap.add_argument('--old-helper',type=Path,required=True);ap.add_argument('--workspace',type=Path,required=True)
+ap.add_argument('--caps15-helper',type=Path,required=True);ap.add_argument('--caps7-helper',type=Path,required=True);ap.add_argument('--caps3-helper',type=Path,required=True);ap.add_argument('--cli',type=Path,required=True);ap.add_argument('--old-cli',type=Path,required=True);ap.add_argument('--old-helper',type=Path,required=True);ap.add_argument('--workspace',type=Path,required=True)
 a=ap.parse_args();BIN=a.cli.resolve(strict=True).parent;OLDCLI=a.old_cli.resolve(strict=True);OLDHELPER=a.old_helper.resolve(strict=True)
 OUT=Path(tempfile.mkdtemp(prefix='create-helper-proof-',dir=a.workspace.resolve(strict=True)))
 PKG=OUT/'package';PKG.mkdir();shutil.copy2(BIN/'obz.exe',PKG/'obz.exe');shutil.copytree(BIN/'runtime',PKG/'runtime')
 NEW=OUT/'new-helper.exe';shutil.copy2(BIN/'obz-worker.exe',NEW)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 def dependency_binding():
- files={Path(__file__).resolve(),BIN/'obz.exe',BIN/'obz-worker.exe',OLDCLI,OLDHELPER,a.caps3_helper.resolve(),a.caps7_helper.resolve()}
+ files={Path(__file__).resolve(),BIN/'obz.exe',BIN/'obz-worker.exe',OLDCLI,OLDHELPER,a.caps3_helper.resolve(),a.caps7_helper.resolve(),a.caps15_helper.resolve()}
  files.update(p for p in (BIN/'runtime').rglob('*') if p.is_file())
  files.update(p for p in (PKG/'runtime').rglob('*') if p.is_file())
  manifest=BIN/'freeze-manifest.json'
@@ -35,7 +35,7 @@ rust=OUT/'fault.rs';rust.write_text(r"""use std::{io::{self,Read,Write},fs,env,t
 fn send(k:u8,b:&[u8]) {let mut o=io::stdout().lock();o.write_all(&[k]).unwrap();o.write_all(&(b.len() as u32).to_le_bytes()).unwrap();o.write_all(b).unwrap();o.flush().unwrap();}
 fn recv()->(u8,Vec<u8>) {let mut i=io::stdin().lock();let mut h=[0;5];i.read_exact(&mut h).unwrap();let n=u32::from_le_bytes(h[1..5].try_into().unwrap()) as usize;assert!(n<=1024);let mut b=vec![0;n];i.read_exact(&mut b).unwrap();let path=env::var("QING_CREATE_TRACE").unwrap();let mut f=fs::OpenOptions::new().append(true).create(true).open(path).unwrap();writeln!(f,"{} {}",h[0],n).unwrap();(h[0],b)}
 fn main(){let m=env::var("QING_CREATE_FAULT").unwrap();if m=="exit0"{return}if m=="exit1"{std::process::exit(1)}if m=="exit3"{std::process::exit(3)}if m=="timeout"{std::thread::sleep(Duration::from_secs(30));return}
-let mut hello=[1u32.to_le_bytes(),15u32.to_le_bytes()].concat();if m=="version"{hello[0]=2}if m=="caps"{hello[4]=1}if m=="legacycaps"{hello[4]=3}if m=="legacytimes"{hello[4]=7}send(if m=="unknown"{99}else{49},&hello);
+let mut hello=[1u32.to_le_bytes(),31u32.to_le_bytes()].concat();if m=="version"{hello[0]=2}if m=="caps"{hello[4]=1}if m=="legacycaps"{hello[4]=3}if m=="legacytimes"{hello[4]=7}if m=="legacysnapshot"{hello[4]=15}send(if m=="unknown"{99}else{49},&hello);
 let (_,mut nonce)=recv();if m=="nonce"{nonce[0]^=1}if m=="longack"{nonce.push(0)}send(51,&nonce);
 if ["version","caps","unknown","nonce","longack"].contains(&m.as_str()){std::thread::sleep(Duration::from_secs(30));return}
 let _=recv();send(47,&[]);if m=="afterbegin"{send(41,&[])}else{send(43,b"fixture error after encoding began")};}
@@ -64,17 +64,17 @@ for mode in ['caps3actual','new','missing','old','legacycaps','version','caps','
 # nonce/handle grants; malformed or ambiguous protocols remain hard failures.
 mini=OUT/'snapshot-source';mini.mkdir();(mini/'a.txt').write_bytes(b'snapshot protocol proof')
 report['snapshot_rows']=[]
-for mode in ['new','missing','old','caps3actual','caps7actual','legacycaps','legacytimes','nonce','unknown','afterbegin','aftererror']:
+for mode in ['new','missing','old','caps3actual','caps7actual','caps15actual','legacycaps','legacytimes','legacysnapshot','nonce','unknown','afterbegin','aftererror']:
  helper=PKG/'obz-worker.exe'
  if helper.exists():helper.unlink()
- if mode!='missing':shutil.copy2(NEW if mode=='new' else OLDHELPER if mode=='old' else a.caps3_helper if mode=='caps3actual' else a.caps7_helper if mode=='caps7actual' else stub,helper)
+ if mode!='missing':shutil.copy2(NEW if mode=='new' else OLDHELPER if mode=='old' else a.caps3_helper if mode=='caps3actual' else a.caps7_helper if mode=='caps7actual' else a.caps15_helper if mode=='caps15actual' else stub,helper)
  trace=OUT/('snapshot-'+mode+'.trace');dest=OUT/('snapshot-'+mode+'.7z')
  env={**os.environ,'OPEN_ARCHIVE_PROFILE':'1','QING_CREATE_FAULT':mode,'QING_CREATE_TRACE':str(trace)}
  p=run([PKG/'obz.exe','create',dest,mini,'--format','7z','--store-atime'],env=env)
- expected=mode in ['new','missing','old','caps3actual','caps7actual','legacycaps','legacytimes'];frames=trace.read_text().splitlines() if trace.exists() else []
+ expected=mode in ['new','missing','old','caps3actual','caps7actual','caps15actual','legacycaps','legacytimes','legacysnapshot'];frames=trace.read_text().splitlines() if trace.exists() else []
  row={'mode':mode,'exit':p.returncode,'received_frames':frames,'expected_success':expected,'stderr':p.stderr.decode(errors='replace')};report['snapshot_rows'].append(row);save()
  assert (p.returncode==0)==expected,row
- if mode in ['legacycaps','legacytimes']:assert not frames,row
+ if mode in ['legacycaps','legacytimes','legacysnapshot']:assert not frames,row
  if expected:
   assert 'OA_CREATE_SNAPSHOT status=complete' in row['stderr'],row
   decoded=OUT/('snapshot-decoded-'+mode)
@@ -82,7 +82,7 @@ for mode in ['new','missing','old','caps3actual','caps7actual','legacycaps','leg
   assert (decoded/'snapshot-source/a.txt').read_bytes()==b'snapshot protocol proof';row['verified_content']=True
  else:
   assert not dest.exists() and 'OA_PHASE engine-process' not in row['stderr'],row
-  if mode in ['afterbegin','aftererror']:assert len(frames)==2 and frames[1].startswith('54 '),row
+  if mode in ['afterbegin','aftererror']:assert len(frames)==2 and frames[1].startswith('55 '),row
  save();print('snapshot',mode,'passed',flush=True)
 # Old parent continues using its original create entry despite a new helper beside it.
 shutil.copy2(NEW,PKG/'obz-worker.exe');shutil.copy2(OLDCLI,PKG/'obz.exe')

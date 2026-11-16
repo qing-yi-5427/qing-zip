@@ -1,10 +1,42 @@
-//! Private input snapshot used only for explicitly stored access timestamps.
-//! Traversal may change source directory atime; snapshot it before child lookup,
-//! copy with the existing complete local-stream proofs, then send immutable times.
+//! Immutable parent time metadata and complete original-source proofs.
+//! Snapshot each directory before child lookup; read originals through retained
+//! identity pins, never copy the input tree or write its timestamps.
 use super::*;
+use std::os::windows::io::AsRawHandle;
+type Handle = *mut std::ffi::c_void;
 use sha2::{Digest,Sha256};
 use super::file_parts::copy_hash;
 use std::{ffi::OsString,os::windows::{fs::{MetadataExt,OpenOptionsExt}}};
+
+extern "C" {
+    fn qz_create_input_open(parent:Handle,name:*const u16,access:u32,share:u32,result:*mut Handle)->i32;
+    fn qz_create_input_names(directory:Handle,restart:u32,names:*mut u8,capacity:u32,used:*mut u32)->i32;
+}
+fn open_child(parent:&File,name:&std::ffi::OsStr,access:u32,share:u32)->Result<File,String>{
+    use std::os::windows::{ffi::OsStrExt,io::FromRawHandle};
+    let name=name.encode_wide().chain(Some(0)).collect::<Vec<_>>();let mut handle=std::ptr::null_mut();
+    let hr=unsafe{qz_create_input_open(parent.as_raw_handle(),name.as_ptr(),access,share,&mut handle)};
+    if hr<0{return Err(format!("relative source open failed: {hr:#x}"));}
+    if handle.is_null(){return Err("relative source handle missing".into());}
+    Ok(unsafe{File::from_raw_handle(handle)})
+}
+fn each_name(directory:&File,ctl:&JobControl,mut visit:impl FnMut(OsString)->Result<(),String>)->Result<(),String>{
+    use std::os::windows::ffi::OsStringExt;
+    let mut page=[0u8;65536];let mut first=true;
+    loop {
+        ctl.check()?;let mut used=0;
+        let hr=unsafe{qz_create_input_names(directory.as_raw_handle(),u32::from(first),page.as_mut_ptr(),page.len() as u32,&mut used)};
+        if hr==1{return Ok(());}if hr<0{return Err(format!("source directory enumeration failed: {hr:#x}"));}
+        first=false;let mut at=0;let used=used as usize;if used>page.len(){return Err("invalid source directory page".into());}
+        while at<used {
+            ctl.check()?;if used-at<4{return Err("truncated source name".into());}
+            let units=u32::from_le_bytes(page[at..at+4].try_into().unwrap()) as usize;at+=4;
+            if units==0||units>(used-at)/2{return Err("invalid source name length".into());}
+            let name=page[at..at+units*2].chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]])).collect::<Vec<_>>();at+=units*2;
+            visit(OsString::from_wide(&name))?;
+        }
+    }
+}
 
 pub(super) struct Snapshot {
     path: PathBuf,
@@ -12,6 +44,7 @@ pub(super) struct Snapshot {
     source: File,
     metadata: fs::Metadata,
     identity: (u32,u64),
+    logical_time:[u64;3],
     digest: [u8;32],
     pub(super) children: Vec<OsString>,
 }
@@ -25,7 +58,7 @@ impl Snapshot {
         if PhaseTimer::enabled() && relative.components().count()==1 {eprintln!("OA_TIME_CAPTURE atime={}",metadata.last_access_time());}
         // Metadata was obtained before streams or any child-name resolution.
         Ok(Self{path:path.to_owned(),relative:relative.to_owned(),source:source.try_clone().map_err(|e|e.to_string())?,
-            metadata:metadata.clone(),identity:directory_identity(source)?,digest:digest(source,ctl)?,children:Vec::new()})
+            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:digest(source,ctl)?,children:Vec::new()})
     }
     fn verify(&self,ctl:&JobControl)->Result<(),String>{
         ctl.check()?;let now=self.source.metadata().map_err(|e|e.to_string())?;
@@ -35,22 +68,25 @@ impl Snapshot {
             return Err("creation source changed while preparing timestamp snapshot".into());
         }
         if now.is_dir(){
-            let mut actual=Vec::new();for entry in fs::read_dir(&self.path).map_err(|e|e.to_string())? {ctl.check()?;actual.push(entry.map_err(|e|e.to_string())?.file_name());}
+            let mut actual=Vec::new();each_name(&self.source,ctl,|name|{actual.push(name);Ok(())})?;
             let mut expected=self.children.clone();actual.sort();expected.sort();
             if actual!=expected{return Err("creation source directory entries changed".into());}
         }
         Ok(())
     }
 }
-// Source and copied-file pins are released before private-tree cleanup.
+// Original source and ancestor pins remain held through encoder exit and final
+// verification. No source data is copied and no source timestamp is written.
 pub(super) struct Prepared {
-    snapshots:Vec<Snapshot>,
-    targets:Vec<File>,
-    target_digests:Vec<[u8;32]>,
-    pub(super) roots:Vec<PathBuf>,
-    _stage:ShellDragDirectory,
+    snapshots: Vec<Snapshot>,
+    ancestors: Vec<File>,
+    root_indices: Vec<usize>,
+    pub(super) roots: Vec<PathBuf>,
 }
 impl Prepared {
+    pub(super) fn root_handles(&self)->impl Iterator<Item=(&Path,&File)> {
+        self.root_indices.iter().map(|&i| (self.snapshots[i].path.as_path(),&self.snapshots[i].source))
+    }
     pub(super) fn snapshot_manifest(&self)->Result<Vec<u8>,String>{
         use std::os::windows::ffi::OsStrExt;
         let mut out=Vec::new();
@@ -63,48 +99,80 @@ impl Prepared {
             out.extend_from_slice(&(units.len() as u32).to_le_bytes());
             for u in units {out.extend_from_slice(&u.to_le_bytes());}
             out.extend_from_slice(&u32::from(s.metadata.is_dir()).to_le_bytes());
-            for v in [s.metadata.creation_time(),s.metadata.last_access_time(),s.metadata.last_write_time()] {out.extend_from_slice(&v.to_le_bytes());}
+            for v in s.logical_time {out.extend_from_slice(&v.to_le_bytes());}
+            // Physical proof is independent from logical archive time values.
+            out.extend_from_slice(&s.identity.0.to_le_bytes());
+            out.extend_from_slice(&s.identity.1.to_le_bytes());
+            out.extend_from_slice(&s.metadata.file_size().to_le_bytes());
+            out.extend_from_slice(&s.metadata.file_attributes().to_le_bytes());
+            out.extend_from_slice(&s.metadata.creation_time().to_le_bytes());
+            out.extend_from_slice(&s.metadata.last_write_time().to_le_bytes());
             if out.len()>64*1024*1024 {return Err("timestamp manifest exceeds bounded worker message budget".into());}
         }
         Ok(out)
     }
-    pub(super) fn container(&self)->&Path {self._stage.path()}
-    pub(super) fn trace_root(&self,label:&str)->Result<(),String>{
-        if PhaseTimer::enabled(){for (s,t) in self.snapshots.iter().zip(&self.targets).filter(|(s,_)|s.relative.components().count()==1){eprintln!("OA_TIME_POINT stage={} expected={} actual={}",label,s.metadata.last_access_time(),t.metadata().map_err(|e|e.to_string())?.last_access_time());}}
-        Ok(())
-    }
+    pub(super) fn trace_root(&self,_label:&str)->Result<(),String>{Ok(())}
     pub(super) fn verify(&self,ctl:&JobControl)->Result<(),String>{
-        for ((snapshot,target),expected) in self.snapshots.iter().zip(&self.targets).zip(&self.target_digests) {
-            snapshot.verify(ctl)?;
-            if digest(target,ctl)?!=*expected{return Err("private creation input changed".into());}
+        for ancestor in &self.ancestors {
+            ctl.check()?;
+            let m=crate::private_stage::checked_metadata(ancestor)?;
+            if !m.is_dir() || m.file_attributes()&0x400!=0 {return Err("source ancestor changed".into());}
         }
+        for snapshot in &self.snapshots {snapshot.verify(ctl)?;}
         Ok(())
     }
 }
-pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&JobControl)->Result<Prepared,String>{
+pub(super) fn prepare(paths:&[PathBuf],parent:&Path,_opts:&EngineOptions,ctl:&JobControl)->Result<Prepared,String>{
+    use std::os::windows::ffi::OsStrExt;
     ctl.check()?;reject_output_in_inputs(parent,paths)?;
-    let stage=ShellDragDirectory::create_named_in(parent,"qing-zip-create-times-")?;
-    let mut snapshots=Vec::new();let mut copy_options=EngineOptions::default();copy_options.control=Some(ctl.clone());
-    let inputs=paths.iter().map(|p|p.display().to_string()).collect::<Vec<_>>();
-    let copied=file_workspace::copy_for_archive(&inputs,stage.path().to_str().ok_or("invalid private input path")?,&copy_options,&mut snapshots)?;
-    if copied.skipped!=0 || !copied.metadata_not_merged.is_empty() || copied.copied+copied.copied_directories!=snapshots.len(){return Err("incomplete private creation input".into());}
-    let mut targets=Vec::new();
-    for snapshot in &snapshots {
-        ctl.check()?;let path=stage.path().join(&snapshot.relative);no_links(&path)?;
-        let target=File::options().access_mode(0x80000000).share_mode(1).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?;
-        if target.metadata().map_err(|e|e.to_string())?.file_attributes()&0x400!=0{return Err("private input link rejected".into());}
-        targets.push(target);
+    let mut ancestors:Vec<File>=Vec::new();let mut held=std::collections::HashMap::new();
+    let mut budget=0usize;
+    // Top-down pins make subsequent path lookup unable to retarget an ancestor.
+    for root in paths {
+        for path in root.ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+            if !held.contains_key(path) {
+                budget=budget.checked_add(path.as_os_str().encode_wide().count()*2+128).ok_or("source pin budget overflow")?;
+                if budget>64*1024*1024{return Err("source pin metadata budget exceeded".into());}
+                let file=if let Some(parent)=path.parent() {
+                    open_child(&ancestors[*held.get(parent).ok_or("missing ancestor pin")?],path.file_name().ok_or("invalid ancestor leaf")?,0x80,3)?
+                }else{File::options().access_mode(0x80).share_mode(3).custom_flags(0x02200000).open(path).map_err(|e|e.to_string())?};
+                let m=crate::private_stage::checked_metadata(&file)?;
+                if !m.is_dir()||m.file_attributes()&0x400!=0{return Err("linked source ancestor rejected".into());}
+                held.insert(path.to_owned(),ancestors.len());ancestors.push(file);
+            }
+        }
     }
-    let roots=paths.iter().map(|p|stage.path().join(p.file_name().unwrap())).collect();
-    // The existing publisher proved every source/target stream mapping. EFS
-    // may legitimately derive different target certificate policy; pin its
-    // complete published digest instead of requiring identical certificate bytes.
-    let target_digests=targets.iter().map(|file|digest(file,ctl)).collect::<Result<Vec<_>,_>>()?;
-    let ready=Prepared{snapshots,targets,target_digests,roots,_stage:stage};ready.verify(ctl)?;
-    // Archive times are immutable protocol records. The private tree retains
-    // whatever times its safe publisher supplied; no filesystem timestamp is
-    // used to transport the snapshot to the encoder.
-    let _=opts;Ok(ready)
+    let mut snapshots=Vec::new();let mut root_indices=Vec::new();
+    let mut first_times=std::collections::HashMap::new();
+    for root in paths {
+        root_indices.push(snapshots.len());
+        let parent=root.parent().ok_or("missing source parent")?;
+        let parent=ancestors[*held.get(parent).ok_or("source parent pin missing")?].try_clone().map_err(|e|e.to_string())?;
+        let mut pending=vec![(root.to_owned(),PathBuf::from(root.file_name().ok_or("missing source name")?),parent)];
+        while let Some((path,relative,parent_pin))=pending.pop() {
+            ctl.check()?;
+            budget=budget.checked_add((path.as_os_str().encode_wide().count()+relative.as_os_str().encode_wide().count())*2+256).ok_or("source pin budget overflow")?;
+            if budget>64*1024*1024{return Err("source pin metadata budget exceeded".into());}
+            let file=open_child(&parent_pin,path.file_name().ok_or("missing source leaf")?,0x80000000,1)?;
+            let metadata=crate::private_stage::checked_metadata(&file)?;
+            if metadata.file_attributes()&0x400!=0 || (!metadata.is_dir()&&!metadata.is_file()){return Err("linked or special create input rejected".into());}
+            let mut snapshot=Snapshot::capture(&path,&relative,&file,&metadata,ctl)?;
+            // A physical file may legitimately appear at several logical paths
+            // (overlapping input roots or hardlinks). Keep its first time snapshot.
+            snapshot.logical_time=*first_times.entry(snapshot.identity).or_insert(snapshot.logical_time);
+            if metadata.is_dir() {
+                each_name(&file,ctl,|name| {
+                    // Bound scheduled names as well as completed node records.
+                    budget=budget.checked_add((path.as_os_str().encode_wide().count()+relative.as_os_str().encode_wide().count()+name.encode_wide().count()*2)*2+128).ok_or("source traversal budget overflow")?;
+                    if budget>64*1024*1024{return Err("source traversal metadata budget exceeded".into());}
+                    snapshot.children.push(name.clone());pending.push((path.join(&name),relative.join(name),file.try_clone().map_err(|e|e.to_string())?));Ok(())
+                })?;
+            }
+            snapshots.push(snapshot);
+        }
+    }
+    let ready=Prepared{snapshots,ancestors,root_indices,roots:paths.to_vec()};
+    ready.snapshot_manifest()?;ready.verify(ctl)?;Ok(ready)
 }
 
 #[cfg(test)]
@@ -168,6 +236,69 @@ pub(super) fn split_and_publish(archive:&Path,output:&Path,bytes:u64,opts:&Engin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_sources_remain_pinned_without_copy_and_detect_new_children() {
+        let root=tempfile::tempdir().unwrap();let source=root.path().join("input");fs::create_dir(&source).unwrap();
+        let file=source.join("a.txt");fs::write(&file,b"source data").unwrap();
+        let opts=EngineOptions::default();let ctl=JobControl::new();
+        let prepared=prepare(&[source.clone()],root.path(),&opts,&ctl).unwrap();
+        assert_eq!(prepared.roots,vec![source.clone()]);assert_eq!(prepared.snapshots.len(),2);
+        assert!(File::options().write(true).open(&file).is_err());
+        assert!(fs::rename(&file,source.join("moved")).is_err());
+        assert!(fs::rename(&source,root.path().join("renamed")).is_err());
+        prepared.verify(&ctl).unwrap();
+        fs::write(source.join("late.txt"),b"new child").unwrap();
+        assert!(prepared.verify(&ctl).is_err());
+        drop(prepared);assert_eq!(fs::read(file).unwrap(),b"source data");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(),1);
+    }
+    #[test]
+    fn direct_file_roots_and_overlap_cancellation_preserve_sources() {
+        let root=tempfile::tempdir().unwrap();let dir=root.path().join("dir");fs::create_dir(&dir).unwrap();
+        let file=dir.join("file");fs::write(&file,b"immutable").unwrap();
+        let opts=EngineOptions::default();let ctl=JobControl::new();
+        let prepared=prepare(&[file.clone()],root.path(),&opts,&ctl).unwrap();
+        assert_eq!(prepared.root_handles().count(),1);assert_eq!(prepared.snapshots.len(),1);
+        assert!(!prepared.snapshots[0].metadata.is_dir());
+        ctl.cancel();assert!(prepared.verify(&ctl).unwrap_err().contains("cancel"));drop(prepared);
+        let overlap=prepare(&[dir,file.clone()],root.path(),&opts,&JobControl::new()).unwrap();
+        assert_eq!(overlap.snapshots.len(),3);
+        assert_eq!(overlap.snapshots[1].logical_time,overlap.snapshots[2].logical_time);drop(overlap);
+        assert_eq!(fs::read(file).unwrap(),b"immutable");
+    }
+    #[test]
+    fn direct_encoding_rejects_late_children_and_cancel_without_publication() {
+        for cancel in [false,true] {
+            let root=tempfile::tempdir().unwrap();let source=root.path().join("source");fs::create_dir(&source).unwrap();
+            let input=source.join("random.bin");let mut bytes=vec![0u8;8*1024*1024];let mut seed=31u64;
+            for b in &mut bytes {seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;*b=seed as u8;}
+            fs::write(&input,&bytes).unwrap();let output=root.path().join("out.7z");
+            let ctl=JobControl::new();let finished=std::sync::atomic::AtomicBool::new(false);
+            let (result,observed)=std::thread::scope(|scope|{
+                let worker=scope.spawn(||{
+                    let deadline=std::time::Instant::now()+Duration::from_secs(30);
+                    while std::time::Instant::now()<deadline && !finished.load(Ordering::SeqCst) {
+                        let progress=ctl.snapshot();
+                        if progress.phase=="compressing"&&progress.percent.is_some() {
+                            assert!(fs::rename(&input,source.join("replacement")).is_err());
+                            assert!(File::options().write(true).open(&input).is_err());
+                            if cancel {ctl.cancel();}else{fs::write(source.join("late.txt"),b"late source child").unwrap();}
+                            return true;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    false
+                });
+                let result=create_with_control(output.to_str().unwrap(),&[source.display().to_string()],"7z",
+                    &EngineOptions{store_atime:Some(true),threads:Some(1),..Default::default()},&ctl);
+                finished.store(true,Ordering::SeqCst);(result,worker.join().unwrap())
+            });
+            assert!(observed,"native encoding did not become observable: {result:?}");
+            assert!(result.is_err());assert!(!output.exists());
+            assert_eq!(fs::read(input).unwrap(),bytes);
+            if !cancel {assert_eq!(fs::read(source.join("late.txt")).unwrap(),b"late source child");}
+        }
+    }
     #[test]
     fn internal_snapshot_pin_budget_fails_closed_without_changing_normal_default() {
         let directory=tempfile::tempdir().unwrap();
