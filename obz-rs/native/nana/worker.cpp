@@ -91,6 +91,7 @@ struct Worker {
   }
   uint32_t single_mode = 0;
   bool verification = false;
+  uint32_t cp_present = 0, codepage = 0;
   uint32_t thread_limit = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
     auto r = channel.read(kind); r.take(nonce.data(), nonce.size());
@@ -112,7 +113,7 @@ struct Worker {
       volumes.push_back({leaves.back().c_str(), uint32_t(leaves.back().size()), 0, size});
     }
     auto units = r.get<uint32_t>();
-    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode < 1 || single_mode > 4) throw std::runtime_error("invalid single archive mode"); verification = single_mode > 2; if (verification) single_mode -= 2; }
+    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode != 1 && single_mode != 2 && single_mode != 5 && single_mode != 6) throw std::runtime_error("invalid single archive mode"); verification = single_mode > 2; if (verification) { single_mode -= 4; cp_present=r.get<uint32_t>(); codepage=r.get<uint32_t>(); if(cp_present>1 || (!cp_present && codepage)) throw std::runtime_error("invalid codepage field"); } }
     if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
     if (units) {
@@ -148,6 +149,7 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
       put(msg, e.name_units); append(msg, e.name, size_t(e.name_units) * 2);
       put(msg, e.size); put(msg, e.is_dir); put(msg, e.attrs_present); put(msg, e.attrs);
       put(msg, e.crc_present); put(msg, e.crc);
+      if(w.verification) put(msg,e.encrypted);
       for (auto t : {e.ctime, e.atime, e.mtime}) { put(msg, t.present); put(msg, t.filetime_100ns); }
     }
     w.channel.send(2, msg);
@@ -222,7 +224,7 @@ static int selected_worker_main(const wchar_t *runtime, bool single) noexcept {
                         open_output, write_output, close_output, cancelled, progress, observe};
     QzSelectedRequest req{1, sizeof(QzSelectedRequest), runtime, w.volumes.data(),
                           uint32_t(w.volumes.size()), w.single_mode, &host};
-    QzSelectedReceipt result{}; HRESULT hr = single ? (w.verification ? qz_verify_single_with_threads(&req, &result, w.thread_limit) : qz_extract_single_with_threads(&req, &result, w.thread_limit)) : qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
+    QzSelectedReceipt result{}; HRESULT hr = single ? (w.verification ? qz_verify_single_with_threads(&req, &result, w.thread_limit, w.password.data(), static_cast<uint32_t>(w.password.size()), w.cp_present, w.codepage) : qz_extract_single_with_threads(&req, &result, w.thread_limit)) : qz_extract_selected_with_password(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()));
     Bytes msg = w.message(); put(msg, uint32_t(hr)); put(msg, result.outcome); put(msg, result.item_count);
     put(msg, result.completion_count); put(msg, result.item_errors); put(msg, result.block_errors);
     put(msg, result.streams_open); put(msg, result.decoded_bytes); put(msg, result.selected_bytes);

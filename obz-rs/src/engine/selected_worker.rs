@@ -579,6 +579,9 @@ fn acknowledge(
     if data.u32()? as usize != entries.len() {
         return Err("archive manifest changed before extraction".into());
     }
+    acknowledge_mode(data,entries,opts,false)
+}
+fn acknowledge_mode(data:&mut Fields,entries:&[Entry],opts:&EngineOptions,verification:bool)->Result<Vec<Member>,String> {
     let mut available = std::collections::HashMap::new();
     for (i, entry) in entries.iter().enumerate() {
         available.insert(entry.name.replace('\\', "/"), i);
@@ -598,9 +601,10 @@ fn acknowledge(
         let attrs = data.u32()?;
         let has_crc = data.bit()?;
         let crc = data.u32()?;
+        let encrypted=if verification{data.bit()?}else{entry.encrypted};
         let times = [data.time()?, data.time()?, data.time()?];
         let kind = (attrs >> 16) & 0xf000;
-        if entry.size != size
+        if entry.encrypted != encrypted || entry.size != size
             || entry.is_dir != directory
             || attrs & 0x400 != 0
             || !matches!(kind, 0 | 0x4000 | 0x8000)
@@ -694,14 +698,14 @@ fn run(
     if let Some(password) = password {
         session.send(6, SecretFrame::new(password), ctl)?;
     }
-    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested)
+    consume_session(&mut session, nonce, entries, opts, root, guards, ctl, stats, None, OutputPlan::Requested,false)
 }
 #[derive(Clone,Copy)]
 enum OutputPlan { Requested, None }
 #[allow(clippy::too_many_arguments)]
 fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&EngineOptions,
     root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,stats:&mut Stats,
-    mut initial:Frame, output:OutputPlan)->Result<bool,String> {
+    mut initial:Frame, output:OutputPlan,verification:bool)->Result<bool,String> {
     let password = opts.password.as_deref();
     let full_bytes = entries
         .iter()
@@ -719,7 +723,8 @@ fn consume_session(session: &mut Session, nonce:[u8;16], entries:&[Entry],opts:&
         }
         match kind {
             2 if accepted.is_none() => {
-                let mut members = acknowledge(&mut data, entries, opts)?;
+                if data.u32()? as usize != entries.len(){return Err("archive manifest changed before extraction".into());}
+                let mut members = acknowledge_mode(&mut data, entries, opts,verification)?;
                 if matches!(output,OutputPlan::None){for member in &mut members{member.chosen=false;}}
                 if members.iter().filter(|m|m.chosen && !entries[m.entry].is_dir).count()>MAX_OUTPUT_HANDLES {
                     return Err("verification output handle budget exceeded".into());

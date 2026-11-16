@@ -335,8 +335,8 @@ mod tests {
         }}
     }
     #[test]
-    fn proof_locked_declines_password_and_rejects_unselected_damage() {
-        for mode in ["password","crc","sha","cancel"] {
+    fn proof_locked_rejects_unselected_damage() {
+        for mode in ["crc","sha","cancel"] {
             let (temp,original,local,old)=fixture();let ctl=JobControl::new();let mut opts=EngineOptions{overwrite:"overwrite".into(),control:Some(ctl.clone()),..Default::default()};
             let mut plan=prepare_for_move_proof(&original,&[local.join("docs").display().to_string()],"folder",&opts).unwrap();
             let output=temp.path().join("candidate.zip");candidate(&plan,&old,&output);
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_guarded_encrypted_candidate_decline_restores_original_archive() {
+    fn proof_guarded_wrong_password_restores_original_archive() {
         let (temp,_,local,_)=fixture();let original=temp.path().join("encrypted.7z");
         let opts=EngineOptions{password:Some("fixture-password".into()),overwrite:"overwrite".into(),..Default::default()};
         create(original.to_str().unwrap(),&[local.join("docs").display().to_string()],"7z",&opts).unwrap();
@@ -396,7 +396,8 @@ mod tests {
         let source=edit_source::EditSource::open_controlled(&original,&control(&opts)).unwrap();let output=source.output().unwrap();fs::copy(&original,output.path()).unwrap();
         archive_add(output.path().to_str().unwrap(),&[local.join("docs").display().to_string()],"nested",&opts).unwrap();
         let binding=edit_source::CandidateIdentityBinding::from_pinned(crate::engine_stream::pin(output.path()).unwrap()).unwrap();
-        let result=source.commit_tracked_guarded(output,binding,&opts,|exact|verify_locked_candidate(exact,prepared.proof.as_ref().unwrap(),&opts));
+        let wrong=EngineOptions{password:Some("wrong-password".into()),..opts.clone()};
+        let result=source.commit_tracked_guarded(output,binding,&opts,|exact|verify_locked_candidate(exact,prepared.proof.as_ref().unwrap(),&wrong));
         assert!(result.is_err());assert_eq!(fs::read(&original).unwrap(),before);assert!(local.join("docs/a.txt").exists());
     }
 

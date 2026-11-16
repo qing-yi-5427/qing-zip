@@ -18,10 +18,13 @@ thread_local! {
 }
 
 fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
+    manifest_entries_mode(body,nonce,false)
+}
+fn manifest_entries_mode(body:&[u8],nonce:&[u8;16],verification:bool)->Result<Vec<Entry>,String> {
     let mut data=Fields(body);
     if data.take(16)? != nonce {return Err("full worker nonce mismatch".into());}
     let count=data.u32()? as usize;
-    if count==0 || count>MAX_ITEMS {return Err("full worker manifest count limit".into());}
+    if (!verification && count==0) || count>MAX_ITEMS {return Err("full worker manifest count limit".into());}
     let mut entries=Vec::with_capacity(count);let mut names=HashSet::new();let mut units=0usize;let mut total=0u64;
     for _ in 0..count {
         let name=data.wide()?.replace('\\',"/");
@@ -31,6 +34,7 @@ fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
         let size=data.u64()?;total=total.checked_add(size).ok_or("full worker size overflow")?;
         let is_dir=data.bit()?;let present=data.bit()?;let attrs=data.u32()?;
         let crc_present=data.bit()?;let crc=data.u32()?;
+        let encrypted=if verification{data.bit()?}else{false};
         let times=[data.time()?,data.time()?,data.time()?];let kind=(attrs>>16)&0xf000;
         if (is_dir && size!=0) || attrs&0x400!=0 || !matches!(kind,0|0x4000|0x8000) ||
             (kind!=0 && (kind==0x4000)!=is_dir) {return Err("unsafe full worker member metadata".into());}
@@ -45,7 +49,7 @@ fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
         // Safety properties were independently rejected by the native manifest
         // and above; unsupported layouts return to the original complete listing.
         entries.push(Entry{name,size,size_known:true,packed_size:0,is_dir,
-            crc:if crc_present {format!("{crc:08X}")}else{String::new()},encrypted:false,modified,
+            crc:if crc_present {format!("{crc:08X}")}else{String::new()},encrypted,modified,
             method:String::new(),comment:String::new(),attributes:format!("{}{}",if is_dir{"D"}else{"A"},if present && attrs&1!=0{"R"}else{""})});
     }
     data.end()?;expected_tree(&entries)?;
@@ -74,7 +78,8 @@ pub(in crate::engine) fn prepare_verification(path:&str,source:&File,opts:&Engin
 fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verification:bool)
     ->Result<Option<(Vec<Entry>,Option<Pending>)>,String> {
     if opts.threads==Some(0) {return Err("invalid compression settings".into());}
-    if !opts.selected.is_empty() || opts.password.is_some() || opts.codepage.is_some() ||
+    if let Some(password)=opts.password.as_deref(){crate::engine_password::validate(password)?;if password.encode_utf16().count()>MAX_PASSWORD_UNITS{return Err("password input length exceeds limit".into());}}
+    if !opts.selected.is_empty() || (!verification && (opts.password.is_some() || opts.codepage.is_some())) ||
         crate::machine_policy::scope().restricted() {return Ok(None);}
     let mut probe=source.try_clone().map_err(|e|e.to_string())?;
     let mut magic=[0u8;4];probe.rewind().map_err(|e|e.to_string())?;
@@ -87,11 +92,13 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
             .is_some_and(|record| !record.zip64 && usize::from(record.entries)>MAX_OUTPUT_HANDLES) {
             return Ok(None);
         }
+        if !(verification && zip_input_probe::canonical_empty(&mut probe,ctl)?) {
         let Some(layout)=zip_input_probe::list_layout(&mut probe,ctl)? else{return Ok(None)};
         // This is a decline-only hint, never authority to publish. Counts include
         // directories; conservative declines retain the complete original listing
         // and CRC-verified decoder. Do not spawn a child we cannot grant outputs to.
         if layout.first_local!=0 || layout.count==0 || layout.count>MAX_ITEMS as u64 || (!verification && layout.count>MAX_OUTPUT_HANDLES as u64) {return Ok(None);}
+        }
         2
     } else if zip_input_probe::signature(&mut probe)?==Some("7z") {1}else{return Ok(None)};
     // Existing positioned ZIP listing handles SFX/extension aliases; preserve it.
@@ -126,7 +133,11 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
     request.extend_from_slice(&1u32.to_le_bytes());request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081)?.to_le_bytes());
     request.extend_from_slice(&source.metadata().map_err(|e|e.to_string())?.len().to_le_bytes());
     wide(&mut request,OsStr::new(if mode==1{"input.7z"}else{"input.zip"}))?;
-    request.extend_from_slice(&0u32.to_le_bytes());request.extend_from_slice(&(mode+if verification{2}else{0}).to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());session.send(11,request,ctl)?;
+    let units=opts.password.as_ref().map_or(0,|p|p.encode_utf16().count() as u32);
+    request.extend_from_slice(&units.to_le_bytes());request.extend_from_slice(&(mode+if verification{4}else{0}).to_le_bytes());request.extend_from_slice(&opts.threads.unwrap_or(0).to_le_bytes());
+    if verification{request.extend_from_slice(&u32::from(opts.codepage.is_some()).to_le_bytes());request.extend_from_slice(&opts.codepage.unwrap_or(0).to_le_bytes());}
+    session.send(11,request,ctl)?;
+    if let Some(password)=opts.password.as_deref(){session.send(6,SecretFrame::new(password),ctl)?;}
     let mut encrypted_header=false;
     let mut threads_applied=opts.threads.is_none();
     loop {
@@ -135,7 +146,7 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
         match frame.0 {
             2=> {
                 if !threads_applied {return Err("worker did not confirm decoder thread limit".into());}
-                let entries=manifest_entries(&frame.1,&nonce)?;
+                let entries=manifest_entries_mode(&frame.1,&nonce,verification)?;
                 if !verification && entries.iter().filter(|e|!e.is_dir).count()>MAX_OUTPUT_HANDLES {
                     // No output capability was granted. Session Drop reaps the waiting child.
                     return Ok(Some((entries,None)));
@@ -150,9 +161,9 @@ fn prepare_impl(path:&str,source:&File,opts:&EngineOptions,ctl:&JobControl,verif
             },
             7=> {let mut f=Fields(&frame.1);f.take(16)?;f.end()?;encrypted_header=true;},
             5=> {
-                if encrypted_header {return Ok(None);}
+                if encrypted_header && !verification {return Ok(None);}
                 let mut stats=Stats{code:-1,..Default::default()};
-                let used=consume_session(session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested)?;
+                let used=consume_session(session,nonce,&[],opts,Path::new(""),&mut CheckedDirectories::default(),ctl,&mut stats,Some(frame),OutputPlan::Requested,verification)?;
                 if used{return Err("full worker completed without manifest".into());}
                 return Ok(None);
             },
@@ -171,7 +182,7 @@ impl Pending {
     }
     fn decode_impl(mut self,entries:&[Entry],opts:&EngineOptions,root:&Path,guards:&mut CheckedDirectories,ctl:&JobControl,output:OutputPlan)->Result<(),String> {
         let mut stats=Stats{code:-1,..Default::default()};
-        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest),output)?;
+        let used=consume_session(&mut self.session,self.nonce,entries,opts,root,guards,ctl,&mut stats,Some(self.manifest),output,self.verification)?;
         if !used {return Err("full worker declined after approved manifest".into());}
         if PhaseTimer::enabled(){eprintln!("OA_FULL_WORKER decoded={} completed={}",stats.decoded,stats.completed);}
         Ok(())
@@ -231,6 +242,78 @@ mod tests {
         }
         assert!(matches!(session.receiver.as_ref().unwrap().try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)), "no request or manifest before runtime verification");
+    }
+    #[test]
+    fn verification_codepage_cannot_hide_unsafe_or_colliding_names_and_secret_limit() {
+        let temp=tempfile::tempdir().unwrap();
+        for (index,names) in [vec!["../xx.txt"],vec!["xx.txt","XX.txt"]].iter().enumerate(){
+            let archive=temp.path().join(format!("bad-{index}.zip"));let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());
+            for name in names{zip.start_file(*name,zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"abc").unwrap();}zip.finish().unwrap();
+            let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions{codepage:Some(936),..Default::default()};
+            assert!(!matches!(prepare_verification(archive.to_str().unwrap(),&source,&opts,&JobControl::new()),Ok(Some(_))));
+            let children=TEST_CHILDREN.with(|v|std::mem::take(&mut *v.borrow_mut()));for child in children{assert_eq!(unsafe{WaitForSingleObject(child.as_raw_handle(),0)},0);}
+        }
+        let archive=temp.path().join("good.zip");fixture(&archive,false);let source=crate::engine_stream::pin(&archive).unwrap();
+        for password in ["x".repeat(32768),"😀".repeat(16384)]{
+            let opts=EngineOptions{password:Some(password),..Default::default()};
+            let error=prepare_verification(archive.to_str().unwrap(),&source,&opts,&JobControl::new()).err().unwrap();assert_eq!(error,"password input length exceeds limit");
+            assert!(TEST_CHILDREN.with(|v|v.borrow().is_empty()));
+        }
+        let mut extended=manifest(&["a"],0x20);extended.splice(54..54,0u32.to_le_bytes());
+        assert!(!manifest_entries_mode(&extended,&[42;16],true).unwrap()[0].encrypted);
+        extended[54]=2;assert!(manifest_entries_mode(&extended,&[42;16],true).is_err());
+        assert!(manifest_entries_mode(&extended[..53],&[42;16],true).is_err());
+    }
+    #[test]
+    fn verification_native_request_rejects_bad_codepage_presence_length_and_mode() {
+        let temp=tempfile::tempdir().unwrap();let archive=temp.path().join("case.zip");fixture(&archive,false);
+        let source=crate::engine_stream::pin(&archive).unwrap();let ctl=JobControl::new();let runtime=runtime_dir().unwrap().unwrap();let _pins=pin_runtime(&runtime,&ctl).unwrap();
+        let exe=std::env::current_exe().unwrap().with_file_name("obz-worker.exe");
+        let exe=if exe.is_file(){exe}else{exe.parent().unwrap().parent().unwrap().join("obz-worker.exe")};let _image=crate::engine_stream::pin(&exe).unwrap();
+        for bad in 0..5 {
+            let mut session=Session::start_mode(&exe,3).unwrap();TEST_CHILDREN.with(|v|v.borrow_mut().push(session.child.try_clone().unwrap()));
+            let mut request=vec![42;16];wide(&mut request,runtime.as_os_str()).unwrap();request.extend_from_slice(&duplicate(&session.child,unsafe{GetCurrentProcess()},0x100000).unwrap().to_le_bytes());
+            request.extend_from_slice(&1u32.to_le_bytes());request.extend_from_slice(&duplicate(&session.child,source.as_raw_handle(),0x100081).unwrap().to_le_bytes());request.extend_from_slice(&source.metadata().unwrap().len().to_le_bytes());wide(&mut request,OsStr::new("input.zip")).unwrap();
+            request.extend_from_slice(&(if bad==4{32768u32}else{0}).to_le_bytes());request.extend_from_slice(&(if bad==3{99u32}else{6}).to_le_bytes());request.extend_from_slice(&0u32.to_le_bytes());
+            request.extend_from_slice(&(if bad==0{2u32}else{1}).to_le_bytes());request.extend_from_slice(&936u32.to_le_bytes());
+            if bad==1{request.pop();}if bad==2{request.push(0);}
+            session.send(11,request,&ctl).unwrap();assert_ne!(session.wait_exit(&ctl).unwrap(),0);drop(session);reap_proof();
+        }
+    }
+    #[test]
+    fn verification_password_aes_zip_and_sevenz_header_encryption() {
+        for format in ["zip","7z"] {for headers in [false,true] {for level in [0,5] {
+            if format=="zip" && headers {continue;}
+            let temp=tempfile::tempdir().unwrap();let archive=temp.path().join(format!("case.{format}"));fs::write(temp.path().join("a.txt"),b"secret payload").unwrap();
+            let engine=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+            let mut args=vec!["a".to_string(),format!("-t{format}"),"-pfixture-password".into(),format!("-mx={level}")];
+            if format=="zip"{args.push("-mem=AES256".into());}if headers{args.push("-mhe=on".into());}args.push(archive.display().to_string());args.push("a.txt".into());
+            let created=std::process::Command::new(engine).current_dir(temp.path()).args(args).output().unwrap();assert!(created.status.success(),"{}",String::from_utf8_lossy(&created.stdout));
+            let source=crate::engine_stream::pin(&archive).unwrap();
+            for correct in [true,false] {
+                let opts=EngineOptions{password:Some(if correct{"fixture-password"}else{"wrong-password"}.into()),threads:Some(4),..Default::default()};let ctl=JobControl::new();
+                let result=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl);
+                let stage=temp.path().join(format!("stage-{correct}"));fs::create_dir(&stage).unwrap();
+                let result=result.and_then(|v|{let (entries,pending)=v.ok_or("unexpected decline")?;
+                    assert!(entries.iter().any(|e|e.encrypted));pending.ok_or("no worker")?.verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::Members)});
+                if correct{result.unwrap();assert_eq!(fs::read(stage.join("a.txt")).unwrap(),b"secret payload");}else{assert!(result.is_err());}
+                reap_proof();
+            }
+        }}}
+    }
+    #[test]
+    fn verification_empty_zip_and_sevenz_and_explicit_zip_codepage() {
+        let temp=tempfile::tempdir().unwrap();let empty=temp.path().join("empty.zip");fixture(&empty,true);
+        let engine=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(BUNDLED_NANA_DIR).join("NanaZip.Universal.Console.exe");
+        let seven=temp.path().join("empty.7z");let created=std::process::Command::new(engine).current_dir(temp.path()).args(["a","-t7z",seven.to_str().unwrap(),"missing-*" ]).output().unwrap();assert!(created.status.success());
+        for archive in [&empty,&seven] {let source=crate::engine_stream::pin(archive).unwrap();let opts=EngineOptions::default();let ctl=JobControl::new();
+            let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().expect("empty supported");assert!(entries.is_empty());
+            pending.unwrap().verify(&entries,&opts,temp.path(),&mut CheckedDirectories::default(),&ctl,VerificationOutput::None).unwrap();reap_proof();}
+        let archive=temp.path().join("cp.zip");let mut zip=zip::ZipWriter::new(File::create(&archive).unwrap());zip.start_file("xx.txt",zip::write::SimpleFileOptions::default()).unwrap();zip.write_all(b"codepage").unwrap();zip.finish().unwrap();
+        let mut bytes=fs::read(&archive).unwrap();for index in 0..bytes.len()-6{if &bytes[index..index+6]==b"xx.txt"{bytes[index]=0xd6;bytes[index+1]=0xd0;}}fs::write(&archive,bytes).unwrap();
+        let source=crate::engine_stream::pin(&archive).unwrap();let opts=EngineOptions{codepage:Some(936),threads:Some(4),..Default::default()};let ctl=JobControl::new();
+        let (entries,pending)=prepare_verification(archive.to_str().unwrap(),&source,&opts,&ctl).unwrap().unwrap();assert_eq!(entries[0].name,"中.txt");
+        let stage=temp.path().join("cp-out");fs::create_dir(&stage).unwrap();pending.unwrap().verify(&entries,&opts,&stage,&mut CheckedDirectories::default(),&ctl,VerificationOutput::Members).unwrap();assert_eq!(fs::read(stage.join("中.txt")).unwrap(),b"codepage");reap_proof();
     }
     #[test]
     fn verification_overlap_keeps_zero_capabilities_until_runtime_is_verified() {
