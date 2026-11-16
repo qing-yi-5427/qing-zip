@@ -1161,6 +1161,10 @@ pub(crate) fn directory_attributes(file: &File) -> Result<u32, String> {
 // Ancestors are checked root-first and file/missing leaves are never cached.
 #[derive(Default)]
 struct CheckedDirectories {
+    // Internal creation snapshots retain a known complete directory inventory.
+    // This changes storage capacity only, never private/owned qualification.
+    #[cfg(windows)]
+    archive_snapshot_pin_limit: Option<usize>,
     #[cfg(windows)]
     held: std::collections::HashMap<PathBuf, (File, bool)>,
     #[cfg(windows)]
@@ -1438,7 +1442,10 @@ impl CheckedDirectories {
                             if meta.is_dir() && in_claim && !self.owned_dirs.contains(part) {
                                 return Err(format!("foreign directory appeared in new destination: {}",part.display()));
                             }
-                            if meta.is_dir() && (self.held.len() < 4096 || in_claim) {
+                            if meta.is_dir() && self.archive_snapshot_pin_limit.is_some_and(|limit|self.held.len()>=limit) {
+                                return Err("creation snapshot directory pin budget exhausted".into());
+                            }
+                            if meta.is_dir() && (self.held.len() < self.archive_snapshot_pin_limit.unwrap_or(4096) || in_claim) {
                                 let owned = self.owned_dirs.contains(part)
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories

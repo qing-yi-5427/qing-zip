@@ -616,6 +616,11 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
         )?;
         }
     }
+    if capture.is_some() {
+        guards.archive_snapshot_pin_limit=Some(nodes.iter().filter(|node|node.directory).count()
+            .checked_add(dest.ancestors().count()).and_then(|count|count.checked_add(1))
+            .ok_or("creation directory pin budget overflow")?);
+    }
     let mut result = Transfer {
         copied: 0,
         copied_directories: 0,

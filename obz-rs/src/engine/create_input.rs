@@ -169,6 +169,15 @@ pub(super) fn split_and_publish(archive:&Path,output:&Path,bytes:u64,opts:&Engin
 mod tests {
     use super::*;
     #[test]
+    fn internal_snapshot_pin_budget_fails_closed_without_changing_normal_default() {
+        let directory=tempfile::tempdir().unwrap();
+        let mut normal=CheckedDirectories::default();assert!(normal.archive_snapshot_pin_limit.is_none());
+        normal.check(directory.path()).unwrap();
+        let mut limited=CheckedDirectories::default();limited.archive_snapshot_pin_limit=Some(0);
+        assert!(limited.check(directory.path()).unwrap_err().contains("pin budget exhausted"));
+        assert!(limited.held.is_empty());
+    }
+    #[test]
     fn snapshot_volumes_roundtrip_and_latest_timestamp() {
         let dir=tempfile::tempdir().unwrap();let archive=dir.path().join("private.bin");
         let bytes=(0..513).map(|i|(i%251) as u8).collect::<Vec<_>>();fs::write(&archive,&bytes).unwrap();
