@@ -7,9 +7,21 @@ OUT=Path(tempfile.mkdtemp(prefix='create-helper-proof-',dir=a.workspace.resolve(
 PKG=OUT/'package';PKG.mkdir();shutil.copy2(BIN/'obz.exe',PKG/'obz.exe');shutil.copytree(BIN/'runtime',PKG/'runtime')
 NEW=OUT/'new-helper.exe';shutil.copy2(BIN/'obz-worker.exe',NEW)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+def dependency_binding():
+ files={Path(__file__).resolve(),BIN/'obz.exe',BIN/'obz-worker.exe',OLDCLI,OLDHELPER,a.caps3_helper.resolve(),a.caps7_helper.resolve()}
+ files.update(p for p in (BIN/'runtime').rglob('*') if p.is_file())
+ files.update(p for p in (PKG/'runtime').rglob('*') if p.is_file())
+ manifest=BIN/'freeze-manifest.json'
+ if manifest.exists():
+  files.add(manifest);frozen=json.loads(manifest.read_text(encoding='utf-8'));b=frozen['binaries'];declarations=dict(b) if isinstance(b,dict) else {x['name']:x['sha256'] for x in b}
+  declarations.update(frozen.get('runtime_inputs',{}))
+  for name,digest in declarations.items():
+   path=(BIN/name).resolve(strict=True);assert path.is_relative_to(BIN) and sha(path)==digest,(name,'freeze mismatch');files.add(path)
+ return {str(path):sha(path) for path in sorted(files)}
+bound=dependency_binding()
 src=OUT/'source';src.mkdir()
 for i in range(2050):(src/f'{i:04}.txt').write_bytes((f'content{i}'*10).encode())
-report={'passed':False,'cli_sha256':sha(PKG/'obz.exe'),'script_sha256':sha(Path(__file__)),'old_cli_sha256':sha(OLDCLI),'helper_sha256':sha(NEW),'old_helper_sha256':sha(OLDHELPER),'caps3_helper_sha256':sha(a.caps3_helper),'caps7_helper_sha256':sha(a.caps7_helper),'rows':[]}
+report={'dependency_sha256':bound,'passed':False,'cli_sha256':sha(PKG/'obz.exe'),'script_sha256':sha(Path(__file__)),'old_cli_sha256':sha(OLDCLI),'helper_sha256':sha(NEW),'old_helper_sha256':sha(OLDHELPER),'caps3_helper_sha256':sha(a.caps3_helper),'caps7_helper_sha256':sha(a.caps7_helper),'rows':[]}
 def save():(OUT/'receipt.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
 def run(cmd,**kw):return subprocess.run([str(x) for x in cmd],capture_output=True,timeout=90,**kw)
 # Oversized challenge is rejected from its length header without allocating or
@@ -82,4 +94,5 @@ nana=PKG/'runtime/nanazip/NanaZip.Universal.Console.exe';p=run([nana,'a','-t7z',
 p=run([PKG/'obz.exe','extract',OUT/'small.7z',OUT/'decoded','--threads','4']);assert p.returncode==0,p.stderr;assert (OUT/'decoded/small/a.txt').read_bytes()==b'full worker compatibility'
 report['old_parent_new_helper_full_extract']=True
 assert len({r['archive_sha256'] for r in report['rows'] if r['expected_success']})==1
+assert dependency_binding()==bound,'helper acceptance dependencies changed'
 report['passed']=True;save();print(OUT/'receipt.json')

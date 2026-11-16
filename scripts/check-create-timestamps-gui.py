@@ -7,7 +7,8 @@ assert not subprocess.run(['powershell','-NoProfile','-Command','(Get-Process qi
 root=Path(tempfile.mkdtemp(prefix='qing-timestamps-gui-'));src=root/'输入';src.mkdir();(src/'data.txt').write_bytes(b'timestamp GUI proof');(src/'empty').mkdir();profile=root/'profile';local=root/'local';local.mkdir()
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 manifest_file=a.exe.parent/'freeze-manifest.json';frozen=json.loads(manifest_file.read_text(encoding='utf-8'))
-declared={**frozen['binaries'],**frozen.get('runtime_inputs',{})}
+binaries=frozen['binaries'];declared=dict(binaries) if isinstance(binaries,dict) else {x['name']:x['sha256'] for x in binaries}
+declared.update(frozen.get('runtime_inputs',{}))
 def dependencies():
  values={str(manifest_file):sha(manifest_file),str(Path(__file__).resolve()):sha(Path(__file__))}
  for name,digest in declared.items():
@@ -15,7 +16,7 @@ def dependencies():
   actual=sha(path);assert actual==digest,(name,'frozen byte mismatch');values[str(path)]=actual
  return values
 bound=dependencies()
-report={'gui':str(a.exe),'sha256':hashlib.sha256(a.exe.read_bytes()).hexdigest(),'fixture':str(root),'dependency_sha256':bound,'source_commit':frozen['source_commit'],'checks':[],'passed':False}
+report={'gui':str(a.exe),'sha256':hashlib.sha256(a.exe.read_bytes()).hexdigest(),'fixture':str(root),'dependency_sha256':bound,'source_commit':frozen.get('source_commit',frozen.get('commit')),'checks':[],'passed':False}
 def save():(a.out/'receipt.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 def checked(name):report['checks'].append(name);save()
 class Browser:
