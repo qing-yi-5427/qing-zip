@@ -1,0 +1,21 @@
+name: Native link fixture diagnosis
+on:
+  push:
+    branches: [codex/link-native-diagnostic]
+permissions:
+  contents: read
+jobs:
+  native-fixture-diagnosis:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Diagnose native relative symbolic fixtures and retain strict assertions
+        shell: pwsh
+        run: |
+          $test = 'engine::file_workspace::links::edit::tests::require_symbolic_inspect_edit_clear_success'
+          $listed = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $test -- --ignored --list | Out-String)
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (!$listed.Contains("${test}: test")) { throw "missing exact diagnostic/strict test: $test" }
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $test -- --ignored --exact --nocapture
+          exit $LASTEXITCODE

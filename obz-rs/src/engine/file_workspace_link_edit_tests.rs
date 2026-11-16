@@ -70,6 +70,7 @@ impl Drop for Fixture{fn drop(&mut self){let file=raw(&self.path,0x100100);attrs
 #[test]
 #[ignore="Requires an already-held symbolic-link privilege; native CI must run explicitly"]
 fn require_symbolic_inspect_edit_clear_success(){
+ native_symbolic_fixture_diagnostics();
  for directory in [false,true]{
     let root=tempfile::tempdir().unwrap();let path=root.path().join("relative-link");let opts=EngineOptions::default();let caller=privilege::snapshot();
     let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};if directory{fs::create_dir(&path).unwrap();}else{fs::write(&path,b"hidden original payload").unwrap();}
@@ -123,4 +124,33 @@ fn require_symbolic_inspect_edit_clear_success(){
  assert_eq!([u16_at(&data,8).unwrap(),u16_at(&data,10).unwrap(),u16_at(&data,12).unwrap(),u16_at(&data,14).unwrap()],[0,bytes,bytes+2,bytes]);assert_eq!(u32_at(&data,16).unwrap(),1);
  let decoded=parse(&data,false).unwrap();assert_eq!(decoded.target,target);assert_eq!(decoded.print,target);assert!(decoded.relative);
  assert_eq!(replacement(&parsed,&"x".repeat(4090)).unwrap().len(),16384);assert!(replacement(&parsed,&"x".repeat(4091)).is_err());
+}
+
+// Narrow native diagnosis only. All original strict assertions still run below.
+fn native_symbolic_fixture_diagnostics(){
+ #[link(name="kernel32")] unsafe extern "system"{fn CreateSymbolicLinkW(link:*const u16,target:*const u16,flags:u32)->u8;}
+ let root=tempfile::tempdir().unwrap();let target=r"..\missing-old";let mut file_raw=None;
+ for directory in [false,true]{
+    let path=root.path().join(if directory{"win32-dir"}else{"win32-file"});let link:Vec<_>=path.as_os_str().encode_wide().chain([0]).collect();let to:Vec<_>=target.encode_utf16().chain([0]).collect();let kind=if directory{LinkKind::SymbolicDirectory}else{LinkKind::SymbolicFile};
+    let result=isolated(kind,||{if unsafe{CreateSymbolicLinkW(link.as_ptr(),to.as_ptr(),u32::from(directory))}==0{return Err(std::io::Error::last_os_error().to_string());}Ok(())});
+    println!("SYMLINK_DIAGNOSTIC Win32 directory={directory} target={target:?} UTF16={:04x?} result={result:?}",target.encode_utf16().collect::<Vec<_>>());
+    if result.is_ok(){
+        match File::options().access_mode(0x100180).share_mode(7).custom_flags(0x02200000).open(&path){
+            Ok(file)=>{println!("SYMLINK_DIAGNOSTIC Win32 GetFileInformation directory={directory} info={:?}",info(&file).map(|v|(v[0],((v[8] as u64)<<32)|v[9] as u64,v[10])));match get(&file){Ok(data)=>{let parsed=parse(&data,directory).map(|p|(p.target,p.print,p.relative));println!("SYMLINK_DIAGNOSTIC Win32 GET directory={directory} bytes={} raw={data:02x?} parsed={parsed:?}",data.len());if !directory{file_raw=Some(data);}},Err(error)=>println!("SYMLINK_DIAGNOSTIC Win32 GET error={error}")}},
+            Err(error)=>println!("SYMLINK_DIAGNOSTIC Win32 no-follow open error={error}"),
+        }
+    }
+ }
+ let parsed=Parsed{kind:LinkKind::SymbolicFile,target:target.into(),print:String::new(),relative:true};let encoded=replacement(&parsed,target).unwrap();println!("SYMLINK_DIAGNOSTIC encoder raw={encoded:02x?}");
+ for encoder in [false,true]{for nonempty in [false,true]{
+    let label=format!("{}-{}",if encoder{"encoder"}else{"win32_raw"},if nonempty{"nonempty"}else{"empty"});let data=if encoder{Some(&encoded)}else{file_raw.as_ref()};
+    if let Some(data)=data{
+        let path=root.path().join(&label);let payload=if nonempty{b"hidden original payload".as_slice()}else{b"".as_slice()};if let Err(error)=fs::write(&path,payload){println!("SYMLINK_DIAGNOSTIC case={label} setup error={error}");continue;}
+        match File::options().access_mode(0x100180).share_mode(7).custom_flags(0x02200000).open(&path){
+            Ok(file)=>{println!("SYMLINK_DIAGNOSTIC case={label} GetFileInformation-before={:?} raw={data:02x?}",info(&file).map(|v|(v[0],((v[8] as u64)<<32)|v[9] as u64,v[10])));let result=isolated(LinkKind::SymbolicFile,||{ioctl(&file,0x900a4,data,&mut [])?;Ok(())});println!("SYMLINK_DIAGNOSTIC case={label} payload_len={} result={result:?}",payload.len());if result.is_ok(){println!("SYMLINK_DIAGNOSTIC case={label} GET matches={:?}",get(&file).map(|raw|raw==*data));}},
+            Err(error)=>println!("SYMLINK_DIAGNOSTIC case={label} no-follow open error={error}"),
+        }
+    }else{println!("SYMLINK_DIAGNOSTIC case={label} unavailable: Win32 baseline failed");}
+ }}
+ println!("SYMLINK_DIAGNOSTIC complete; original strict create/edit/clear assertions follow unchanged");
 }
