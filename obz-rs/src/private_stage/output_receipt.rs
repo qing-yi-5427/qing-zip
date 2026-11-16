@@ -30,6 +30,14 @@ fn native_policy_stamp(file:&File,storage:&mut [u32])->Result<Option<[u8;32]>,St
     if required<20 || required>capacity{return Err("invalid owned output security length".into());}
     let bytes=unsafe{GetSecurityDescriptorLength(storage.as_mut_ptr().cast())};
     if bytes<20 || bytes>required{return Err("invalid owned output security".into());}
+    // GetSecurityInfo can synthesize INHERITED_ACE flags for legacy unprotected
+    // DACLs. Preserve that established observation instead of normalizing flags
+    // or assuming the raw native descriptor is semantically identical.
+    let (mut control, mut revision) = (0u16, 0u32);
+    if unsafe { GetSecurityDescriptorControl(storage.as_mut_ptr().cast(), &mut control, &mut revision) } == 0 {
+        return Err("invalid owned output security control".into());
+    }
+    if control & (0x1000 | 0x400) == 0 { return Ok(None); }
     let mut hash=Sha256::new();
     hash.update(unsafe{std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(),bytes as usize)});
     Ok(Some(hash.finalize().into()))
@@ -152,6 +160,37 @@ mod tests {
         let _owned=Allocation(sd);let(mut present,mut defaulted,mut acl)=(0,0,std::ptr::null_mut());
         assert_ne!(unsafe{GetSecurityDescriptorDacl(sd,&mut present,&mut acl,&mut defaulted)},0);
         assert_eq!(unsafe{SetSecurityInfo(file.as_raw_handle(),1,4|0x80000000,std::ptr::null_mut(),std::ptr::null_mut(),acl,std::ptr::null_mut())},0);
+    }
+    #[test]
+    fn receipt_native_eligibility_preserves_complete_descriptor_bytes() {
+        for directory in [false, true] {
+            let root=tempfile::tempdir().unwrap();let path=root.path().join("object");
+            if directory {fs::create_dir(&path).unwrap();} else {fs::write(&path,b"data").unwrap();}
+            let file=opened(&path);
+            for (name,bits,flags,eligible) in [
+                ("protected",0x1000u16,0x80000000u32,true),
+                ("auto-inherited",0x500,0x20000000,true),
+                ("legacy",0,0x20000000,false),
+            ] {
+                let sd=descriptor(&file).unwrap();
+                assert_ne!(unsafe{SetSecurityDescriptorControl(sd.0,0x1500,bits)},0);
+                assert!(unsafe{NtSetSecurityObject(file.as_raw_handle(),4|flags,sd.0)}>=0);
+                let mut storage=[0u32;1024];
+                let native=native_policy_stamp(&file,&mut storage).unwrap();
+                let (mut control,mut revision)=(0u16,0u32);
+                assert_ne!(unsafe{GetSecurityDescriptorControl(storage.as_mut_ptr().cast(),&mut control,&mut revision)},0);
+                assert_eq!(control & 0x1400,bits & 0x1400,"{name}");
+                assert_eq!(native.is_some(),eligible,"{name}");
+                let win32=security_descriptor(&file,7).unwrap();
+                if eligible {
+                    let native_len=unsafe{GetSecurityDescriptorLength(storage.as_mut_ptr().cast())} as usize;
+                    let win32_len=unsafe{GetSecurityDescriptorLength(win32.0)} as usize;
+                    assert_eq!(unsafe{std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(),native_len)},
+                        unsafe{std::slice::from_raw_parts(win32.0.cast::<u8>(),win32_len)},"{name}");
+                }
+                assert_eq!(policy_stamp(&file).unwrap(),win32_policy_stamp(&file).unwrap(),"{name}");
+            }
+        }
     }
     #[test]
     fn receipt_native_full_security_matches_win32_and_preserves_acl_order(){
