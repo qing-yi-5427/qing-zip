@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     fn preparation_cancels_its_own_job_and_keeps_shell_exports() {
+        let _registry = crate::jobs::test_registry_guard();
         use std::{fs, sync::atomic::AtomicBool};
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("items.zip");

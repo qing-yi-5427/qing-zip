@@ -12,6 +12,15 @@ static JOBS: OnceLock<Mutex<BTreeMap<u64, Arc<Job>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 fn registry() -> &'static Mutex<BTreeMap<u64, Arc<Job>>> { JOBS.get_or_init(Default::default) }
 
+// Integration tests share the real two-slot registry. Hold this across the
+// entire test (including worker completion), not inside start_operation: the
+// drag test intentionally runs two jobs together to verify isolated cancellation.
+#[cfg(test)]
+pub(crate) fn test_registry_guard() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_REGISTRY: Mutex<()> = Mutex::new(());
+    TEST_REGISTRY.lock().unwrap()
+}
+
 pub fn running() -> bool { registry().lock().map(|jobs|jobs.values().any(|j|j.state.lock().map(|s|s.status=="running").unwrap_or(true))).unwrap_or(true) }
 pub fn cancel_all() { if let Ok(jobs)=registry().lock(){for job in jobs.values(){
     let phase=job.control.progress.lock().unwrap_or_else(|e|e.into_inner());
@@ -249,6 +258,7 @@ pub fn forget_operation(id:u64)->Result<(),String>{
     use super::*;
     #[test]
     fn zip_creation_job_returns_the_new_archive_and_completed_progress() {
+        let _registry = test_registry_guard();
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         std::fs::create_dir(&source).unwrap();
@@ -273,6 +283,7 @@ pub fn forget_operation(id:u64)->Result<(),String>{
     }
     #[test]
     fn real_listing_job_serializes_the_shared_entries_in_each_snapshot() {
+        let _registry = test_registry_guard();
         let root = tempfile::tempdir().unwrap();
         let archive = root.path().join("example.zip").display().to_string();
         let input = root.path().join("note.txt");
@@ -314,6 +325,7 @@ pub fn forget_operation(id:u64)->Result<(),String>{
     }
     #[test] fn unknown_job_fails(){assert!(operation_status(u64::MAX).is_err());assert!(cancel_operation(u64::MAX).is_err());}
     #[test] fn background_failure_is_reported_and_released(){
+        let _registry = test_registry_guard();
         let id=start_operation(Request{operation:"unknown".into(),..Default::default()},None).unwrap();
         for _ in 0..100 {let s=operation_status(id).unwrap();if s.status!="running"{assert_eq!(s.status,"failed");assert!(s.error.is_some());forget_operation(id).unwrap();return;}std::thread::sleep(std::time::Duration::from_millis(10));}
         panic!("job did not finish");
