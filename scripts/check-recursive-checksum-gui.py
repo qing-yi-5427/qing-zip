@@ -81,18 +81,15 @@ try:
  nested=root/'hash-tree';(nested/'one'/'two').mkdir(parents=True);empty=root/'empty';empty.mkdir()
  files={nested/'a.txt':b'alpha',nested/'one'/'two'/'b.bin':b'nested bytes',root/'outside.txt':b'outside'}
  for path,payload in files.items():path.write_bytes(payload)
- b=Browser();b.click('[data-view="tools"]');b.click('[data-action="checksum-tool"]');b.wait('!!document.querySelector("iframe")')
+ b=Browser();b.click('[data-view="tools"]');b.click('[data-launch-tool="checksum"]');b.wait('!!document.querySelector("iframe")')
  url=b.js('document.querySelector("iframe").src');b.call('Page.navigate',{'url':url});b.wait('!!document.querySelector("#checksum-folder")')
- b.select('#hash-algorithm','SHA256')
+ b.wait('Array.from(document.querySelector("#hash-algorithm").options).some(o=>o.value==="SHA256")');b.select('#hash-algorithm','SHA256')
  b.click('#checksum-folder')
  desktop=Desktop(backend='uia');dialog=desktop.window(process=b.proc.pid,class_name='#32770');dialog.wait('visible',timeout=15)
- report['native_picker_title']=dialog.window_text();dialog.child_window(control_type='Edit',found_index=0).set_edit_text(str(nested))
+ report['native_picker_title']=dialog.window_text()
+ dialog.set_focus();dialog.type_keys('^l');dialog.type_keys(str(nested),with_spaces=True,pause=.01);dialog.type_keys('{ENTER}');time.sleep(.5)
  buttons=dialog.descendants(control_type='Button');report['native_picker_buttons']=[x.window_text() for x in buttons]
- # Standard IFileDialog folder picker accepts its filename field with Enter.
- dialog.child_window(control_type='Edit',found_index=0).type_keys('{ENTER}')
- try:dialog.wait_not('visible',timeout=2)
- except Exception:
-  [x for x in dialog.descendants(control_type='Button') if x.window_text() in ['选择文件夹','Select Folder','选择文件夹(&S)']][0].click_input()
+ select=[x for x in buttons if x.window_text().replace('&','').startswith(('选择文件夹','Select Folder'))];assert len(select)==1,report['native_picker_buttons'];select[0].click_input();dialog.wait_not('visible',timeout=10)
  b.wait('document.querySelector("#checksum-paths").value==='+json.dumps(str(nested)))
  checked('real-native-folder-picker-populates-tool')
  b.click('#run');b.wait('document.querySelector("#status").textContent==="已完成"')
