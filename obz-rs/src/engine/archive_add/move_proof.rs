@@ -112,6 +112,62 @@ pub(super) fn verify_candidate(candidate:&Path, plan:&Plan, opts:&EngineOptions)
     Ok(CandidateProof{_candidate:pin,identity,verified_members})
 }
 
+/// Fresh content verification while the caller retains a strong post-replace
+/// candidate handle. Only a same-object read handle is reopened; no archive
+/// pathname is opened, and the candidate is never copied to another file.
+#[allow(dead_code)]
+pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts:&EngineOptions)->Result<(),String> {
+    use std::os::windows::io::{AsRawHandle,FromRawHandle};
+    use sha2::{Digest,Sha256};
+    #[link(name="kernel32")]
+    extern "system" {fn ReOpenFile(file:*mut std::ffi::c_void,access:u32,share:u32,flags:u32)->*mut std::ffi::c_void;}
+    let ctl=control(opts);ctl.check()?;plan.validate_mapping()?;
+    let identity=directory_identity(candidate)?;
+    let raw=unsafe{ReOpenFile(candidate.as_raw_handle(),0x80000000,5,0x00200000)};
+    if raw as isize == -1 {return Err(std::io::Error::last_os_error().to_string());}
+    let reader=unsafe{File::from_raw_handle(raw)};
+    if directory_identity(&reader)?!=identity {return Err("Candidate reader identity mismatch".into());}
+    let mut options=opts.clone();options.selected.clear();options.overwrite="error".into();
+    // Name is a decoder hint only. prepare obtains every input byte through
+    // reader; the existing single-volume probe chooses ZIP or 7z by content.
+    let (entries,pending)=selected_worker::full_worker::prepare("move-proof-candidate",&reader,&options,&ctl)?
+        .ok_or("当前候选格式、密码、编码或策略不支持固定句柄验证，原包与源文件保持不变")?;
+    let pending=pending.ok_or("候选成员数超过固定句柄验证上限，原包与源文件保持不变")?;
+    let occupied=inventory(entries.clone())?;
+    let wanted:Vec<_>=plan.items.iter().filter(|i|i.skipped.is_none()).collect();
+    for item in &wanted {
+        if occupied.get(&key(&item.member))!=Some(&item.directory){return Err("Candidate member/type mismatch".into());}
+    }
+    options.selected=wanted.iter().filter(|i|!i.directory).map(|i|i.member.clone()).collect();
+    if options.selected.is_empty() {
+        // An explicitly absent name requests zero output handles while the
+        // worker still decodes and validates every member. Never use [] here.
+        let mut absent="qing-zip-no-materialized-members".to_owned();
+        while occupied.keys().any(|name|name==&key(&absent)||name.starts_with(&(key(&absent)+"/"))){absent.push('_');}
+        options.selected.push(absent);
+    }
+    let stage=ShellDragDirectory::create_named("qing-zip-locked-move-proof-")?;
+    let data=stage.path().join("verified");fs::create_dir(&data).map_err(|e|e.to_string())?;
+    let mut guards=CheckedDirectories::default();
+    pending.decode(&entries,&options,&data,&mut guards,&ctl)?;
+    #[cfg(test)]
+    AFTER_EXTRACT.with(|hook| {if let Some(run)=hook.borrow_mut().take(){run(&data);}});
+    for item in wanted {
+        ctl.check()?;if item.directory{continue;}
+        let path=data.join(validate_name(&item.member)?);
+        let mut file=crate::engine_stream::pin(&path)?;
+        let meta=crate::private_stage::checked_metadata(&file)?;
+        if !meta.is_file()||meta.len()!=item.bytes{return Err("Candidate length mismatch".into());}
+        let mut hash=Sha256::new();let mut buffer=vec![0u8;1024*1024];
+        loop {ctl.check()?;let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{break;}hash.update(&buffer[..n]);}
+        let actual:[u8;32]=hash.finalize().into();
+        if Some(actual)!=item.sha256{return Err(format!("Candidate payload mismatch: {}",item.member));}
+    }
+    ctl.check()?;
+    if directory_identity(candidate)?!=identity{return Err("Candidate identity changed during validation".into());}
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! { static AFTER_EXTRACT: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) }; }
 #[cfg(test)]
@@ -239,6 +295,48 @@ mod tests {
         })));
         verify_candidate(&output,prepared.proof.as_ref().unwrap(),&EngineOptions::default()).unwrap();
         assert!(local.join("docs/a.txt").exists());
+    }
+
+    fn strong(path:&Path)->File {
+        use std::os::windows::fs::OpenOptionsExt;
+        File::options().access_mode(0x80010000).share_mode(1).custom_flags(0x00200000).open(path).unwrap()
+    }
+    #[test]
+    fn proof_locked_real_zip_and_sevenz_updates_without_candidate_copy() {
+        for format in ["zip","7z"] { for policy in ["error","skip","rename","overwrite"] {
+            let (temp,zip,local,_)=fixture();let original=if format=="zip"{zip}else{
+                let seed=temp.path().join("seed");fs::create_dir_all(seed.join("folder/docs")).unwrap();fs::write(seed.join("folder/docs/a.txt"),b"old a").unwrap();
+                let archive=temp.path().join("original.7z");create(archive.to_str().unwrap(),&[seed.join("folder").display().to_string()],"7z",&EngineOptions::default()).unwrap();archive
+            };
+            let before=fs::read(&original).unwrap();let inputs=vec![local.join("docs").display().to_string()];
+            let opts=EngineOptions{overwrite:policy.into(),threads:Some(4),..Default::default()};
+            let plan=prepare_for_move_proof(&original,&inputs,"folder",&opts);
+            if policy=="error"{assert!(plan.is_err());assert_eq!(fs::read(&original).unwrap(),before);continue;}
+            let plan=plan.unwrap();let candidate=temp.path().join(format!("candidate.{format}"));fs::copy(&original,&candidate).unwrap();
+            // Exercise real native update + verification + publication, not
+            // the synthetic ZipWriter candidate constructor used above.
+            archive_add(candidate.to_str().unwrap(),&inputs,"folder",&opts).unwrap();
+            let pinned=strong(&candidate);
+            assert!(crate::engine_stream::pin(&candidate).is_err(),"normal path pin must conflict with the strong DELETE handle");
+            AFTER_EXTRACT.with(|hook|*hook.borrow_mut()=Some(Box::new(|data|{assert!(!data.join("untouched.bin").exists());assert!(data.join("folder/docs/b.txt").is_file());})));
+            verify_locked_candidate(&pinned,plan.proof.as_ref().unwrap(),&opts).unwrap();
+            assert!(File::options().write(true).open(&candidate).is_err());
+            assert_eq!(fs::read(&original).unwrap(),before);assert!(local.join("docs/a.txt").exists());
+        }}
+    }
+    #[test]
+    fn proof_locked_declines_password_and_rejects_unselected_damage() {
+        for mode in ["password","crc","sha","cancel"] {
+            let (temp,original,local,old)=fixture();let ctl=JobControl::new();let mut opts=EngineOptions{overwrite:"overwrite".into(),control:Some(ctl.clone()),..Default::default()};
+            let mut plan=prepare_for_move_proof(&original,&[local.join("docs").display().to_string()],"folder",&opts).unwrap();
+            let output=temp.path().join("candidate.zip");candidate(&plan,&old,&output);
+            if mode=="crc"{let mut bytes=fs::read(&output).unwrap();let marker=b"UNSELECTED-INTEGRITY-PAYLOAD";let n=bytes.windows(marker.len()).position(|w|w==marker).unwrap();bytes[n]^=1;fs::write(&output,bytes).unwrap();}
+            if mode=="sha"{plan.proof.as_mut().unwrap().items.iter_mut().find(|i|!i.directory).unwrap().sha256=Some([0;32]);}
+            if mode=="password"{opts.password=Some("not inherited".into());}
+            if mode=="cancel"{AFTER_EXTRACT.with(|h|*h.borrow_mut()=Some(Box::new(move|_|ctl.cancel())));}
+            let pin=strong(&output);assert!(verify_locked_candidate(&pin,plan.proof.as_ref().unwrap(),&opts).is_err(),"{mode}");
+            assert!(local.join("docs/a.txt").exists());
+        }
     }
 
 }
