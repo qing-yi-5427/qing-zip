@@ -12,6 +12,20 @@ pub fn checksum_files(
     if paths.is_empty() {
         return Err("checksum requires one or more files".into());
     }
+    let expanded = super::tree::Inputs::collect(paths, opts)?;
+    if expanded.has_directories {
+        let result = if expanded.files.is_empty() {
+            if super::CommonSelection::from_names(names).is_none() { choose_algorithms(names, opts)?; }
+            json!({"checksums":[]})
+        }
+            else { checksum_file_batch(&expanded.files, names, opts)? };
+        expanded.verify(opts)?;
+        return Ok(result);
+    }
+    checksum_file_batch(paths, names, opts)
+}
+
+fn checksum_file_batch(paths: &[String], names: &[String], opts: &EngineOptions) -> Result<Value,String> {
     let control = opts.control.clone().unwrap_or_default();
     control.check()?;
     control.set("checksum", Some(0), "Calculating file checksums");

@@ -41,6 +41,7 @@ function render(op,result){$('result').replaceChildren();if(op==='benchmark'){
 if(op==='file-split'||op==='file-combine'){text(op==='file-split'?'分割完成':'合并完成','h3');text('保存位置：'+result.output);text('大小：'+result.bytes+' 字节');text('SHA256：'+result.sha256,'pre');if(op==='file-combine')text(result.verified_manifest?'已验证所有分块与完整文件校验值':'无校验清单，已按卷序合并');return;}if(result.data_url){const img=document.createElement('img');img.id='preview';img.src=result.data_url;img.alt=result.name;$('result').append(img);return;}
 if(Array.isArray(result.entries)){text(`${result.entries.length} 个条目`);const table=document.createElement('table');const head=document.createElement('tr');for(const s of ['名称','字节','加密','修改时间']){const h=document.createElement('th');h.textContent=s;head.append(h);}table.append(head);for(const e of result.entries){const tr=document.createElement('tr');for(const v of [e.name,e.is_dir?'目录':e.size_known===false?'未知':e.size,e.encrypted?'是':'否',e.modified]){const td=document.createElement('td');td.textContent=v;tr.append(td);}table.append(tr);}$('result').append(table);return;}
 if(Array.isArray(result.checksums)||(op==='checksum'&&(result.hashes||result.sha256))){
+ if(Array.isArray(result.checksums)&&!result.checksums.length){text('文件夹中没有可校验的文件。');return;}
  const output=(result.checksums||[result]).map(file=>{
    const hashes=file.hashes||Object.fromEntries(['crc32','md5','sha1','sha256'].map(k=>[k.toUpperCase(),file[k]]));
    return [file.path,...Object.entries(hashes).map(([name,value])=>name+': '+value)].join('\n');
@@ -78,3 +79,5 @@ $('checksum-browse').onclick=async()=>{
  if(picked.length)$('checksum-paths').value=[...new Set([...lines('checksum-paths'),...picked])].join('\n');
 };
 $('hash-algorithm').onchange=()=>show('hash-choices',$('hash-algorithm').value==='custom');
+
+$('checksum-folder').onclick=async()=>{const picked=await invoke('pick_folder');if(picked)$('checksum-paths').value=[...new Set([...lines('checksum-paths'),picked])].join('\n');};

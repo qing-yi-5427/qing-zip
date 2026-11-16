@@ -1,6 +1,26 @@
 use std::{fs, process::Command};
 
 #[test]
+fn checksum_cli_recurses_and_preserves_mixed_input_order() {
+    let dir=tempfile::tempdir().unwrap();let tree=dir.path().join("directory");
+    fs::create_dir_all(tree.join("nested/empty")).unwrap();
+    fs::write(tree.join("a.txt"),b"abc").unwrap();
+    fs::write(tree.join("nested/a.txt"),b"").unwrap();
+    let extra=dir.path().join("outside.txt");fs::write(&extra,b"abc").unwrap();
+    for names in [&[][..],&["--hash","SHA256","--hash","CRC32"][..],&["--hash","*"][..]] {
+        let output=Command::new(env!("CARGO_BIN_EXE_obz")).arg("checksum").args([&tree,&extra]).args(names).output().unwrap();
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        let value:serde_json::Value=serde_json::from_slice(&output.stdout).unwrap();
+        let rows=value["checksums"].as_array().unwrap();assert_eq!(rows.len(),3);
+        assert_eq!(rows[0]["path"],tree.join("a.txt").to_str().unwrap());
+        assert_eq!(std::path::Path::new(rows[1]["path"].as_str().unwrap()),tree.join("nested").join("a.txt"));
+        assert_eq!(rows[2]["path"],extra.to_str().unwrap());
+        let sha=if names.is_empty(){&rows[1]["sha256"]}else{&rows[1]["hashes"]["SHA256"]};
+        assert_eq!(sha,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    }
+}
+
+#[test]
 fn checksum_cli_preserves_order_and_single_file_shape() {
     let root = tempfile::tempdir().unwrap();
     let first = root.path().join("a").join("same [2].txt");

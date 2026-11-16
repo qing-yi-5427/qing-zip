@@ -36,6 +36,7 @@ pub fn algorithms(opts: &EngineOptions) -> Result<Vec<Algorithm>, String> {
 /// Empty selection retains the original four-hash, single-pass API. An explicit
 /// selection (or "*") computes all requested hashes in one read of the file.
 pub fn checksum_selected(path: &str, names: &[String], opts: &EngineOptions) -> Result<serde_json::Value, String> {
+    if tree::is_directory(path)? { return checksum_files(&[path.to_owned()], names, opts); }
     if names.is_empty() { return checksum(path, opts); }
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
@@ -115,6 +116,7 @@ fn choose_algorithms(names: &[String], opts: &EngineOptions) -> Result<Vec<Algor
 }
 
 mod batch;
+mod tree;
 #[cfg(windows)]
 mod pin_batch;
 pub use batch::checksum_files;
@@ -138,20 +140,11 @@ fn parse_hashes(text: &str, chosen: &[Algorithm]) -> Result<std::collections::BT
 pub fn checksum(path: &str, opts: &EngineOptions) -> Result<serde_json::Value, String> {
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
-    let mut open = std::fs::OpenOptions::new();
-    open.read(true);
-    #[cfg(windows)] {
-        use std::os::windows::fs::OpenOptionsExt;
-        // Restoring the timestamp after a same-size write can defeat metadata checks.
-        open.share_mode(1);
-    }
-    let mut file = open.open(path).map_err(|e| e.to_string())?;
-    let before = file.metadata().map_err(|e| e.to_string())?;
-    if !before.is_file() {
-        return Err("checksums require a regular file".into());
-    }
+    let mut input = HashInput::open(path)?;
+    let file = &mut input.source;
+    let before = &input.before;
     ctl.set("checksum", Some(0), "Calculating file checksums");
-    let (size, hashes) = hash_reader(&mut file, before.len(), &ctl, CommonSelection::ALL)?;
+    let (size, hashes) = hash_reader(&mut **file, before.len(), &ctl, CommonSelection::ALL)?;
     let after = file.metadata().map_err(|e| e.to_string())?;
     if before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
@@ -265,14 +258,14 @@ mod tests {
         assert_eq!(empty["hashes"]["SHA256"], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     }
     #[test]
-    fn extended_rejects_unknown_switches_directories_and_cancel() {
+    fn extended_rejects_unknown_switches_and_cancel() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("input.txt");
         std::fs::write(&path, b"abc").unwrap();
         for name in ["-oanything", "SHA256 -psecret", "*\n"] {
             assert!(checksum_selected(path.to_str().unwrap(), &[name.into()], &EngineOptions::default()).is_err());
         }
-        assert!(checksum_selected(dir.path().to_str().unwrap(), &["SHA256".into()], &EngineOptions::default()).is_err());
+        assert_eq!(checksum_selected(dir.path().to_str().unwrap(), &["SHA256".into()], &EngineOptions::default()).unwrap()["checksums"].as_array().unwrap().len(),1);
         let ctl = JobControl::new(); ctl.cancel();
         let opts = EngineOptions { control: Some(ctl), ..Default::default() };
         assert!(checksum_selected(path.to_str().unwrap(), &["SHA256".into()], &opts).unwrap_err().contains("cancelled"));
