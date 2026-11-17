@@ -20,8 +20,8 @@ function entryType(entry) {
   const dot = entry.leaf.lastIndexOf('.');
   return dot < 0 ? '' : entry.leaf.slice(dot + 1).toUpperCase();
 }
-function modifiedTime(entry) {
-  return entry.modifiedTime ??= Date.parse((entry.modified || '').replace(' ', 'T'));
+function entryTime(entry, key) {
+  return entry[key+'Time'] ??= Date.parse((entry[key] || '').replace(' ', 'T'));
 }
 const flatNameOrder = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
 function compareEntries(a, b) {
@@ -37,8 +37,8 @@ function compareEntries(a, b) {
     order = (a[s.sort] || 0) - (b[s.sort] || 0);
   } else if (s.sort === 'type') {
     if (!a.is_dir) order = entryType(a).localeCompare(entryType(b));
-  } else if (s.sort === 'modified') {
-    const left = modifiedTime(a), right = modifiedTime(b);
+  } else if (['modified','created','accessed'].includes(s.sort)) {
+    const left = entryTime(a,s.sort), right = entryTime(b,s.sort);
     const unknownLast = Number(!Number.isFinite(left)) - Number(!Number.isFinite(right));
     if (unknownLast) return unknownLast;
     order = left - right;
@@ -121,7 +121,7 @@ function archive(){if(!s.archive)return home();return `${nestedBanner()}<div cla
 const windowThreshold = 256;
 function fileRow(e,index){const label=s.flatView?e.name.slice(s.folder.length).replace(/\/$/,''):e.leaf;
 const nameCell=`<td data-column="name"><button class="qa-filebtn" tabindex="${e.name===s.cursor?0:-1}" data-entry="${esc(e.name)}" title="${esc(label)}"><span class="oa-file-symbol ${e.is_dir?'folder':''}" ${!e.is_dir&&isImage(e.name)&&s.listStyle==='icons'?`data-thumbnail="${esc(e.name)}" aria-label="图片缩略图"`:''}>${icon(e.is_dir?'folder':'file')}</span><span>${esc(label)}</span></button></td>`;
-const cell=id=>{if(id==='name')return nameCell;let value='';if(id==='size')value=e.is_dir?'':entrySize(e);else if(id==='packed_size')value=e.is_dir?'':ArchiveColumns.packedKnown(e)?size(e.packed_size||0):'未提供';else if(id==='type')value=e.is_dir?'文件夹':entryType(e)?entryType(e)+' 文件':'文件';else if(id==='modified')value=displayModified(e.modified)||'未提供';else if(id==='encrypted')value=e.encrypted?'是':'未标记';else value=e[id]||'未提供';if(id==='type'&&e.encrypted)value+=' 🔒';return `<td data-column="${id}" title="${esc(value)}">${esc(value)}</td>`;};
+const cell=id=>{if(id==='name')return nameCell;let value='';if(id==='size')value=e.is_dir?'':entrySize(e);else if(id==='packed_size')value=e.is_dir?'':ArchiveColumns.packedKnown(e)?size(e.packed_size||0):'未提供';else if(id==='type')value=e.is_dir?'文件夹':entryType(e)?entryType(e)+' 文件':'文件';else if(['modified','created','accessed'].includes(id))value=displayModified(e[id])||'未提供';else if(id==='encrypted')value=e.encrypted?'是':'未标记';else value=e[id]||'未提供';if(id==='type'&&e.encrypted)value+=' 🔒';return `<td data-column="${id}" title="${esc(value)}">${esc(value)}</td>`;};
 return `<tr aria-rowindex="${index+2}" data-row="${esc(e.name)}" aria-selected="${s.selected.has(e.name)}" class="${s.selected.has(e.name)?'selected':''}"><td><input type="checkbox" tabindex="-1" data-select="${esc(e.name)}" aria-label="选择 ${esc(label)}" ${s.selected.has(e.name)?'checked':''}></td>${s.listStyle==='icons'?nameCell:columns.filter(c=>c.visible).map(c=>cell(c.id)).join('')}</tr>`;}
 
 function releaseListingWindow() { listingWindow?.stop(); listingWindow = null; }
@@ -809,7 +809,7 @@ async function showProperties(wholeArchive){
  if(!s.archive)throw Error('请先打开压缩包。');
  const selected=wholeArchive?[]:[...s.selected],archive=s.archive,options={password:s.password||null,codepage:s.codepage||null};
  const details=QingArchiveProperties.describe(s.entries,selected,archive);
- for(const row of details.rows)if(row[0]==='修改时间'&&row[1]!=='未提供'){row[1]=displayModified(row[1]);row[0]='修改时间（本地）';}
+ for(const row of details.rows)if(['修改时间','创建时间','访问时间'].includes(row[0])&&row[1]!=='未提供'){row[1]=displayModified(row[1]);row[0]+='（本地）';}
  const markup=rows=>`<dl class="qa-properties">${rows.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
  const query=wholeArchive||selected.length===0;
  dialog(query?'压缩包属性':details.title,markup(details.rows)+(query?'<section id="qa-property-status"><p>正在读取格式属性…</p></section>':''),btn('关闭','close')+(query?btn('取消读取','canceljob'):''));

@@ -86,7 +86,7 @@ fn name(path: &str, kind: &str) -> Result<String, String> {
     Ok(name)
 }
 fn entry(name: String, size: u64, packed: u64, kind: &str) -> Entry {
-    Entry {
+    Entry { created: String::new(), accessed: String::new(),
         size_known: true,
         name,
         size,

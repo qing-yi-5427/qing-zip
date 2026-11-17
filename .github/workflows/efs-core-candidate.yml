@@ -1,13 +1,19 @@
 name: Windows EFS regression
 on:
   workflow_dispatch:
+    inputs:
+      run_deep_tests:
+        description: 'Run EFS regressions on an explicitly approved disposable runner'
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main, codex/nanazip-parity, codex/file-workspace-efs, codex/efs-directory]
 permissions:
   contents: read
 jobs:
   disposable-windows-efs:
-    if: github.repository == 'qing-yi-5427/qing-zip'
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
     runs-on: windows-2022
     timeout-minutes: 20
     steps:

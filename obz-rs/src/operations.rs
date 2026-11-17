@@ -116,13 +116,13 @@ fn serialize_listing_entries<S: serde::Serializer>(entries: &[engine::Entry], se
     // in lexical key order. Keep that order while borrowing each entry.
     #[derive(Serialize)]
     struct Row<'a> {
-        attributes: &'a str, comment: &'a str, crc: &'a str, encrypted: bool,
+        accessed: &'a str, attributes: &'a str, comment: &'a str, crc: &'a str, created: &'a str, encrypted: bool,
         is_dir: bool, method: &'a str, modified: &'a str, name: &'a str,
         packed_size: u64, size: u64, size_known: bool,
     }
     serializer.collect_seq(entries.iter().map(|entry| {
-        let engine::Entry { attributes, comment, crc, encrypted, is_dir, method, modified, name, packed_size, size, size_known } = entry;
-        Row { attributes, comment, crc, encrypted: *encrypted, is_dir: *is_dir, method,
+        let engine::Entry { accessed, attributes, comment, crc, created, encrypted, is_dir, method, modified, name, packed_size, size, size_known } = entry;
+        Row { accessed, attributes, comment, crc, created, encrypted: *encrypted, is_dir: *is_dir, method,
               modified, name, packed_size: *packed_size, size: *size, size_known: *size_known }
     }))
 }
@@ -422,6 +422,7 @@ fn base64(data: &[u8]) -> String {
     #[test]
     fn listing_response_matches_legacy_json_including_key_order() {
         let entry = engine::Entry {
+            created: "2025-01-02 03:04:05Z".into(), accessed: "2026-02-03 04:05:06Z".into(),
             name: "目录/file".into(), size: u64::MAX, size_known: false, packed_size: 11,
             is_dir: false, crc: "ABCD".into(), encrypted: true, modified: "2026-01-01".into(),
             method: "LZMA2".into(), comment: "quote \" slashes \\ line\n".into(), attributes: "R".into(),

@@ -17,10 +17,12 @@
         ['压缩后大小', one.packed_size > 0 || (one.size_known !== false && one.size === 0) ? bytes(one.packed_size) : missing],
         ['压缩方法', one.method || missing], ['CRC', one.crc || missing],
         ['加密', one.encrypted ? '是' : '否'], ['修改时间', one.modified || missing],
+        ['创建时间', one.created || missing], ['访问时间', one.accessed || missing],
         ['原始属性', one.attributes || missing], ['注释', one.comment || missing]);
       return { title: '文件属性', rows };
     }
     if (names.length === 1) rows.push(['包内路径', names[0]]);
+    if (one) rows.push(['修改时间', one.modified || missing], ['创建时间', one.created || missing], ['访问时间', one.accessed || missing]);
     const files = included.filter(e => !e.is_dir);
     let total = 0n, unknown = 0;
     for (const file of files) {

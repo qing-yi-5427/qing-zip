@@ -42,7 +42,7 @@ pub fn recognize(path: &str) -> Result<Option<Vec<u8>>, String> {
 fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
     let mut es = Vec::new();
     for e in &pkg.archive.entries {
-        es.push(Entry {
+        es.push(Entry { created: String::new(), accessed: String::new(),
             size_known: true,
             name: format!("payload/{}", e.name.replace('\\', "/")),
             size: e.size,
@@ -57,7 +57,7 @@ fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
         })
     }
     for e in &pkg.ui_entries {
-        es.push(Entry {
+        es.push(Entry { created: String::new(), accessed: String::new(),
             size_known: true,
             name: format!("ui/{}", e.name.replace('\\', "/")),
             size: e.size,

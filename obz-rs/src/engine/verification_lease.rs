@@ -49,7 +49,7 @@ impl VerifiedArchive {
     pub fn member_count(&self) -> usize { self.entries.len() }
     pub fn retained_metadata_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<Entry>() + self.entries.iter()
-            .map(|e| e.name.capacity()+e.crc.capacity()+e.method.capacity()+e.comment.capacity()+e.attributes.capacity()+e.modified.capacity()).sum::<usize>()
+            .map(|e| e.name.capacity()+e.crc.capacity()+e.method.capacity()+e.comment.capacity()+e.attributes.capacity()+e.modified.capacity()+e.created.capacity()+e.accessed.capacity()).sum::<usize>()
     }
 }
 

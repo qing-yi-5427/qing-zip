@@ -311,7 +311,7 @@ fn check_root(
                 }
                 if !official_only { image.files.insert(name.to_lowercase(), bytes); }
             }
-            image.entries.push(crate::engine::Entry {
+            image.entries.push(crate::engine::Entry { created: String::new(), accessed: String::new(),
                 name, size: size as u64, packed_size: size as u64, size_known: true,
                 is_dir, crc: String::new(), encrypted: false, modified: String::new(),
                 method: String::new(), comment: String::new(), attributes: String::new(),

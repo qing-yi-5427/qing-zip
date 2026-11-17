@@ -21,6 +21,19 @@ test('size sorting keeps unknown lengths last in either direction and directorie
  f.s.reverse=true;
  assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.leaf),['nested','data.txt','empty.txt','unknown.txt']);
 });
+
+test('all date columns sort their own timestamp, keep unknown dates last, and preserve directory priority',()=>{
+ for(const key of ['modified','created','accessed']) {
+  const f=fixture();f.s.sort=key;
+  f.s.entries=[{name:'unknown.txt'},{name:'invalid.txt',[key]:'invalid'},{name:'late.txt',[key]:'2026-01-01 00:00:00Z'},{name:'early.txt',[key]:'2025-01-01 00:00:00Z'},{name:'folder/',is_dir:true}];
+  assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.leaf),['folder','early.txt','late.txt','invalid.txt','unknown.txt']);
+  f.s.reverse=true;
+  assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.leaf),['folder','late.txt','early.txt','unknown.txt','invalid.txt']);
+ }
+ const f=fixture();f.s.entries=[{name:'a',created:'2025-01-01 00:00:00Z',accessed:'2026-01-01 00:00:00Z'},{name:'b',created:'2026-01-01 00:00:00Z',accessed:'2025-01-01 00:00:00Z'}];
+ f.s.sort='created';assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.leaf),['a','b']);
+ f.s.sort='accessed';assert.deepEqual(Array.from(f.api.visibleEntries(),e=>e.leaf),['b','a']);
+});
 test('nested metadata retains unknown size after folder navigation and filtering',()=>{
  const f=fixture();f.s.entries=[{name:'folder/log.txt',size:0,size_known:false},{name:'elsewhere.txt',size:8}];
  f.s.folder='folder/';f.s.search='LOG';

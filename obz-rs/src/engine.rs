@@ -263,6 +263,10 @@ pub struct Entry {
     pub crc: String,
     pub encrypted: bool,
     pub modified: String,
+    #[serde(default)]
+    pub created: String,
+    #[serde(default)]
+    pub accessed: String,
     pub method: String,
     pub comment: String,
     pub attributes: String,
@@ -808,6 +812,8 @@ fn listing_entry(
         None => None,
     };
     Ok(Some(Entry {
+        created: props.get(Field::Created).unwrap_or("").to_string(),
+        accessed: props.get(Field::Accessed).unwrap_or("").to_string(),
         size_known: is_dir || size.is_some(),
         name: name.into(),
         size: size.unwrap_or(0),
@@ -963,7 +969,7 @@ fn read_directory(
             let name = Path::new(path).file_stem().and_then(|name| name.to_str())
                 .ok_or("invalid stream filename")?.to_owned();
             validate_name(&name)?;
-            out.push(Entry {
+            out.push(Entry { created: String::new(), accessed: String::new(),
                 name, size: 0, size_known: false,
                 packed_size: fs::metadata(path).map_err(|error| error.to_string())?.len(),
                 is_dir: false, crc: String::new(), encrypted: false, modified: String::new(),
@@ -996,7 +1002,7 @@ fn read_directory(
             .to_string_lossy()
             .into_owned();
         validate_name(&name)?;
-        out.push(Entry {
+        out.push(Entry { created: String::new(), accessed: String::new(),
             size_known: true,
             name,
             size: temp.metadata().map_err(|e| e.to_string())?.len(),
@@ -5849,6 +5855,29 @@ mod staging_tests {
     }
 
     #[test]
+    fn technical_listing_created_accessed_and_legacy_payload() {
+        let entries = parse_listing(b"Path = file.txt\nSize = 3\nCreated = 2025-01-02 03:04:05.1234567Z\nAccessed = 2026-02-03 04:05:06Z\n\nPath = unknown\nSize = 0\n").unwrap();
+        assert_eq!((&*entries[0].created, &*entries[0].accessed),
+            ("2025-01-02 03:04:05.1234567Z", "2026-02-03 04:05:06Z"));
+        assert!(entries[1].created.is_empty() && entries[1].accessed.is_empty());
+        let mut payload = serde_json::to_value(&entries[0]).unwrap();
+        let roundtrip: Entry = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(entries[0], roundtrip);
+        for field in ["created", "accessed"] {
+            let mut changed = entries[0].clone();
+            if field == "created" { changed.created.clear(); } else { changed.accessed.clear(); }
+            assert_ne!(entries[0], changed);
+            payload.as_object_mut().unwrap().remove(field);
+        }
+        let legacy: Entry = serde_json::from_value(payload).unwrap();
+        assert!(legacy.created.is_empty() && legacy.accessed.is_empty());
+        for field in ["Created", "Accessed"] {
+            let duplicate = format!("Path = file.txt\n{field} = first\n{field} = second\n");
+            assert_eq!(parse_listing(duplicate.as_bytes()).unwrap_err(), "ambiguous archive entry metadata");
+        }
+    }
+
+    #[test]
     fn technical_listing_rejects_ambiguous_and_unsafe_records() {
         for data in [
             b"Unknown = 1\r\nUnknown = 2".as_slice(),
@@ -6333,7 +6362,7 @@ mod staging_tests {
         fs::write(&source, b"source").unwrap();
         fs::write(format!("{}:Zone.Identifier", source.display()), b"[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
         let zone = crate::motw::archive_context(&source).unwrap();
-        let mut entry = Entry { name: "a.txt".into(), size: 8, size_known: true, packed_size: 0,
+        let mut entry = Entry { created: String::new(), accessed: String::new(), name: "a.txt".into(), size: 8, size_known: true, packed_size: 0,
             is_dir: false, crc: String::new(), encrypted: false, modified: String::new(),
             method: String::new(), comment: String::new(), attributes: "R".into() };
         entry.modified = "2019-01-02 03:04:05".into();
@@ -7308,7 +7337,7 @@ mod staging_tests {
             let data = if i == 0 { vec![] } else { vec![i as u8; 3073] };
             zip.start_file(&name, options).unwrap();
             zip.write_all(&data).unwrap();
-            entries.push(Entry {
+            entries.push(Entry { created: String::new(), accessed: String::new(),
                 size_known: true,
                 name,
                 size: data.len() as u64,
@@ -7323,7 +7352,7 @@ mod staging_tests {
             });
         }
         zip.add_directory("empty/", options).unwrap();
-        entries.push(Entry {
+        entries.push(Entry { created: String::new(), accessed: String::new(),
             size_known: true,
             name: "empty/".into(),
             size: 0,
@@ -7950,7 +7979,7 @@ mod staging_tests {
         fs::set_permissions(&target, perm).unwrap();
         let newpath = temp.path().join("metadata.txt");
         let published = publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &newpath, false).unwrap();
-        let entry = Entry {
+        let entry = Entry { created: String::new(), accessed: String::new(),
             size_known: true,
             name: "metadata.txt".into(),
             size: 0,

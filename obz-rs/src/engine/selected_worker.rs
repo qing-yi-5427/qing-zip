@@ -938,7 +938,7 @@ mod tests {
     use super::*;
 
     fn entry(name: String) -> Entry {
-        Entry {
+        Entry { created: String::new(), accessed: String::new(),
             name,
             size: 1,
             size_known: true,

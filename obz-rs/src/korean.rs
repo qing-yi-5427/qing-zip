@@ -119,7 +119,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
         Archive::Egg(a) => a
             .entries
             .iter()
-            .map(|e| Entry {
+            .map(|e| Entry { created: String::new(), accessed: String::new(),
                 size_known: true,
                 name: e.file_name.replace('\\', "/"),
                 size: e.uncompressed_size,
@@ -145,7 +145,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
         Archive::Alz(a) => a
             .entries
             .iter()
-            .map(|e| Entry {
+            .map(|e| Entry { created: String::new(), accessed: String::new(),
                 size_known: true,
                 name: e.file_name.replace('\\', "/"),
                 size: e.uncompressed_size,

@@ -49,7 +49,7 @@ fn manifest_entries_mode(body:&[u8],nonce:&[u8;16],verification:bool)->Result<Ve
         // compressed size and comments are intentionally not synthesized.
         // Safety properties were independently rejected by the native manifest
         // and above; unsupported layouts return to the original complete listing.
-        entries.push(Entry{name,size,size_known:true,packed_size:0,is_dir,
+        entries.push(Entry{ created: String::new(), accessed: String::new(),name,size,size_known:true,packed_size:0,is_dir,
             crc:if crc_present {format!("{crc:08X}")}else{String::new()},encrypted,modified,
             method:String::new(),comment:String::new(),attributes:format!("{}{}",if is_dir{"D"}else{"A"},if present && attrs&1!=0{"R"}else{""})});
     }

@@ -337,7 +337,9 @@ print('native Python',sys.version,ssl.OPENSSL_VERSION,sqlite3.sqlite_version)
     return {'python':runtime,'desktop':desktop,'authored_imports':dependencies,'full_manifest_checks':checks,'native_sfx_executed':True,'native_7zip_fallback':True}
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('dist',type=Path);ap.add_argument('downloads',type=Path);a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('dist',type=Path);ap.add_argument('downloads',type=Path)
+    ap.add_argument('--package-only',action='store_true',help='Build the installer and hashes without executing payloads, installation or acceptance tests')
+    a=ap.parse_args()
     out=a.dist.resolve();downloads=a.downloads.resolve()
     version=json.loads((ROOT/'obz-gui/tauri.conf.json').read_text())['version']
     prefix=f'qing-zip-{version}-arm64'
@@ -349,6 +351,17 @@ def main():
         nsis=next((tmp/'nsis').glob('*/makensis.exe'))
         run([nsis,'/INPUTCHARSET','UTF8','/DARM64_PAYLOAD',f'/DVERSION={version}',f'/DSTAGING={stage}',f'/DOUTPUT={setup}',ROOT/'scripts/installer.nsi'])
         assert machine(setup)==0x14c,'unexpected installer bootstrap'
+        if a.package_only:
+            report={'version':version,'source_commit':os.environ.get('GITHUB_SHA'),'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),
+                    'scope':'ARM64 package build only; no payload execution, installation, uninstall or functional acceptance',
+                    'installed':False,'functional_acceptance_run':False,'native_filesystem_tests_run':False,'assets':{}}
+            for artifact in [setup,portable]:
+                digest=sha(artifact)
+                report['assets'][artifact.name]={'sha256':digest,'bytes':artifact.stat().st_size}
+                (out/(artifact.name+'.sha256')).write_text(digest+'  '+artifact.name+'\n',encoding='ascii')
+            (out/(prefix+'-package-build.json')).write_text(json.dumps(report,indent=2),encoding='utf8')
+            print(json.dumps(report))
+            return
         exported=files(stage)
         with zipfile.ZipFile(portable) as z:z.extractall(tmp/'portable')
         assert files(tmp/'portable')==exported

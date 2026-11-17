@@ -20,6 +20,17 @@ test('aggregate sizes remain exact beyond Number precision and distinguish unkno
   assert.equal(rows['大小未知的文件'],'1');
 });
 
+test('member creation and access dates are reported as supplied, including directory metadata', () => {
+  for (const is_dir of [false,true]) {
+    const rows=Object.fromEntries(describe([entry('member',3,{is_dir,created:'2025-01-02 03:04:05Z',accessed:'2026-02-03 04:05:06.1234567Z'})],['member'],'archive').rows);
+    assert.equal(rows['创建时间'],'2025-01-02 03:04:05Z');
+    assert.equal(rows['访问时间'],'2026-02-03 04:05:06.1234567Z');
+    assert.equal(rows['修改时间'],'未提供');
+  }
+  const missing=Object.fromEntries(describe([entry('legacy',3)],['legacy'],'archive').rows);
+  assert.equal(missing['创建时间'],'未提供');assert.equal(missing['访问时间'],'未提供');
+});
+
 test('technical properties keep wrapper layers, large integers and unknown solid flags distinct',()=>{
  const {technical}=require('../frontend/archive-properties.js');
  const rows=Object.fromEntries(technical({source_bytes:'9007199254740993',layers:[{fields:{Type:'Split',Volumes:'3'}},{fields:{Type:'7z',Solid:'+',Offset:'-1'}}]}));

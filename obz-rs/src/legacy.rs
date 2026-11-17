@@ -446,7 +446,7 @@ fn entry_view(e: &unarc_rs::unified::ArchiveEntry) -> Result<Entry, String> {
     if e.original_size() > MAX_ENTRY || e.compressed_size() > MAX_TOTAL {
         return Err("ACE entry exceeds size limit".into());
     }
-    Ok(Entry {
+    Ok(Entry { created: String::new(), accessed: String::new(),
         size_known: true,
         name: e.name().replace('\\', "/"),
         size: e.original_size(),
