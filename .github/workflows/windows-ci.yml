@@ -43,7 +43,11 @@ jobs:
             'engine::staging_tests::technical_listing_preserves_mixed_line_endings_and_metadata',
             'engine::staging_tests::technical_listing_rejects_ambiguous_and_unsafe_records',
             'engine::staging_tests::technical_listing_created_accessed_and_legacy_payload',
-            'operations::tests::listing_response_matches_legacy_json_including_key_order'
+            'operations::tests::listing_response_matches_legacy_json_including_key_order',
+            'engine::selected_worker::zip_listing::tests::zip_member_times_distinct_values_and_precision',
+            'engine::selected_worker::zip_listing::tests::zip_member_times_absent_values_stay_empty',
+            'engine::selected_worker::zip_listing::tests::zip_member_times_reject_wrong_types_counts_and_existing_unsafe_metadata',
+            'engine::selected_worker::zip_listing::tests::zip_member_times_protocol_v2_is_synchronized_and_rejects_v1'
           )
           foreach ($testName in $tests) {
             $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $testName -- --exact --nocapture 2>&1 | Out-String)

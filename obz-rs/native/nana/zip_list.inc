@@ -34,11 +34,11 @@ extern "C" HRESULT __stdcall qz_list_zip_at(const QzZipListRequest *request, uin
   return boundary([&]() -> HRESULT {
     static std::atomic<bool> used{false};
     if (used.exchange(true)) fail("one task per isolated ZIP worker required");
-    if (!request || request->abi_version != 1 || request->struct_bytes != sizeof(QzZipListRequest) ||
+    if (!request || request->abi_version != QZ_ZIP_LIST_VERSION || request->struct_bytes != sizeof(QzZipListRequest) ||
         !request->host || request->source_size > INT64_MAX || !request->local_offset ||
         request->local_offset >= request->source_size) fail("invalid ZIP listing request");
     const auto host = *request->host;
-    if (host.abi_version != 1 || host.struct_bytes != sizeof(QzZipListHost) ||
+    if (host.abi_version != QZ_ZIP_LIST_VERSION || host.struct_bytes != sizeof(QzZipListHost) ||
         !host.read_at || !host.cancelled || !host.property) fail("invalid ZIP listing host");
     // Adapter contains no output grants. VolumeStream only uses these callbacks.
     QzSelectedHost source{};
@@ -64,7 +64,7 @@ extern "C" HRESULT __stdcall qz_list_zip_at(const QzZipListRequest *request, uin
       zip_list_property(arc.get(), host, UINT32_MAX, j, archive_props[j]);
     const PROPID item_props[] = {kpidPath, kpidIsDir, kpidSize, kpidPackSize, kpidCRC,
       kpidEncrypted, kpidMTime, kpidMethod, kpidComment, kpidAttrib, kpidSymLink,
-      kpidHardLink, kpidIsAltStream, kpidPosixAttrib};
+      kpidHardLink, kpidIsAltStream, kpidPosixAttrib, kpidCTime, kpidATime};
     for (uint32_t i = 0; i < count; ++i) {
       exact(operation->check(), "ZIP metadata cancelled");
       for (uint32_t j = 0; j < std::size(item_props); ++j)

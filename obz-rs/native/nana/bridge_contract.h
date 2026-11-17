@@ -124,6 +124,9 @@ HRESULT __stdcall qz_extract_selected_reusing_verified(const struct QzSelectedRe
 
 // Read-only ZIP listing. Property ids are stable protocol ordinals, not SDK ids.
 // No output or volume-discovery callback exists in this capability surface.
+// Version 2 appends creation/access times at item ordinals 14/15. Version 1
+// consumers must not interpret this longer property sequence.
+enum { QZ_ZIP_LIST_VERSION = 2 };
 struct QzZipListProperty {
   uint32_t id, type; // 0 empty, 1 number, 2 bool, 3 UTF-16, 4 FILETIME.
   uint64_t number;

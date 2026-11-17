@@ -1,5 +1,24 @@
 //! Read-only, positioned official ZIP listing for proven large-prefix inputs.
 use super::*;
+const ZIP_LIST_VERSION: u32 = 2;
+const ITEM_PROPERTIES: [&str; 16] = [
+    "Path",
+    "Folder",
+    "Size",
+    "Packed Size",
+    "CRC",
+    "Encrypted",
+    "Modified",
+    "Method",
+    "Comment",
+    "Attributes",
+    "Symbolic Link",
+    "Hard Link",
+    "Alternate Stream",
+    "Posix Attributes",
+    "Created",
+    "Accessed",
+];
 extern "C" {
     pub(super) fn qing_spawn_zip_list_worker(
         exe: *const u16,
@@ -39,13 +58,16 @@ impl Property {
         })
     }
     fn render(&self, ordinal: usize) -> Result<Option<String>, String> {
+        if ordinal >= ITEM_PROPERTIES.len() {
+            return Err("unknown ZIP metadata field".into());
+        }
         if self.kind == 0 {
             return Ok(None);
         }
         let expected = match ordinal {
             0 | 7 | 8 | 10 | 11 => 3,
             1 | 5 | 12 => 2,
-            6 => 4,
+            6 | 14 | 15 => 4,
             _ => 1,
         };
         if self.kind != expected {
@@ -66,6 +88,31 @@ impl Property {
             _ => unreachable!(),
         }))
     }
+}
+
+fn listing_member(
+    properties: &[Property],
+    seen: &mut HashSet<String>,
+) -> Result<Option<Entry>, String> {
+    if properties.len() != ITEM_PROPERTIES.len() {
+        return Err("incomplete ZIP item metadata".into());
+    }
+    if properties[13].kind != 0 && ((properties[13].number >> 12) & 15) == 10 {
+        return Err("archive symbolic link unsupported".into());
+    }
+    let values: Vec<Option<String>> = properties
+        .iter()
+        .enumerate()
+        .map(|(i, p)| p.render(i))
+        .collect::<Result<_, _>>()?;
+    let mut props = listing_properties::Properties::default();
+    for (key, value) in ITEM_PROPERTIES.iter().zip(&values) {
+        if let Some(value) = value {
+            props.insert(key, value);
+        }
+    }
+    let name = values[0].as_deref().ok_or("missing ZIP member name")?;
+    listing_entry(name, &props, seen)
 }
 
 // Formatting follows the pinned official PropIDUtils.cpp/PropVariantConv.cpp;
@@ -220,7 +267,7 @@ pub(crate) fn try_list(
     frame.extend_from_slice(&0u32.to_le_bytes());
     session.send(8, frame, ctl)?;
     let mut position = nonce.to_vec();
-    position.extend_from_slice(&1u32.to_le_bytes());
+    position.extend_from_slice(&ZIP_LIST_VERSION.to_le_bytes());
     position.extend_from_slice(&offset.to_le_bytes());
     session.send(10, position, ctl)?;
     let mut properties: Vec<Property> = Vec::new();
@@ -299,39 +346,8 @@ pub(crate) fn try_list(
                         return Ok(None);
                     }
                     properties.push(prop);
-                    if properties.len() == 14 {
-                        if properties[13].kind != 0 && ((properties[13].number >> 12) & 15) == 10 {
-                            return Err("archive symbolic link unsupported".into());
-                        }
-                        const NAMES: [&str; 14] = [
-                            "Path",
-                            "Folder",
-                            "Size",
-                            "Packed Size",
-                            "CRC",
-                            "Encrypted",
-                            "Modified",
-                            "Method",
-                            "Comment",
-                            "Attributes",
-                            "Symbolic Link",
-                            "Hard Link",
-                            "Alternate Stream",
-                            "Posix Attributes",
-                        ];
-                        let values: Vec<Option<String>> = properties
-                            .iter()
-                            .enumerate()
-                            .map(|(i, p)| p.render(i))
-                            .collect::<Result<_, _>>()?;
-                        let mut props = listing_properties::Properties::default();
-                        for (key, value) in NAMES.iter().zip(&values) {
-                            if let Some(value) = value {
-                                props.insert(key, value);
-                            }
-                        }
-                        let name = values[0].as_deref().ok_or("missing ZIP member name")?;
-                        if let Some(entry) = listing_entry(name, &props, &mut seen)? {
+                    if properties.len() == ITEM_PROPERTIES.len() {
+                        if let Some(entry) = listing_member(&properties, &mut seen)? {
                             entries.push(entry);
                         }
                         properties.clear();
@@ -374,6 +390,124 @@ pub(crate) fn try_list(
 mod tests {
     use super::*;
     thread_local! { pub(super) static ON_FRAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
+
+    // These tests only use in-memory properties/frames; no worker or source file.
+    fn times_properties() -> Vec<Property> {
+        let mut properties: Vec<_> = (0..ITEM_PROPERTIES.len())
+            .map(|_| Property {
+                kind: 0,
+                number: 0,
+                precision: 0,
+                sub: 0,
+                reserved: 0,
+                text: String::new(),
+            })
+            .collect();
+        properties[0].kind = 3;
+        properties[0].text = "member.txt".into();
+        properties[2].kind = 1;
+        properties[2].number = 3;
+        properties
+    }
+
+    #[test]
+    fn zip_member_times_distinct_values_and_precision() {
+        let mut properties = times_properties();
+        for (ordinal, ticks, precision, sub) in [
+            (6, 133801234567890123, 23, 0),
+            (14, 133801234577890124, 25, 56),
+            (15, 133801234587890125, 2, 0),
+        ] {
+            properties[ordinal] = Property {
+                kind: 4,
+                number: ticks,
+                precision,
+                sub,
+                reserved: 0,
+                text: String::new(),
+            };
+        }
+        let entry = listing_member(&properties, &mut HashSet::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.modified, "2024-12-31 12:57:36.7890123Z");
+        assert_eq!(entry.created, "2024-12-31 12:57:37.789012456Z");
+        assert_eq!(entry.accessed, "2024-12-31 12:57:38Z");
+        assert!(entry.size_known);
+        assert_eq!(entry.size, 3);
+    }
+
+    #[test]
+    fn zip_member_times_absent_values_stay_empty() {
+        let properties = times_properties();
+        let entry = listing_member(&properties, &mut HashSet::new())
+            .unwrap()
+            .unwrap();
+        assert!(entry.modified.is_empty() && entry.created.is_empty() && entry.accessed.is_empty());
+        let mut properties = properties;
+        properties[14].kind = 4; // Official zero FILETIME also remains empty.
+        properties[15].kind = 4;
+        let entry = listing_member(&properties, &mut HashSet::new())
+            .unwrap()
+            .unwrap();
+        assert!(entry.created.is_empty() && entry.accessed.is_empty());
+    }
+
+    #[test]
+    fn zip_member_times_reject_wrong_types_counts_and_existing_unsafe_metadata() {
+        let mut properties = times_properties();
+        assert!(listing_member(&properties[..14], &mut HashSet::new()).is_err());
+        assert!(listing_member(&properties[..15], &mut HashSet::new()).is_err());
+        properties.push(Property {
+            kind: 0,
+            number: 0,
+            precision: 0,
+            sub: 0,
+            reserved: 0,
+            text: String::new(),
+        });
+        assert!(listing_member(&properties, &mut HashSet::new()).is_err());
+        let unknown = properties.pop().unwrap();
+        assert!(unknown.render(16).is_err());
+        for ordinal in [6, 14, 15] {
+            for kind in [1, 2, 3] {
+                properties[ordinal].kind = kind;
+                assert!(listing_member(&properties, &mut HashSet::new()).is_err());
+            }
+            properties[ordinal].kind = 0;
+        }
+        let mut seen = HashSet::new();
+        listing_member(&properties, &mut seen).unwrap();
+        assert!(listing_member(&properties, &mut seen)
+            .unwrap_err()
+            .contains("duplicate"));
+        properties[13].kind = 1;
+        properties[13].number = 0xa000;
+        assert!(listing_member(&properties, &mut HashSet::new())
+            .unwrap_err()
+            .contains("symbolic link"));
+    }
+
+    #[test]
+    fn zip_member_times_protocol_v2_is_synchronized_and_rejects_v1() {
+        // Statically inspect the native request guards rather than launching a
+        // deliberately incompatible worker on this machine.
+        let contract = include_str!("../../native/nana/bridge_contract.h");
+        let worker = include_str!("../../native/nana/zip_list_worker.inc");
+        let bridge = include_str!("../../native/nana/zip_list.inc");
+        assert_eq!(ZIP_LIST_VERSION, 2);
+        assert_ne!(ZIP_LIST_VERSION, 1);
+        assert!(contract.contains("QZ_ZIP_LIST_VERSION = 2"));
+        assert!(worker.contains("position.get<uint32_t>() != QZ_ZIP_LIST_VERSION) return 3;"));
+        assert!(worker.contains("QzZipListHost host{QZ_ZIP_LIST_VERSION,"));
+        assert!(worker.contains("QzZipListRequest request{QZ_ZIP_LIST_VERSION,"));
+        assert!(bridge.contains("request->abi_version != QZ_ZIP_LIST_VERSION"));
+        assert!(bridge.contains("host.abi_version != QZ_ZIP_LIST_VERSION"));
+        assert!(
+            bridge.contains("kpidHardLink, kpidIsAltStream, kpidPosixAttrib, kpidCTime, kpidATime")
+        );
+    }
+
     fn small_input(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("source.zip");
