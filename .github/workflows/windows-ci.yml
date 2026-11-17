@@ -63,7 +63,7 @@ jobs:
       - name: Deep extraction memory state and ordinary archive fixtures
         shell: pwsh
         run: |
-          foreach ($module in @('deep_extract_plan::tests','deep_stream_copy::tests','deep_publication_state::tests')) {
+          foreach ($module in @('deep_extract_plan::tests','deep_stream_copy::tests','deep_publication_state::tests','deep_volume_plan::tests')) {
             cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $module
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }

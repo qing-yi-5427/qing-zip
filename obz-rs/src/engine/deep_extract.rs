@@ -45,6 +45,7 @@ enum Kind {
     Archive,
     Stream(&'static str),
     Invalid(String),
+    MissingFirst(String),
 }
 #[derive(Clone)]
 struct Source {
@@ -80,6 +81,7 @@ pub struct Report {
     pub verified_output_bytes: u64,
     pub accounting_estimated: bool,
     pub protected_archives: Vec<String>,
+    pub retained_matching_files: Vec<String>,
 }
 pub struct Session {
     stage: Option<ShellDragDirectory>,
@@ -100,6 +102,7 @@ pub struct Session {
     verified_bytes: u64,
     estimated: bool,
     publication: file_workspace::DeepPublicationLedger,
+    retained_matching_files: BTreeSet<String>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -213,10 +216,13 @@ fn extension_hint(path: &Path) -> bool {
     let lower = ordinary_name(path).to_ascii_lowercase();
     [
         ".zip", ".7z", ".rar", ".tar", ".gz", ".gzip", ".bz2", ".xz", ".tgz", ".tbz2", ".txz",
-        ".001",
     ]
     .iter()
     .any(|s| lower.ends_with(s))
+        || matches!(
+            crate::deep_volume_plan::classify(&ordinary_name(path), &[]),
+            crate::deep_volume_plan::Member::First { .. }
+        )
 }
 fn sniff(path: &Path) -> Result<Option<Kind>, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
@@ -283,113 +289,91 @@ fn application_container(entries: &[Entry]) -> bool {
         || (names.contains("mimetype")
             && (names.contains("meta-inf/container.xml") || names.contains("content.xml")))
 }
-fn secondary_volume(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if let Some((_, tail)) = lower.rsplit_once('.') {
-        if tail.len() >= 3 && tail.bytes().all(|b| b.is_ascii_digit()) {
-            return tail.parse::<u32>().is_ok_and(|n| n != 1);
-        }
-        if tail.len() == 3
-            && matches!(tail.as_bytes()[0], b'z' | b'r')
-            && tail.as_bytes()[1..].iter().all(u8::is_ascii_digit)
-        {
-            return true;
-        }
-    }
-    if let Some(i) = lower.rfind(".part") {
-        if let Some(number) = lower[i + 5..].strip_suffix(".rar") {
-            return number.parse::<u32>().is_ok_and(|n| n != 1);
-        }
-    }
-    false
-}
 fn family(path: &Path, peers: &[PathBuf]) -> Vec<PathBuf> {
-    let name = ordinary_name(path).to_ascii_lowercase();
-    let parent = path.parent();
-    let numeric = name.strip_suffix(".001");
-    let rar = name.rfind(".part").and_then(|i| {
-        name[i + 5..]
-            .strip_suffix(".rar")
-            .filter(|n| n.parse::<u32>().ok() == Some(1))
-            .map(|_| &name[..i])
-    });
+    let siblings = peers
+        .iter()
+        .filter(|p| p.parent() == path.parent())
+        .map(|p| ordinary_name(p))
+        .collect::<Vec<_>>();
+    let names = crate::deep_volume_plan::content_family(&ordinary_name(path), &siblings);
     peers
         .iter()
-        .filter(|p| {
-            if p.parent() != parent {
-                return false;
-            }
-            let other = ordinary_name(p).to_ascii_lowercase();
-            if other == name {
-                return true;
-            }
-            if let Some(prefix) = numeric {
-                return other
-                    .strip_prefix(&format!("{prefix}."))
-                    .is_some_and(|n| n.len() >= 3 && n.bytes().all(|b| b.is_ascii_digit()));
-            }
-            if let Some(prefix) = rar {
-                return other
-                    .strip_prefix(&format!("{prefix}.part"))
-                    .and_then(|n| n.strip_suffix(".rar"))
-                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-            }
-            if let Some(prefix) = name.strip_suffix(".zip") {
-                return other
-                    .strip_prefix(&format!("{prefix}.z"))
-                    .is_some_and(|n| n.len() == 2 && n.bytes().all(|b| b.is_ascii_digit()));
-            }
-            if let Some(prefix) = name.strip_suffix(".rar") {
-                return other
-                    .strip_prefix(&format!("{prefix}.r"))
-                    .is_some_and(|n| n.len() == 2 && n.bytes().all(|b| b.is_ascii_digit()));
-            }
-            false
-        })
+        .filter(|p| p.parent() == path.parent() && names.contains(&ordinary_name(p)))
         .cloned()
         .collect()
 }
+// Existing bounded engine metadata can prove an independently readable file.
+// Unknown metadata never authorizes consuming or removing a guessed companion.
+fn standalone_archive(path: &Path, opts: &EngineOptions) -> bool {
+    let Ok(properties) = archive_properties::read(&path.to_string_lossy(), opts) else {
+        return false;
+    };
+    if properties.partial || properties.layers.len() != 1 {
+        return false;
+    }
+    let fields = &properties.layers[0].fields;
+    let kind = fields
+        .get("Type")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !["zip", "7z", "tar", "gzip", "bzip2", "xz"].contains(&kind.as_str())
+        || fields.get("Multivolume").is_some_and(|s| s == "+")
+        || fields
+            .get("Volumes")
+            .is_some_and(|s| s.parse::<u64>().ok() != Some(1))
+    {
+        return false;
+    }
+    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    fields
+        .get("Physical Size")
+        .and_then(|s| s.parse::<u64>().ok())
+        .is_some_and(|n| n > 0 && n <= size)
+}
 fn first_volume(path: &Path) -> Result<PathBuf, String> {
-    let name = ordinary_name(path).to_ascii_lowercase();
-    if !secondary_volume(&name) {
+    use crate::deep_volume_plan::{classify, Member};
+    let name = ordinary_name(path);
+    if !matches!(classify(&name, &[]), Member::Later { .. }) {
         return Ok(path.to_owned());
     }
     let parent = path.parent().ok_or("分卷缺少父目录")?;
-    let prefix = if let Some((base, tail)) = name.rsplit_once('.') {
-        if tail.len() >= 3 && tail.bytes().all(|b| b.is_ascii_digit()) {
-            Some(format!("{base}.001"))
-        } else if tail.starts_with('z') && tail.len() == 3 {
-            Some(format!("{base}.zip"))
-        } else if tail.starts_with('r') && tail.len() == 3 {
-            Some(format!("{base}.rar"))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    for item in fs::read_dir(parent).map_err(|e| e.to_string())? {
-        let p = item.map_err(|e| e.to_string())?.path();
-        let n = ordinary_name(&p).to_ascii_lowercase();
-        if prefix.as_ref() == Some(&n) {
-            return Ok(p);
-        }
-        if let Some(i) = name.rfind(".part") {
-            if let Some(number) = n
-                .strip_prefix(&format!("{}.part", &name[..i]))
-                .and_then(|s| s.strip_suffix(".rar"))
-            {
-                if number.parse::<u32>().ok() == Some(1) {
-                    return Ok(p);
-                }
-            }
-        }
+    let siblings = fs::read_dir(parent)
+        .map_err(|e| e.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match classify(&name, &siblings) {
+        Member::Later {
+            first: Some(first), ..
+        } => Ok(parent.join(first)),
+        Member::Later { expected, .. } => Err(format!(
+            "缺少第一卷 {expected}；现有分卷已保留，请定位第一卷后重试或保留此包继续"
+        )),
+        _ => Ok(path.to_owned()),
     }
-    Err(format!(
-        "缺少第一卷，无法处理 {}；请将全部分卷放在同一文件夹",
-        ordinary_name(path)
-    ))
 }
+fn volume_member(path: &Path, peers: &[PathBuf]) -> crate::deep_volume_plan::Member {
+    let initial = crate::deep_volume_plan::classify(&ordinary_name(path), &[]);
+    if !matches!(initial, crate::deep_volume_plan::Member::Later { .. }) {
+        return initial;
+    }
+    let siblings = peers
+        .iter()
+        .filter(|p| p.parent() == path.parent())
+        .map(|p| ordinary_name(p))
+        .collect::<Vec<_>>();
+    crate::deep_volume_plan::classify(&ordinary_name(path), &siblings)
+}
+fn missing_volume_key(path: &Path, family: &str) -> String {
+    format!(
+        "missing-first:{}:{family}",
+        path.parent().unwrap_or(Path::new("")).display()
+    )
+}
+
 fn measure(path: &Path, ctl: &JobControl) -> Result<(u64, u64), String> {
     ctl.check()?;
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -453,9 +437,26 @@ impl Session {
                     };
                     (path, kind)
                 }
-                Err(error) => (input.clone(), Kind::Invalid(error)),
+                Err(error) => (
+                    input.clone(),
+                    match volume_member(input, &peers) {
+                        crate::deep_volume_plan::Member::Later { expected, .. } => {
+                            Kind::MissingFirst(expected)
+                        }
+                        _ => Kind::Invalid(error),
+                    },
+                ),
             };
-            let key = source_key(&path);
+            let key = if matches!(kind, Kind::MissingFirst(_)) {
+                match volume_member(&path, &peers) {
+                    crate::deep_volume_plan::Member::Later { family, .. } => {
+                        missing_volume_key(&path, &family)
+                    }
+                    _ => source_key(&path),
+                }
+            } else {
+                source_key(&path)
+            };
             roots.push(Candidate {
                 source: key.clone(),
                 name: ordinary_name(&path),
@@ -463,7 +464,7 @@ impl Session {
             sources.insert(
                 key,
                 Source {
-                    parts: family(&path, &peers),
+                    parts: vec![path.clone()],
                     path,
                     kind,
                 },
@@ -498,6 +499,7 @@ impl Session {
             verified_bytes: 0,
             estimated: false,
             publication: Default::default(),
+            retained_matching_files: BTreeSet::new(),
         })
     }
     pub fn resume(
@@ -547,17 +549,32 @@ impl Session {
         Ok(())
     }
     fn decode(&mut self, id: usize, ctl: &JobControl) -> Result<(), String> {
-        *ctl.context.lock().unwrap_or_else(|e|e.into_inner())=Some(format!(
+        *ctl.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
             "第 {} / {} 层 · {}\n已处理 {} 个文件 · {:.2} / {:.2} GiB · {} 个压缩包",
-            self.plan.nodes[id].depth,self.plan.limits.depth,self.locator(id).join(" → "),
-            self.plan.decoded_files,self.plan.decoded_bytes as f64/1073741824.0,
-            self.plan.limits.bytes as f64/1073741824.0,self.plan.nodes.len()
+            self.plan.nodes[id].depth,
+            self.plan.limits.depth,
+            self.locator(id).join(" → "),
+            self.plan.decoded_files,
+            self.plan.decoded_bytes as f64 / 1073741824.0,
+            self.plan.limits.bytes as f64 / 1073741824.0,
+            self.plan.nodes.len()
         ));
-        let source = self
+        let mut source = self
             .sources
             .get(&self.plan.nodes[id].source)
             .ok_or("压缩包来源已失效")?
             .clone();
+        if matches!(source.kind, Kind::MissingFirst(_)) {
+            let first = first_volume(&source.path)?;
+            let kind = sniff(&first)?.ok_or("第一卷尚未识别为支持的压缩包；现有分卷已保留")?;
+            source = Source {
+                parts: vec![first.clone()],
+                path: first,
+                kind,
+            };
+            self.sources
+                .insert(self.plan.nodes[id].source.clone(), source.clone());
+        }
         if application_extension(&source.path) {
             self.plan.nodes[id].state = State::Protected;
             return Ok(());
@@ -602,6 +619,9 @@ impl Session {
                 attributes: String::new(),
             }],
             Kind::Invalid(ref error) => return Err(error.clone()),
+            Kind::MissingFirst(ref expected) => {
+                return Err(format!("缺少第一卷 {expected}；现有分卷已保留"))
+            }
         };
         // Validate ALL names and namespaces, including unselected entries.
         expected_tree(&entries)?;
@@ -655,6 +675,9 @@ impl Session {
                 .map(|_| ())
             }
             Kind::Invalid(ref error) => Err(error.clone()),
+            Kind::MissingFirst(ref expected) => {
+                Err(format!("缺少第一卷 {expected}；现有分卷已保留"))
+            }
         };
         // Accounting survives decoder/checksum/cancellation failure and subsequent retries.
         let observed = measure(&tree, &JobControl::new())?;
@@ -675,18 +698,48 @@ impl Session {
                 paths.push(tree.join(validate_name(&entry.name)?));
             }
         }
+        paths.sort_by_key(|path| !crate::deep_volume_plan::first_probe(&ordinary_name(path)));
         // Bounded discovery: once the archive queue is full, retain the remaining files.
         let mut candidates = vec![];
         let mut archive_parts = HashSet::new();
+        let mut possible_companions = HashSet::new();
         for path in &paths {
             ctl.check()?;
-            if secondary_volume(&ordinary_name(path)) {
-                continue;
-            }
             if self.plan.nodes.len() + candidates.len() > self.plan.limits.archives {
                 self.plan.undiscovered_sources += 1;
                 self.plan.nodes[id].unscanned = true;
                 break;
+            }
+            let mut companion = possible_companions.contains(path);
+            if let crate::deep_volume_plan::Member::Later {
+                family: group,
+                expected,
+                first,
+            } = volume_member(path, &paths)
+            {
+                if first.is_none() {
+                    let key = missing_volume_key(path, &group);
+                    if !self.sources.contains_key(&key) {
+                        self.sources.insert(
+                            key.clone(),
+                            Source {
+                                path: path.clone(),
+                                parts: vec![],
+                                kind: Kind::MissingFirst(expected),
+                            },
+                        );
+                        candidates.push(Candidate {
+                            source: key,
+                            name: path
+                                .strip_prefix(&tree)
+                                .map_err(|e| e.to_string())?
+                                .to_string_lossy()
+                                .into_owned(),
+                        });
+                    }
+                    continue;
+                }
+                companion = true;
             }
             let kind = if let Some(cached) = self.probes.get(path) {
                 cached.clone()
@@ -695,10 +748,23 @@ impl Session {
                 self.probes.insert(path.clone(), probed.clone());
                 probed
             };
+            if companion && (kind.is_none() || !standalone_archive(path, &opts)) {
+                self.retained_matching_files.insert(format!(
+                    "{} → {}",
+                    self.locator(id).join(" → "),
+                    path.strip_prefix(&tree)
+                        .map_err(|e| e.to_string())?
+                        .display()
+                ));
+                continue;
+            }
             if let Some(kind) = kind {
                 let key = source_key(path);
-                let parts = family(path, &paths);
-                archive_parts.extend(parts.iter().cloned());
+                possible_companions.extend(family(path, &paths).into_iter().filter(|p| p != path));
+                // Names propose discovery groups only. The decoder verified this exact
+                // source; no inferred sibling ever receives deletion/collapse authority.
+                let parts = vec![path.clone()];
+                archive_parts.insert(path.clone());
                 self.sources.insert(
                     key.clone(),
                     Source {
@@ -726,9 +792,10 @@ impl Session {
                 })
             });
         let pure = candidates.len() == 1
-            && !paths.is_empty()
             && !meaningful_empty_directory
-            && paths.iter().all(|p| archive_parts.contains(p));
+            && crate::deep_volume_plan::contains_only_confirmed(&paths, |p| {
+                archive_parts.contains(p)
+            });
         self.plan.decoded(id, string(&tree)?, candidates, pure);
         Ok(())
     }
@@ -807,7 +874,7 @@ impl Session {
     pub fn drive(&mut self, ctl: &JobControl) -> Result<Report, String> {
         let result = self.drive_inner(ctl);
         self.options.password = None;
-        *ctl.context.lock().unwrap_or_else(|e|e.into_inner())=None;
+        *ctl.context.lock().unwrap_or_else(|e| e.into_inner()) = None;
         result
     }
     fn drive_inner(&mut self, ctl: &JobControl) -> Result<Report, String> {
@@ -986,7 +1053,10 @@ impl Session {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(id, node)| (node.parent.is_some() && !self.plan.fully_expanded(*id)) || (node.parent.is_none() && node.state==State::Skipped))
+            .filter(|(id, node)| {
+                (node.parent.is_some() && !self.plan.fully_expanded(*id))
+                    || (node.parent.is_none() && node.state == State::Skipped)
+            })
             .map(|(id, _)| self.locator(id).join(" → "))
             .collect::<Vec<_>>();
         let partial = !pending.is_empty()
@@ -994,7 +1064,7 @@ impl Session {
             || self.plan.nodes.iter().any(|n| n.state == State::Skipped)
             || self.publish_error.is_some()
             || self.plan.undiscovered_sources > 0;
-        let summary = if !pending.is_empty() {
+        let mut summary = if !pending.is_empty() {
             format!(
                 "已处理 {} 个压缩包；{} 项等待重试或保留。已校验结果保存在恢复目录。",
                 self.plan
@@ -1017,6 +1087,12 @@ impl Session {
                 self.files
             )
         };
+        if !self.retained_matching_files.is_empty() {
+            summary.push_str(&format!(
+                " 另保留 {} 个同名匹配文件，未凭文件名推断分卷身份。",
+                self.retained_matching_files.len()
+            ));
+        }
         Report {
             destination: self
                 .outputs
@@ -1041,6 +1117,7 @@ impl Session {
             verified_output_bytes: self.verified_bytes,
             accounting_estimated: self.estimated,
             protected_archives,
+            retained_matching_files: self.retained_matching_files.iter().cloned().collect(),
         }
     }
     fn locator(&self, mut id: usize) -> Vec<String> {

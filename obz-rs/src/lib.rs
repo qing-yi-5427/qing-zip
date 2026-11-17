@@ -32,6 +32,7 @@ mod smart_extract;
 mod deep_extract_plan;
 mod deep_stream_copy;
 mod deep_publication_state;
+mod deep_volume_plan;
 
 pub mod motw;
 

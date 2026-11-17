@@ -441,3 +441,34 @@ fn ordinary_rar5_nested_archive_uses_existing_decoder() {
         65536
     );
 }
+#[test]
+fn ordinary_numeric_sibling_is_retained_without_false_partial_or_wrapper_loss() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("ordinary.zip");
+    let inner = zip(&[("a.txt", b"a")]);
+    let ordinary = b"this is an ordinary numbered text file";
+    let original = zip(&[("bundle.001", &inner), ("bundle.002", ordinary)]);
+    fs::write(&source, &original).unwrap();
+    let mut s = start(t.path(), &[&source], Default::default());
+    let report = s.drive(&JobControl::new()).unwrap();
+    assert!(
+        report.finished,
+        "{}",
+        serde_json::to_string(&report).unwrap()
+    );
+    assert!(!report.partial);
+    assert_eq!(report.archives, 2);
+    assert_eq!(
+        fs::read(t.path().join("output/ordinary/bundle/a.txt")).unwrap(),
+        b"a"
+    );
+    assert_eq!(
+        fs::read(t.path().join("output/ordinary/bundle.002")).unwrap(),
+        ordinary
+    );
+    assert!(report
+        .retained_matching_files
+        .iter()
+        .any(|p| p.ends_with("bundle.002")));
+    assert_eq!(fs::read(source).unwrap(), original);
+}
