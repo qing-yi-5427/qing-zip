@@ -4284,6 +4284,54 @@ fn publication_workers(requested: Option<u32>, available: usize, files: usize) -
     // Keep the measured four-worker ceiling and honor a lower user limit.
     4.min(requested.unwrap_or(4) as usize).min(available).min(files).max(1)
 }
+fn direct_memory_publication(direct_claim: bool, exclusive_claim: bool,
+    has_journal: bool, policy: &str, memory: bool) -> bool {
+    direct_claim && exclusive_claim && has_journal && policy == "error" && memory
+}
+// Parent IDs are dense and assigned in first-appearance order during the
+// existing preparation pass. Queue only nonempty groups: uneven group lengths
+// still take O(files + parents) work, with no per-file path clones here.
+fn round_robin_publication_order(parent_ids: &[usize]) -> Vec<usize> {
+    let mut groups = (0..parent_ids.iter().max().map_or(0, |id| id + 1))
+        .map(|_| Vec::new()).collect::<Vec<_>>();
+    for (index, &parent) in parent_ids.iter().enumerate() { groups[parent].push(index); }
+    let mut active = groups.iter().filter(|group| !group.is_empty())
+        .map(|group| group.iter()).collect::<std::collections::VecDeque<_>>();
+    let mut order = Vec::with_capacity(parent_ids.len());
+    while let Some(mut group) = active.pop_front() {
+        order.push(*group.next().expect("nonempty publication group"));
+        if group.len() != 0 { active.push_back(group); }
+    }
+    order
+}
+#[test]
+fn parent_round_robin_preserves_every_index_and_parent_order() {
+    for (parents, expected) in [
+        (vec![],vec![]), (vec![0,0,0],vec![0,1,2]),
+        (vec![0,0,0,1,1,2],vec![0,3,5,1,4,2]),
+        (vec![0,1,0,2,1,0],vec![0,1,3,2,4,5]),
+    ] {
+        let order = round_robin_publication_order(&parents);
+        assert_eq!(order, expected);
+        let mut indices = order.clone(); indices.sort_unstable();
+        assert_eq!(indices, (0..parents.len()).collect::<Vec<_>>());
+        for &parent in &parents {
+            assert_eq!(order.iter().copied().filter(|&i| parents[i] == parent).collect::<Vec<_>>(),
+                (0..parents.len()).filter(|&i| parents[i] == parent).collect::<Vec<_>>());
+        }
+    }
+}
+#[test]
+fn parent_round_robin_requires_owned_direct_memory_error_publication() {
+    assert!(direct_memory_publication(true,true,true,"error",true));
+    assert!(!direct_memory_publication(false,true,true,"error",true));
+    assert!(!direct_memory_publication(true,false,true,"error",true));
+    assert!(!direct_memory_publication(true,true,false,"error",true));
+    assert!(!direct_memory_publication(true,true,true,"error",false));
+    for policy in ["skip","overwrite","rename"] {
+        assert!(!direct_memory_publication(true,true,true,policy,true));
+    }
+}
 #[test]
 fn publication_respects_explicit_limits_without_raising_the_default() {
     assert_eq!(publication_workers(None, 32, 6000), 4);
@@ -4315,12 +4363,21 @@ fn publish_staged_files_parallel(
         .copied()
         .filter(|e| !e.is_dir)
         .collect::<Vec<_>>();
-    let mut parents = HashSet::new();
+    #[cfg(windows)]
+    let direct = direct_memory_publication(guards.direct_memory_claim, guards.exclusive_claim,
+        journal.is_some(), policy, matches!(stage,StagedContents::Memory(_)));
+    #[cfg(not(windows))]
+    let direct = false;
+    let mut parent_ids = direct.then(|| Vec::with_capacity(files.len()));
+    let mut parents = HashMap::new();
     for entry in &files {
         ctl.check()?;
         let target = dest.join(validate_name(&entry.name)?);
         let parent = target.parent().ok_or("missing output directory")?;
-        if parents.insert(parent.to_path_buf()) {
+        let next_parent = parents.len();
+        let group = *parents.entry(parent.to_path_buf()).or_insert(next_parent);
+        if let Some(ids) = &mut parent_ids { ids.push(group); }
+        if group == next_parent {
             guards.check(parent)?;
             if !guards.pinned(parent) {
                 guards.create_dirs(parent)?;
@@ -4328,11 +4385,7 @@ fn publish_staged_files_parallel(
             guards.allow_publication(parent)?;
         }
     }
-    #[cfg(windows)]
-    let direct = guards.direct_memory_claim && guards.exclusive_claim
-        && journal.is_some() && policy == "error" && matches!(stage,StagedContents::Memory(_));
-    #[cfg(not(windows))]
-    let direct = false;
+    let dispatch_order = parent_ids.as_deref().map(round_robin_publication_order);
     #[cfg(not(windows))]
     let move_noop = false;
     let prepared_guards: &CheckedDirectories = guards;
@@ -4351,6 +4404,7 @@ fn publish_staged_files_parallel(
         let mut handles = Vec::new();
         for _ in 0..workers {
             let files = &files;
+            let dispatch_order = &dispatch_order;
             let next = &next;
             let skipped = &skipped;
             let progress = &progress;
@@ -4363,7 +4417,9 @@ fn publish_staged_files_parallel(
                         while !stopped.load(Ordering::Acquire) {
                             ctl.check()?;
                             let index = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(entry) = files.get(index) else { break };
+                            if index >= files.len() { break; }
+                            let index = dispatch_order.as_ref().map_or(index, |order| order[index]);
+                            let entry = files[index];
                             let relative = validate_name(&entry.name)?;
                             let target = dest.join(&relative);
                             let parent = target.parent().ok_or("missing output directory")?;
