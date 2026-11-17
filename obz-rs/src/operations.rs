@@ -34,6 +34,11 @@ pub struct Request {
     pub smart: bool,
     pub hashes: Vec<String>,
     pub benchmark: Option<engine::benchmark::Options>,
+    #[cfg(all(windows,target_pointer_width="64"))]
+    pub deep: Option<engine::deep_extract::Settings>,
+    pub deep_session: Option<u64>,
+    pub deep_node: Option<usize>,
+    pub deep_skip: bool,
     #[cfg(windows)]
     pub source_archive: Option<engine::archive_export::Source>,
 }

@@ -30,6 +30,8 @@ pub mod archive_export_local;
 pub(crate) mod compression_parameters;
 mod bounded_archive_stage;
 pub mod benchmark;
+#[cfg(all(windows, target_pointer_width = "64"))]
+pub mod deep_extract;
 mod zip_volume_view;
 mod zip_input_probe;
 #[cfg(windows)]
@@ -220,6 +222,8 @@ pub struct Progress {
 pub struct JobControl {
     pub cancelled: Arc<AtomicBool>,
     pub progress: Arc<Mutex<Progress>>,
+    /// Optional deep-session context; ordinary jobs leave this empty.
+    pub context: Arc<Mutex<Option<String>>>,
 }
 impl JobControl {
     pub fn new() -> Self {
@@ -229,10 +233,14 @@ impl JobControl {
         self.cancelled.store(true, Ordering::SeqCst);
     }
     pub fn snapshot(&self) -> Progress {
-        self.progress
+        let mut snapshot=self.progress
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .clone();
+        if let Some(context)=self.context.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){
+            snapshot.message=format!("{context}\n{}",snapshot.message);
+        }
+        snapshot
     }
     pub(crate) fn check(&self) -> Result<(), String> {
         if self.cancelled.load(Ordering::SeqCst) {

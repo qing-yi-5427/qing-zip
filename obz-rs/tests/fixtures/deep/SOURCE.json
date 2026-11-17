@@ -1,0 +1,8 @@
+{
+  "source": "rars 0.11.0 cached crate, crates/rars/tests/fixtures/rar50/m3_default.rar",
+  "repository": "https://github.com/bitplane/rars",
+  "commit": "c07b3e68b564489202afc0ac9fa1ab5ff82db6a6",
+  "license": "Apache-2.0",
+  "sha256": "3029e7d1a03e9afaf9d5384caa929cf1fe10165e8b15e38a6e509364a300ad59",
+  "purpose": "ordinary RAR5 m3 archive containing one 65536-byte bigtext_64k.bin; no links or malformed/fault fixture"
+}

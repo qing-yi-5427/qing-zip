@@ -2,7 +2,7 @@
 use crate::engine::{self, EngineOptions, Entry};
 use std::path::{Path, PathBuf};
 
-fn archive_name(path: &str) -> Result<String,String> {
+pub(crate) fn archive_name(path: &str) -> Result<String,String> {
     let mut name=Path::new(path).file_name().and_then(|s|s.to_str()).ok_or("invalid archive filename")?.to_owned();
     if let Some((base,tail))=name.rsplit_once('.') {
         if tail.len()>=3 && tail.bytes().all(|b|b.is_ascii_digit()){name=base.to_owned();}

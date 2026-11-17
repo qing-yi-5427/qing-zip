@@ -11,7 +11,7 @@ function fixture(id) {
   const input = id && {id, value: 'C:\\original', isConnected: true};
   const calls = [];
   const context = {
-    s: {active: null}, overlay: {hidden: !id, querySelector: () => input},
+    deepExtract:{acceptDrop:()=>false}, s: {active: null}, overlay: {hidden: !id, querySelector: () => input},
     lines: () => input.value.split(/\r?\n/).map(p => p.trim()).filter(Boolean),
     refreshSources: () => calls.push('refresh'),
     enqueueArchives: paths => calls.push(paths),

@@ -29,6 +29,9 @@ pub mod rare;
 pub mod archive_comment;
 
 mod smart_extract;
+mod deep_extract_plan;
+mod deep_stream_copy;
+mod deep_publication_state;
 
 pub mod motw;
 

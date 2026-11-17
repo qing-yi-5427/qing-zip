@@ -32,7 +32,9 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node --check obz-gui/frontend/compression-options.js
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs obz-gui/tests/folder-projection.cjs obz-gui/tests/archive-tab-focus.cjs
+          node --check obz-gui/frontend/deep-extract.js
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs obz-gui/tests/folder-projection.cjs obz-gui/tests/archive-tab-focus.cjs obz-gui/tests/deep-extract.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
@@ -58,6 +60,15 @@ jobs:
             if ($code) { exit $code }
             if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing pure test: $testName" }
           }
+      - name: Deep extraction memory state and ordinary archive fixtures
+        shell: pwsh
+        run: |
+          foreach ($module in @('deep_extract_plan::tests','deep_stream_copy::tests','deep_publication_state::tests')) {
+            cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $module
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --test deep_extract -- --test-threads=1
+          exit $LASTEXITCODE
       - name: Full frontend regression suite (explicit test opt-in)
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh

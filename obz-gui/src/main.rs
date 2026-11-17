@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use obz_core::engine::{self, EngineOptions};
 mod jobs;
+mod deep_extract;
 mod verification;
 mod nested;
 mod editor_process;

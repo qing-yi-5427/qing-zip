@@ -3,11 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const makeContext=value=>vm.createContext(Object.assign(value,{deepExtract:{jobActions:()=>''}}));
 
 test('cancelled tasks use a neutral message without hiding real failure details', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const field={textContent:''};const notices=[];
-  const context=vm.createContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
+  const context=makeContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
   for(const prefix of ['function taskError(', 'function error(', 'function jobs()', 'function historyPage()'])
     vm.runInContext(source.split('\n').find(line=>line.startsWith(prefix)),context);
   context.error(Error('operation cancelled'));
@@ -54,7 +55,7 @@ test('listing results belong to the caller and are not retained in task history'
   const run = source.split('\n').find(line => line.startsWith('async function run('));
   const result = {entries: [{name: 'member.txt'}]};
   const state = {jobs: []};
-  const context = vm.createContext({
+  const context = makeContext({
     s: state,
     invoke: async command => command === 'wait_operation' ? {status:'complete', progress:{}, result} : 1
   });
@@ -70,7 +71,7 @@ test('clipboard export discards incomplete output and publishes only a completed
   const copy = source.slice(source.indexOf('async function copySelectedFiles('), source.indexOf('async function run('));
   for (const failure of [null, 'extract', 'publish_clipboard_export']) {
     const calls = [], notices = [];
-    const context = vm.createContext({
+    const context = makeContext({
       s: {archive: 'sample.zip', selected: new Set(['nested/item.txt'])},
       invoke: async (name, args) => {
         calls.push(name);
@@ -102,7 +103,7 @@ test('partial moves retain counts and the backend reason in task history', async
   for(const reason of [null,'目标的数据流已改变，保留来源']) {
     const result={moved:2,copied:1,retained_sources:['C:/source/a'],retained_reasons:reason?[reason]:[]};
     const state={jobs:[]};let forgotten=false;
-    const context=vm.createContext({s:state,invoke:async command=>{
+    const context=makeContext({s:state,invoke:async command=>{
       if(command==='wait_operation')return {status:'complete',progress:{},result};
       if(command==='forget_operation')forgotten=true;
       return 1;
@@ -128,7 +129,7 @@ test('partial moves retain counts and the backend reason in task history', async
 test('directory content merge shows retained metadata in both task presentations',async()=>{
  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
  const result={copied:3,retained_sources:[],metadata_not_merged:['C:/source/folder']};const state={jobs:[]};
- const context=vm.createContext({s:state,esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
+ const context=makeContext({s:state,esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
  vm.runInContext(source.split('\n').find(line=>line.startsWith('async function run(')),context);
  assert.equal(await context.run({operation:'fs-copy'},'复制文件',{silent:true}),result);
  for(const name of ['jobs','historyPage']){
@@ -142,7 +143,7 @@ test('access-time warnings survive task cleanup without marking archive data fai
  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
  for(const uncertain of [false,true]){
   const result={outputs:['C:/out.zip'],input_atime:{applied_handles:1,unavailable_handles:0,unconfirmed_sources:uncertain?1:0,warnings:uncertain?[{source:'C:/input.txt',phase:'alternate_stream_proof'}]:[]}};
-  const state={jobs:[]};const context=vm.createContext({s:state,QingFileWorkspace:require('../frontend/file-workspace.js'),esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
+  const state={jobs:[]};const context=makeContext({s:state,QingFileWorkspace:require('../frontend/file-workspace.js'),esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
   vm.runInContext(source.split('\n').find(line=>line.startsWith('async function run(')),context);
   await context.run({operation:'create'},'新建压缩文件',{silent:true});
   assert.equal(state.jobs[0].partial,false);

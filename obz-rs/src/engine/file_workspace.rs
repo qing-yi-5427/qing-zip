@@ -625,12 +625,18 @@ pub fn transfer(
     moving: bool,
     opts: &EngineOptions,
 ) -> Result<Transfer, String> {
-    transfer_inner(inputs,destination,moving,opts,None)
+    transfer_inner(inputs,destination,moving,opts,None,None)
 }
 pub(super) fn copy_for_archive(inputs:&[String],destination:&str,opts:&EngineOptions,capture:&mut Vec<super::create_input::Snapshot>)->Result<Transfer,String>{
-    transfer_inner(inputs,destination,false,opts,Some(capture))
+    transfer_inner(inputs,destination,false,opts,Some(capture),None)
 }
-fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOptions,mut capture:Option<&mut Vec<super::create_input::Snapshot>>)->Result<Transfer,String>{
+/// Deep sessions retain this in memory across publication retries. A commit is
+/// confirmed only by the existing post-publication verification below.
+pub(super) type DeepPublicationLedger=crate::deep_publication_state::Ledger;
+pub(super) fn copy_for_deep(inputs:&[String],destination:&str,opts:&EngineOptions,ledger:&mut DeepPublicationLedger)->Result<Transfer,String>{
+    transfer_inner(inputs,destination,false,opts,None,Some(ledger))
+}
+fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOptions,mut capture:Option<&mut Vec<super::create_input::Snapshot>>,mut ledger:Option<&mut DeepPublicationLedger>)->Result<Transfer,String>{
     let ctl = control(opts);
     ctl.check()?;
     if inputs.is_empty() {
@@ -946,6 +952,13 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                 });}
                 continue;
             }
+            if let Some(ledger)=ledger.as_ref(){if ledger.completed(&node.path,&mut |target,proof|{
+                let target=crate::engine_stream::pin(target).map_err(|e|format!("已保存文件无法确认，恢复结果已保留：{e}"))?;
+                if directory_identity(&target)?!=proof.identity{return Err("已保存文件已改变，恢复结果已保留，未自动重复复制".into());}
+                if proof.encrypted{super::file_workspace_efs::verify_published(&target,proof.digest,&ctl)?;}
+                else if streams(&target,None,&ctl)?!=proof.digest{return Err("已保存内容已改变，恢复结果已保留，未自动重复复制".into());}
+                Ok(())
+            })?{result.copied+=1;continue;}}
             let Some(chosen) =
                 choose_target_checked(target, &opts.overwrite, &mut |p| guards.check(p))?
             else {
@@ -980,13 +993,16 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                 node.handle=Some(prepared.source().try_clone().map_err(|e|e.to_string())?);
                 let expected_digest=prepared.digest();
                 let output=prepared.publish(&target,opts.overwrite=="overwrite",&ctl)?;
+                if let Some(ledger)=ledger.as_mut(){ledger.committed(&node.path,&target);}
                 result.copied+=1;
                 let id=directory_identity(&output)?;
+                if let Some(ledger)=ledger.as_mut(){ledger.proof(&node.path,crate::deep_publication_state::Proof{identity:id,digest:expected_digest,encrypted:true});}
                 drop(output);
                 let pin=crate::engine_stream::pin(&target)?;
                 if directory_identity(&pin)?!=id{return Err("published EFS target identity changed".into());}
                 super::file_workspace_efs::verify_published(&pin,expected_digest,&ctl)?;
                 published.push(pin);
+                if let Some(ledger)=ledger.as_mut(){ledger.confirmed(&node.path);}
                 if moving {result.retained_reasons.push(format!("{}：EFS副本已验证，跨卷来源保留",node.path.display()));}
                 // EFS key/stream proofs are intentionally not sent to the
                 // ordinary BackupRead cross-volume source deletion finalizer.
@@ -1009,7 +1025,9 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                     .commit_local_streams(&target, opts.overwrite == "overwrite", &proof)
                     .map(|file| (file, expected)).map_err(|e|format!("发布文件：{e}"))
             }).map_err(|e|format!("准备或写入输出文件：{e}"))?;
+            if let Some(ledger)=ledger.as_mut(){ledger.committed(&node.path,&target);}
             let published_identity = directory_identity(&output)?;
+            if let Some(ledger)=ledger.as_mut(){ledger.proof(&node.path,crate::deep_publication_state::Proof{identity:published_identity,digest:expected,encrypted:false});}
             drop(output);
             let published_pin = crate::engine_stream::pin(&target).map_err(|e|format!("固定已发布文件：{e}"))?;
             if directory_identity(&published_pin)? != published_identity || streams(&published_pin, None, &ctl).map_err(|e|format!("复验已发布文件：{e}"))? != expected {
@@ -1019,6 +1037,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                 source_id: directory_identity(input)?, target_id: published_identity,
                 digest: expected, created_directory: false, unmerged_target_digest: None });}
             published.push(published_pin);
+            if let Some(ledger)=ledger.as_mut(){ledger.confirmed(&node.path);}
             result.copied += 1;
         }
         for (directory,index,digest) in encrypted_directories.iter().rev(){

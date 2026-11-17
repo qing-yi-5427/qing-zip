@@ -149,6 +149,7 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
         request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.get(&id)?);
     }
     if request.operation == "external-edit" {return crate::nested::edit_job(request.path,request.name,request.options,request.label);}
+    if matches!(request.operation.as_str(),"deep-extract"|"deep-resume"|"deep-discard"){return crate::deep_extract::execute(request,recycle_after,control);}
     if request.operation == "external-save" {return crate::nested::external_save_job(&request.path,control);}
     if request.operation == "nested-open" { return crate::nested::open_job(request.path,request.name,request.options); }
     if request.operation == "nested-save" { return crate::nested::save_job(&request.path, control); }
@@ -207,7 +208,7 @@ pub(super) fn start_controlled(mut request: Request, recycle_after: bool, contro
         finished(result.is_ok());
         let mut state=job.state.lock().unwrap_or_else(|e|e.into_inner());
         match result {
-            Ok(value)=>{state.status="complete".into();state.result=Some(Arc::new(value));},
+            Ok(value)=>{state.status=if job.control.cancelled.load(Ordering::SeqCst) && matches!(&value,OperationResponse::Json(v) if v.get("deep_session").is_some()){"cancelled"}else{"complete"}.into();state.result=Some(Arc::new(value));},
             Err(e)=>{state.status=if job.control.cancelled.load(Ordering::Relaxed){"cancelled"}else{"failed"}.into();state.error=Some(e);}
         }
         job.finished.notify_all();
