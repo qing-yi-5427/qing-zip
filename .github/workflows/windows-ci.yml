@@ -32,7 +32,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node --check obz-gui/frontend/compression-options.js
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs
+          node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs obz-gui/tests/folder-projection.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE

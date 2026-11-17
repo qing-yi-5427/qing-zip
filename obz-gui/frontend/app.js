@@ -63,13 +63,13 @@ function home(){return `<section class="oa-home"><span class="oa-home-mark">${ic
 // Refreshing an archive replaces its entry array. Keep just the current
 // folder's projection per live listing, so selection changes can reuse it.
 const folderViews = new WeakMap();
+function folderEntry(name, metadata) {
+  return {...metadata, name, leaf:name.slice(0,-1).split('/').pop(),
+    is_dir:true, size:0, size_known:true};
+}
 // Archive formats may omit parent directory records. Include each implied parent once.
 function flatChildren(entries, folder) {
   const items = new Map();
-  const folderEntry = (name, metadata) => ({
-    ...metadata, name, leaf:name.slice(0,-1).split('/').pop(),
-    is_dir:true, size:0, size_known:true
-  });
   for (const entry of entries) {
     const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'').replace(/\/+$/,'');
     if (!path.startsWith(folder) || path.length <= folder.length) continue;
@@ -95,11 +95,9 @@ function folderChildren(entries, folder) {
     if (!parts.length) continue;
     const directory = parts.length > 1 || entry.is_dir;
     const leaf = parts[0], name = folder + leaf + (directory ? '/' : '');
-    if (!children.has(name) || (entry.is_dir && parts.length === 1)) children.set(name, {
-      ...entry, name, leaf, is_dir:directory, size:directory ? 0 : entry.size,
-      modified:parts.length > 1 ? '' : entry.modified,
-      size_known:directory || entry.size_known !== false
-    });
+    if (!children.has(name) || (entry.is_dir && parts.length === 1)) children.set(name,
+      directory ? folderEntry(name, parts.length === 1 ? entry : undefined)
+        : {...entry, name, leaf, is_dir:directory, size_known:entry.size_known !== false});
   }
   return [...children.values()];
 }
