@@ -625,18 +625,78 @@ pub fn transfer(
     moving: bool,
     opts: &EngineOptions,
 ) -> Result<Transfer, String> {
-    transfer_inner(inputs,destination,moving,opts,None,None)
+    transfer_inner(inputs,destination,moving,opts,None,None,None)
 }
 pub(super) fn copy_for_archive(inputs:&[String],destination:&str,opts:&EngineOptions,capture:&mut Vec<super::create_input::Snapshot>)->Result<Transfer,String>{
-    transfer_inner(inputs,destination,false,opts,Some(capture),None)
+    transfer_inner(inputs,destination,false,opts,Some(capture),None,None)
 }
 /// Deep sessions retain this in memory across publication retries. A commit is
 /// confirmed only by the existing post-publication verification below.
 pub(super) type DeepPublicationLedger=crate::deep_publication_state::Ledger;
-pub(super) fn copy_for_deep(inputs:&[String],destination:&str,opts:&EngineOptions,ledger:&mut DeepPublicationLedger)->Result<Transfer,String>{
-    transfer_inner(inputs,destination,false,opts,None,Some(ledger))
+pub(super) struct DeepInputProtection {
+    paths: HashSet<String>,
+    complete: bool,
+    identities: HashSet<(u32, u64)>,
+    // Deny replacement through aliases for the entire publication pass.
+    _pins: Vec<File>,
 }
-fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOptions,mut capture:Option<&mut Vec<super::create_input::Snapshot>>,mut ledger:Option<&mut DeepPublicationLedger>)->Result<Transfer,String>{
+impl DeepInputProtection {
+    pub(super) fn new(inputs: &HashSet<PathBuf>, complete: bool) -> Result<Self, String> {
+        let mut protection = Self {
+            paths: inputs.iter().map(|path| path_key(path)).collect(),
+            complete,
+            identities: HashSet::new(),
+            _pins: Vec::new(),
+        };
+        for path in inputs {
+            let pin = match File::options().read(true).share_mode(1)
+                .custom_flags(0x02200000).open(path)
+            {
+                Ok(pin) => pin,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("无法保护原压缩包 {}：{error}", path.display())),
+            };
+            protection.identities.insert(directory_identity(&pin)?);
+            protection._pins.push(pin);
+        }
+        Ok(protection)
+    }
+
+    fn replace_target(&self, target: &Path, overwrite: bool) -> Result<bool, String> {
+        let conflict = || format!("目标与原压缩包或分卷冲突，恢复结果已保留：{}", target.display());
+        if self.paths.contains(&path_key(target)) {
+            return Err(conflict());
+        }
+        if !overwrite {
+            return Ok(false);
+        }
+        let handle = match File::options().access_mode(0x80).share_mode(7)
+            .custom_flags(0x02200000).open(target)
+        {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(self.complete),
+            Err(error) => return Err(error.to_string()),
+        };
+        if self.identities.contains(&directory_identity(&handle)?) {
+            return Err(conflict());
+        }
+        if !self.complete {
+            return Err("无法确认全部原始分卷，已保留目标和恢复结果".into());
+        }
+        Ok(true)
+    }
+}
+
+pub(super) fn copy_for_deep(
+    inputs: &[String],
+    destination: &str,
+    opts: &EngineOptions,
+    ledger: &mut DeepPublicationLedger,
+    protection: &DeepInputProtection,
+) -> Result<Transfer, String> {
+    transfer_inner(inputs, destination, false, opts, None, Some(ledger), Some(protection))
+}
+fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOptions,mut capture:Option<&mut Vec<super::create_input::Snapshot>>,mut ledger:Option<&mut DeepPublicationLedger>,protection:Option<&DeepInputProtection>)->Result<Transfer,String>{
     let ctl = control(opts);
     ctl.check()?;
     if inputs.is_empty() {
@@ -967,6 +1027,11 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                 continue;
             };
             target = chosen;
+            let overwrite = opts.overwrite == "overwrite";
+            let replace = match protection {
+                Some(protection) => protection.replace_target(&target, overwrite)?,
+                None => overwrite,
+            };
             let parent = target.parent().ok_or("缺少目标父目录")?;
             guards.create_dirs(parent).map_err(|e|format!("准备父目录：{e}"))?;
             guards.allow_publication(parent).map_err(|e|format!("固定发布目录：{e}"))?;
@@ -992,7 +1057,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                 }
                 node.handle=Some(prepared.source().try_clone().map_err(|e|e.to_string())?);
                 let expected_digest=prepared.digest();
-                let output=prepared.publish(&target,opts.overwrite=="overwrite",&ctl)?;
+                let output=prepared.publish(&target,replace,&ctl)?;
                 if let Some(ledger)=ledger.as_mut(){ledger.committed(&node.path,&target);}
                 result.copied+=1;
                 let id=directory_identity(&output)?;
@@ -1022,7 +1087,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                     control: ctl.clone(),
                 };
                 temp.inner
-                    .commit_local_streams(&target, opts.overwrite == "overwrite", &proof)
+                    .commit_local_streams(&target, replace, &proof)
                     .map(|file| (file, expected)).map_err(|e|format!("发布文件：{e}"))
             }).map_err(|e|format!("准备或写入输出文件：{e}"))?;
             if let Some(ledger)=ledger.as_mut(){ledger.committed(&node.path,&target);}

@@ -53,3 +53,15 @@ test('implied folder cells show absent metadata and unmarked encryption without 
  assert.doesNotMatch(html,/🔒|child comment|Deflate|12345678/);
  assert.equal(Object.hasOwn(row,'encrypted'),false);
 });
+
+test('tree navigation reuses one parent index per listing',()=>{
+ let reads=0;
+ const entries=[{get name(){reads++;return 'a/b/file.txt';},size:1},{name:'c/other.txt',size:2}];
+ assert.deepEqual(project(entries).map(e=>e.name),['a/','c/']);
+ const indexed=reads;
+ assert.equal(project(entries,'a/')[0].name,'a/b/');
+ assert.equal(project(entries,'c/')[0].name,'c/other.txt');
+ assert.equal(project(entries,'a/b/')[0].name,'a/b/file.txt');
+ assert.equal(reads,indexed);
+ assert.deepEqual(project([{name:'new/file.txt'}]).map(e=>e.name),['new/']);
+});

@@ -91,8 +91,9 @@ pub struct Session {
     dest: PathBuf,
     smart: bool,
     outputs: Vec<String>,
-    files: usize,
     published: BTreeSet<usize>,
+    supplied_inputs: Vec<PathBuf>,
+    root_inputs: HashSet<PathBuf>,
     attached: BTreeSet<usize>,
     finished: bool,
     publish_error: Option<String>,
@@ -330,6 +331,44 @@ fn standalone_archive(path: &Path, opts: &EngineOptions) -> bool {
         .and_then(|s| s.parse::<u64>().ok())
         .is_some_and(|n| n > 0 && n <= size)
 }
+fn add_root_family(
+    path: &Path,
+    inputs: &mut HashSet<PathBuf>,
+    directories: &mut HashMap<PathBuf, Option<Vec<String>>>,
+) -> bool {
+    use crate::deep_volume_plan::{classify, root_family, Member};
+    inputs.insert(path.to_owned());
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    inputs.insert(canonical.clone());
+    let Some(parent) = canonical.parent() else { return false };
+    let name = ordinary_name(&canonical);
+    if !matches!(
+        canonical.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        Some("zip" | "rar" | "exe")
+    ) && !crate::deep_volume_plan::first_probe(&name)
+        && matches!(classify(&name, &[]), Member::Ordinary)
+    {
+        return true;
+    }
+    let siblings = directories.entry(parent.to_owned()).or_insert_with(|| {
+        let entries = match fs::read_dir(parent) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+            Err(_) => return None,
+        };
+        entries.map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>().ok()
+    });
+    let Some(siblings) = siblings else { return false };
+    let first = match classify(&name, siblings) {
+        Member::Later { first: Some(first), .. } => first,
+        Member::Later { expected, .. } => expected,
+        _ => name,
+    };
+    inputs.insert(parent.join(&first));
+    inputs.extend(root_family(&first, siblings).into_iter().map(|name| parent.join(name)));
+    true
+}
 fn first_volume(path: &Path) -> Result<PathBuf, String> {
     use crate::deep_volume_plan::{classify, Member};
     let name = ordinary_name(path);
@@ -422,6 +461,8 @@ impl Session {
             .iter()
             .map(|p| absolute(p))
             .collect::<Result<Vec<_>, _>>()?;
+        let mut root_inputs: HashSet<_> = peers.iter().cloned().collect();
+        let mut directories = HashMap::new();
         let mut roots = vec![];
         let mut sources = HashMap::new();
         for input in &peers {
@@ -447,6 +488,7 @@ impl Session {
                     },
                 ),
             };
+            add_root_family(&path, &mut root_inputs, &mut directories);
             let key = if matches!(kind, Kind::MissingFirst(_)) {
                 match volume_member(&path, &peers) {
                     crate::deep_volume_plan::Member::Later { family, .. } => {
@@ -488,8 +530,9 @@ impl Session {
             dest,
             smart,
             outputs: vec![],
-            files: 0,
             published: BTreeSet::new(),
+            supplied_inputs: peers,
+            root_inputs,
             attached: BTreeSet::new(),
             finished: false,
             publish_error: None,
@@ -629,10 +672,10 @@ impl Session {
             self.plan.nodes[id].state = State::Protected;
             return Ok(());
         }
-        if entries.iter().any(|e| e.encrypted) && opts.password.is_none() {
+        let selected = Selection::new(&opts.selected);
+        if opts.password.is_none() && entries.iter().any(|e| e.encrypted && selected.contains(&e.name)) {
             return Err("此压缩包需要密码".into());
         }
-        let selected = Selection::new(&opts.selected);
         let files = entries
             .iter()
             .filter(|e| !e.is_dir && selected.contains(&e.name))
@@ -659,7 +702,7 @@ impl Session {
         fs::create_dir(&tree).map_err(|e| e.to_string())?;
         let result = match source.kind {
             Kind::Archive => with_zip_source(&string(&source.path)?, &opts, |p| {
-                extract_raw(p, &string(&tree)?, &opts)
+                extract_raw_with_selection(p, &string(&tree)?, &opts, true)
             })
             .map(|_| ()),
             Kind::Stream(format) => {
@@ -783,19 +826,28 @@ impl Session {
                 });
             }
         }
-        let meaningful_empty_directory = entries
-            .iter()
-            .filter(|e| e.is_dir && selected.contains(&e.name))
-            .any(|e| {
-                validate_name(&e.name).ok().is_some_and(|relative| {
-                    !paths.iter().any(|p| p.starts_with(tree.join(&relative)))
-                })
-            });
-        let pure = candidates.len() == 1
-            && !meaningful_empty_directory
+        let mut pure = candidates.len() == 1
             && crate::deep_volume_plan::contains_only_confirmed(&paths, |p| {
                 archive_parts.contains(p)
             });
+        if pure {
+            let mut directories = entries.iter()
+                .filter(|entry| entry.is_dir && selected.contains(&entry.name))
+                .peekable();
+            if directories.peek().is_some() {
+                let populated: HashSet<_> = paths.iter()
+                    .flat_map(|path| path.ancestors().skip(1).take_while(|parent| parent.starts_with(&tree)))
+                    .map(path_key)
+                    .collect();
+                for entry in directories {
+                    let directory = tree.join(validate_name(&entry.name)?);
+                    if !populated.contains(&path_key(&directory)) {
+                        pure = false;
+                        break;
+                    }
+                }
+            }
+        }
         self.plan.decoded(id, string(&tree)?, candidates, pure);
         Ok(())
     }
@@ -919,98 +971,41 @@ impl Session {
                 self.plan.pending(id, error);
             }
         }
-        if self.plan.complete() {
-            self.publish(ctl)?;
-        }
+        self.publish(ctl)?;
         Ok(self.report())
     }
     fn publish(&mut self, ctl: &JobControl) -> Result<(), String> {
         self.publish_error = None;
-        for id in self.plan.roots.clone() {
-            if self.published.contains(&id)
-                || matches!(self.plan.nodes[id].state, State::Skipped | State::Protected)
-            {
-                continue;
+        let ready: Vec<_> = self.plan.roots.iter().copied()
+            .filter(|id| !self.published.contains(id) && self.plan.nodes[*id].state == State::Done)
+            .collect();
+        if !ready.is_empty() {
+            // Keep previously discovered members and include any newly supplied volumes.
+            let mut directories = HashMap::new();
+            let mut complete = true;
+            for path in &self.supplied_inputs {
+                complete &= add_root_family(path, &mut self.root_inputs, &mut directories);
             }
-            ctl.check()?;
-            let tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
-            let mut entries = vec![];
-            collect_entries(&tree, &tree, &mut entries, ctl)?;
-            let mut opts = self.options.clone();
-            opts.selected.clear();
-            opts.control = Some(ctl.clone());
-            let source = self
-                .sources
-                .get(&self.plan.nodes[id].source)
-                .ok_or("缺少原包来源")?;
-            let target = if self.smart {
-                PathBuf::from(crate::smart_extract::destination(
-                    &string(&source.path)?,
-                    &string(&self.dest)?,
-                    &entries,
-                    &opts,
-                )?)
-            } else {
-                self.dest
-                    .join(crate::smart_extract::archive_name(&string(&source.path)?)?)
-            };
-            if !has_stage_space(
-                self.dest
-                    .ancestors()
-                    .find(|p| p.is_dir())
-                    .ok_or("目标路径无效")?,
-                measure(&tree, ctl)?
-                    .1
-                    .saturating_add(self.plan.limits.reserve_bytes),
-            ) {
-                self.publish_error = Some("目标磁盘空间不足，已校验结果保留在恢复目录".into());
-                break;
-            }
-            let mut guards = CheckedDirectories::default();
-            guards.create_dirs(&target)?;
-            drop(guards); // The existing copier acquires its own publication-compatible pins.
-            let inputs = fs::read_dir(&tree)
-                .map_err(|e| e.to_string())?
-                .map(|e| e.map_err(|e| e.to_string()).and_then(|e| string(&e.path())))
-                .collect::<Result<Vec<_>, _>>()?;
-            if inputs.is_empty() {
-                self.outputs.push(string(&target)?);
-                self.published.insert(id);
-                continue;
-            }
-            ctl.set(
-                "deep-publish",
-                None,
-                "正在保存已校验的解压结果；取消后已保存的文件会保留",
-            );
-            match file_workspace::copy_for_deep(
-                &inputs,
-                &string(&target)?,
-                &opts,
-                &mut self.publication,
-            ) {
-                Ok(result) => {
-                    let output = string(&target)?;
-                    if !self.outputs.contains(&output) {
-                        self.outputs.push(output);
+            let protection = file_workspace::DeepInputProtection::new(&self.root_inputs, complete);
+            match protection {
+                Ok(protection) => {
+                    let mut errors = Vec::new();
+                    for id in ready {
+                        ctl.check()?;
+                        if let Err(error) = self.publish_root(id, ctl, &protection) {
+                            ctl.check()?;
+                            errors.push(format!("{}：{error}", self.plan.nodes[id].name));
+                        }
                     }
-                    if result.skipped > 0 {
-                        self.publish_error = Some(format!(
-                            "{} 个同名项目已跳过；完整结果保留在恢复目录",
-                            result.skipped
-                        ));
-                    } else {
-                        self.published.insert(id);
+                    if !errors.is_empty() {
+                        self.publish_error = Some(errors.join("\n"));
                     }
                 }
-                Err(error) => {
-                    self.publish_error = Some(error);
-                    break;
-                }
+                Err(error) => self.publish_error = Some(error),
             }
         }
-        self.files = self.publication.len();
         self.finished = self.publish_error.is_none()
+            && self.plan.complete()
             && self.plan.roots.iter().all(|id| {
                 self.published.contains(id)
                     || matches!(
@@ -1018,6 +1013,77 @@ impl Session {
                         State::Skipped | State::Protected
                     )
             });
+        Ok(())
+    }
+    fn publish_root(
+        &mut self,
+        id: usize,
+        ctl: &JobControl,
+        protection: &file_workspace::DeepInputProtection,
+    ) -> Result<(), String> {
+        let tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
+        let mut entries = vec![];
+        collect_entries(&tree, &tree, &mut entries, ctl)?;
+        let mut opts = self.options.clone();
+        opts.selected.clear();
+        opts.control = Some(ctl.clone());
+        let source = self
+            .sources
+            .get(&self.plan.nodes[id].source)
+            .ok_or("缺少原包来源")?;
+        let target = if self.smart {
+            PathBuf::from(crate::smart_extract::destination(
+                &string(&source.path)?,
+                &string(&self.dest)?,
+                &entries,
+                &opts,
+            )?)
+        } else {
+            self.dest
+                .join(crate::smart_extract::archive_name(&string(&source.path)?)?)
+        };
+        if !has_stage_space(
+            self.dest
+                .ancestors()
+                .find(|p| p.is_dir())
+                .ok_or("目标路径无效")?,
+            measure(&tree, ctl)?
+                .1
+                .saturating_add(self.plan.limits.reserve_bytes),
+        ) {
+            return Err("目标磁盘空间不足，已校验结果保留在恢复目录".into());
+        }
+        let mut guards = CheckedDirectories::default();
+        guards.create_dirs(&target)?;
+        drop(guards); // The existing copier acquires its own publication-compatible pins.
+        let inputs = fs::read_dir(&tree)
+            .map_err(|e| e.to_string())?
+            .map(|e| e.map_err(|e| e.to_string()).and_then(|e| string(&e.path())))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        ctl.set(
+            "deep-publish",
+            None,
+            "正在保存已校验的解压结果；取消后已保存的文件会保留",
+        );
+        let output = string(&target)?;
+        let before = self.publication.len();
+        let result = if inputs.is_empty() {
+            Ok(0)
+        } else {
+            file_workspace::copy_for_deep(&inputs, &output, &opts, &mut self.publication, protection)
+                .map(|result| result.skipped)
+        };
+        if (matches!(result, Ok(0)) || self.publication.len() > before)
+            && !self.outputs.contains(&output)
+        {
+            self.outputs.push(output);
+        }
+        let skipped = result?;
+        if skipped > 0 {
+            return Err(format!("{skipped} 个同名项目已跳过；完整结果保留在恢复目录"));
+        }
+        self.published.insert(id);
         Ok(())
     }
     pub fn report(&self) -> Report {
@@ -1066,12 +1132,13 @@ impl Session {
             || self.plan.undiscovered_sources > 0;
         let mut summary = if !pending.is_empty() {
             format!(
-                "已处理 {} 个压缩包；{} 项等待重试或保留。已校验结果保存在恢复目录。",
+                "已处理 {} 个压缩包，已保存 {} 个文件；{} 项等待重试或保留。未保存的已校验结果保留在恢复目录。",
                 self.plan
                     .nodes
                     .iter()
                     .filter(|n| matches!(n.state, State::Done | State::Waiting))
                     .count(),
+                self.publication.len(),
                 pending.len()
             )
         } else if self.publish_error.is_some() {
@@ -1079,12 +1146,12 @@ impl Session {
         } else if partial {
             format!(
                 "深度解压已结束，已保存 {} 个文件；未展开的内层压缩包已保留。",
-                self.files
+                self.publication.len()
             )
         } else {
             format!(
                 "深度解压完成，已保存 {} 个文件；原压缩包已保留。",
-                self.files
+                self.publication.len()
             )
         };
         if !self.retained_matching_files.is_empty() {

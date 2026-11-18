@@ -57,6 +57,43 @@ pub fn content_family(first: &str, siblings: &[String]) -> Vec<String> {
             matches!(classify(name,&[]),Member::Later{ref family,ref expected,..}if first_family.as_ref()==Some(family)||expected.eq_ignore_ascii_case(first))
     }).cloned().collect()
 }
+/// Conservative overwrite protection for names a root decoder can open.
+pub fn root_family(first: &str, siblings: &[String]) -> Vec<String> {
+    let mut protected = content_family(first, siblings);
+    let mut known = protected.iter().cloned().collect::<std::collections::HashSet<_>>();
+    let lower = first.to_lowercase();
+    let Some((stem, ext)) = lower.rsplit_once('.') else { return protected };
+    for sibling in siblings {
+        let name = sibling.to_lowercase();
+        let Some((base, suffix)) = name.rsplit_once('.') else { continue };
+        let same_stem = stem == base;
+        let zip_part = matches!(ext, "zip" | "exe")
+            && (matches!(suffix, "zip" | "exe")
+                || (suffix.len() >= 3 && suffix.starts_with('z') && suffix[1..].bytes().all(|b| b.is_ascii_digit())));
+        let old_rar_part = matches!(ext, "rar" | "exe")
+            && (matches!(suffix, "rar" | "exe")
+                || (suffix.len() == 3 && matches!(suffix.as_bytes()[0], b'r'..=b'z')
+                    && suffix.as_bytes()[1..].iter().all(u8::is_ascii_digit)));
+        let numbered_part = numbered(&lower).zip(numbered(&name))
+            .is_some_and(|((a, _, _), (b, _, _))| a == b);
+        let new_rar_part = matches!(ext, "rar" | "exe") && suffix == "rar"
+            && rar_number(stem).zip(rar_number(base)).is_some_and(|(a, b)| a == b);
+        if ((same_stem && (zip_part || old_rar_part)) || numbered_part || new_rar_part)
+            && known.insert(sibling.clone())
+        {
+            protected.push(sibling.clone());
+        }
+    }
+    protected
+}
+
+fn rar_number(stem: &str) -> Option<(&str, &str)> {
+    let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let start = stem[..end].rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |index| index + stem[index..].chars().next().unwrap().len_utf8());
+    Some((&stem[..start], &stem[end..]))
+}
+
 pub fn contains_only_confirmed<T>(files: &[T], confirmed: impl Fn(&T) -> bool) -> bool {
     !files.is_empty() && files.iter().all(confirmed)
 }
@@ -98,7 +135,7 @@ pub fn classify(name: &str, siblings: &[String]) -> Member {
         };
     }
     if let Some((base, tail)) = lower.rsplit_once('.') {
-        if tail.len() == 3
+        if tail.len() >= 3
             && matches!(tail.as_bytes()[0], b'z' | b'r')
             && tail.as_bytes()[1..].iter().all(u8::is_ascii_digit)
         {
@@ -120,6 +157,16 @@ pub fn classify(name: &str, siblings: &[String]) -> Member {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protection_includes_extended_zip_sfx_and_legacy_rar_members() {
+        let zip = ["files.zip", "files.z100", "files.exe", "other.z100"].map(str::to_owned);
+        let rar = ["files.rar", "files.r00", "files.s00", "other.s00"].map(str::to_owned);
+        let modern = ["files001xx.rar", "files002xx.rar", "files002yy.rar"].map(str::to_owned);
+        assert_eq!(root_family("files.zip", &zip), zip[..3]);
+        assert_eq!(root_family("files.rar", &rar), rar[..3]);
+        assert_eq!(root_family("files001xx.rar", &modern), modern[..2]);
+    }
+
     #[test]
     fn absent_first_is_explicit_for_recognized_volume_names() {
         for (name, expected) in [

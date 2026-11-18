@@ -193,11 +193,19 @@ fn application_container_and_bad_batch_input_do_not_expand_or_abort_good_input()
     let mut s = start(t.path(), &[&good, &bad], Default::default());
     let paused = s.drive(&JobControl::new()).unwrap();
     assert_eq!(paused.pending.len(), 1);
+    assert!(!paused.finished);
+    assert_eq!(paused.outputs, vec![t.path().join("output").join("good").display().to_string()]);
+    assert_eq!(paused.files, 2);
+    assert_eq!(fs::read(t.path().join("output/good/a.txt")).unwrap(), b"a");
+    let spent = paused.accounted_bytes;
     assert_eq!(paused.protected_archives, vec!["paper.docx"]);
     s.resume(paused.pending[0].node, true, None, None).unwrap();
     let report = s.drive(&JobControl::new()).unwrap();
     assert!(report.finished);
     assert!(report.partial);
+    assert_eq!(report.outputs, paused.outputs);
+    assert_eq!(report.files, paused.files);
+    assert_eq!(report.accounted_bytes, spent);
     assert_eq!(
         fs::read(t.path().join("output/good/paper.docx")).unwrap(),
         doc
@@ -471,4 +479,92 @@ fn ordinary_numeric_sibling_is_retained_without_false_partial_or_wrapper_loss() 
         .iter()
         .any(|p| p.ends_with("bundle.002")));
     assert_eq!(fs::read(source).unwrap(), original);
+}
+
+#[test]
+fn mixed_zip_public_selection_works_without_a_password() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("mixed.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    writer.add_directory("public/", options).unwrap();
+    writer.start_file("public/文 档[1].txt", options).unwrap();
+    writer.write_all(b"clear").unwrap();
+    writer.start_file("private.txt", options.with_aes_encryption(zip::AesMode::Aes256, "fixture-pass")).unwrap();
+    writer.write_all(b"secret").unwrap();
+    writer.finish().unwrap();
+    let mut session = start(t.path(), &[&path], EngineOptions {
+        selected: vec!["public/".into()],
+        ..Default::default()
+    });
+    let report = session.drive(&JobControl::new()).unwrap();
+    assert!(report.finished, "{}", serde_json::to_string(&report).unwrap());
+    let output = t.path().join("output/mixed");
+    assert_eq!(fs::read(output.join("public/文 档[1].txt")).unwrap(), b"clear");
+    assert!(!output.join("private.txt").exists());
+    let mut shared_password = start(t.path(), &[&path], EngineOptions {
+        selected: vec!["public/".into()],
+        password: Some("unrelated-fixture-pass".into()),
+        overwrite: "rename".into(),
+        ..Default::default()
+    });
+    let report = shared_password.drive(&JobControl::new()).unwrap();
+    assert!(report.finished, "{}", serde_json::to_string(&report).unwrap());
+    let mut private = start(t.path(), &[&path], EngineOptions {
+        selected: vec!["private.txt".into()],
+        ..Default::default()
+    });
+    let pending = private.drive(&JobControl::new()).unwrap();
+    assert_eq!(pending.pending.len(), 1);
+    assert!(pending.pending[0].reason.contains("密码"));
+}
+
+#[test]
+fn batch_protects_originals_and_unselected_split_volumes_at_the_final_target() {
+    let t = tempfile::tempdir().unwrap();
+    let target = t.path().join("output/wrapper");
+    fs::create_dir_all(&target).unwrap();
+    let original = zip(&[("verified.txt", b"keep")]);
+    let sibling = target.join("preserve.input");
+    fs::write(&sibling, &original).unwrap();
+    let volume_base = target.join("split.7z");
+    let payload = t.path().join("payload.bin");
+    fs::write(&payload, (0..8192).map(|n| (n % 251) as u8).collect::<Vec<_>>()).unwrap();
+    engine::create(
+        volume_base.to_str().unwrap(), &[payload.display().to_string()], "7z",
+        &EngineOptions { method: Some("Copy".into()), volume_bytes: Some(4096), ..Default::default() },
+    ).unwrap();
+    let first = target.join("split.7z.001");
+    let second = target.join("split.7z.002");
+    let second_before = fs::read(&second).unwrap();
+    for (index, (collision, preserved)) in [("preserve.input", &original), ("split.7z.002", &second_before)].into_iter().enumerate() {
+        // A fixed destination keeps these ordinary archive fixtures next to the source files.
+        let settings = Settings { recovery_directory: Some(t.path().join("recovery").display().to_string()), ..Default::default() };
+        let root = t.path().join(format!("run-{index}"));
+        fs::create_dir_all(&root).unwrap();
+        let wrapper = root.join("wrapper.zip");
+        fs::write(&wrapper, zip(&[("ordinary.txt", b"keep"), (collision, b"would overwrite")])).unwrap();
+        let mut session = Session::start(
+            [&wrapper, &sibling, &first].into_iter().map(|path| path.display().to_string()).collect(),
+            target.parent().unwrap().to_str().unwrap(),
+            false,
+            EngineOptions { overwrite: "overwrite".into(), ..Default::default() },
+            settings,
+        ).unwrap();
+        let mut paused = session.drive(&JobControl::new()).unwrap();
+        if index == 1 {
+            assert_eq!(paused.pending.len(), 1);
+            session.resume(paused.pending[0].node, true, None, None).unwrap();
+            paused = session.drive(&JobControl::new()).unwrap();
+        }
+        assert!(!paused.finished);
+        assert!(paused.publish_error.as_deref().is_some_and(|message| message.contains(collision)), "{}", serde_json::to_string(&paused).unwrap());
+        assert!(paused.recovery_path.is_some());
+        assert_eq!(&fs::read(target.join(collision)).unwrap(), preserved);
+        assert!(paused.outputs.iter().any(|path| path.ends_with("split")));
+        session.retry_publication("rename".into()).unwrap();
+        let done = session.drive(&JobControl::new()).unwrap();
+        assert!(done.finished, "{}", serde_json::to_string(&done).unwrap());
+        assert_eq!(&fs::read(target.join(collision)).unwrap(), preserved);
+    }
 }

@@ -227,6 +227,14 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "extract" => {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
             if r.smart {
+                let archive = std::path::Path::new(&r.path);
+                if archive.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+                    && archive.is_file()
+                    && (restricted || crate::installer::recognize(&r.path)?.is_none())
+                {
+                    let (files, destination) = engine::extract_smart_zip(&r.path, &r.dest, &r.options)?;
+                    return Ok(json!({"files":files,"destination":destination}));
+                }
                 return engine::with_zip_source(&r.path, &r.options, |source| {
                     let entries = list_archive(source, &r.options)?;
                     let destination = crate::smart_extract::destination(&r.path, &r.dest, &entries, &r.options)?;

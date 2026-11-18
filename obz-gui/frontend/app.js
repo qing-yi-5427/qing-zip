@@ -64,6 +64,7 @@ function home(){return `<section class="oa-home"><span class="oa-home-mark">${ic
 // Refreshing an archive replaces its entry array. Keep just the current
 // folder's projection per live listing, so selection changes can reuse it.
 const folderViews = new WeakMap();
+const folderIndexes = new WeakMap();
 function folderEntry(name, metadata) {
   return {...metadata, name, leaf:name.slice(0,-1).split('/').pop(),
     is_dir:true, size:0, size_known:true};
@@ -87,20 +88,38 @@ function flatChildren(entries, folder) {
   }
   return [...items.values()];
 }
-function folderChildren(entries, folder) {
-  const children = new Map();
+function indexFolderChildren(entries) {
+  const folders = new Map();
   for (const entry of entries) {
-    const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'');
-    if (!path.startsWith(folder)) continue;
-    const parts = path.slice(folder.length).split('/').filter(Boolean);
-    if (!parts.length) continue;
-    const directory = parts.length > 1 || entry.is_dir;
-    const leaf = parts[0], name = folder + leaf + (directory ? '/' : '');
-    if (!children.has(name) || (entry.is_dir && parts.length === 1)) children.set(name,
-      directory ? folderEntry(name, parts.length === 1 ? entry : undefined)
-        : {...entry, name, leaf, is_dir:directory, size_known:entry.size_known !== false});
+    const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'').split('/').filter(Boolean).join('/');
+    if (!path) continue;
+    let end = path.length;
+    let directory = entry.is_dir;
+    let explicit = true;
+    while (end > 0) {
+      const separator = path.lastIndexOf('/', end - 1);
+      const parent = path.slice(0, separator + 1);
+      const leaf = path.slice(separator + 1, end);
+      const name = path.slice(0, end) + (directory ? '/' : '');
+      let children = folders.get(parent);
+      if (!children) folders.set(parent, children = new Map());
+      if (children.has(name) && !(directory && explicit)) break;
+      children.set(name, directory ? folderEntry(name, explicit ? entry : undefined)
+        : {...entry, name, leaf, is_dir:false, size_known:entry.size_known !== false});
+      end = separator;
+      directory = true;
+      explicit = false;
+    }
   }
-  return [...children.values()];
+  return folders;
+}
+function folderChildren(entries, folder) {
+  let index = folderIndexes.get(entries);
+  if (!index) {
+    index = indexFolderChildren(entries);
+    folderIndexes.set(entries, index);
+  }
+  return [...(index.get(folder)?.values() || [])];
 }
 function visibleEntries() {
   let view = folderViews.get(s.entries);

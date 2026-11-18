@@ -337,6 +337,41 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         assert_eq!(serde_json::to_vec(&second.result).unwrap(), serde_json::to_vec(&expected).unwrap());
     }
     #[test]
+    fn smart_zip_job_keeps_selected_layout_and_full_output() {
+        let _registry = test_registry_guard();
+        let root = tempfile::tempdir().unwrap();
+        let wrapped = root.path().join("bundle");
+        std::fs::create_dir(&wrapped).unwrap();
+        std::fs::write(wrapped.join("selected.txt"), b"first").unwrap();
+        std::fs::write(wrapped.join("other.txt"), b"second").unwrap();
+        let archive = root.path().join("bundle.zip").display().to_string();
+        obz_core::engine::create(&archive, &[wrapped.display().to_string()], "zip", &Default::default()).unwrap();
+        for (name, selected, count) in [
+            ("selected", vec!["bundle/selected.txt".to_owned()], 1),
+            ("full", Vec::new(), 2),
+        ] {
+            let dest = root.path().join(name);
+            let id = start_operation(Request {
+                operation: "extract".into(),
+                path: archive.clone(),
+                dest: dest.display().to_string(),
+                smart: true,
+                options: obz_core::engine::EngineOptions { selected, ..Default::default() },
+                ..Default::default()
+            }, None).unwrap();
+            let job = registry().lock().unwrap().get(&id).cloned().unwrap();
+            let snapshot = wait_snapshot(&job, id, Duration::from_secs(30)).unwrap();
+            assert_eq!(snapshot.status, "complete", "{:?}", snapshot.error);
+            let Some(OperationResponse::Json(result)) = snapshot.result.as_deref() else { panic!("missing extraction result") };
+            assert_eq!(result["files"].as_u64(), Some(count));
+            assert_eq!(result["destination"].as_str(), dest.to_str());
+            assert_eq!(std::fs::read(dest.join("bundle").join("selected.txt")).unwrap(), b"first");
+            assert_eq!(dest.join("bundle").join("other.txt").exists(), count == 2);
+            forget_operation(id).unwrap();
+        }
+    }
+
+    #[test]
     fn completion_wait_handles_finished_and_inflight_jobs_without_lost_wakeup() {
         let job=Arc::new(Job{control:JobControl::new(),state:Mutex::new(JobState{status:"running".into(),result:None,error:None}),finished:std::sync::Condvar::new()});
         assert_eq!(wait_snapshot(&job,1,Duration::from_millis(1)).unwrap().status,"running");

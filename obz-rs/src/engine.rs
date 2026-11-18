@@ -2696,6 +2696,24 @@ thread_local! {
     static BEFORE_SELECTED_DIRECTORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
 }
 fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_raw_with_selection(path, dest, opts, false)
+}
+
+fn extract_raw_with_selection(
+    path: &str,
+    dest: &str,
+    opts: &EngineOptions,
+    allow_unencrypted_projection: bool,
+) -> Result<usize, String> {
+    extract_raw_to(path, opts, allow_unencrypted_projection, |_| absolute(dest))
+}
+
+fn extract_raw_to(
+    path: &str,
+    opts: &EngineOptions,
+    allow_unencrypted_projection: bool,
+    destination: impl FnOnce(&[Entry]) -> Result<PathBuf, String>,
+) -> Result<usize, String> {
     #[cfg(windows)]
     let _reuse_scope=opts.verification_capture.as_ref().map(verification_lease::Capture::scope);
     let policy = crate::machine_policy::scope();
@@ -2759,7 +2777,17 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     if !opts.selected.is_empty() && entries.is_empty() {
         return Err("selected archive entries were not found".into());
     }
-    let dest = absolute(dest)?;
+    // Deep selection can read public members without credentials when an
+    // unrelated member is encrypted. Names for the whole archive remain validated.
+    let unencrypted_projection = allow_unencrypted_projection
+        && !opts.selected.is_empty()
+        && all_entries.iter().any(|entry| entry.encrypted)
+        && entries.iter().all(|entry| !entry.encrypted);
+    #[cfg(nana_selected_worker)]
+    if unencrypted_projection {
+        drop(full_worker.take());
+    }
+    let dest = destination(&all_entries)?;
     // Declaration order releases all output locks before TempDir cleanup, also
     // on early errors (the output may share TEMP ancestors).
     let mut stage;
@@ -2776,7 +2804,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         }
     }
     #[cfg(all(windows, target_pointer_width = "64"))]
-    let selected_zip_candidate = matches!(payload_source, PayloadSource::Engine)
+    let selected_zip_candidate = !unencrypted_projection && matches!(payload_source, PayloadSource::Engine)
         && !opts.selected.is_empty() && selected_source.is_some()
         && memory_source.is_some() && entries.iter().filter(|e| !e.is_dir).nth(127).is_some()
         // The shared filesystem publisher uses at most four workers.
@@ -2836,7 +2864,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     #[cfg(nana_selected_worker)]
     if memory.is_some() {drop(full_worker.take());}
     #[cfg(nana_selected_worker)]
-    let split_plan = if !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty() {
+    let split_plan = if !unencrypted_projection && !policy.restricted() && !opts.selected.is_empty() && !_volume_guards.is_empty() {
         selected_worker::plan(path, &source_guard, &_volume_guards, &all_entries, opts)?
     } else { None };
     #[cfg(nana_selected_worker)]
@@ -2852,7 +2880,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     // Only decode_memory_zip has read every member to EOF and retained exactly
     // the selected file bytes. A fallback decoder may still produce the whole tree.
     let memory_selection = selected_zip_candidate && defer_preflight && memory.is_some();
-    let projected = (plan_selection || memory_selection).then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
+    let projected = (plan_selection || memory_selection || unencrypted_projection).then(|| entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>());
     let safe_projection = opts.selected.is_empty() || projected.is_some();
     // A selected stage may be committed only after the isolated worker verifies
     // the entire fixed archive family and confirms that it wrote this projection.
@@ -2926,7 +2954,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         stage_guards = Some(fallback.guards(None)?);
         stage = Some(fallback);
     }
-    let verified_projection = split_streamed || memory_selection;
+    let verified_projection = split_streamed || memory_selection || unencrypted_projection;
     let staged_entries = projected.as_deref().filter(|_| verified_projection).unwrap_or(&all_entries);
     if let Some(stage) = &stage {
         let stage_guards = stage_guards.as_mut().unwrap();
@@ -2938,7 +2966,7 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
         #[cfg(not(nana_selected_worker))]
         let full_streamed = false;
-        let streamed = full_streamed || split_streamed || (memory.is_none() && decode_selected_zip(
+        let streamed = full_streamed || split_streamed || (!unencrypted_projection && memory.is_none() && decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,
@@ -2951,6 +2979,14 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         } else if let Some(files) = &memory {
             stage_verified_memory(files, staged_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if !streamed {
+            let mut public_options;
+            let opts = if unencrypted_projection {
+                public_options = opts.clone();
+                public_options.password = None;
+                &public_options
+            } else {
+                opts
+            };
             let mut args = base("x", opts)?;
             let execute = if official_zeal {
                 args.push("-tZealFS".into());
@@ -2959,7 +2995,27 @@ fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             if let Some(format) = crate::stream_formats::raw_format(path) {
                 args.push(format!("-t{format}"));
             }
-            if all_entries.len() == 1 && !all_entries[0].is_dir {
+            if unencrypted_projection {
+                use std::io::Write;
+                let mut list = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+                for entry in &entries {
+                    if entry.name.contains(['\r', '\n', '\0']) {
+                        return Err("archive name cannot be represented in a selection list".into());
+                    }
+                    writeln!(list, "{}", entry.name.trim_end_matches(['/', '\\']))
+                        .map_err(|error| error.to_string())?;
+                }
+                let list_path = list.into_temp_path();
+                args.extend([
+                    "-scsUTF-8".into(),
+                    "-ssc".into(),
+                    format!("-i@{}", list_path.display()),
+                    format!("-o{}", stage.path().display()),
+                    "--".into(),
+                    absolute(path)?.display().to_string(),
+                ]);
+                execute(&args, None, opts, None)?;
+            } else if all_entries.len() == 1 && !all_entries[0].is_dir {
                 // Raw compressors may synthesize different disk and listing names.
                 // One stdout decode is unambiguous and retains the advertised name.
                 let target = stage.path().join(validate_name(&all_entries[0].name)?);
@@ -5456,6 +5512,26 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         } else {
             extract_raw(path, dest, opts)
         }
+    })
+}
+
+/// Compute the smart layout from the extraction listing while the source is pinned.
+pub(crate) fn extract_smart_zip(
+    path: &str,
+    base: &str,
+    opts: &EngineOptions,
+) -> Result<(usize, String), String> {
+    let mut options = opts.clone();
+    if options.zone_identifier.is_none() {
+        options.zone_identifier = Some(crate::motw::archive_context(Path::new(path))?);
+    }
+    with_zip_source(path, &options, |source| {
+        let mut destination = String::new();
+        let files = extract_raw_to(source, &options, false, |entries| {
+            destination = crate::smart_extract::destination(path, base, entries, &options)?;
+            absolute(&destination)
+        })?;
+        Ok((files, destination))
     })
 }
 
