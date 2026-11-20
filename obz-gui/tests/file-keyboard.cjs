@@ -3,6 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 const keyboard=source.split('// File and menu keyboard behavior. Keep focus separate from the range anchor.')[1].split('// End file and menu keyboard behavior.')[0];
 const select=source.split('\n').find(line=>line.startsWith('function selectRow('));
+const compositionGuard=source.split('\n').find(line=>line.startsWith('function isCompositionKey('));
 function fixture(count=8,columns=1){
  const calls=[],document={activeElement:null},buttons=[];
  const state={selected:new Set(),cursor:null,anchor:null,listStyle:columns>1?'icons':'details'};
@@ -16,7 +17,7 @@ function fixture(count=8,columns=1){
   window:{getSelection:()=>({removeAllRanges(){}})},visibleEntries:()=>buttons.map(b=>({name:b.dataset.entry})),refreshSelection(){},
   entry:async name=>calls.push(['open',name]),error:message=>calls.push(['error',message]),showMenu:(group,row)=>calls.push(['menu',group,row.dataset.row]),showMore:()=>calls.push(['more']),
   $:()=>menu,menuReturnFocus:null};
- vm.createContext(context);vm.runInContext(keyboard+'\n'+select,context);
+ vm.createContext(context);vm.runInContext([keyboard,select,compositionGuard].join('\n'),context);
  const press=(index,key,modifiers={})=>{let prevented=false,stopped=false;const e={target:buttons[index],key,preventDefault(){prevented=true;},stopPropagation(){stopped=true;},...modifiers};context.handleFileKeydown(e);return {prevented,stopped};};
  return {context,state,buttons,calls,menu,document,press};
 }

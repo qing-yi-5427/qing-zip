@@ -18,6 +18,8 @@ mod shell_compress;
 mod associations;
 mod preview;
 mod instance;
+mod appearance;
+mod window_snap;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -146,19 +148,6 @@ async fn cancel_and_close(app: tauri::AppHandle) -> Result<bool,String> {
         for _ in 0..300 {if !jobs::running(){if nested::dirty(){return Ok(false);}nested::cleanup();app.exit(0);return Ok(true);}std::thread::sleep(std::time::Duration::from_millis(100));}
         Err("任务正在安全停止，请稍后再关闭窗口。".into())
     }).await.map_err(|e|e.to_string())?
-}
-
-#[tauri::command]
-fn set_appearance(window: tauri::WebviewWindow, material: String, dark: bool) -> Result<(),String> {
-    use tauri::utils::{config::WindowEffectsConfig, WindowEffect};
-    window.set_theme(Some(if dark {tauri::Theme::Dark} else {tauri::Theme::Light})).map_err(|e|e.to_string())?;
-    let effects=match material.as_str(){
-        "solid"=>None,
-        "acrylic"=>Some(WindowEffectsConfig{effects:vec![WindowEffect::Acrylic],..Default::default()}),
-        "mica"=>Some(WindowEffectsConfig{effects:vec![if dark {WindowEffect::MicaDark}else{WindowEffect::MicaLight}],..Default::default()}),
-        _=>return Err("unknown material".into())
-    };
-    window.set_effects(effects).map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -294,7 +283,7 @@ fn main() {
             pick_folder,
             pick_save, pick_copy_save,
             pick_files_for_zip,
-            dropped, open_tools, pick_combined_save, app_version, checksum_algorithms, current_executable, startup_path, pick_archive_save, set_appearance, window_action, window_maximized, cancel_and_close, nested::nested_sessions, nested::close_nested, nested::external_edits, nested::finish_external_edit, editor_process::pick_editor, edit_copies::retained_edits, verification::revoke_archive_verification, jobs::start_operation, jobs::operation_status, jobs::wait_operation, jobs::cancel_operation, jobs::forget_operation,
+            dropped, open_tools, pick_combined_save, app_version, checksum_algorithms, current_executable, startup_path, pick_archive_save, appearance::set_appearance, window_snap::set_snap_button_bounds, window_action, window_maximized, cancel_and_close, nested::nested_sessions, nested::close_nested, nested::external_edits, nested::finish_external_edit, editor_process::pick_editor, edit_copies::retained_edits, verification::revoke_archive_verification, jobs::start_operation, jobs::operation_status, jobs::wait_operation, jobs::cancel_operation, jobs::forget_operation,
             drag::start_drag_preparation, drag::cancel_drag_preparation, drag::finish_drag, drag::discard_drag, desktop::known_folders, desktop::reveal_path, desktop::copy_archive, desktop::clipboard_paths, desktop::clipboard_directory, desktop::discard_clipboard_export, desktop::publish_clipboard_export, recycle_paths, desktop::list_directory,
             associations::folder_menu_enabled, associations::set_folder_menu, associations::file_menu::file_compression_menu_enabled, associations::file_menu::set_file_compression_menu, instance::take_pending_folders, instance::take_pending_compression_files, associations::association_status, associations::set_file_associations, associations::open_default_apps,
             preview::preview_policy_token, preview::preview_entry, preview::preview_thumbnails, preview::open_archive_image, preview::clear_preview_cache, instance::take_pending_archives, instance::canonical_archive_path, instance::take_pending_shell_extractions

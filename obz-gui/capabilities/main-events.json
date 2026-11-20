@@ -1,6 +1,6 @@
 {
   "identifier": "main-events",
-  "description": "Local main window file drop event subscription",
-  "windows": ["main"],
+  "description": "Local window event subscriptions",
+  "windows": ["main", "tools"],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

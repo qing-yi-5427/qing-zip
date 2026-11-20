@@ -9,7 +9,7 @@ function fixture(){
  let rows=[],buttons=new Map();
  const context={document,main,s:{page:'files',view:'archive',archive:'a.zip',cursor:'a-row',anchor:'a-row',search:'a-query',selected:new Set(['a-row'])},
   archiveTabs:[{id:'a',archive:'a.zip',cursor:'a-row',anchor:'a-row',search:'a-query',selected:new Set(['a-row']),scrollTop:110,treeScroll:19},{id:'b',archive:'b.zip',cursor:'b-row',anchor:'b-row',search:'b-query',selected:new Set(['b-row']),scrollTop:220,treeScroll:29}],
-  currentTabId:'a',TAB_FIELDS:['archive','cursor','anchor','search','selected'],pref:{},overlay:{hidden:true,firstElementChild:null},menuReturnFocus:null,
+  currentTabId:'a',renderedPage:'archive:a',TAB_FIELDS:['archive','cursor','anchor','search','selected'],pref:{},overlay:{hidden:true,firstElementChild:null},menuReturnFocus:null,
   root:{querySelector(selector){if(selector==='.oa-tree-section')return tree;return buttons.get(selector.match(/data-archive-tab="([^"]+)"/)?.[1])||null;}},
   $:()=>menu,rowButtons:()=>rows,requestAnimationFrame:fn=>frames.push(fn),tabBusy:()=>false,toast(){},
   invoke:async name=>{calls.push(['invoke',name]);},resetPreviewState:()=>calls.push(['reset-preview']),
@@ -18,7 +18,7 @@ function fixture(){
  };
  function paintTabs(){for(const n of buttons.values())n.isConnected=false;buttons=new Map(context.archiveTabs.map(t=>[t.id,node(t.id+'-tab',{},true)]));calls.push(['paint-tabs']);}
  context.renderArchiveTabs=paintTabs;
- context.render=()=>{for(const n of rows)n.isConnected=false;if(!document.activeElement?.isConnected)document.activeElement=document.body;rows=context.s.archive?[node(context.s.cursor,{entry:context.s.cursor})]:[];paintTabs();calls.push(['render']);};
+ context.render=()=>{context.renderedPage=context.s.archive?'archive:'+context.currentTabId:'home';for(const n of rows)n.isConnected=false;if(!document.activeElement?.isConnected)document.activeElement=document.body;rows=context.s.archive?[node(context.s.cursor,{entry:context.s.cursor})]:[];paintTabs();calls.push(['render']);};
  vm.createContext(context);
  for(const name of ['saveCurrentTab','applyTab','emptyArchiveState','showNestedClose'])vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'(')),context);
  vm.runInContext(source.slice(source.indexOf('let archiveTabFocusGeneration='),source.indexOf('function discardArchiveTab(')),context);
@@ -75,7 +75,9 @@ test('async background close after a user switch does not restore the old focus 
 });
 test('background Escape has no close side effects; modal and menu Escape preserve their owners',()=>{
  const c={document:{activeElement:null},overlay:{hidden:true},root:{addEventListener(type,handler){c.handler=handler;}},menu:{hidden:true},menuReturnFocus:{isConnected:true,focus(){c.focused=true;}},close(){c.closed++;},closed:0,focused:false,$:()=>c.menu};vm.createContext(c);
- vm.runInContext(source.split('\n').find(line=>line.startsWith('function handleDialogKeydown(')),c);
- const press=()=>c.handleDialogKeydown({key:'Escape',preventDefault(){c.prevented=true;}});
- press();assert.equal(c.closed,0);c.menu.hidden=false;press();assert.equal(c.closed,0);assert.equal(c.menu.hidden,true);assert.equal(c.focused,true);c.overlay.hidden=false;press();assert.equal(c.closed,1);
+ vm.runInContext(source.slice(source.indexOf('function isCompositionKey('),source.indexOf("root.addEventListener('keydown',handleDialogKeydown)")),c);
+ const press=(extra={})=>c.handleDialogKeydown({key:'Escape',preventDefault(){c.prevented=true;},...extra});
+ press();assert.equal(c.closed,0);c.menu.hidden=false;press();assert.equal(c.closed,0);assert.equal(c.menu.hidden,true);assert.equal(c.focused,true);c.overlay.hidden=false;
+ press({isComposing:true});press({keyCode:229});assert.equal(c.closed,0);
+ press();assert.equal(c.closed,1);
 });

@@ -1,6 +1,6 @@
 (()=>{'use strict';
 const defaults={depth:8,archives:256,files:100000,bytes:20*1073741824,reserve_bytes:1073741824,recovery_directory:null};
-window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,onRecycled,onBrowse})=>{
+window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,extractionSummary,sourceDisposition,onRecycled,onBrowse})=>{
  s.deepExtract=!!pref.deepExtract;s.deepRecycleAfter=!!pref.deepRecycleAfter;s.deepLimits={...defaults,...pref.deepLimits};
  const completionOptions=new Map();
  const button=(label,action,extra='')=>`<button type="button" class="qa-button${action==='start-batch'?' primary':''}" data-deep-action="${action}" ${extra}>${label}</button>`;
@@ -19,11 +19,9 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
   dialog('批量深度解压',`
    <div class="qa-actions oa-source-heading"><strong>压缩包</strong><span id="oa-deep-count" class="qa-sub"></span>${button('选择文件…','pick-inputs')}</div>
    <div id="oa-deep-list" class="oa-deep-list"></div>
-   <details class="oa-extract-advanced"><summary>粘贴或输入多行路径</summary><textarea id="oa-deep-inputs" rows="3" aria-label="压缩包路径（每行一个）"></textarea></details>
    <label class="qa-field">保存到<div class="qa-inlinefield"><input id="oa-deep-destination" placeholder="各原包所在的文件夹">${button('浏览…','pick-dest')}</div></label>
-   <p class="qa-sub oa-output-preview">预计输出 <output id="oa-deep-preview"></output></p><p class="qa-sub">同名目录已存在时会自动编号。</p>
+   <details class="oa-extract-advanced"><summary>粘贴或输入多行路径</summary><textarea id="oa-deep-inputs" rows="3" aria-label="压缩包路径（每行一个）"></textarea></details>
    <label class="qa-field">密码（可选）<input id="oa-deep-password" type="password" autocomplete="off" placeholder="用于原包及内层压缩包"></label>
-   <label class="oa-switch-row"><span>全部成功后将原包移入回收站</span><input id="oa-deep-recycle" class="oa-switch" role="switch" type="checkbox" ${s.deepRecycleAfter?'checked':''}></label>
    <details class="oa-extract-advanced"><summary>更多解压选项</summary>
     <label class="oa-switch-row"><span>智能解压</span><input id="oa-deep-smart" class="oa-switch" role="switch" type="checkbox" ${s.sameFolder?'checked':''}></label>
     <label class="qa-field">遇到同名文件<select id="oa-deep-conflict">${conflictChoices(s.overwrite)}</select></label>
@@ -33,7 +31,8 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
     ${limitsMarkup()}
    </details>
    <label class="qa-check"><input id="oa-deep-remember" type="checkbox" checked>记住解压选项</label>
-  `,btn('取消','close')+(allowBrowse?button('改为打开压缩包','browse-archives'):'')+button('开始深度解压','start-batch'),'oa-extraction-dialog');
+  `,extractionSummary({pathsId:'oa-deep-preview',statusId:'oa-deep-source-status',recycleId:'oa-deep-recycle',recycle:s.deepRecycleAfter,batch:true,numbered:true})+
+   btn('取消','close')+(allowBrowse?button('改为打开压缩包','browse-archives'):'')+button('开始深度解压','start-batch'),'oa-extraction-dialog');
   if(password)$('oa-deep-password').value=password;
   acceptDrop(paths);
  }
@@ -41,15 +40,20 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
  function batchPreview(){
   const dest=$('oa-deep-destination').value.trim(), paths=inputPaths();
   const output=$('oa-deep-preview');
-  if(paths.length===1){
-   const [source]=paths,base=dest||archiveParent(source);
-   const folder=source===s.archive?estimatedArchiveFolder(source,s.entries,[],$('oa-deep-smart').checked,true):archiveStem(source);
-   output.textContent=base?base.replace(/[\\/]+$/,'')+'\\'+folder:folder;
-  }else{
-   output.textContent=paths.length?`${paths.length} 个来源 · ${dest||'各原包所在的文件夹'} · 独立子文件夹`:'添加压缩包后显示';
-  }
-  output.title=output.textContent;
-  root.querySelector('[data-deep-action=start-batch]').textContent=$('oa-deep-recycle').checked?'深度解压并回收':'开始深度解压';
+  const smart=$('oa-deep-smart').checked;
+  output.value=paths.map(source=>{
+   const base=dest||archiveParent(source);
+   const folder=source===s.archive?estimatedArchiveFolder(source,s.entries,[],smart,true):archiveStem(source);
+   return base?base.replace(/[\\/]+$/,'')+'\\'+folder:folder;
+  }).join('\n');
+  output.placeholder='添加压缩包后显示';
+  const recycle=$('oa-deep-recycle').checked;
+  const blocked=recycle&&$('oa-deep-conflict').value==='skip';
+  const disposition=$('oa-deep-source-status'),submit=root.querySelector('[data-deep-action=start-batch]');
+  disposition.textContent=blocked?'原包：要使用回收，请更改同名文件处理方式，或关闭回收。':sourceDisposition(recycle,{deep:true});
+  disposition.dataset.recycle=String(recycle&&!blocked);
+  submit.textContent=recycle&&!blocked?'深度解压并回收':'开始深度解压';
+  submit.disabled=blocked;
  }
  function renderInputs(){
   const paths=$('oa-deep-inputs').value.split(/\r?\n/);
@@ -92,11 +96,11 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
  root.addEventListener('input',e=>{
   if(e.target.id==='oa-deep-inputs')renderInputs();
   if(e.target.id==='oa-deep-destination')batchPreview();
+  if(e.target.dataset.deepInput!==undefined)updateInput(Number(e.target.dataset.deepInput),e.target.value.trim());
  });
  root.addEventListener('change',e=>{
   const t=e.target;
-  if(t.id==='oa-deep-recycle'||t.id==='oa-deep-smart')batchPreview();
-  if(t.dataset.deepInput!==undefined)updateInput(Number(t.dataset.deepInput),t.value.trim());
+  if(['oa-deep-recycle','oa-deep-smart','oa-deep-conflict'].includes(t.id))batchPreview();
  });
  root.addEventListener('click',async e=>{const target=e.target.closest('[data-deep-action]');if(!target)return;e.preventDefault();try{switch(target.dataset.deepAction){
   case'browse-archives':onBrowse(inputPaths());break;

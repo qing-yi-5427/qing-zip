@@ -11,7 +11,7 @@ function fixture(responses, chosen = []) {
  const calls = [], fields = {}, timers = new Map();
  const context = {
   s: {page:'files',archive:''},
-  overlay: {hidden:true,dataset:{page:''},querySelector:()=>null},
+  overlay: {hidden:true,dataset:{page:''},querySelector:()=>null,querySelectorAll:()=>[]},
   $: id=>fields[id], esc: String, filename: path.win32.basename, archiveKey:p=>p.toLowerCase(),
   tabBusy:()=>false, schedulePendingQueue:()=>{}, archiveOpenMessage:String,
   setTimeout:fn=>{const id=Symbol();timers.set(id,fn);return id;},
@@ -73,8 +73,28 @@ test('a header-encrypted archive prompts to open and has a manual deep action',a
  const file='C:/encrypted.7z';
  const f=fixture({[file]:{route:'review',path:file,reason:'目录需要密码'}});
  await f.context.routeHomeArchives([file]);
+ const dialog=f.calls.find(c=>c[0]==='dialog');
+ assert.match(dialog[2],/尝试打开/);
+ f.fields['oa-home-review-0']={value:'browse'};
+ f.context.submitHomeReview();
  assert.deepEqual(f.calls.filter(c=>c[0]==='password'),[['password',file]]);
- assert.match(source,/openDialog\(review\[0\]\.path,\{allowDeep:true\}\)/);
+ assert.match(source,/openDialog\(browse\[0\],\{allowDeep:true\}\)/);
+});
+
+test('long mixed failures keep diagnostics below each treatment choice',async()=>{
+ const corrupt='C:/corrupt.zip',missing='C:/missing.zip';
+ const reason='Invalid archive header: '+('long engine detail '.repeat(140));
+ const f=fixture({
+  [corrupt]:{route:'review',path:corrupt,reason},
+  [missing]:{route:'review',path:missing,reason:'File not found'},
+ });
+ await f.context.routeHomeArchives([corrupt,missing]);
+ const [, ,html]=f.calls.find(c=>c[0]==='dialog');
+ assert.ok(html.indexOf('oa-home-review-0')<html.indexOf(reason));
+ assert.match(html,/无法识别压缩包/);
+ assert.match(html,/找不到文件/);
+ assert.match(html,/<details><summary>诊断详情/);
+ assert.equal(html.match(/复制诊断/g).length,2);
 });
 
 test('stopping recognition prevents a late result from applying to a new intake',async()=>{

@@ -1,4 +1,18 @@
 const invoke=(window.__TAURI__||window.parent.__TAURI__).core.invoke,$=id=>document.getElementById(id),lines=id=>$(id).value.split(/\r?\n/).filter(s=>s.length>0);let active=null;
+if (window === window.top) {
+ const readPreference = () => {
+  let theme;
+  try { theme = JSON.parse(localStorage.getItem('qing-preferences'))?.theme; } catch {}
+  return { theme: QingAppearance.preferredMode(theme), material: 'solid' };
+ };
+ const updateAppearance = QingAppearance.bind(readPreference, theme => {
+  document.documentElement.style.colorScheme = theme;
+ }, console.warn);
+ window.addEventListener('storage', event => {
+  if (event.key === 'qing-preferences') updateAppearance();
+ });
+ updateAppearance();
+}
 let hashDiscovery=null;
 const listedHashes=new Set();
 function addHashChoice(name){
@@ -69,8 +83,10 @@ if(op==='checksum'){
 }
 if(op==='recover'&&$('charset').value){request.charset=$('charset').value;request.min_length=Number($('min-length').value);request.max_length=Number($('max-length').value);}
 if(['delete','vault-delete','shell-enable','shell-disable'].includes(op)&&!confirm('确认执行“'+$('operation').selectedOptions[0].textContent+'”？'))return;
-try{if(op.startsWith('shell-'))request.path=await invoke('current_executable');window.obzBusy=true;$('fields').disabled=true;$('run').disabled=true;$('result').replaceChildren();$('status').className='';$('status').textContent='开始处理…';show('progress',true);$('progress').removeAttribute('value');active=await invoke('start_operation',{request});$('cancel').disabled=!['list','extract','create','test','add','delete','rename','preview','recover','checksum','benchmark','file-split','file-combine'].includes(op);$('password').value='';$('candidates').value='';while(true){const s=await invoke('wait_operation',{id:active});if(s.progress.percent!==null)$('progress').value=s.progress.percent;else $('progress').removeAttribute('value');if(s.status!=='running'){if(s.status==='complete'){render(op,s.result);$('status').textContent='已完成';}else if(s.status==='cancelled'){$('status').textContent='已取消';}else{throw new Error(s.error||'任务失败');}break;}$('status').textContent=s.progress.percent!==null?`处理中 · ${s.progress.percent}%`:'处理中…';}}catch(err){$('status').textContent=String(err);$('status').className='error';}finally{if(active!==null){await invoke('forget_operation',{id:active}).catch(()=>{});active=null;}window.obzBusy=false;$('fields').disabled=false;$('run').disabled=false;$('cancel').disabled=true;show('progress',false);}};
-document.documentElement.style.colorScheme=window.parent!==window?window.parent.document.getElementById('qing-archive').style.colorScheme:'light';
+try{if(op.startsWith('shell-'))request.path=await invoke('current_executable');window.obzBusy=true;$('fields').disabled=true;$('run').disabled=true;$('run').setAttribute('aria-busy','true');$('result').replaceChildren();$('status').className='';$('status').textContent='开始处理…';show('progress',true);$('progress').removeAttribute('value');active=await invoke('start_operation',{request});$('cancel').disabled=!['list','extract','create','test','add','delete','rename','preview','recover','checksum','benchmark','file-split','file-combine'].includes(op);$('password').value='';$('candidates').value='';while(true){const s=await invoke('wait_operation',{id:active});if(s.progress.percent!==null)$('progress').value=s.progress.percent;else $('progress').removeAttribute('value');if(s.status!=='running'){if(s.status==='complete'){render(op,s.result);$('status').textContent='已完成';}else if(s.status==='cancelled'){$('status').textContent='已取消';}else{throw new Error(s.error||'任务失败');}break;}$('status').textContent=s.progress.percent!==null?`处理中 · ${s.progress.percent}%`:'处理中…';}}catch(err){$('status').textContent=String(err);$('status').className='error';}finally{if(active!==null){await invoke('forget_operation',{id:active}).catch(()=>{});active=null;}window.obzBusy=false;$('fields').disabled=false;$('run').disabled=false;$('run').removeAttribute('aria-busy');$('cancel').disabled=true;show('progress',false);}};
+if (window.parent !== window) {
+ document.documentElement.style.colorScheme = window.parent.document.documentElement.style.colorScheme;
+}
 const params=new URLSearchParams(location.search);if(params.has('operation'))$('operation').value=params.get('operation');if(params.has('path')){$('path').value=params.get('path');$('checksum-paths').value=params.get('path');}if(params.has('codepage'))$('codepage').value=params.get('codepage');updateOperation();
 if(window.parent!==window){document.querySelector('h1').hidden=true;document.querySelector('body>p').hidden=true;document.body.style.padding='12px';}
 

@@ -1,6 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const text=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 const code=text.slice(text.indexOf('let dragGesture=null;'),text.indexOf('const scrollTimers='));
+const compositionGuard=text.split('\n').find(line=>line.startsWith('function isCompositionKey('));
 const run=text.slice(text.indexOf('async function run('),text.indexOf('async function finishExtraction('));
 const progress=text.slice(text.indexOf('function updateJobProgress('),text.indexOf('function jobMeasurements('));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -21,7 +22,7 @@ function fixture(){
    if(!['cancel_drag_preparation','forget_operation','discard_drag'].includes(name))throw Error(name);
   }
  };
- vm.runInNewContext(progress+run+'\n'+code+'\nthis.begin=dragSelection;',context);
+ vm.runInNewContext([progress,run,compositionGuard,code,'this.begin=dragSelection;'].join('\n'),context);
  return {start,wait,finish,calls,toasts,context,events};
 }
 const complete={status:'complete',result:{files:1,destination:'owned temporary export'},progress:{}};
