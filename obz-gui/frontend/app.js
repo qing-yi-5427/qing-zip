@@ -9,7 +9,7 @@ const formats=[['zip','ZIP'],['7z','7z'],['zipx','ZIPX · XZ'],['tar','TAR'],['t
 const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}};
 let appVersion='',folderMenuEnabled=false,fileMenuEnabled=false;const pendingFolders=[],pendingFileGroups=[];
 const pref=load('qing-preferences',{}),s={page:'files',view:'home',collapsed:new Set(),theme:pref.theme||'light',material:pref.material||'acrylic',density:pref.density||'relaxed',overwrite:pref.overwrite||'error',sameFolder:pref.sameFolder!==false,recycleAfter:!!pref.recycleAfter,openAfter:!!pref.openAfter,closeAfter:!!pref.closeAfter,archive:'',entries:[],folder:'',flatView:false,search:'',sort:'name',reverse:false,selected:new Set(),jobs:[],active:null,password:'',advancedTab:'archive-tools',recent:load('qing-recent',[]),profiles:load('qing-profiles',[]),batchStop:false};
-const deepExtract=window.QingDeepExtract({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,onRecycled:paths=>forgetRecycledArchives(paths)});
+const deepExtract=window.QingDeepExtract({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,onRecycled:paths=>forgetRecycledArchives(paths),onBrowse:paths=>{close();enqueueArchives(paths);}});
 let columns=ArchiveColumns.normalize(load('qing-columns',null)),columnDraft=null;
 let toastTimer,returnFocus,menuReturnFocus,menuAnchorRect;
 s.listStyle=pref.listStyle==='icons'?'icons':'details';s.iconSize=Math.max(80,Math.min(256,Number(pref.iconSize)||144));
@@ -59,9 +59,8 @@ function showColumns(){columnDraft=ArchiveColumns.normalize(columns);dialog('列
 function paintColumns(){const box=$('oa-column-list');box.innerHTML=columnDraft.map((c,i)=>`<div class="oa-column-setting"><label><input type="checkbox" data-column-visible="${c.id}" ${c.visible?'checked':''} ${c.id==='name'?'disabled':''}>${c.label}</label><label>宽度 <input type="number" min="64" max="800" step="8" aria-label="${c.label}宽度" data-column-width="${c.id}" value="${c.width}"></label><button type="button" class="qa-button quiet" data-column-move="${c.id}" data-delta="-1" aria-label="${c.label}前移" ${i===0?'disabled':''}>↑</button><button type="button" class="qa-button quiet" data-column-move="${c.id}" data-delta="1" aria-label="${c.label}后移" ${i===columnDraft.length-1?'disabled':''}>↓</button></div>`).join('');}
 function toast(message){$('qa-toast').textContent=message;$('qa-toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('qa-toast').hidden=true,4500)}
 function appearance(){root.style.colorScheme=s.theme;root.dataset.material=s.material;root.style.setProperty('--qa-row',s.density==='compact'?'35px':'43px');if($('qa-tools'))try{$('qa-tools').contentDocument.documentElement.style.colorScheme=s.theme;}catch{}root.querySelectorAll('[data-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.theme===s.theme)));localStorage.setItem('qing-preferences',JSON.stringify({theme:s.theme,material:s.material,density:s.density,overwrite:s.overwrite,sameFolder:s.sameFolder,recycleAfter:s.recycleAfter,openAfter:s.openAfter,closeAfter:s.closeAfter,deepExtract:s.deepExtract,deepRecycleAfter:s.deepRecycleAfter,deepLimits:s.deepLimits,listStyle:s.listStyle,iconSize:s.iconSize}));invoke('set_appearance',{material:s.material,dark:s.theme==='dark'}).catch(e=>toast('窗口材质不可用，保留页面样式：'+e));}
-function home(){return `<section class="oa-home"><h1>打开压缩包或深度解压</h1><div class="oa-home-targets">
- <button type="button" id="oa-home-open-drop" class="oa-home-deep-drop" data-action="open">${icon('folder-open')}<span><strong>打开压缩包</strong><small data-drop-label>拖入查看，或点击选择</small></span></button>
- <button type="button" id="oa-home-deep-drop" class="oa-home-deep-drop" data-action="deep-batch">${icon('folder-output')}<span><strong>深度解压</strong><small data-drop-label>拖入批量解压，或点击添加</small></span></button>
+function home(){return `<section class="oa-home"><h1>打开或解压压缩包</h1><div class="oa-home-targets">
+ <button type="button" id="oa-home-smart-drop" class="oa-home-smart-drop" data-action="home-smart">${icon('folder-open')}<span><strong>拖入文件或点击选择</strong><small data-drop-label>自动识别压缩包和多层压缩包</small></span></button>
  </div></section>${s.recent.length?`<section class="oa-recent"><div class="oa-section-head"><h3>最近打开</h3>${btn('全部记录','recent-menu','quiet')}</div>${s.recent.slice(0,4).map((path,i)=>`<button class="qa-recent-row" data-recent="${i}"><span class="oa-file-symbol">${icon('archive')}</span><span class="qa-file-copy"><strong>${esc(filename(path))}</strong><small>${esc(path)}</small></span>${icon('chevron')}</button>`).join('')}</section>`:''}`;}
 
 // Refreshing an archive replaces its entry array. Keep just the current
@@ -338,10 +337,10 @@ const fileWorkspace=QingFileWorkspace.create({invoke,run,esc,icon,error,toast,
 });
 function render(){if(overlay.dataset.page==='close-confirm')return;releaseListingWindow();stopThumbnailObserver();const pages={settings,associations:associationPage,advanced,tools:toolbox,tool:toolPage,history:historyPage,filemanager:()=>fileWorkspace.page()};main.innerHTML=s.page==='files'?(s.archive?archive():home()):`<div class="oa-page">${(pages[s.page]||toolbox)()}</div>`;renderChrome();$('oa-toolbar').hidden=s.page==='filemanager';root.querySelector('.oa-tree-section').hidden=s.page==='filemanager';if(s.page==='filemanager')fileWorkspace.mount(main);else fileWorkspace.suspend();if(s.page==='files'&&s.archive)rows();$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';renderInlineTask();$('oa-total').textContent=s.archive?`${s.entries.filter(e=>!e.is_dir).length} 个文件 · ${s.entries.filter(e=>e.is_dir).length} 个文件夹`:'本地处理 · 不上传文件';if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
 
-function navigate(v){if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}close();if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();}
+function navigate(v){if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}close();if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();}
 
 function dialog(title,body,footer,layout=''){overlay.dataset.page='';returnFocus=document.activeElement;overlay.hidden=false;overlay.innerHTML=`<section class="qa-dialog ${layout}" role="dialog" aria-modal="true" aria-labelledby="qa-dialog-title"><div class="qa-dialog-header"><h2 id="qa-dialog-title">${esc(title)}</h2>${btn('关闭','close','quiet')}</div>${layout?`<div class="oa-dialog-body">${body}</div>`:body}<div id="qa-formerror" class="qa-error" role="alert"></div><div class="qa-dialog-footer">${footer}</div></section>`;root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;$('oa-menu').inert=true;$('oa-toolbar').inert=true;$('oa-archive-tabs').inert=true;overlay.querySelector('input,textarea,button')?.focus();}
-function close(){if($('qa-edit-inputs')?.closest('.qa-dialog').getAttribute('aria-busy')==='true'&&overlay.dataset.page!=='close-confirm')return;if($('qa-property-status')&&Number.isInteger(s.active))invoke('cancel_operation',{id:s.active}).catch(()=>{});if(pendingNestedOpen&&!openingArchive&&!s.active){const orphan=pendingNestedOpen.session;pendingNestedOpen=null;if(orphan)invoke('close_nested',{ids:[orphan.id],discard:false}).catch(error);}$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'&&!s.backgroundExtraction){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;if($('oa-task-panel'))$('oa-task-panel').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}
+function close(){if(overlay.dataset.page==='home-inspecting'&&homeIntake){stopHomeIntake();return;}if($('qa-edit-inputs')?.closest('.qa-dialog').getAttribute('aria-busy')==='true'&&overlay.dataset.page!=='close-confirm')return;if($('qa-property-status')&&Number.isInteger(s.active))invoke('cancel_operation',{id:s.active}).catch(()=>{});if(pendingNestedOpen&&!openingArchive&&!s.active){const orphan=pendingNestedOpen.session;pendingNestedOpen=null;if(orphan)invoke('close_nested',{ids:[orphan.id],discard:false}).catch(error);}$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'&&!s.backgroundExtraction){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}if(overlay.dataset.page==='home-review')homeReview=null;overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;if($('oa-task-panel'))$('oa-task-panel').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}
 
 function taskError(e){const text=String(e);if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';return text;}
 function showPreservationNotice(message){dialog('操作提示',`<p>${esc(message)}</p>`,btn('关闭','close'));}
@@ -554,11 +553,11 @@ function forgetRecycledArchives(paths){
  render();
 }
 async function finishExtraction(source,dest,result,{recycle=false,openAfter=false,closeAfter=false}={}){if(recycle){const last=s.jobs.at(-1);if(result.recycled){s.recent=s.recent.filter(p=>p!==source);localStorage.setItem('qing-recent',JSON.stringify(s.recent));discardArchiveTab(source,{preserveJob:true});if(last)last.summary+='；原压缩包已移入回收站。';render();}else{const message='解压已完成，但原压缩包未移入回收站：'+(result.recycle_error||'原压缩包已保留。');if(last){last.summary=message;last.partial=true;}s.inlineExpanded=true;renderProgress();toast(message);}}if(openAfter)await invoke('reveal_path',{path:result.destination||dest});if(closeAfter&&(!recycle||result.recycled))await invoke('window_action',{action:'close'});return !recycle||!!result.recycled;}
-async function openArchive(path,password='',{refresh=false,nested=null,folder=''}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!$('qa-open-path')||!!$('oa-nested-password')});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};if(nested)Object.assign(tab,{nestedId:nested.id,parentArchive:nested.parent,nestedMember:nested.member,dirty:nested.dirty,conflict:nested.conflict});Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:folder&&(folderChildren(r.entries,folder).length||r.entries.some(entry=>entry.is_dir&&entry.name===folder))?folder:'',flatView:refresh&&!!s.flatView,search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);navigate('archive');}catch(e){throw new Error(archiveOpenMessage(e,!!password));}finally{openingArchive=false;}}
+async function openArchive(path,password='',{refresh=false,nested=null,folder='',listing=null,show=true,isCurrent=()=>true}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=listing?.path??await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;if(show)switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=listing??await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!$('qa-open-path')||!!$('oa-nested-password')});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});if(!isCurrent())return;const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};if(nested)Object.assign(tab,{nestedId:nested.id,parentArchive:nested.parent,nestedMember:nested.member,dirty:nested.dirty,conflict:nested.conflict});Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:folder&&(folderChildren(r.entries,folder).length||r.entries.some(entry=>entry.is_dir&&entry.name===folder))?folder:'',flatView:refresh&&!!s.flatView,search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);if(show)navigate('archive');}catch(e){throw new Error(archiveOpenMessage(e,!!password));}finally{openingArchive=false;}}
 
 
 function archiveOpenMessage(error,passwordProvided=false){const message=String(error);if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
-function openDialog(path=''){s.view=s.archive?'archive':'home';dialog('打开压缩包',`<label class="qa-field">文件路径<div class="qa-inlinefield"><input id="qa-open-path" value="${esc(path)}">${btn('浏览…','browse-open')}</div></label><label class="qa-field">密码（需要时填写）<input id="qa-open-password" type="password" autocomplete="off"></label>`,btn('取消','close')+btn('打开','open-submit','primary'));}
+function openDialog(path='',{allowDeep=false}={}){s.view=s.archive?'archive':'home';dialog('打开压缩包',`<label class="qa-field">文件路径<div class="qa-inlinefield"><input id="qa-open-path" value="${esc(path)}">${btn('浏览…','browse-open')}</div></label><label class="qa-field">密码（需要时填写）<input id="qa-open-password" type="password" autocomplete="off"></label>`,btn('取消','close')+(allowDeep?btn('改为深度解压','open-submit-deep'):'')+btn('打开','open-submit','primary'));}
 function appendArchiveInputs(input, paths) {
   if (!input?.isConnected || !Array.isArray(paths)) return;
   const known = new Set(lines(input.id));
@@ -573,18 +572,106 @@ function appendArchiveInputs(input, paths) {
   input.value += separator + added.join('\n');
   if (input.id === 'qa-inputs' || input.id === 'qa-edit-inputs') refreshSources();
 }
-function homeDeepDropAt(position) {
-  if (!overlay.hidden || !position) return null;
-  const scale = window.devicePixelRatio || 1;
-  return document.elementFromPoint(position.x / scale, position.y / scale)?.closest('#oa-home-deep-drop,#oa-home-open-drop');
-
+let homeIntake=null,homeReview=null;
+function homeIntakeAvailable(){
+  return overlay.hidden && s.page==='files' && !s.archive;
 }
-function acceptDroppedPaths(paths, position) {if(deepExtract.acceptDrop(paths))return;
-  if (paths.length && homeDeepDropAt(position)?.id==='oa-home-deep-drop') {deepExtract.batch(paths);return;}
+function stopHomeIntake(){
+  finishHomeIntake(homeIntake);
+}
+function finishHomeIntake(intake){
+  homeIntake=null;
+  clearTimeout(intake.progress);
+  if(overlay.dataset.page==='home-inspecting')close();
+  if(intake.browsed)navigate('archive');
+  schedulePendingQueue();
+}
+async function pickHomeArchives(){
+  if(!homeIntakeAvailable()||tabBusy())return;
+  const paths=await invoke('pick_home_files');
+  if(paths.length)await routeHomeArchives(paths);
+}
+async function routeHomeArchives(paths){
+  if(!paths.length)return;
+  if(homeIntake){
+    for(const path of paths)homeIntake.paths.set(archiveKey(path),path);
+    return;
+  }
+  if(!homeIntakeAvailable()||tabBusy()){enqueueArchives(paths);return;}
+  const intake={paths:new Map(paths.map(path=>[archiveKey(path),path])),browsed:0,path:''};
+  homeIntake=intake;
+  const isCurrent=()=>homeIntake===intake;
+  const showStatus=()=>{
+    const status=$('oa-home-identify-status');
+    if(status)status.textContent='正在识别 '+filename(intake.path)+'…';
+  };
+  intake.progress=setTimeout(()=>{
+    if(!isCurrent()||!overlay.hidden)return;
+    dialog('识别压缩包','<p id="oa-home-identify-status" class="qa-sub" role="status"></p>',btn('停止识别','close'));
+    overlay.dataset.page='home-inspecting';
+    showStatus();
+  },220);
+  const deep=[], review=[];
+  try{
+    for(const path of intake.paths.values()){
+      intake.path=path;
+      showStatus();
+      try{
+        const result=await invoke('inspect_home_archive',{path});
+        if(!isCurrent())return;
+        if(result.route==='browse'){
+          await openArchive(result.path,'',{listing:result,show:false,isCurrent});
+          if(!isCurrent())return;
+          intake.browsed++;
+        }else if(result.route==='deep')deep.push(result.path);
+        else review.push(result);
+      }catch(reason){
+        if(!isCurrent())return;
+        review.push({path,reason:String(reason)});
+      }
+    }
+  }finally{
+    if(isCurrent())finishHomeIntake(intake);
+  }
+  if(review.length){showHomeReview(review,deep);return;}
+  if(deep.length)deepExtract.batch(deep,{allowBrowse:true});
+}
+function showHomeReview(review,deep){
+  if(review.length===1&&!deep.length&&/密码/.test(archiveOpenMessage(review[0].reason))){
+    openDialog(review[0].path,{allowDeep:true});
+    error(archiveOpenMessage(review[0].reason));
+    return;
+  }
+  homeReview={review,deep};
+  dialog('选择如何处理',`${deep.length?`<p class="qa-sub">${deep.length} 个文件已识别，继续后将加入深度解压。</p>`:''}
+    <div class="oa-deep-list">${review.map((item,i)=>`<label class="qa-field"><span title="${esc(item.path)}">${esc(filename(item.path))}</span>
+    <small class="qa-sub">${esc(archiveOpenMessage(item.reason))}</small>
+    <select id="oa-home-review-${i}">${opts([['skip','跳过'],['browse','尝试打开'],['deep','加入深度解压']],/密码/.test(archiveOpenMessage(item.reason))?'browse':'skip')}</select></label>`).join('')}</div>`,
+    btn('取消','close')+btn('继续','home-review-submit','primary'),'oa-extraction-dialog');
+  overlay.dataset.page='home-review';
+}
+function submitHomeReview(){
+  if(overlay.dataset.page!=='home-review'||!homeReview)return;
+  const {review,deep}=homeReview,browse=[];
+  for(const [i,item] of review.entries()){
+    const choice=$('oa-home-review-'+i).value;
+    if(choice==='deep')deep.push(item.path);
+    if(choice==='browse')browse.push(item.path);
+  }
+  close();
+  if(deep.length)deepExtract.batch(deep,{allowBrowse:true});
+  enqueueArchives(browse);
+}
+function acceptDroppedPaths(paths) {
+  if(deepExtract.acceptDrop(paths))return;
   const input = !overlay.hidden && overlay.querySelector('#qa-inputs, #qa-edit-inputs');
   if (input) {
     if (s.active) toast('请等待当前任务完成后再添加文件。');
     else appendArchiveInputs(input, paths);
+    return;
+  }
+  if(homeIntakeAvailable()||homeIntake){
+    routeHomeArchives(paths).catch(error);
     return;
   }
   enqueueArchives(paths);
@@ -1079,7 +1166,7 @@ case'compression-advanced':{
  if(!panel.hidden)toggle.scrollIntoView({block:'start'});
  break;
 }
-case'destination-up':{const path=$('qa-destination').value.replace(/[\\/]+$/,'').replace(/[\\/][^\\/]+$/,'');await setDestination(path);break;}case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'open':{const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0])$('qa-open-path').value=p[0];break;}case'open-submit':{const pathInput=$('qa-open-path'),passwordInput=$('qa-open-password'),dialogNode=pathInput?.closest('.qa-dialog');if(!dialogNode||pathInput.disabled)break;const path=pathInput.value.trim(),password=passwordInput.value;if(!path)throw Error('请选择压缩包。');const controls=[pathInput,passwordInput,...dialogNode.querySelectorAll('[data-action=open-submit],[data-action=browse-open]')],message=dialogNode.querySelector('#qa-formerror');message.textContent='';let status=dialogNode.querySelector('#qa-open-status');if(!status){status=document.createElement('p');status.id='qa-open-status';status.className='qa-sub';status.setAttribute('role','status');message.before(status);}status.textContent='正在打开压缩文件…';dialogNode.setAttribute('aria-busy','true');controls.forEach(control=>control.disabled=true);try{await openArchive(path,password);}catch(e){if(dialogNode.isConnected&&overlay.contains(dialogNode))message.textContent=String(e);else toast(String(e));}finally{if(dialogNode.isConnected&&overlay.contains(dialogNode)){controls.forEach(control=>control.disabled=false);dialogNode.removeAttribute('aria-busy');status.textContent='';}}break;}
+case'destination-up':{const path=$('qa-destination').value.replace(/[\\/]+$/,'').replace(/[\\/][^\\/]+$/,'');await setDestination(path);break;}case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'home-smart':await pickHomeArchives();break;case'home-review-submit':submitHomeReview();break;case'open-submit-deep':{const path=$('qa-open-path').value.trim(),password=$('qa-open-password').value;if(path)deepExtract.batch([path],{password,allowBrowse:true});break;}case'open':{if(homeIntakeAvailable()){await pickHomeArchives();break;}const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0])$('qa-open-path').value=p[0];break;}case'open-submit':{const pathInput=$('qa-open-path'),passwordInput=$('qa-open-password'),dialogNode=pathInput?.closest('.qa-dialog');if(!dialogNode||pathInput.disabled)break;const path=pathInput.value.trim(),password=passwordInput.value;if(!path)throw Error('请选择压缩包。');const controls=[pathInput,passwordInput,...dialogNode.querySelectorAll('[data-action=open-submit],[data-action=browse-open]')],message=dialogNode.querySelector('#qa-formerror');message.textContent='';let status=dialogNode.querySelector('#qa-open-status');if(!status){status=document.createElement('p');status.id='qa-open-status';status.className='qa-sub';status.setAttribute('role','status');message.before(status);}status.textContent='正在打开压缩文件…';dialogNode.setAttribute('aria-busy','true');controls.forEach(control=>control.disabled=true);try{await openArchive(path,password);}catch(e){if(dialogNode.isConnected&&overlay.contains(dialogNode))message.textContent=String(e);else toast(String(e));}finally{if(dialogNode.isConnected&&overlay.contains(dialogNode)){controls.forEach(control=>control.disabled=false);dialogNode.removeAttribute('aria-busy');status.textContent='';}}break;}
 case'compress':compress();break;case'compress-files':{const input=$('qa-inputs');appendArchiveInputs(input,await invoke('pick_files_for_zip'));break;}case'compress-folder':{const input=$('qa-inputs');appendArchiveInputs(input,[await invoke('pick_folder')]);break;}case'compress-save':{const save=$('qa-save'),separate=$('oa-separate').checked,path=save.value.trim();const p=separate?await invoke('pick_folder'):await invoke('pick_archive_save',{format:$('qa-format').value,suggestion:path});if(p&&save.isConnected&&separate===$('oa-separate').checked){save.value=p;changeCompressionSave(save);}break;}
 case'startcompress':{const inputs=lines('qa-inputs'),format=$('qa-format').value,separate=$('oa-separate').checked,verify=$('oa-test-after').checked;
 const password=validateCompressionPassword(format),options={level:Number($('qa-level').value)};if(password){options.password=password;options.encryption=$('oa-encryption').value;}
@@ -1364,7 +1451,7 @@ const baseAction=action;
 const backgroundActions=new Set(['canceljob','task-toggle','close','keep-running','cancel-exit','find','copy-path','root','up',
  'toggle-tree','toggle-flat','details','icons','reverse-sort','select-all','invert','select-mask','unselect-mask','select-type','unselect-type',
  'menu','app-menu','more-menu','shell-clear','files-home','reveal','reveal-output','about','help']);
-action=async a=>{if(s.backgroundExtraction&&!backgroundActions.has(a)){toast('请先等待或取消当前任务。');return;}if($('qa-tools')?.contentWindow?.obzBusy&&!['keep-running','cancel-exit','close'].includes(a)){toast('请先等待或取消当前工具任务。');return;}
+action=async a=>{if(homeIntake&&a!=='close'&&a!=='exit'){return;}if(s.backgroundExtraction&&!backgroundActions.has(a)){toast('请先等待或取消当前任务。');return;}if($('qa-tools')?.contentWindow?.obzBusy&&!['keep-running','cancel-exit','close'].includes(a)){toast('请先等待或取消当前工具任务。');return;}
  if(/^extract-retry-\d+$/.test(a)){openExtractionRetry(Number(a.slice('extract-retry-'.length)));return;}
  switch(a){case'columns':showColumns();return;case'columns-reset':columnDraft=ArchiveColumns.normalize(null);paintColumns();return;case'columns-apply':{columns=ArchiveColumns.normalize(columnDraft);localStorage.setItem('qing-columns',JSON.stringify(columns));for(const tab of archiveTabs){if(!columns.some(c=>c.visible&&c.id===tab.sort)){tab.sort='name';tab.reverse=false;}}if(!columns.some(c=>c.visible&&c.id===s.sort)){s.sort='name';s.reverse=false;}close();render();focusEntry(s.cursor);}return;case'associations':navigate('associations');if(s.page==='associations')await loadAssociations();return;case'associations-refresh':await loadAssociations();return;case'associations-save':await saveAssociations();return;case'default-apps':await invoke('open_default_apps');toast('请在 Windows 默认应用中选择 qing-zip，完成后返回刷新状态。');return;case'more-menu':case'app-menu':showMore();return;case'extract-recycle':extract({recycleOnce:true});return;case'all-tools':s.advancedTab='archive-tools';navigate('advanced');return;case'tools-home':navigate('tools');return;case'files-home':navigate('files');return;case'comment':{if(!s.archive)throw Error('请先打开 ZIP 压缩文件。');const r=await run({operation:'comment-get',path:s.archive},'读取注释',{silent:true});dialog('压缩文件注释',`<label class="qa-field">ZIP 注释<textarea id="oa-comment">${esc(r.comment)}</textarea></label>`,btn('取消','close')+btn('保存','comment-save','primary'));}return;case'comment-save':{const name=$('oa-comment').value;await run({operation:'comment-set',path:s.archive,name},'保存注释');}return;case'settings':navigate('settings');return;case'profiles':s.advancedTab='automation';navigate('advanced');return;case'batch':s.advancedTab='batch';navigate('advanced');return;case'close-archive':closeArchiveTabs('current');return;case'close-all-tabs':closeArchiveTabs('all');return;case'refresh-archive':if(s.archive)await openArchive(s.archive,s.password,{refresh:true});return;case'properties':await showProperties(false);return;case'archive-properties':await showProperties(true);return;case'save-nested':await saveNested();return;case'nested-open-submit':await retryNestedOpen();return;case'nested-close-save':await finishNestedClose(true);return;case'nested-close-discard':await finishNestedClose(false);return;case'exit':await invoke('window_action',{action:'close'});return;case'find':$('qa-search')?.focus();return;case'select-all':visibleEntries().forEach(e=>s.selected.add(e.name));if($('qa-rows'))refreshSelection();return;case'select-mask':case'unselect-mask':if(s.archive)showSelectionMask(a==='select-mask');return;case'select-type':case'unselect-type':selectFocusedType(a==='select-type');return;case'invert':visibleEntries().forEach(e=>s.selected.has(e.name)?s.selected.delete(e.name):s.selected.add(e.name));if($('qa-rows'))refreshSelection();return;case'toggle-flat':if(!s.archive||(tabBusy()&&!s.backgroundExtraction))return;s.flatView=!s.flatView;{const available=positionsFor(visibleEntries());s.selected=new Set([...s.selected].filter(name=>available.has(name)));if(!available.has(s.anchor))s.anchor=null;if(!available.has(s.cursor))s.cursor=null;}s.page='files';s.view='archive';render();main.scrollTop=0;return;case'toggle-tree':root.dataset.tree=root.dataset.tree==='hidden'?'shown':'hidden';updateToolbar();return;case'toggle-status':root.dataset.status=root.dataset.status==='hidden'?'shown':'hidden';return;case'toolbar-large':case'toolbar-small':case'toolbar-hidden':root.dataset.toolbar=a.slice(8);return;case'details':case'icons':s.listStyle=a;saveViewPreference();render();focusEntry(s.cursor);return;case'reverse-sort':s.reverse=!s.reverse;rows();syncViewControls();return;case'external-copies':await showRetainedEdits();return;case'external-retained-open':await invoke('reveal_path',{path:retainedEditRecords[Number($('oa-retained-edit').value)].path});return;case'external-retained-save':{const path=retainedEditRecords[Number($('oa-retained-edit').value)].path,dest=await invoke('pick_copy_save',{path});if(dest){await invoke('copy_archive',{path,dest});toast('已另存为 '+dest);}}return;case'external-edit':await beginExternalEdit();return;case'external-editor-default':$('oa-editor-path').value='';return;case'external-editor-pick':{const path=await invoke('pick_editor');if(path)$('oa-editor-path').value=path;}return;case'external-launch':await launchExternalEdit();return;case'external-sessions':await showExternalEdits();return;case'external-copy':if(externalCurrent){const dest=await invoke('pick_copy_save',{path:externalCurrent.path});if(dest){await invoke('copy_archive',{path:externalCurrent.path,dest});toast('已另存为 '+dest);}}return;case'external-save-confirm':confirmExternalFinish(true);return;case'external-discard-confirm':confirmExternalFinish(false);return;case'external-save':await finishExternalEdit(true);return;case'external-discard':await finishExternalEdit(false);return;case'open-as-archive':{const member=selectedNestedMember();if(!member)throw Error('请选中一个文件。');await openNestedEntry(member);}return;case'preview-selected':if(s.selected.size!==1)throw Error('请选中一个文件或文件夹。');await entry([...s.selected][0],{preview:true});return;case'codepage':dialog('文件名代码页',`<label class="qa-field">编码<select id="oa-codepage">${opts([['','自动检测'],['65001','UTF-8'],['936','简体中文 GBK'],['950','繁体中文 Big5'],['949','韩文'],['932','日文 Shift-JIS'],['437','OEM 437']],s.codepage||'')}</select></label>`,btn('取消','close')+btn('应用','codepage-apply','primary'));return;case'codepage-apply':s.codepage=$('oa-codepage').value?Number($('oa-codepage').value):null;await openArchive(s.archive,s.password,{refresh:true});return;case'recent-menu':showRecentDialog();return;case'save-as':if(!s.archive)throw Error('请先打开压缩文件。');{if(/\.\d{3,}$/.test(s.archive))throw Error('分卷请先解压后重新压缩，以免遗漏其他卷。');const dest=await invoke('pick_copy_save',{path:s.archive});if(dest){await invoke('copy_archive',{path:s.archive,dest});toast('已另存为 '+dest);}}return;case'reveal-output':{const path=s.jobs.at(-1)?.outputPath;if(path)await invoke('reveal_path',{path});}return;case'reveal':if(s.archive)await invoke('reveal_path',{path:s.archive});return;case'recycle-archive':if(s.archive)dialog('删除压缩文件',`<p>将 ${esc(filename(s.archive))} 移到回收站？</p>`,btn('取消','close')+btn('移到回收站','recycle-confirm','danger'));return;case'recycle-confirm':if(s.nestedId||archiveTabs.some(t=>archiveKey(t.parentArchive||'')===archiveKey(s.archive)))throw Error('请先保存并关闭内层标签，再删除外层压缩包。');await invoke('recycle_paths',{paths:[s.archive]});close();await action('close-archive');return;case'copy-path':await navigator.clipboard.writeText([...s.selected].map(n=>s.archive+' / '+n).join('\n')||s.archive);toast('已复制路径');return;case'paste-files':{const paths=await invoke('clipboard_paths',{paths:null});if(!paths.length)throw Error('剪贴板中没有文件。');showAddForm(paths);}return;case'copy-files':await copySelectedFiles();return;case'vault-tool':showTool('vault-list','密码管理器');return;case'repair-tool':showTool('repair','修复 ZIP 压缩包');return;case'recover-tool':showTool('recover','密码恢复');return;case'checksum-tool':showTool('checksum','文件校验值');return;case'about':dialog('关于 qing-zip',`<p>qing-zip ${esc(appVersion)}</p><p class="qa-sub">本地压缩与解压工具。第三方组件许可随程序附带。</p>`,btn('关闭','close'));return;case'help':dialog('使用说明','<p>打开压缩包后，单击选择条目，双击进入文件夹或查看文件。Ctrl / Shift 可多选。</p><p>方向键移动，Shift+方向键连续选择，空格勾选，回车打开，Shift+F10 打开右键菜单。</p><p>Ctrl+N 新建，Ctrl+E 解压，Ctrl+T 测试，F2 重命名，Del 删除包内条目。</p><p>Ctrl+Tab 切换标签，Ctrl+Shift+Tab 反向切换，Ctrl+W 关闭当前标签，Ctrl+R 刷新当前标签。标签右键可关闭其他或全部。</p><p>文本双击只读预览；图片双击用系统默认看图程序打开原图。大图标模式可用 Ctrl+滚轮调整尺寸。</p><p>工具菜单提供修复、密码恢复、校验值和批量处理。</p>',btn('关闭','close'));return;}return baseAction(a);};
 root.addEventListener('dblclick',e=>{if(e.target.closest('input'))return;const row=e.target.closest('[data-row]');if(row)entry(row.dataset.row).catch(error);});
@@ -1643,7 +1730,7 @@ function showRecentContext(row,event){rememberMenuFocus();const path=s.recent[Nu
 root.addEventListener('keydown',handleMenuKeydown,true);
 root.addEventListener('keydown',handleFileKeydown);
 function rememberRecent(path){if(archiveTabs.some(t=>t.nestedId&&archiveKey(t.archive)===archiveKey(path)))return;s.recent=[path,...s.recent.filter(p=>archiveKey(p)!==archiveKey(path))].slice(0,12);localStorage.setItem('qing-recent',JSON.stringify(s.recent));}
-function tabBusy(){return !!s.active||openingArchive||openingImage||!!$('qa-tools')?.contentWindow?.obzBusy;}
+function tabBusy(){return !!s.active||!!homeIntake||openingArchive||openingImage||!!$('qa-tools')?.contentWindow?.obzBusy;}
 function saveCurrentTab(){const tab=archiveTabs.find(t=>t.id===currentTabId);if(!tab)return;for(const key of TAB_FIELDS)tab[key]=s[key] instanceof Set?new Set(s[key]):s[key];tab.scrollTop=main.scrollTop;tab.treeScroll=root.querySelector('.oa-tree-section').scrollTop;}
 function applyTab(tab){for(const key of TAB_FIELDS)s[key]=tab[key] instanceof Set?new Set(tab[key]):tab[key];if(!s.selected)s.selected=new Set();if(!s.collapsed)s.collapsed=new Set();}
 function emptyArchiveState(){Object.assign(s,{nestedId:null,parentArchive:null,nestedMember:null,dirty:false,conflict:false,archive:'',entries:[],password:'',codepage:null,folder:'',flatView:false,search:'',sort:'name',reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,lastDest:undefined,listStyle:pref.listStyle==='icons'?'icons':'details',iconSize:Math.max(80,Math.min(256,Number(pref.iconSize)||144))});currentTabId=null;}
@@ -1726,25 +1813,20 @@ function closeArchiveTabs(mode,id=currentTabId){const focusOrigin=archiveTabFocu
 async function finishNestedClose(save){const pending=pendingNestedClose;if(!pending||tabBusy()||finishingArchiveTabs)return;finishingArchiveTabs=true;try{if(save){for(const tab of pending.tabs){await syncNestedSessions();if(tab.dirty)await saveNested(tab);}}const ids=pending.tabs.filter(t=>t.nestedId).map(t=>t.nestedId);if(ids.length)await invoke('close_nested',{ids,discard:!save});if(!await removeArchiveTabs(pending.tabs,pending.focusOrigin))return;if(pendingNestedClose===pending)pendingNestedClose=null;if(pending.exit)await invoke('window_action',{action:'close'});}catch(e){await syncNestedSessions();showNestedClose();throw e;}finally{finishingArchiveTabs=false;}}
 
 root.querySelectorAll('[data-lucide]').forEach(i=>{i.outerHTML=icon(i.dataset.lucide)});invoke('app_version').then(v=>{appVersion=v;if(s.page==='settings')render();}).catch(error);appearance();render();invoke('file_compression_menu_enabled').then(v=>{fileMenuEnabled=v;if(s.page==='settings')render();}).catch(error);invoke('folder_menu_enabled').then(v=>{folderMenuEnabled=v;if(s.page==='settings')render();}).catch(error);window.__TAURI__.event.listen('open-archives',()=>drainNativeArchives()).then(drainNativeArchives).catch(error);
-function showHomeDeepDrop(position) {
-  const hit=homeDeepDropAt(position);
-  for(const [id,idle,active] of [
-   ['oa-home-open-drop','拖入查看，或点击选择','松开以打开'],
-   ['oa-home-deep-drop','拖入批量解压，或点击添加','松开以添加到深度解压']
-  ]){
-   const target=$(id);
-   if(!target)continue;
-   target.classList.toggle('oa-drop-active',hit===target);
-   target.querySelector('[data-drop-label]').textContent=hit===target?active:idle;
-  }
+function showHomeSmartDrop(dragging) {
+  const target=$('oa-home-smart-drop');
+  if(!target)return;
+  const active=dragging&&homeIntakeAvailable();
+  target.classList.toggle('oa-drop-active',active);
+  target.querySelector('[data-drop-label]').textContent=active?'松开以识别文件':'自动识别压缩包和多层压缩包';
 }
 for (const type of ['drag-enter','drag-over']) {
-  window.__TAURI__.event.listen('tauri://'+type,e=>showHomeDeepDrop(e.payload?.position)).catch(error);
+  window.__TAURI__.event.listen('tauri://'+type,()=>showHomeSmartDrop(true)).catch(error);
 }
-window.__TAURI__.event.listen('tauri://drag-leave',()=>showHomeDeepDrop(null)).catch(error);
+window.__TAURI__.event.listen('tauri://drag-leave',()=>showHomeSmartDrop(false)).catch(error);
 window.__TAURI__.event.listen('tauri://drag-drop',e=>{
-  showHomeDeepDrop(null);
-  acceptDroppedPaths(e.payload?.paths||[],e.payload?.position);
+  showHomeSmartDrop(false);
+  acceptDroppedPaths(e.payload?.paths||[]);
 }).catch(error);
 async function showProperties(wholeArchive){
  if(!s.archive)throw Error('请先打开压缩包。');

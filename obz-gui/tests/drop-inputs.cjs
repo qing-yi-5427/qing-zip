@@ -11,7 +11,7 @@ function fixture(id) {
   const input = id && {id, value: 'C:\\original', isConnected: true};
   const calls = [];
   const context = {
-    deepExtract:{acceptDrop:()=>false}, s: {active: null}, overlay: {hidden: !id, querySelector: () => input},
+    deepExtract:{acceptDrop:()=>false}, s: {active: null,page:'files',archive:'C:\\current.zip'}, overlay: {hidden: !id, querySelector: () => input},
     lines: () => input.value.split(/\r?\n/).map(p => p.trim()).filter(Boolean),
     refreshSources: () => calls.push('refresh'),
     enqueueArchives: paths => calls.push(paths),
@@ -43,5 +43,5 @@ test('other drops still open archives, busy forms and dismissed pickers keep the
   context.appendArchiveInputs(input, paths);
   assert.deepEqual(calls, ['busy']);
   assert.equal(input.value, 'C:\\original');
-  assert.match(app, /event\.listen\('tauri:\/\/drag-drop',e=>\{[\s\S]+?acceptDroppedPaths\(e\.payload\?\.paths\|\|\[\],e\.payload\?\.position\);\s*\}/);
+  assert.match(app, /event\.listen\('tauri:\/\/drag-drop',e=>\{[\s\S]+?acceptDroppedPaths\(e\.payload\?\.paths\|\|\[\]\);\s*\}/);
 });

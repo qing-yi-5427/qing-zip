@@ -18,22 +18,6 @@ function fixture(){
 }
 test('actual app initialization reaches deep module without a temporal-dead-zone error',()=>{const element={addEventListener:()=>{}};const context={window:{__TAURI__:{core:{invoke:async()=>{}}}},document:{getElementById:()=>element},localStorage:{getItem:()=>null},dialog:()=>{},run:async()=>{},appearance:()=>{},toast:()=>{},renderProgress:()=>{}};vm.createContext(context);vm.runInContext(moduleSource,context);const start=app.slice(0,app.indexOf('let columns=ArchiveColumns.normalize'))+app.slice(app.indexOf('function archiveParent('),app.indexOf('function updateExtractPreview('))+'})();';assert.doesNotThrow(()=>vm.runInContext(start,context));});
 test('batch drop appends once and settings never persist passwords',()=>{const f=fixture();f.api.batch();f.elements['oa-deep-inputs']={value:'C:\\a.zip'};assert.ok(f.api.acceptDrop(['C:\\a.zip','C:\\b.jpg']));assert.equal(f.elements['oa-deep-inputs'].value,'C:\\a.zip\nC:\\b.jpg');assert.ok(f.api.switchMarkup().includes('oa-deep-extract'));assert.ok(!JSON.stringify(f.context.s.deepLimits).includes('password'));});
-test('home drop uses native physical coordinates and preloads the batch dialog',()=>{
- const f=fixture();
- const logic=app.slice(app.indexOf('function homeDeepDropAt('),app.indexOf('function refreshSources()'));
- Object.assign(f.context,{overlay:{hidden:true},deepExtract:f.api,enqueueArchives:()=>assert.fail('deep zone routed as normal open'),document:{elementFromPoint:(x,y)=>{
-  assert.equal(x,40);assert.equal(y,60);
-  return {closest:selector=>selector.includes('#oa-home-deep-drop')?{id:'oa-home-deep-drop'}:null};
- }}});
- f.context.window.devicePixelRatio=1.5;
- vm.runInContext(logic,f.context);
- f.context.acceptDroppedPaths(['C:\\a','D:\\b.7z'],{x:60,y:90});
- const dialog=f.calls.find(c=>c[0]==='dialog');
- assert.equal(f.elements['oa-deep-inputs'].value,['C:\\a','D:\\b.7z'].join('\n'));
- assert.match(f.elements['oa-deep-list'].innerHTML,/data-deep-action="remove-input"/);
- assert.match(dialog[2],/id="oa-deep-smart"[^>]*checked/);
- assert.doesNotMatch(dialog[2],/id="oa-deep-recycle"[^>]*checked/);
-});
 test('batch forwards optional initial password and dedicated per-source destination',async()=>{
  const f=fixture();
  for(const [field,value] of Object.entries({inputs:'C:\\folder\\a\nD:\\b.7z',destination:'',conflict:'error',password:'test-only'})){

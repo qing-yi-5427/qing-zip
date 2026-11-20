@@ -56,7 +56,7 @@ pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,St
     }
     result
 }
-fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
+pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
     let policy=crate::machine_policy::scope();
     if policy.restricted() { return engine::list(path, opts); }
     if crate::rare::supports(path){return crate::rare::list(path,opts);}

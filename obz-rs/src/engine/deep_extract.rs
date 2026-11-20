@@ -257,28 +257,34 @@ fn extension_hint(path: &Path) -> bool {
             crate::deep_volume_plan::Member::First { .. }
         )
 }
+fn signature(header: &[u8]) -> Option<Kind> {
+    if header.starts_with(&[0x1f, 0x8b]) {
+        return Some(Kind::Stream("gzip"));
+    }
+    if header.starts_with(b"BZh") {
+        return Some(Kind::Stream("bzip2"));
+    }
+    if header.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0]) {
+        return Some(Kind::Stream("xz"));
+    }
+    if header.starts_with(b"PK\x03\x04")
+        || header.starts_with(b"PK\x05\x06")
+        || header.starts_with(b"PK\x07\x08")
+        || header.starts_with(b"7z\xbc\xaf\x27\x1c")
+        || header.starts_with(b"Rar!\x1a\x07")
+        || header.get(257..262) == Some(b"ustar")
+    {
+        return Some(Kind::Archive);
+    }
+    None
+}
 fn sniff(path: &Path) -> Result<Option<Kind>, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut file = crate::engine_stream::open_source_leaf(path).map_err(|e| e.to_string())?;
     let mut head = [0u8; 512];
     let n = file.read(&mut head).map_err(|e| e.to_string())?;
     let h = &head[..n];
-    if h.starts_with(&[0x1f, 0x8b]) {
-        return Ok(Some(Kind::Stream("gzip")));
-    }
-    if h.starts_with(b"BZh") {
-        return Ok(Some(Kind::Stream("bzip2")));
-    }
-    if h.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0]) {
-        return Ok(Some(Kind::Stream("xz")));
-    }
-    if h.starts_with(b"PK\x03\x04")
-        || h.starts_with(b"PK\x05\x06")
-        || h.starts_with(b"PK\x07\x08")
-        || h.starts_with(b"7z\xbc\xaf\x27\x1c")
-        || h.starts_with(b"Rar!\x1a\x07")
-        || (n >= 262 && &h[257..262] == b"ustar")
-    {
-        return Ok(Some(Kind::Archive));
+    if let Some(kind) = signature(h) {
+        return Ok(Some(kind));
     }
     // Candidate only: the existing listing/decoder remains the format proof.
     // A bounded tail probe catches prefixed ZIPs; SFX receives a bounded header scan.
@@ -305,23 +311,116 @@ fn sniff(path: &Path) -> Result<Option<Kind>, String> {
     }
     Ok(extension_hint(path).then_some(Kind::Archive))
 }
-fn application_container(entries: &[Entry]) -> bool {
-    let names: HashSet<_> = entries
-        .iter()
-        .map(|e| e.name.replace('\\', "/").to_ascii_lowercase())
-        .collect();
-    (names.contains("[content_types].xml")
-        && names
-            .iter()
-            .any(|n| n.starts_with("word/") || n.starts_with("xl/") || n.starts_with("ppt/")))
-        || (names.contains("androidmanifest.xml")
-            && names
-                .iter()
-                .any(|n| n == "classes.dex" || n.starts_with("res/")))
-        || names.contains("meta-inf/manifest.mf")
-        || (names.contains("mimetype")
-            && (names.contains("meta-inf/container.xml") || names.contains("content.xml")))
+pub fn application_container(entries: &[Entry]) -> bool {
+    let mut office_marker = false;
+    let mut office_payload = false;
+    let mut android_manifest = false;
+    let mut android_payload = false;
+    let mut mimetype = false;
+    let mut publication_payload = false;
+    for entry in entries {
+        let mut components = entry.name.split(['/', '\\']);
+        let first = components.next().unwrap_or_default();
+        match components.next() {
+            None => {
+                office_marker |= first.eq_ignore_ascii_case("[content_types].xml");
+                android_manifest |= first.eq_ignore_ascii_case("androidmanifest.xml");
+                android_payload |= first.eq_ignore_ascii_case("classes.dex");
+                mimetype |= first.eq_ignore_ascii_case("mimetype");
+                publication_payload |= first.eq_ignore_ascii_case("content.xml");
+            }
+            Some(second) => {
+                office_payload |= ["word", "xl", "ppt"].iter().any(|dir| first.eq_ignore_ascii_case(dir));
+                android_payload |= first.eq_ignore_ascii_case("res");
+                if first.eq_ignore_ascii_case("meta-inf") && components.next().is_none() {
+                    if second.eq_ignore_ascii_case("manifest.mf") {
+                        return true;
+                    }
+                    publication_payload |= second.eq_ignore_ascii_case("container.xml");
+                }
+            }
+        }
+    }
+    (office_marker && office_payload)
+        || (android_manifest && android_payload)
+        || (mimetype && publication_payload)
 }
+
+/// Read only a bounded signature for formats supported by deep extraction.
+pub fn home_deep_candidate(path: &Path) -> Result<bool, String> {
+    Ok(!application_extension(path) && sniff(path)?.is_some())
+}
+
+pub fn home_application_extension(path: &Path) -> bool {
+    application_extension(path)
+}
+
+/// Keep multi-volume inputs together in the existing deep workflow.
+pub fn home_volume_member(path: &Path) -> bool {
+    use crate::deep_volume_plan::{classify, Member};
+    let name = ordinary_name(path);
+    match classify(&name, &[]) {
+        Member::First { .. } => true,
+        Member::Later { .. } => first_volume(path).is_ok_and(|first| {
+            sniff(&first).is_ok_and(|kind| kind.is_some())
+        }),
+        Member::Ordinary => match path.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("zip") => path.with_extension("z01").is_file() || path.with_extension("z001").is_file(),
+            Some("rar") => path.with_extension("r00").is_file(),
+            _ => false,
+        },
+    }
+}
+
+/// Use the browsing listing first. For a small, ordinary ZIP wrapper, look at
+/// at most four unencrypted payload prefixes without creating any output.
+pub fn home_nested_candidate(path: &Path, entries: &[Entry]) -> bool {
+    let mut files = entries.iter().filter(|e| !e.is_dir);
+    if files.clone().any(|e| {
+        let name = Path::new(&e.name);
+        !application_extension(name) && extension_hint(name)
+    }) {
+        return true;
+    }
+    if entries.len() > 128
+        || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        || files.clone().take(5).count() > 4
+        || crate::machine_policy::scope().restricted()
+    {
+        return false;
+    }
+    let Ok(mut source) = crate::engine_stream::pin(path) else {
+        return false;
+    };
+    let Ok(Some(index)) = zip_volume_view::single_disk_record(&mut source) else {
+        return false;
+    };
+    if index.zip64 || usize::from(index.entries) != entries.len()
+        || index.directory_size > 256 * 1024
+        || u64::from(index.directory) + u64::from(index.directory_size) != index.end_record
+    {
+        return false;
+    }
+    let Ok(mut zip) = zip::ZipArchive::new(&mut *source) else {
+        return false;
+    };
+    if zip.len() != entries.len() {
+        return false;
+    }
+    files.any(|e| {
+        !e.encrypted
+            && e.size >= 6
+            && matches!(e.method.as_str(), "Store" | "Deflate")
+            && !application_extension(Path::new(&e.name))
+            && zip.by_name(&e.name.replace('\\', "/")).is_ok_and(|mut member| {
+                let mut prefix = [0u8; 512];
+                let length = e.size.min(prefix.len() as u64) as usize;
+                member.read_exact(&mut prefix[..length]).is_ok()
+                    && signature(&prefix[..length]).is_some()
+            })
+    })
+}
+
 fn family(path: &Path, peers: &[PathBuf]) -> Vec<PathBuf> {
     let siblings = peers
         .iter()

@@ -7,6 +7,7 @@ use std::time::Instant;
 use obz_core::engine::{self, EngineOptions};
 mod jobs;
 mod deep_extract;
+mod home_intake;
 mod verification;
 mod nested;
 mod editor_process;
@@ -289,7 +290,7 @@ fn main() {
             open_archive,
             extract_archive,
             create_zip,
-            pick_files,
+            pick_files, home_intake::inspect_home_archive, home_intake::pick_home_files,
             pick_folder,
             pick_save, pick_copy_save,
             pick_files_for_zip,

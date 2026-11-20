@@ -1,6 +1,6 @@
 (()=>{'use strict';
 const defaults={depth:8,archives:256,files:100000,bytes:20*1073741824,reserve_bytes:1073741824,recovery_directory:null};
-window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,onRecycled})=>{
+window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,onRecycled,onBrowse})=>{
  s.deepExtract=!!pref.deepExtract;s.deepRecycleAfter=!!pref.deepRecycleAfter;s.deepLimits={...defaults,...pref.deepLimits};
  const completionOptions=new Map();
  const button=(label,action,extra='')=>`<button type="button" class="qa-button${action==='start-batch'?' primary':''}" data-deep-action="${action}" ${extra}>${label}</button>`;
@@ -14,7 +14,7 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
   if(remember){s.deepLimits=value;appearance();}return value;
  }
  function sync(){const enabled=!!$('oa-deep-extract')?.checked;const note=$('oa-deep-note'),limits=$('oa-deep-limits');if(note)note.hidden=!enabled;if(limits)limits.hidden=!enabled;}
- function batch(paths=[]){
+ function batch(paths=[],{allowBrowse=false,password=""}={}){
   if(s.active){toast('请先等待或取消当前任务。');return;}
   dialog('批量深度解压',`
    <div class="qa-actions oa-source-heading"><strong>压缩包</strong><span id="oa-deep-count" class="qa-sub"></span>${button('选择文件…','pick-inputs')}</div>
@@ -33,7 +33,8 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
     ${limitsMarkup()}
    </details>
    <label class="qa-check"><input id="oa-deep-remember" type="checkbox" checked>记住解压选项</label>
-  `,btn('取消','close')+button('开始深度解压','start-batch'),'oa-extraction-dialog');
+  `,btn('取消','close')+(allowBrowse?button('改为打开压缩包','browse-archives'):'')+button('开始深度解压','start-batch'),'oa-extraction-dialog');
+  if(password)$('oa-deep-password').value=password;
   acceptDrop(paths);
  }
  const inputPaths=()=>[...new Set($('oa-deep-inputs').value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean))];
@@ -98,6 +99,7 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
   if(t.dataset.deepInput!==undefined)updateInput(Number(t.dataset.deepInput),t.value.trim());
  });
  root.addEventListener('click',async e=>{const target=e.target.closest('[data-deep-action]');if(!target)return;e.preventDefault();try{switch(target.dataset.deepAction){
+  case'browse-archives':onBrowse(inputPaths());break;
   case'pick-inputs':acceptDrop(await invoke('pick_files'));break;
   case'pick-dest':{const path=await invoke('pick_folder');if(path&&$('oa-deep-destination')){$('oa-deep-destination').value=path;batchPreview();}break;}
   case'remove-input':updateInput(Number(target.dataset.index),null);break;
