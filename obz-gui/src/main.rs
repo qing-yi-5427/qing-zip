@@ -89,7 +89,7 @@ fn open_tools(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     if let Some(window)=app.get_webview_window("tools") {window.set_focus().map_err(|e|e.to_string())?;return Ok(());}
     tauri::WebviewWindowBuilder::new(&app,"tools",tauri::WebviewUrl::App("tools.html".into()))
-        .title("qing-zip · 归档工具").inner_size(920.0,760.0).min_inner_size(780.0,600.0)
+        .title("qing-zip · 归档工具").inner_size(1120.0,820.0).min_inner_size(780.0,600.0)
         .build().map_err(|e|e.to_string())?;
     Ok(())
 }

@@ -201,3 +201,40 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .oa-home-deep-drop small{display:block;margin-top:4px;color:var(--qa-sub)}
 #qing-archive .oa-deep-outputs{display:grid;justify-items:start;gap:5px;margin-block:10px}
 #qing-archive .oa-deep-outputs button{white-space:normal;overflow-wrap:anywhere;text-align:left;max-width:100%}
+
+/* Extraction forms share a scrolling body and retain their actions at the bottom. */
+#qing-archive .oa-extraction-dialog{display:flex;flex-direction:column;width:650px;padding:18px 22px;overflow:hidden}
+#qing-archive .oa-extraction-dialog .qa-dialog-header{flex:none;margin-bottom:8px}
+#qing-archive .oa-dialog-body{min-height:0;overflow:auto;padding:0 5px 6px 0}
+#qing-archive .oa-dialog-body>.qa-field{margin:8px 0}
+#qing-archive .oa-extraction-dialog .qa-dialog-footer{flex:none;margin-top:6px;padding-top:8px}
+#qing-archive .oa-dialog-body .oa-switch-row{padding-block:8px}
+#qing-archive .oa-output-preview{display:flex;gap:7px;align-items:baseline;white-space:nowrap;margin-block:4px}
+#qing-archive .oa-output-preview output{color:var(--qa-text);min-width:0;overflow:hidden;text-overflow:ellipsis}
+#qing-archive .oa-source-heading .qa-sub{flex:1}
+#qing-archive .oa-deep-list{max-height:106px;overflow:auto;display:grid;gap:4px;padding:4px 0}
+#qing-archive .oa-deep-source{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px}
+#qing-archive .oa-deep-source input{width:100%;min-width:0}
+#qing-archive .oa-home-targets{display:flex;justify-content:center;flex-wrap:wrap;gap:12px;margin-top:18px}
+#qing-archive .oa-home-targets .oa-home-deep-drop{margin:0;min-width:190px}
+#qing-archive .oa-extract-split{display:flex}
+#qing-archive .oa-extract-split button:first-child{border-radius:9px 0 0 9px}
+#qing-archive .oa-extract-split button:last-child{border-left:1px solid #ffffff60;border-radius:0 9px 9px 0;padding-inline:10px}
+#qing-archive .oa-breadcrumb button{max-width:185px;flex:0 1 auto;min-width:14px}
+#qing-archive .oa-breadcrumb button:hover{text-decoration:underline}
+#qing-archive #oa-search-scope{width:auto;padding:4px;font-size:12px}
+#qing-archive #qa-main:has(.qa-table:not(.oa-icons)) .oa-sort-control{display:none}
+#qing-archive #qa-main:has(.qa-table:not(.oa-icons)) .qa-path{padding-block:5px}
+#qing-archive #qa-main:has(.qa-table:not(.oa-icons)) .oa-view-controls{padding-block:3px}
+#qing-archive .qa-table:not(.oa-icons) th{height:32px}
+#qing-archive .qa-table:not(.oa-icons) td{padding-block:3px}
+#qing-archive .qa-table:not(.oa-icons) .oa-file-symbol{width:26px;height:29px}
+#qing-archive #oa-task-panel{flex:none;margin:4px 13px 0;border:1px solid var(--qa-line);border-radius:10px;background:var(--qa-panel)}
+#qing-archive #oa-task-panel [data-action=task-toggle]{justify-content:space-between;min-width:0;flex:1;min-height:28px;padding-block:4px;overflow:hidden;text-overflow:ellipsis}
+#qing-archive #oa-task-panel [data-action=task-toggle]::after{content:"展开";color:var(--qa-sub);font-size:12px}
+#qing-archive #oa-task-panel [data-action=task-toggle][aria-expanded=true]::after{content:"收起"}
+#qing-archive .oa-task-toolbar{display:flex;align-items:center}
+#qing-archive .oa-task-toolbar .qa-button{min-height:28px;padding-block:4px}
+#qing-archive #oa-task-content{max-height:min(190px,31vh);overflow:auto;scrollbar-width:thin}
+#qing-archive #oa-task-content .qa-jobcard{margin:0;border-radius:0;border-width:1px 0 0;padding:8px 14px}
+#qing-archive #oa-task-content .qa-jobresult{margin-block:3px}

@@ -2,6 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const text=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 const code=text.slice(text.indexOf('let dragGesture=null;'),text.indexOf('const scrollTimers='));
 const run=text.slice(text.indexOf('async function run('),text.indexOf('async function finishExtraction('));
+const progress=text.slice(text.indexOf('function updateJobProgress('),text.indexOf('function jobMeasurements('));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 function fixture(){
@@ -14,13 +15,13 @@ function fixture(){
   root:{...target('root:'),setPointerCapture(){captured=true},hasPointerCapture(){return captured},
    releasePointerCapture(id){captured=false;events.get('root:lostpointercapture')({pointerId:id,target:this});}},
   window:target('window:'),crypto:{randomUUID:()=> '21968181-d961-4b93-bfb1-0b36a1b9849a'},
-  toast:t=>toasts.push(t),invoke:async(name,args)=>{
+  performance,schedulePendingQueue:()=>{},toast:t=>toasts.push(t),invoke:async(name,args)=>{
    calls.push({name,args});if(name==='start_drag_preparation')return start.promise;
    if(name==='wait_operation')return wait.promise;if(name==='finish_drag')return finish.promise;
    if(!['cancel_drag_preparation','forget_operation','discard_drag'].includes(name))throw Error(name);
   }
  };
- vm.runInNewContext(run+'\n'+code+'\nthis.begin=dragSelection;',context);
+ vm.runInNewContext(progress+run+'\n'+code+'\nthis.begin=dragSelection;',context);
  return {start,wait,finish,calls,toasts,context,events};
 }
 const complete={status:'complete',result:{files:1,destination:'owned temporary export'},progress:{}};

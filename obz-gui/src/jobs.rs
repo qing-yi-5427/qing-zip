@@ -133,7 +133,7 @@ fn confirm_zip_disk(path: &str) -> Result<(), String> {
 pub(crate) fn commit_recycle(control: &JobControl) -> Result<(), String> {
     let mut phase=control.progress.lock().unwrap_or_else(|e|e.into_inner());
     check_cancel(control)?;
-    *phase=Progress{phase:"recycling".into(),percent:Some(100),message:"解压已完成，正在将原压缩包移入回收站（此阶段不可取消）".into()};
+    *phase=Progress{phase:"recycling".into(),percent:None,message:"解压已完成，正在将原压缩包移入回收站（此阶段不可取消）".into(),..Progress::default()};
     Ok(())
 }
 fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -> Result<(),String> {

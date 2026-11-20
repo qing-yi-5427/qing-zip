@@ -25,7 +25,7 @@ function fixture(options={}){
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
  vm.createContext(context);vm.runInContext(compression+'\n'+functions,context);
- const actions=source.split('\n').find(line=>line.startsWith("case'shell-continue':"));
+ const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
  return {context,calls,errors,elements,native,timers,queue:(path,smart=true)=>context.enqueueShellExtractions([{path,dest:'C:\\archives',smart}])};

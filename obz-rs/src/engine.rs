@@ -217,6 +217,18 @@ pub struct Progress {
     pub phase: String,
     pub percent: Option<u8>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<ProgressWork>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ProgressWork {
+    pub items_done: usize,
+    pub items_total: usize,
+    pub bytes_done: Option<u64>,
+    pub bytes_total: Option<u64>,
 }
 #[derive(Clone, Default)]
 pub struct JobControl {
@@ -237,9 +249,7 @@ impl JobControl {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        if let Some(context)=self.context.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){
-            snapshot.message=format!("{context}\n{}",snapshot.message);
-        }
+        snapshot.context = self.context.lock().unwrap_or_else(|e| e.into_inner()).clone();
         snapshot
     }
     pub(crate) fn check(&self) -> Result<(), String> {
@@ -254,6 +264,20 @@ impl JobControl {
             phase: phase.into(),
             percent,
             message: message.into(),
+            ..Progress::default()
+        };
+    }
+    fn report_files(&self, phase: &str, name: &str, done: usize, total: usize, bytes_done: Option<u64>, bytes_total: Option<u64>) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        if progress.phase == phase && progress.work.as_ref().is_some_and(|work| work.items_done > done) {
+            return;
+        }
+        *progress = Progress {
+            phase: phase.into(),
+            percent: (total != 0).then(|| (done.saturating_mul(100) / total) as u8),
+            message: name.into(),
+            work: Some(ProgressWork { items_done: done, items_total: total, bytes_done, bytes_total }),
+            ..Progress::default()
         };
     }
 }
@@ -2232,11 +2256,11 @@ fn decode_selected_zip(
         names.push(key);
     }
     let _timer = PhaseTimer::new("verify-selected-zip-stream");
-    ctl.set(
-        "decoding",
-        Some(0),
-        "Verifying archive and staging selected files",
-    );
+    let files_total = expected.values().filter(|entry| !entry.is_dir).count();
+    let bytes_total = expected.values().filter(|entry| !entry.is_dir).try_fold(0u64, |sum, entry| sum.checked_add(entry.size));
+    let mut files_done = 0;
+    let mut bytes_done = 0;
+    ctl.report_files("verifying-files", "", 0, files_total, bytes_total.map(|_| 0), bytes_total);
     let mut buffer = vec![0u8; 1024 * 1024];
     let selection = Selection::new(&opts.selected);
     for (i, key) in names.into_iter().enumerate() {
@@ -2278,6 +2302,14 @@ fn decode_selected_zip(
         }
         if count != e.size || hash.finalize() != member.crc32() {
             return Err("ZIP size or CRC mismatch".into());
+        }
+        if !e.is_dir {
+            files_done += 1;
+            if bytes_total.is_some() { bytes_done += count; }
+            if files_done == 1 || files_done == files_total || files_done % 64 == 0 {
+                ctl.report_files("verifying-files", &e.name, files_done, files_total,
+                    bytes_total.map(|_| bytes_done), bytes_total);
+            }
         }
     }
     ctl.check()?;
@@ -2400,7 +2432,7 @@ fn decode_memory_zip(
     };
     ctl.set(
         "decoding",
-        Some(0),
+        None,
         "Verifying complete archive in bounded memory",
     );
     let mut contents = MemoryFiles::with_capacity(if opts.selected.is_empty() { files } else { opts.selected.len().min(files) });
@@ -2566,7 +2598,7 @@ fn decode_memory_sevenz(
     };
     ctl.set(
         "decoding",
-        Some(0),
+        None,
         "Verifying complete solid archive in bounded memory",
     );
     let bytes = Arc::new(parsed.decode(&data, &|| ctl.check())?);
@@ -2936,7 +2968,7 @@ fn extract_raw_to(
         let root = stage.as_ref().ok_or("selected worker stage unavailable")?.path();
         let guards = stage_guards.as_mut().ok_or("missing selected worker stage guards")?;
         guards.check(root)?;
-        ctl.set("decoding", Some(0), "Verifying all archive entries");
+        ctl.set("decoding", None, "Verifying all archive entries");
         selected_worker::decode(plan, &source_guard, &_volume_guards, &all_entries, opts, root, guards, &ctl)?
     } else { false };
     #[cfg(not(nana_selected_worker))]
@@ -2960,7 +2992,7 @@ fn extract_raw_to(
         let stage_guards = stage_guards.as_mut().unwrap();
         stage_guards.check(stage.path())?;
         if !split_streamed {
-            ctl.set("decoding", Some(0), "Decoding archive into temporary storage");
+            ctl.set("decoding", None, "Decoding archive into temporary storage");
         }
         #[cfg(nana_selected_worker)]
         let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
@@ -3710,6 +3742,11 @@ fn stage_verified_memory(
     let guards: &CheckedDirectories = guards;
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
+    let bytes_done = std::sync::atomic::AtomicU64::new(0);
+    let bytes_total = jobs.iter().try_fold(0u64, |sum, job| {
+        job.entry.size_known.then(|| sum.checked_add(job.entry.size)).flatten()
+    });
+    ctl.report_files("staging-files", "", 0, jobs.len(), bytes_total.map(|_| 0), bytes_total);
     let stopped = AtomicBool::new(false);
     let consume = || -> Result<(), String> {
         while !stopped.load(Ordering::Acquire) {
@@ -3720,9 +3757,13 @@ fn stage_verified_memory(
                 stopped.store(true, Ordering::Release);
                 return Err(error);
             }
+            if bytes_total.is_some() {
+                bytes_done.fetch_add(job.entry.size, Ordering::Relaxed);
+            }
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 64 == 0 {
-                ctl.set("extracting", Some((done * 100 / jobs.len()) as u8), &job.entry.name);
+            if done == 1 || done == jobs.len() || done % 64 == 0 {
+                ctl.report_files("staging-files", &job.entry.name, done, jobs.len(),
+                    bytes_total.map(|_| bytes_done.load(Ordering::Relaxed)), bytes_total);
             }
         }
         Ok(())
@@ -4454,11 +4495,20 @@ fn publish_staged_files_parallel(
     let move_noop = false;
     let prepared_guards: &CheckedDirectories = guards;
     let next = AtomicUsize::new(0);
-    let completed = AtomicUsize::new(0);
     let skipped = AtomicUsize::new(0);
-    let progress = |name: &str| {
-        let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-        ctl.set("extracting", Some((count * 100 / files.len().max(1)) as u8), name);
+    let publish_progress = Mutex::new((0usize, 0u64));
+    let bytes_total = (policy != "skip").then(|| files.iter().try_fold(0u64, |sum, entry| {
+        entry.size_known.then(|| sum.checked_add(entry.size)).flatten()
+    })).flatten();
+    ctl.report_files("publishing-files", "", 0, files.len(), bytes_total.map(|_| 0), bytes_total);
+    let progress = |entry: &Entry| {
+        let mut tally = publish_progress.lock().unwrap_or_else(|e| e.into_inner());
+        tally.0 += 1;
+        if bytes_total.is_some() { tally.1 += entry.size; }
+        if tally.0 == 1 || tally.0 == files.len() || tally.0 % 64 == 0 {
+            ctl.report_files("publishing-files", &entry.name, tally.0, files.len(),
+                bytes_total.map(|_| tally.1), bytes_total);
+        }
     };
     let stopped = AtomicBool::new(false);
     let first_error = Mutex::new(None::<String>);
@@ -4492,7 +4542,7 @@ fn publish_staged_files_parallel(
                                 prepared_guards.check_prepared(p)
                             })?.is_none() {
                                 skipped.fetch_add(1, Ordering::Relaxed);
-                                progress(&entry.name);
+                                progress(entry);
                                 continue;
                             }
                             // The next call immediately checks this exact parent in
@@ -4512,7 +4562,7 @@ fn publish_staged_files_parallel(
                                 Ok(true)
                             })?;
                             if !committed { return Ok(()); }
-                            progress(&entry.name);
+                            progress(entry);
                         }
                         Ok(())
                     },
@@ -4540,7 +4590,7 @@ fn publish_staged_files_parallel(
         return Err(error);
     }
     ctl.check()?;
-    Ok(completed.load(Ordering::Relaxed) - skipped.load(Ordering::Relaxed))
+    Ok(publish_progress.into_inner().unwrap_or_else(|e| e.into_inner()).0 - skipped.load(Ordering::Relaxed))
 }
 
 pub fn extract_with_control(
