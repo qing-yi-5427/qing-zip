@@ -43,5 +43,5 @@ test('other drops still open archives, busy forms and dismissed pickers keep the
   context.appendArchiveInputs(input, paths);
   assert.deepEqual(calls, ['busy']);
   assert.equal(input.value, 'C:\\original');
-  assert.match(app, /event\.listen\('tauri:\/\/drag-drop',e=>acceptDroppedPaths/);
+  assert.match(app, /event\.listen\('tauri:\/\/drag-drop',e=>\{[\s\S]+?acceptDroppedPaths\(e\.payload\?\.paths\|\|\[\],e\.payload\?\.position\);\s*\}/);
 });

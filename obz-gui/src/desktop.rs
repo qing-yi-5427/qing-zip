@@ -512,11 +512,11 @@ fn volume_name(name: &str) -> bool {
             tail.strip_suffix(".rar").is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
         })
 }
-fn single_archive_name(path: &Path) -> Result<(), String> {
+fn single_archive_name(path: &Path, allow_content_detection: bool) -> Result<(), String> {
     let name = path.file_name().and_then(|v| v.to_str()).ok_or("无效压缩包名称")?.to_ascii_lowercase();
     if volume_name(&name) { return Err("分卷压缩包暂不支持解压后自动回收，请使用普通解压".into()); }
     let ext = path.extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
-    if !["zip", "zipx", "7z", "tar", "gz", "gzip", "bz2", "bzip2", "xz", "tgz", "tbz", "tbz2", "txz"].contains(&ext.as_str()) {
+    if !allow_content_detection && !["zip", "zipx", "7z", "tar", "gz", "gzip", "bz2", "bzip2", "xz", "tgz", "tbz", "tbz2", "txz"].contains(&ext.as_str()) {
         return Err("此格式尚未验证单卷自动回收，请使用普通解压".into());
     }
     let stem = path.file_stem().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -539,18 +539,25 @@ pub(crate) struct ArchiveRecycleGuard {
     file: File,
     path: PathBuf,
     identity: ArchiveIdentity,
+    allow_content_detection: bool,
 }
 impl ArchiveRecycleGuard {
     pub(crate) fn acquire(path: &str) -> Result<Self, String> {
+        Self::acquire_with_policy(path, false)
+    }
+    pub(crate) fn acquire_deep(path: &str) -> Result<Self, String> {
+        Self::acquire_with_policy(path, true)
+    }
+    fn acquire_with_policy(path: &str, allow_content_detection: bool) -> Result<Self, String> {
         let path = recycle_candidates(vec![path.into()])?.remove(0);
         let path = existing(&path)?;
-        single_archive_name(&path)?;
+        single_archive_name(&path, allow_content_detection)?;
         let file = readonly_archive(&path)?;
         let identity = archive_identity(&file)?;
-        Ok(Self { file, path, identity })
+        Ok(Self { file, path, identity, allow_content_detection })
     }
-    fn unchanged(&self) -> Result<(), String> {
-        single_archive_name(&self.path)?;
+    pub(crate) fn unchanged(&self) -> Result<(), String> {
+        single_archive_name(&self.path, self.allow_content_detection)?;
         let current = readonly_archive(&self.path)?;
         if archive_identity(&self.file)? != self.identity || archive_identity(&current)? != self.identity {
             return Err("原压缩包发生改变，解压结果保留，原包未回收".into());

@@ -33,6 +33,45 @@ fn start(root: &Path, inputs: &[&Path], options: EngineOptions) -> Session {
     .unwrap()
 }
 #[test]
+fn batch_defaults_to_each_source_parent_and_uses_one_dedicated_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    let extensionless = first.join("bundle");
+    let archive = second.join("bundle.zip");
+    let doc = zip(&[("[Content_Types].xml", b"types"), ("word/document.xml", b"document")]);
+    let original = zip(&[("bundle/kept.docx", &doc)]);
+    fs::write(&extensionless, &original).unwrap();
+    fs::write(&archive, zip(&[("note.txt", b"note")])).unwrap();
+    {
+        let mut session = Session::start(
+            [&extensionless, &archive].map(|p| p.display().to_string()).to_vec(),
+            "",
+            true,
+            Default::default(),
+            Settings {
+                recovery_directory: Some(temp.path().join("recovery").display().to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+        let result = session.drive(&JobControl::new()).unwrap();
+        assert!(result.finished && !result.partial, "{}", result.summary);
+        assert_eq!(result.outputs, [first.join("bundle (2)"), second.join("bundle")].map(|p| p.display().to_string()));
+        let mut roots = Vec::new();
+        session.for_each_recyclable_root(|root, _| { roots.push(root.to_owned()); Ok(()) }).unwrap();
+        assert_eq!(roots, [extensionless.clone(), archive.clone()]);
+    }
+    assert_eq!(fs::read(first.join("bundle (2)/kept.docx")).unwrap(), doc);
+    assert!(!first.join("bundle (2)/bundle").exists());
+    assert_eq!(fs::read(second.join("bundle/note.txt")).unwrap(), b"note");
+    assert_eq!(fs::read(extensionless).unwrap(), original);
+    assert!(archive.exists());
+    assert_eq!(fs::read_dir(temp.path().join("recovery")).unwrap().count(), 0);
+}
+
+#[test]
 fn prefixed_wrong_extension_chain_preserves_final_photos_directory() {
     let t = tempfile::tempdir().unwrap();
     let final_zip = zip(&[("照片/a.jpg", b"photo")]);
@@ -449,6 +488,54 @@ fn ordinary_rar5_nested_archive_uses_existing_decoder() {
         65536
     );
 }
+#[test]
+fn confirmed_encrypted_numbered_7z_is_cleaned_only_inside_the_recovery_tree() {
+    let t = tempfile::tempdir().unwrap();
+    let inner_file = t.path().join("payload.bin");
+    let data = vec![0x44; 16384];
+    fs::write(&inner_file, &data).unwrap();
+    engine::create(
+        t.path().join("parts.7z").to_str().unwrap(),
+        &[inner_file.display().to_string()],
+        "7z",
+        &EngineOptions {
+            method: Some("Copy".into()),
+            password: Some("fixture-pass".into()),
+            header_encryption: Some(true),
+            volume_bytes: Some(8192),
+            ..Default::default()
+        },
+    ).unwrap();
+    let names = ["parts.7z.001", "parts.7z.002", "parts.7z.003"];
+    let volumes = names.map(|name| fs::read(t.path().join(name)).unwrap());
+    for with_extra in [false, true] {
+        let mut rows: Vec<_> = names.iter().zip(&volumes)
+            .map(|(name, content)| (*name, content.as_slice())).collect();
+        if with_extra { rows.push(("parts.7z.004", b"ordinary companion")); }
+        let source = t.path().join(if with_extra { "extra.zip" } else { "outer.zip" });
+        let bytes = zip(&rows);
+        fs::write(&source, &bytes).unwrap();
+        let mut session = start(t.path(), &[&source], EngineOptions {
+            password: Some("fixture-pass".into()),
+            ..Default::default()
+        });
+        let report = session.drive(&JobControl::new()).unwrap();
+        assert!(report.finished && !report.partial, "{}", report.summary);
+        if with_extra {
+            assert_eq!(fs::read(t.path().join("output/extra/parts.7z.004")).unwrap(), b"ordinary companion");
+            assert!(!report.retained_matching_files.is_empty());
+        } else {
+            assert!(report.retained_matching_files.is_empty(), "{}", report.summary);
+            assert_eq!(fs::read(t.path().join("output/outer/payload.bin")).unwrap(), data);
+            assert_eq!(fs::read_dir(t.path().join("output/outer")).unwrap().count(), 1);
+        }
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+    for (name, received) in names.iter().zip(&volumes) {
+        assert_eq!(fs::read(t.path().join(name)).unwrap(), *received);
+    }
+}
+
 #[test]
 fn ordinary_numeric_sibling_is_retained_without_false_partial_or_wrapper_loss() {
     let t = tempfile::tempdir().unwrap();

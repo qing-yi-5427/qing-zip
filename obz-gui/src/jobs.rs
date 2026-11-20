@@ -62,7 +62,7 @@ fn capture_prefix(mut reader: impl Read, maximum: usize) -> Vec<u8> {
     }}}
     result
 }
-fn confirm_single_volume(request: &Request, control: &JobControl) -> Result<(), String> {
+pub(crate) fn confirm_single_volume(request: &Request, control: &JobControl) -> Result<(), String> {
     let _policy = obz_core::machine_policy::scope();
     use std::os::windows::process::CommandExt;
     check_cancel(control)?;
@@ -130,7 +130,7 @@ fn confirm_zip_disk(path: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn commit_recycle(control: &JobControl) -> Result<(), String> {
+pub(crate) fn commit_recycle(control: &JobControl) -> Result<(), String> {
     let mut phase=control.progress.lock().unwrap_or_else(|e|e.into_inner());
     check_cancel(control)?;
     *phase=Progress{phase:"recycling".into(),percent:Some(100),message:"解压已完成，正在将原压缩包移入回收站（此阶段不可取消）".into()};

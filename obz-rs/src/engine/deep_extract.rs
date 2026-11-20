@@ -15,6 +15,7 @@ pub struct Settings {
     pub bytes: u64,
     pub reserve_bytes: u64,
     pub recovery_directory: Option<String>,
+    pub dedicated_output: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -26,6 +27,7 @@ impl Default for Settings {
             bytes: v.bytes,
             reserve_bytes: v.reserve_bytes,
             recovery_directory: None,
+            dedicated_output: false,
         }
     }
 }
@@ -53,6 +55,32 @@ struct Source {
     parts: Vec<PathBuf>,
     kind: Kind,
 }
+struct VerifiedVolume {
+    path: PathBuf,
+    identity: (u32, u64),
+    length: u64,
+    modified: std::time::SystemTime,
+}
+impl VerifiedVolume {
+    fn read(path: PathBuf, file: &File) -> Option<Self> {
+        let metadata = file.metadata().ok()?;
+        Some(Self {
+            path,
+            identity: directory_identity(file).ok()?,
+            length: metadata.len(),
+            modified: metadata.modified().ok()?,
+        })
+    }
+    fn unchanged(&self) -> bool {
+        crate::engine_stream::open_source_leaf(&self.path)
+            .ok()
+            .and_then(|file| Self::read(self.path.clone(), &file))
+            .is_some_and(|current| {
+                (current.identity, current.length, current.modified)
+                    == (self.identity, self.length, self.modified)
+            })
+    }
+}
 #[derive(Serialize)]
 pub struct Pending {
     pub node: usize,
@@ -72,6 +100,7 @@ pub struct Report {
     pub decoded_bytes: u64,
     pub decoded_files: u64,
     pub archives: usize,
+    pub max_depth: usize,
     pub summary: String,
     pub retained_archives: Vec<String>,
     pub undiscovered_sources: u64,
@@ -88,8 +117,10 @@ pub struct Session {
     plan: Plan,
     sources: HashMap<String, Source>,
     options: EngineOptions,
-    dest: PathBuf,
+    dest: Option<PathBuf>,
     smart: bool,
+    dedicated_output: bool,
+    assigned_targets: HashMap<usize, PathBuf>,
     outputs: Vec<String>,
     published: BTreeSet<usize>,
     supplied_inputs: Vec<PathBuf>,
@@ -104,6 +135,7 @@ pub struct Session {
     estimated: bool,
     publication: file_workspace::DeepPublicationLedger,
     retained_matching_files: BTreeSet<String>,
+    verified_split_parts: HashMap<usize, Vec<VerifiedVolume>>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -303,6 +335,79 @@ fn family(path: &Path, peers: &[PathBuf]) -> Vec<PathBuf> {
         .cloned()
         .collect()
 }
+
+// Recognize a raw 7z byte stream cut into consecutively numbered volumes.
+// Never claim an extra file just because it shares a name with the first part.
+fn open_exact_numbered_7z(first: &Path, ctl: &JobControl) -> Option<Vec<(PathBuf, File)>> {
+    let prefix = first.file_name()?.to_str()?.strip_suffix(".001")?;
+    if !Path::new(prefix).extension()?.eq_ignore_ascii_case("7z") {
+        return None;
+    }
+    let mut first_file = crate::engine_stream::open_source_leaf(first).ok()?;
+    let mut start = [0u8; 32];
+    first_file.read_exact(&mut start).ok()?;
+    if !start.starts_with(b"7z\xbc\xaf\x27\x1c")
+        || start[6] != 0
+        || crc32fast::hash(&start[12..]) != u32::from_le_bytes(start[8..12].try_into().ok()?)
+    {
+        return None;
+    }
+    let next_offset = u64::from_le_bytes(start[12..20].try_into().ok()?);
+    let next_size = u64::from_le_bytes(start[20..28].try_into().ok()?);
+    let end = 32u64.checked_add(next_offset)?.checked_add(next_size)?;
+    let mut total = first_file.metadata().ok()?.len();
+    if next_size == 0 || total >= end {
+        return None;
+    }
+    let mut parts = vec![(first.to_owned(), first_file)];
+    for number in 2..=1024 {
+        ctl.check().ok()?;
+        let path = first.with_file_name(format!("{prefix}.{number:03}"));
+        let file = crate::engine_stream::open_source_leaf(&path).ok()?;
+        let length = file.metadata().ok()?.len();
+        if length == 0 {
+            return None;
+        }
+        total = total.checked_add(length)?;
+        if total > end {
+            return None;
+        }
+        parts.push((path, file));
+        if total == end {
+            let next = first.with_file_name(format!("{prefix}.{:03}", number + 1));
+            return match fs::symlink_metadata(next) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(parts),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+fn confirmed_numbered_7z(
+    parts: &[(PathBuf, File)],
+    opts: &EngineOptions,
+) -> Option<Vec<VerifiedVolume>> {
+    let proof = parts
+        .iter()
+        .map(|(path, file)| VerifiedVolume::read(path.clone(), file))
+        .collect::<Option<Vec<_>>>()?;
+    let properties = archive_properties::read(proof.first()?.path.to_str()?, opts).ok()?;
+    let [outer, inner] = properties.layers.as_slice() else {
+        return None;
+    };
+    let field = |layer: &archive_properties::Layer, key: &str| layer.fields.get(key).cloned();
+    let total = proof
+        .iter()
+        .try_fold(0u64, |sum, part| sum.checked_add(part.length))?;
+    (!properties.partial
+        && field(outer, "Type").as_deref() == Some("Split")
+        && field(inner, "Type").as_deref() == Some("7z")
+        && field(outer, "Volumes").and_then(|n| n.parse::<usize>().ok()) == Some(proof.len())
+        && field(outer, "Total Physical Size").and_then(|n| n.parse::<u64>().ok()) == Some(total)
+        && field(inner, "Physical Size").and_then(|n| n.parse::<u64>().ok()) == Some(total))
+    .then_some(proof)
+}
 // Existing bounded engine metadata can prove an independently readable file.
 // Unknown metadata never authorizes consuming or removing a guessed companion.
 fn standalone_archive(path: &Path, opts: &EngineOptions) -> bool {
@@ -340,10 +445,16 @@ fn add_root_family(
     inputs.insert(path.to_owned());
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     inputs.insert(canonical.clone());
-    let Some(parent) = canonical.parent() else { return false };
+    let Some(parent) = canonical.parent() else {
+        return false;
+    };
     let name = ordinary_name(&canonical);
     if !matches!(
-        canonical.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        canonical
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("zip" | "rar" | "exe")
     ) && !crate::deep_volume_plan::first_probe(&name)
         && matches!(classify(&name, &[]), Member::Ordinary)
@@ -356,17 +467,27 @@ fn add_root_family(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
             Err(_) => return None,
         };
-        entries.map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-            .collect::<std::io::Result<Vec<_>>>().ok()
+        entries
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .ok()
     });
-    let Some(siblings) = siblings else { return false };
+    let Some(siblings) = siblings else {
+        return false;
+    };
     let first = match classify(&name, siblings) {
-        Member::Later { first: Some(first), .. } => first,
+        Member::Later {
+            first: Some(first), ..
+        } => first,
         Member::Later { expected, .. } => expected,
         _ => name,
     };
     inputs.insert(parent.join(&first));
-    inputs.extend(root_family(&first, siblings).into_iter().map(|name| parent.join(name)));
+    inputs.extend(
+        root_family(&first, siblings)
+            .into_iter()
+            .map(|name| parent.join(name)),
+    );
     true
 }
 fn first_volume(path: &Path) -> Result<PathBuf, String> {
@@ -438,7 +559,10 @@ impl Session {
         mut options: EngineOptions,
         settings: Settings,
     ) -> Result<Self, String> {
-        let dest = absolute(destination)?;
+        let dest = (!destination.trim().is_empty())
+            .then(|| absolute(destination))
+            .transpose()?;
+        let dedicated_output = settings.dedicated_output || dest.is_none();
         let ctl = control(&options);
         ctl.check()?;
         let base = if let Some(path) = settings
@@ -519,8 +643,11 @@ impl Session {
         }
         options.verification_capture = None;
         options.verification_reuse = None;
-        let note="这是深度解压的恢复目录。原压缩包始终保留。node-* 包含已校验的中间结果；发生中断时可从这里恢复文件。此目录不保存密码。\r\n";
+        let note="这是深度解压的恢复目录。node-* 包含已校验的中间结果；发生中断时可从这里恢复文件。此目录不保存密码。\r\n";
         fs::write(stage.path().join("恢复说明.txt"), note).map_err(|e| e.to_string())?;
+        if let Some(password) = options.password.as_deref() {
+            crate::engine_password::validate(password)?;
+        }
         let passwords = options.password.take().into_iter().collect();
         Ok(Self {
             stage: Some(stage),
@@ -529,6 +656,8 @@ impl Session {
             options,
             dest,
             smart,
+            dedicated_output,
+            assigned_targets: HashMap::new(),
             outputs: vec![],
             published: BTreeSet::new(),
             supplied_inputs: peers,
@@ -543,6 +672,7 @@ impl Session {
             estimated: false,
             publication: Default::default(),
             retained_matching_files: BTreeSet::new(),
+            verified_split_parts: HashMap::new(),
         })
     }
     pub fn resume(
@@ -632,6 +762,9 @@ impl Session {
         if self.plan.nodes[id].parent.is_some() {
             opts.selected.clear();
         }
+        let split_pins = self.plan.nodes[id]
+            .parent
+            .and_then(|_| open_exact_numbered_7z(&source.path, ctl));
         ctl.set(
             "deep-inspect",
             None,
@@ -673,7 +806,11 @@ impl Session {
             return Ok(());
         }
         let selected = Selection::new(&opts.selected);
-        if opts.password.is_none() && entries.iter().any(|e| e.encrypted && selected.contains(&e.name)) {
+        if opts.password.is_none()
+            && entries
+                .iter()
+                .any(|e| e.encrypted && selected.contains(&e.name))
+        {
             return Err("此压缩包需要密码".into());
         }
         let files = entries
@@ -734,6 +871,25 @@ impl Session {
         let charge = self.plan.charge(files.max(observed.0), charged);
         result?;
         charge?;
+        ctl.check()?;
+        if let (Some(parent), Some(parts)) = (self.plan.nodes[id].parent, split_pins.as_deref()) {
+            if let Some(proof) = confirmed_numbered_7z(parts, &opts) {
+                let parent_tree = Path::new(
+                    self.plan.nodes[parent]
+                        .tree
+                        .as_deref()
+                        .ok_or("缺少分卷暂存目录")?,
+                );
+                let locator = self.locator(parent).join(" → ");
+                for part in proof.iter().skip(1) {
+                    if let Ok(relative) = part.path.strip_prefix(parent_tree) {
+                        self.retained_matching_files
+                            .remove(&format!("{locator} → {}", relative.display()));
+                    }
+                }
+                self.verified_split_parts.insert(id, proof);
+            }
+        }
         ctl.check()?;
         let mut paths = vec![];
         for entry in &entries {
@@ -831,12 +987,18 @@ impl Session {
                 archive_parts.contains(p)
             });
         if pure {
-            let mut directories = entries.iter()
+            let mut directories = entries
+                .iter()
                 .filter(|entry| entry.is_dir && selected.contains(&entry.name))
                 .peekable();
             if directories.peek().is_some() {
-                let populated: HashSet<_> = paths.iter()
-                    .flat_map(|path| path.ancestors().skip(1).take_while(|parent| parent.starts_with(&tree)))
+                let populated: HashSet<_> = paths
+                    .iter()
+                    .flat_map(|path| {
+                        path.ancestors()
+                            .skip(1)
+                            .take_while(|parent| parent.starts_with(&tree))
+                    })
                     .map(path_key)
                     .collect();
                 for entry in directories {
@@ -854,17 +1016,34 @@ impl Session {
     fn assemble(&mut self, id: usize) -> Result<(), String> {
         let node = self.plan.nodes[id].clone();
         let tree = PathBuf::from(node.tree.as_ref().ok_or("缺少解码目录")?);
-        if node.archive_only
-            && node.children.len() == 1
-            && self.plan.nodes[node.children[0]].state == State::Done
-            && self.plan.fully_expanded(node.children[0])
-        {
-            let child = self.plan.nodes[node.children[0]]
-                .tree
-                .clone()
-                .ok_or("缺少内层结果")?;
-            self.plan.assembled(id, child);
-            return Ok(());
+        if let [child] = node.children.as_slice() {
+            if self.plan.nodes[*child].state == State::Done && self.plan.fully_expanded(*child) {
+                let mut archive_only = node.archive_only;
+                if let Some(parts) = self.verified_split_parts.get(child) {
+                    if parts.iter().any(|part| !part.unchanged()) {
+                        return Err("已校验的暂存分卷发生变化，恢复结果已保留".into());
+                    }
+                    let mut entries = vec![];
+                    collect_entries(&tree, &tree, &mut entries, &JobControl::new())?;
+                    archive_only = entries.iter().all(|entry| {
+                        validate_name(&entry.name).is_ok_and(|relative| {
+                            let path = tree.join(relative);
+                            parts.iter().any(|part| {
+                                if entry.is_dir {
+                                    part.path.starts_with(&path)
+                                } else {
+                                    part.path == path
+                                }
+                            })
+                        })
+                    });
+                }
+                if archive_only {
+                    let child_tree = self.plan.nodes[*child].tree.clone().ok_or("缺少内层结果")?;
+                    self.plan.assembled(id, child_tree);
+                    return Ok(());
+                }
+            }
         }
         for child in &node.children {
             if self.plan.nodes[*child].state != State::Done {
@@ -915,8 +1094,17 @@ impl Session {
             }
             // Remove only decoded, session-owned intermediates whose entire subtree expanded.
             if self.plan.fully_expanded(*child) {
-                for part in &source.parts {
-                    remove_private_file(part)?;
+                if let Some(parts) = self.verified_split_parts.get(child) {
+                    if parts.iter().any(|part| !part.unchanged()) {
+                        return Err("已校验的暂存分卷发生变化，恢复结果已保留".into());
+                    }
+                    for part in parts {
+                        remove_private_file(&part.path)?;
+                    }
+                } else {
+                    for part in &source.parts {
+                        remove_private_file(part)?;
+                    }
                 }
             }
         }
@@ -976,7 +1164,11 @@ impl Session {
     }
     fn publish(&mut self, ctl: &JobControl) -> Result<(), String> {
         self.publish_error = None;
-        let ready: Vec<_> = self.plan.roots.iter().copied()
+        let ready: Vec<_> = self
+            .plan
+            .roots
+            .iter()
+            .copied()
             .filter(|id| !self.published.contains(id) && self.plan.nodes[*id].state == State::Done)
             .collect();
         if !ready.is_empty() {
@@ -1021,7 +1213,7 @@ impl Session {
         ctl: &JobControl,
         protection: &file_workspace::DeepInputProtection,
     ) -> Result<(), String> {
-        let tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
+        let mut tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
         let mut entries = vec![];
         collect_entries(&tree, &tree, &mut entries, ctl)?;
         let mut opts = self.options.clone();
@@ -1031,20 +1223,37 @@ impl Session {
             .sources
             .get(&self.plan.nodes[id].source)
             .ok_or("缺少原包来源")?;
+        let base = self
+            .dest
+            .clone()
+            .unwrap_or_else(|| source.path.parent().unwrap_or(&source.path).to_path_buf());
+        let folder = crate::smart_extract::archive_name(&string(&source.path)?)?;
         let target = if self.smart {
             PathBuf::from(crate::smart_extract::destination(
                 &string(&source.path)?,
-                &string(&self.dest)?,
+                &string(&base)?,
                 &entries,
                 &opts,
             )?)
         } else {
-            self.dest
-                .join(crate::smart_extract::archive_name(&string(&source.path)?)?)
+            base.join(crate::extract::relative_path(&folder)?)
+        };
+        let target = if target == base && self.dedicated_output {
+            // The prepared tree already has a same-named wrapper. Publish its
+            // children directly into the dedicated output, preserving its spelling.
+            let [wrapper]: [fs::DirEntry; 1] = fs::read_dir(&tree)
+                .map_err(|e| e.to_string())?
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?
+                .try_into()
+                .map_err(|_| "已校验的顶层目录发生变化")?;
+            tree = wrapper.path();
+            base.join(wrapper.file_name())
+        } else {
+            target
         };
         if !has_stage_space(
-            self.dest
-                .ancestors()
+            base.ancestors()
                 .find(|p| p.is_dir())
                 .ok_or("目标路径无效")?,
             measure(&tree, ctl)?
@@ -1054,7 +1263,37 @@ impl Session {
             return Err("目标磁盘空间不足，已校验结果保留在恢复目录".into());
         }
         let mut guards = CheckedDirectories::default();
-        guards.create_dirs(&target)?;
+        let target = if self.dedicated_output {
+            guards.create_dirs(&base)?;
+            if let Some(assigned) = self.assigned_targets.get(&id) {
+                guards.create_dirs(assigned)?;
+                assigned.clone()
+            } else {
+                let name = ordinary_name(&target);
+                let mut chosen = None;
+                for suffix in 1..10000 {
+                    let candidate = if suffix == 1 {
+                        target.clone()
+                    } else {
+                        base.join(format!("{name} ({suffix})"))
+                    };
+                    match fs::create_dir(&candidate) {
+                        Ok(()) => {
+                            chosen = Some(candidate);
+                            break;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+                let chosen = chosen.ok_or("未找到可用的专属输出目录名称")?;
+                self.assigned_targets.insert(id, chosen.clone());
+                chosen
+            }
+        } else {
+            guards.create_dirs(&target)?;
+            target
+        };
         drop(guards); // The existing copier acquires its own publication-compatible pins.
         let inputs = fs::read_dir(&tree)
             .map_err(|e| e.to_string())?
@@ -1071,8 +1310,14 @@ impl Session {
         let result = if inputs.is_empty() {
             Ok(0)
         } else {
-            file_workspace::copy_for_deep(&inputs, &output, &opts, &mut self.publication, protection)
-                .map(|result| result.skipped)
+            file_workspace::copy_for_deep(
+                &inputs,
+                &output,
+                &opts,
+                &mut self.publication,
+                protection,
+            )
+            .map(|result| result.skipped)
         };
         if (matches!(result, Ok(0)) || self.publication.len() > before)
             && !self.outputs.contains(&output)
@@ -1081,7 +1326,9 @@ impl Session {
         }
         let skipped = result?;
         if skipped > 0 {
-            return Err(format!("{skipped} 个同名项目已跳过；完整结果保留在恢复目录"));
+            return Err(format!(
+                "{skipped} 个同名项目已跳过；完整结果保留在恢复目录"
+            ));
         }
         self.published.insert(id);
         Ok(())
@@ -1165,7 +1412,8 @@ impl Session {
                 .outputs
                 .first()
                 .cloned()
-                .unwrap_or_else(|| self.dest.display().to_string()),
+                .or_else(|| self.dest.as_ref().map(|dest| dest.display().to_string()))
+                .unwrap_or_default(),
             outputs: self.outputs.clone(),
             files: self.publication.len(),
             partial,
@@ -1175,6 +1423,13 @@ impl Session {
             decoded_bytes: self.plan.decoded_bytes,
             decoded_files: self.plan.decoded_files,
             archives: self.plan.nodes.len(),
+            max_depth: self
+                .plan
+                .nodes
+                .iter()
+                .map(|node| node.depth)
+                .max()
+                .unwrap_or(0),
             summary,
             retained_archives: retained,
             undiscovered_sources: self.plan.undiscovered_sources,
@@ -1186,6 +1441,33 @@ impl Session {
             protected_archives,
             retained_matching_files: self.retained_matching_files.iter().cloned().collect(),
         }
+    }
+    /// Only hand fully expanded and published roots to the desktop's identity
+    /// guards. A resolved volume alias or protected container is never a source.
+    pub fn for_each_recyclable_root(
+        &self,
+        mut confirm: impl FnMut(&Path, &[String]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !self.finished
+            || !self.options.selected.is_empty()
+            || self.plan.roots.len() != self.supplied_inputs.len()
+            || self.plan.undiscovered_sources != 0
+            || !self.retained_matching_files.is_empty()
+        {
+            return Err("任务未完整展开，或包含无法确认的来源，原压缩包已保留".into());
+        }
+        for id in &self.plan.roots {
+            let source = &self.sources[&self.plan.nodes[*id].source];
+            if !self.published.contains(id)
+                || !self.plan.fully_expanded(*id)
+                || source.parts.len() != 1
+                || !self.supplied_inputs.contains(&source.path)
+            {
+                return Err("无法确认原压缩包为已完整解压的单卷，原压缩包已保留".into());
+            }
+            confirm(&source.path, &self.passwords)?;
+        }
+        Ok(())
     }
     fn locator(&self, mut id: usize) -> Vec<String> {
         let mut parts = vec![];
