@@ -223,7 +223,15 @@ pub struct Progress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub deep: Option<DeepProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub work: Option<ProgressWork>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct DeepProgress {
+    pub archive: String,
+    pub depth: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -238,7 +246,7 @@ pub struct JobControl {
     pub cancelled: Arc<AtomicBool>,
     pub progress: Arc<Mutex<Progress>>,
     /// Optional deep-session context; ordinary jobs leave this empty.
-    pub context: Arc<Mutex<Option<String>>>,
+    pub context: Arc<Mutex<Option<(String, DeepProgress)>>>,
 }
 impl JobControl {
     pub fn new() -> Self {
@@ -252,7 +260,10 @@ impl JobControl {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        snapshot.context = self.context.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some((context, deep)) = self.context.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            snapshot.context = Some(context);
+            snapshot.deep = Some(deep);
+        }
         snapshot
     }
     pub(crate) fn check(&self) -> Result<(), String> {

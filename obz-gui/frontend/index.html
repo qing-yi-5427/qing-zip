@@ -4,7 +4,29 @@
 <div class="qa-window">
 <header class="qa-titlebar"><span class="qa-brandmark"><img src="app-icon.png" alt=""></span><strong>qing-zip</strong><button class="qa-app-menu" data-action="app-menu" aria-label="所有菜单">···</button><div id="oa-archive-tabs" class="oa-archive-tabs" hidden></div><div class="qa-drag-gap" title="拖动窗口" aria-hidden="true"></div><div class="qa-theme-switch" role="group" aria-label="应用主题"><button data-theme="system" aria-pressed="true" aria-label="跟随系统" title="跟随系统"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button><button data-theme="light" aria-pressed="false" aria-label="浅色主题" title="浅色主题"><i data-lucide="sun" aria-hidden="true"></i></button><button data-theme="dark" aria-pressed="false" aria-label="深色主题" title="深色主题"><i data-lucide="moon" aria-hidden="true"></i></button></div><div class="qa-window-controls"><button data-window="minimize" aria-label="最小化"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M3 8h10"/></svg></button><button data-window="maximize" aria-label="最大化或还原"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx=".5"/></svg></button><button data-window="close" aria-label="关闭窗口"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="m3.5 3.5 9 9m0-9-9 9"/></svg></button></div></header>
 <div class="qa-shell"><aside class="oa-sidebar"><nav class="oa-nav" aria-label="主导航"><button data-view="files" aria-current="true"><i data-lucide="folder-open"></i>文件</button><button data-view="tools"><i data-lucide="grid"></i>工具箱</button><button data-view="history"><i data-lucide="check"></i>任务</button></nav><section class="oa-tree-section"><h2>压缩包目录</h2><div id="oa-tree" role="tree" aria-label="目录树"></div></section><div class="oa-side-bottom"><nav class="oa-nav"><button data-view="settings"><i data-lucide="settings"></i>设置</button></nav></div></aside><section class="oa-workspace"><div id="oa-toolbar" role="toolbar" aria-label="文件操作"></div><div id="oa-heading"></div><main id="qa-main"></main></section></div>
-<section id="oa-task-panel" aria-label="解压任务" hidden><div class="oa-task-toolbar"><button class="qa-button quiet" data-action="task-toggle" aria-controls="oa-task-content" aria-expanded="false"></button><button id="oa-task-output" class="qa-button quiet" data-job-output="" hidden></button></div><div id="oa-task-content" hidden></div></section>
+<section id="oa-task-panel" aria-label="后台任务" hidden>
+ <div class="oa-task-toolbar">
+  <button id="oa-task-toggle" class="qa-button quiet" data-action="task-toggle" aria-controls="oa-task-body" aria-expanded="false">
+   <svg class="oa-task-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8m-8 4h8m-8 4h5"/></svg>
+   <span><strong id="oa-task-title"></strong><span id="oa-task-compact-phase"></span></span>
+   <svg class="oa-task-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+  </button>
+  <button id="oa-task-dismiss" class="qa-button quiet" data-action="task-dismiss" aria-label="关闭任务卡片" title="关闭任务卡片" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+ </div>
+ <div id="oa-task-body" hidden>
+  <div class="oa-task-overview">
+   <div class="oa-task-stage"><strong id="oa-task-phase"></strong><span id="oa-task-metric"></span></div>
+   <p id="oa-task-file" dir="auto" hidden></p>
+   <progress id="oa-task-progress" max="100" aria-labelledby="oa-task-phase" hidden></progress>
+   <div class="oa-task-actions">
+    <button id="oa-task-details" class="qa-button quiet" data-action="task-details" aria-controls="oa-task-content" aria-expanded="false">任务详情</button>
+    <button id="oa-task-cancel" class="qa-button danger" data-action="canceljob" hidden>取消任务</button>
+    <button id="oa-task-output" class="qa-button" data-job-output="" hidden></button>
+   </div>
+  </div>
+  <div id="oa-task-content" hidden></div>
+ </div>
+</section>
 <footer class="qa-status"><span id="qa-status-text">就绪</span><span id="oa-total"></span></footer>
 <div id="oa-menu" role="menu" hidden></div><div id="qa-overlay" hidden></div><div id="qa-toast" role="status" hidden></div>
 </div></div><script src="compression-options.js"></script><script src="archive-icon-window.js"></script><script src="archive-tree-window.js"></script><script src="archive-row-window.js"></script><script src="archive-properties.js"></script><script src="archive-columns.js"></script><script src="file-workspace.js"></script><script src="deep-extract.js"></script><script src="appearance.js"></script><script src="app.js"></script></body></html>

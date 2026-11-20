@@ -865,16 +865,20 @@ impl Session {
         Ok(())
     }
     fn decode(&mut self, id: usize, ctl: &JobControl) -> Result<(), String> {
-        *ctl.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
-            "第 {} / {} 层 · {}\n已处理 {} 个文件 · {:.2} / {:.2} GiB · {} 个压缩包",
-            self.plan.nodes[id].depth,
+        let location = self.locator(id);
+        let depth = self.plan.nodes[id].depth;
+        let context = format!(
+            "第 {} 层（上限 {} 层） · {}\n已处理 {} 个文件 · 累计解码 {:.2} GiB（上限 {:.2} GiB） · 已识别 {} 个压缩包",
+            depth,
             self.plan.limits.depth,
-            self.locator(id).join(" → "),
+            location.join(" → "),
             self.plan.decoded_files,
             self.plan.decoded_bytes as f64 / 1073741824.0,
             self.plan.limits.bytes as f64 / 1073741824.0,
             self.plan.nodes.len()
-        ));
+        );
+        let archive = location.last().cloned().unwrap_or_default();
+        *ctl.context.lock().unwrap_or_else(|e| e.into_inner()) = Some((context, DeepProgress { archive, depth }));
         let mut source = self
             .sources
             .get(&self.plan.nodes[id].source)

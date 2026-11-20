@@ -206,6 +206,8 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .oa-extraction-dialog{display:flex;flex-direction:column;width:650px;padding:18px 22px;overflow:hidden}
 #qing-archive .oa-extraction-dialog .qa-dialog-header{flex:none;margin-bottom:8px}
 #qing-archive .oa-dialog-body{min-height:0;overflow:auto;padding:0 5px 6px 0}
+/* Keep the outer focus outline inside the scrollport and preserve field alignment. */
+#qing-archive .oa-extraction-dialog .oa-dialog-body{margin-inline-start:-4px;padding-inline-start:4px}
 #qing-archive .oa-dialog-body>.qa-field{margin:8px 0}
 #qing-archive .oa-extraction-dialog .qa-dialog-footer{flex:none;margin-top:6px;padding-top:8px}
 #qing-archive .oa-dialog-body .oa-switch-row{padding-block:8px}
@@ -243,15 +245,64 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .qa-table:not(.oa-icons) th{height:32px}
 #qing-archive .qa-table:not(.oa-icons) td{padding-block:3px}
 #qing-archive .qa-table:not(.oa-icons) .oa-file-symbol{width:26px;height:29px}
-#qing-archive #oa-task-panel{flex:none;margin:4px 13px 0;border:1px solid var(--qa-line);border-radius:10px;background:var(--qa-panel)}
-#qing-archive #oa-task-panel [data-action=task-toggle]{justify-content:space-between;min-width:0;flex:1;min-height:28px;padding-block:4px;overflow:hidden;text-overflow:ellipsis}
-#qing-archive #oa-task-panel [data-action=task-toggle]::after{content:"展开";color:var(--qa-sub);font-size:12px}
-#qing-archive #oa-task-panel [data-action=task-toggle][aria-expanded=true]::after{content:"收起"}
-#qing-archive .oa-task-toolbar{display:flex;align-items:center}
-#qing-archive .oa-task-toolbar .qa-button{min-height:28px;padding-block:4px}
-#qing-archive #oa-task-content{max-height:min(190px,31vh);overflow:auto;scrollbar-width:thin}
-#qing-archive #oa-task-content .qa-jobcard{margin:0;border-radius:0;border-width:1px 0 0;padding:8px 14px}
-#qing-archive #oa-task-content .qa-jobresult{margin-block:3px}
+#qing-archive #oa-task-panel {
+  position:absolute;
+  inset:auto 24px 40px auto;
+  z-index:20;
+  width:min(278px,calc(100% - 48px));
+  padding:4px;
+  border:1px solid color-mix(in srgb,var(--qa-line) 85%,var(--qa-sub));
+  border-radius:var(--qa-radius-section);
+  background:var(--qa-panel);
+  backdrop-filter:blur(18px);
+  box-shadow:0 10px 30px light-dark(#26364c26,#0007);
+}
+#qing-archive #oa-task-panel[data-expanded=true] { width:min(340px,calc(100% - 48px)); }
+#qing-archive[data-status=hidden] #oa-task-panel { bottom:16px; }
+#qing-archive[data-material=solid] #oa-task-panel { background:var(--qa-surface);backdrop-filter:none; }
+#qing-archive .oa-task-toolbar { display:flex;align-items:center;gap:2px; }
+#qing-archive #oa-task-toggle { justify-content:flex-start;min-width:0;flex:1;padding:5px 8px;text-align:left; }
+#qing-archive #oa-task-toggle > span { display:grid;flex:1;min-width:0; }
+#qing-archive #oa-task-toggle strong,#qing-archive #oa-task-compact-phase,#qing-archive #oa-task-file {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+#qing-archive .oa-task-icon { box-sizing:content-box;flex:none;padding:7px;border-radius:9px;background:var(--qa-tint);color:var(--qa-accent); }
+#qing-archive #oa-task-compact-phase,#qing-archive #oa-task-file,#qing-archive #oa-task-metric { color:var(--qa-sub);font-size:12px; }
+#qing-archive .oa-task-chevron { flex:none;color:var(--qa-sub); }
+#qing-archive #oa-task-toggle[aria-expanded=true] .oa-task-chevron { transform:rotate(180deg); }
+#qing-archive #oa-task-toggle[aria-expanded=true] #oa-task-compact-phase { display:none; }
+#qing-archive #oa-task-dismiss { min-height:28px;padding:3px; }
+#qing-archive .oa-task-overview { margin:1px 8px 3px;padding-top:7px;border-top:1px solid var(--qa-line); }
+#qing-archive .oa-task-stage { display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px; }
+#qing-archive .oa-task-stage strong { font-weight:600; }
+#qing-archive #oa-task-metric { flex:none;font-variant-numeric:tabular-nums; }
+#qing-archive #oa-task-file { margin:3px 0 0; }
+#qing-archive #oa-task-progress { display:block;height:6px;margin:9px 0 4px; }
+#qing-archive .oa-task-actions { display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin-top:6px; }
+#qing-archive .oa-task-actions .qa-button { min-height:30px;padding:4px 9px;font-size:12px; }
+#qing-archive #oa-task-details[aria-expanded=true] { background:var(--qa-tint);color:var(--qa-accent); }
+#qing-archive #oa-task-content {
+  max-height:min(182px,32vh);
+  margin:6px 4px 2px;
+  padding:0 4px;
+  border-top:1px solid var(--qa-line);
+  overflow:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  user-select:text;
+  -webkit-user-select:text;
+  overflow-wrap:anywhere;
+}
+#qing-archive #oa-task-content .qa-jobcard { margin:0;border-bottom:0;padding:8px 2px; }
+#qing-archive #oa-task-content .qa-jobcard+.qa-jobcard { border-top:1px solid var(--qa-line); }
+#qing-archive #oa-task-content :is(.qa-sub,.qa-jobresult) { max-height:none;overflow:visible;margin-block:4px; }
+#qing-archive #oa-task-content .qa-button { max-width:100%;white-space:normal;overflow-wrap:anywhere; }
+@media(forced-colors:active) {
+  #qing-archive #oa-task-panel { background:Canvas;border-color:ButtonText;backdrop-filter:none; }
+}
 
 #qing-archive .oa-compression-results{list-style:none;margin:8px 0;padding:0}
 #qing-archive .oa-compression-results li{border-top:1px solid var(--qa-line);padding:7px 0}
