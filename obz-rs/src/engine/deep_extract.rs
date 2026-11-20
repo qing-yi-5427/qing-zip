@@ -407,18 +407,62 @@ pub fn home_nested_candidate(path: &Path, entries: &[Entry]) -> bool {
     if zip.len() != entries.len() {
         return false;
     }
-    files.any(|e| {
-        !e.encrypted
-            && e.size >= 6
-            && matches!(e.method.as_str(), "Store" | "Deflate")
-            && !application_extension(Path::new(&e.name))
-            && zip.by_name(&e.name.replace('\\', "/")).is_ok_and(|mut member| {
-                let mut prefix = [0u8; 512];
-                let length = e.size.min(prefix.len() as u64) as usize;
-                member.read_exact(&mut prefix[..length]).is_ok()
-                    && signature(&prefix[..length]).is_some()
-            })
+    files.any(|entry| {
+        if entry.encrypted || entry.size < 6
+            || !matches!(entry.method.as_str(), "Store" | "Deflate")
+            || application_extension(Path::new(&entry.name))
+        {
+            return false;
+        }
+        let Some(index) = zip.index_for_name(&entry.name.replace('\\', "/")) else {
+            return false;
+        };
+        let Ok(member) = zip.by_index_raw(index) else {
+            return false;
+        };
+        zip_prefix_has_archive_signature(member)
     })
+}
+
+fn zip_prefix_has_archive_signature<R: Read + Seek>(mut member: zip::read::ZipFile<'_, R>) -> bool {
+    use miniz_oxide::inflate::{
+        core::{decompress, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF, DecompressorOxide},
+        TINFLStatus,
+    };
+
+    if member.encrypted() || member.size() < 6 {
+        return false;
+    }
+    let mut prefix = [0u8; 512];
+    let length = member.size().min(prefix.len() as u64) as usize;
+    let prefix = &mut prefix[..length];
+    match member.compression() {
+        zip::CompressionMethod::Stored => {
+            if member.read_exact(prefix).is_err() {
+                return false;
+            }
+        }
+        zip::CompressionMethod::Deflated => {
+            // Read at most 64 KiB of Deflate input even if it emits no prefix.
+            // The output buffer stops decompression at the desired prefix.
+            let mut packed = vec![0; member.compressed_size().min(64 * 1024) as usize];
+            if member.read_exact(&mut packed).is_err() {
+                return false;
+            }
+            let (status, _, written) = decompress(
+                &mut DecompressorOxide::new(),
+                &packed,
+                prefix,
+                0,
+                TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+            );
+            if written != length || !matches!(status, TINFLStatus::Done | TINFLStatus::HasMoreOutput) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    signature(prefix).is_some()
 }
 
 fn family(path: &Path, peers: &[PathBuf]) -> Vec<PathBuf> {
