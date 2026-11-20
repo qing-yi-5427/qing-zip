@@ -357,9 +357,11 @@ function renderInlineTask(){
  file.hidden=!path;
  file.textContent=(currentArchive?`第 ${currentArchive.depth} 层 · `:'')+filename(path);
  file.title=path;
- const progress=$('oa-task-progress');
- progress.hidden=!running;
- if(percent===null)progress.removeAttribute('value');else progress.value=percent;
+ for(const id of ['oa-task-compact-progress','oa-task-progress']){
+  const progress=$(id);
+  progress.hidden=!running||(id==='oa-task-compact-progress'?s.inlineExpanded:!s.inlineExpanded);
+  if(percent===null)progress.removeAttribute('value');else progress.value=percent;
+ }
  cancel.hidden=!running||job.phase==='recycling'||!!job.cancelRequested;
  output.hidden=running||!job.outputPath;
  output.dataset.jobOutput=String(job.id);

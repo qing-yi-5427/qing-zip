@@ -288,7 +288,8 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .oa-task-stage strong { font-weight:600; }
 #qing-archive #oa-task-metric { flex:none;font-variant-numeric:tabular-nums; }
 #qing-archive #oa-task-file { margin:3px 0 0; }
-#qing-archive #oa-task-progress { display:block;height:6px;margin:9px 0 4px; }
+#qing-archive #oa-task-progress:not([hidden]) { display:block;height:6px;margin:9px 0 4px; }
+#qing-archive #oa-task-compact-progress:not([hidden]) { display:block;width:calc(100% - 16px);height:5px;margin:3px 8px 4px; }
 #qing-archive .oa-task-actions { display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin-top:6px; }
 #qing-archive .oa-task-actions .qa-button { min-height:30px;padding:4px 9px;font-size:12px; }
 #qing-archive #oa-task-details[aria-expanded=true] { background:var(--qa-tint);color:var(--qa-accent); }

@@ -6,3 +6,37 @@ test('progress replacement restores logical action, falls back on completion, ne
  const context={document:{activeElement:cancel},$:()=>content,overlay:{querySelector:()=>close},s:{active:1}};vm.createContext(context);vm.runInContext(src.slice(src.indexOf('function refreshJobContent('),src.indexOf('function renderProgress(')),context);
  context.refreshJobContent('running');assert.equal(focused,'cancel');controls=[output];context.refreshJobContent('done');assert.equal(focused,'output');controls=[];context.s.active=null;context.refreshJobContent('failed');assert.equal(focused,'close');focused=null;inside=false;context.refreshJobContent('running');assert.equal(focused,null);
 });
+test('background progress stays visible while collapsed, reflects unknown work, and hides at completion',()=>{
+ const elements=new Map();
+ const get=id=>{
+  if(!elements.has(id))elements.set(id,{dataset:{},setAttribute(){},removeAttribute(name){delete this[name];}});
+  return elements.get(id);
+ };
+ const job={id:1,label:'解压到此处',status:'running',startedAt:0,percent:null,inlineDetails:false};
+ const s={active:1,jobs:[job],inlineTask:1,inlineExpanded:false};
+ const context={s,$:get,document:{activeElement:null},shellQueuePaused:false,filename:path=>path,performance:{now:()=>1000}};
+ vm.createContext(context);
+ vm.runInContext(src.slice(src.indexOf('const phaseLabels='),src.indexOf('function updateJobProgress(')),context);
+ vm.runInContext(src.slice(src.indexOf('function elapsedTime('),src.indexOf('function compressionStageLabel(')),context);
+ vm.runInContext(src.slice(src.indexOf('function renderInlineTask('),src.indexOf('function taskDetailSelection(')),context);
+ const compact=get('oa-task-compact-progress'),expanded=get('oa-task-progress');
+ context.renderInlineTask();
+ assert.equal(compact.hidden,false);
+ assert.equal(compact.value,undefined);
+ assert.equal(expanded.hidden,true);
+ job.percent=38;
+ context.renderInlineTask();
+ assert.equal(compact.value,38);
+ s.inlineExpanded=true;
+ context.renderInlineTask();
+ assert.equal(compact.hidden,true);
+ assert.equal(expanded.hidden,false);
+ assert.equal(expanded.value,38);
+ job.cancelRequested=true;
+ context.renderInlineTask();
+ assert.equal(expanded.value,undefined);
+ job.status='cancelled';
+ context.renderInlineTask();
+ assert.equal(compact.hidden,true);
+ assert.equal(expanded.hidden,true);
+});

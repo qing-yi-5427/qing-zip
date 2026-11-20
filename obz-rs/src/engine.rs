@@ -534,9 +534,25 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false)
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None)
         .map(|(log, _)| log)
 }
+fn run_staged_decode(
+    args: &[String],
+    opts: &EngineOptions,
+    output: Option<File>,
+    allow_zealfs: bool,
+    output_size: Option<u64>,
+) -> Result<(), String> {
+    let (log, _) = run_program_log_with_directory(
+        executable()?, args, None, opts, output, allow_zealfs, false, output_size,
+    )?;
+    // Match the regular runner's output validation.
+    read_engine_output(log)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_program_log_with_directory(
     program: PathBuf,
     args: &[String],
@@ -545,6 +561,7 @@ fn run_program_log_with_directory(
     output: Option<File>,
     allow_zealfs: bool,
     collect_directory: bool,
+    output_size: Option<u64>,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
@@ -559,6 +576,11 @@ fn run_program_log_with_directory(
     if let Some(password) = &opts.password { crate::engine_password::validate(password)?; }
     let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
     let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
+    let mut live_progress = engine_progress::LiveProgress::open(
+        args.first().map(String::as_str),
+        &errors,
+        output.as_ref().zip(output_size),
+    );
     let pipe = collect_directory.then(directory_capture::pipe).and_then(Result::ok);
     let (stdout, capture_files) = if let Some((reader, writer)) = pipe {
         (writer, Some((reader, logs.try_clone().map_err(|e| e.to_string())?)))
@@ -617,7 +639,6 @@ fn run_program_log_with_directory(
         },
         None => None,
     };
-    let mut progress_reader = File::open(errors.path()).ok();
     let status = loop {
         if ctl.check().is_err() {
             let _ = child.kill();
@@ -634,30 +655,8 @@ fn run_program_log_with_directory(
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
-                use std::io::{Seek, SeekFrom};
-                if let Some(progress) = progress_reader.as_mut() {
-                    if let Ok(length) = progress.metadata().map(|m| m.len()) {
-                        let _ = progress.seek(SeekFrom::Start(length.saturating_sub(256)));
-                        let mut tail = String::new();
-                        let _ = progress.read_to_string(&mut tail);
-                        if let Some(pos) = tail.rfind('%') {
-                            let digits = tail[..pos]
-                                .chars()
-                                .rev()
-                                .take_while(|c| c.is_ascii_digit())
-                                .collect::<String>()
-                                .chars()
-                                .rev()
-                                .collect::<String>();
-                            if let Ok(n) = digits.parse::<u8>() {
-                                let mut state =
-                                    ctl.progress.lock().unwrap_or_else(|e| e.into_inner());
-                                if state.phase != "extracting" {
-                                    state.percent = Some(n.min(100));
-                                }
-                            }
-                        }
-                    }
+                if let Some(progress) = &mut live_progress {
+                    progress.sample(&ctl);
                 }
                 if let Err(e) = wait_for_process(&child, Duration::from_millis(40)) {
                     let _ = child.kill();
@@ -776,6 +775,7 @@ fn append_listing_lines<'a>(
 }
 
 mod directory_capture;
+mod engine_progress;
 mod listing_properties;
 use directory_capture::DirectoryCapture;
 use listing_properties::Field;
@@ -1073,7 +1073,7 @@ fn run_technical_listing_with_directory(
     args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool, collect_directory: bool,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let execute = |args: &[String]| run_program_log_with_directory(
-        executable()?, args, None, opts, None, allow_zealfs, collect_directory,
+        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None,
     );
     match execute(args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
@@ -3034,10 +3034,9 @@ fn extract_raw_to(
                 opts
             };
             let mut args = base("x", opts)?;
-            let execute = if official_zeal {
+            if official_zeal {
                 args.push("-tZealFS".into());
-                run_with_zealfs
-            } else { run };
+            }
             if let Some(format) = crate::stream_formats::raw_format(path) {
                 args.push(format!("-t{format}"));
             }
@@ -3060,7 +3059,7 @@ fn extract_raw_to(
                     "--".into(),
                     absolute(path)?.display().to_string(),
                 ]);
-                execute(&args, None, opts, None)?;
+                run_staged_decode(&args, opts, None, official_zeal, None)?;
             } else if all_entries.len() == 1 && !all_entries[0].is_dir {
                 // Raw compressors may synthesize different disk and listing names.
                 // One stdout decode is unambiguous and retains the advertised name.
@@ -3077,14 +3076,19 @@ fn extract_raw_to(
                         std::io::Write::write_all(&mut output, bytes).map_err(|e|e.to_string())
                     })?
                 } else { false };
-                if !native { execute(&args, None, opts, Some(output))?; }
+                if !native {
+                    let entry = &all_entries[0];
+                    run_staged_decode(
+                        &args, opts, Some(output), official_zeal, entry.size_known.then_some(entry.size),
+                    )?;
+                }
             } else {
                 args.extend([
                     format!("-o{}", stage.path().display()),
                     "--".into(),
                     absolute(path)?.display().to_string(),
                 ]);
-                execute(&args, None, opts, None)?;
+                run_staged_decode(&args, opts, None, official_zeal, None)?;
             }
         }
         let mut staged_expected = if verified_projection && projected.is_some() {
@@ -4634,7 +4638,10 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
     if let Some(format) = crate::stream_formats::raw_format(path) {
         crate::stream_formats::validate_raw_options(opts)?;
         let source = absolute(path)?;
-        if policy.restricted() { list_raw_with_source(path, opts, &mut source_guard)?; }
+        if policy.restricted() {
+            list_raw_with_source(path, opts, &mut source_guard)?;
+            ctl.set("testing", None, "Checking archive integrity");
+        }
         crate::engine_stream::validate_frame_bounds(&source, format, opts)?;
         if crate::engine_stream::decode_native(&source, format, opts, None, &mut |_| Ok(()))? {
             ctl.set("complete", Some(100), "Archive integrity verified");
