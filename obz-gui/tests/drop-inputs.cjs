@@ -27,7 +27,7 @@ test('native drops add files and directories to the open creation or update form
     context.acceptDroppedPaths(['C:\\original', 'D:\\Folder', 'D:\\文件 1.txt',
       'D:\\Folder', 'x\ninjected.txt', null]);
     assert.equal(input.value, 'C:\\original\nD:\\Folder\nD:\\文件 1.txt');
-    assert.deepEqual(calls, id === 'qa-inputs' ? ['refresh'] : []);
+    assert.deepEqual(calls, ['refresh']);
   }
 });
 

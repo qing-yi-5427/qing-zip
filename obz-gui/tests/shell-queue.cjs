@@ -15,7 +15,7 @@ function fixture(options={}){
   esc:x=>String(x),btn:(label,action)=>`<button data-action="${action}">${label}</button>`,
   renderProgress:()=>{},render:()=>{},renderArchiveTabs:()=>{},toast:x=>calls.push(['toast',x]),error:e=>errors.push(String(e)),
   localStorage:{setItem:(key,value)=>calls.push(['storage',key,value])},discardArchiveTab:(path)=>calls.push(['discard',path]),
-  tabBusy:()=>!!context.s.active,compress:()=>calls.push(['compress']),refreshSources:()=>{},$:id=>elements[id]||null,
+  tabBusy:()=>!!context.s.active,compress:()=>calls.push(['compress']),refreshSources:()=>{if(elements['qa-inputs'])elements['qa-save'].value=context.suggestedCompressionPath(elements['qa-inputs'].value.split('\n').filter(Boolean),'zip',false);},$:id=>elements[id]||null,
   dialog:(title,body,footer)=>{calls.push(['dialog',title,body,footer]);context.overlay.hidden=false;elements['qa-shell-password']={value:''};},
   close:()=>{context.overlay.hidden=true;delete elements['qa-shell-password'];},
   openArchive:async path=>calls.push(['open',path]),openDialog:()=>{},
@@ -24,7 +24,8 @@ function fixture(options={}){
  };
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
- vm.createContext(context);vm.runInContext(compression+'\n'+functions,context);
+ const naming=source.slice(source.indexOf('const compressionExtensions='),source.indexOf('function sourceFields('));
+ vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+functions,context);
  const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);

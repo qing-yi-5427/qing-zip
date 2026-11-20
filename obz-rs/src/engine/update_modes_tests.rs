@@ -98,6 +98,12 @@ fn update_modes_real_zip_and_solid_7z_follow_official_action_matrix() {
             )
             .unwrap();
             test(archive.to_str().unwrap(), &opts).unwrap();
+            if password.is_some() {
+                let entries = list(archive.to_str().unwrap(), &opts).unwrap();
+                assert!(entries.iter().filter(|entry| !entry.is_dir).all(|entry| {
+                    entry.encrypted && (format != "zip" || entry.method.contains("AES-256"))
+                }));
+            }
             let dest = temp.path().join("output");
             extract(archive.to_str().unwrap(), dest.to_str().unwrap(), &opts).unwrap();
             assert_eq!(fs::read(dest.join("A/newer")).unwrap(), b"new");
@@ -126,8 +132,94 @@ fn update_modes_real_zip_and_solid_7z_follow_official_action_matrix() {
     }
 }
 
+#[test]
+fn compression_update_rejects_a_readable_but_unencrypted_proposal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sealed.zip");
+    let source = dir.path().join("report.txt");
+    fs::write(&source, b"confidential original").unwrap();
+    let path = path.to_str().unwrap();
+    let inputs = [source.display().to_string()];
+    let opts = EngineOptions { password: Some("test-fixture-password".into()), ..Default::default() };
+    create(path, &inputs, "zip", &opts).unwrap();
+    let original = fs::read(path).unwrap();
+    fs::write(&source, b"confidential replacement").unwrap();
+    let wrong = dir.path().join("plain.zip");
+    create(wrong.to_str().unwrap(), &inputs, "zip", &EngineOptions::default()).unwrap();
+    let bytes = fs::read(wrong).unwrap();
+    AFTER_ENGINE.with(|hook| *hook.borrow_mut() = Some(Box::new(move |candidate| fs::write(candidate, bytes).unwrap())));
+    assert!(update(path, "add", &inputs, &opts).is_err());
+    assert_eq!(fs::read(path).unwrap(), original);
+}
+
 thread_local! {
     pub(super) static AFTER_ENGINE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[test]
+fn compression_update_verifies_existing_password_and_preserves_mixed_zip_encryption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed.zip");
+    let public = dir.path().join("public.txt");
+    let secret = dir.path().join("secret.txt");
+    let added = dir.path().join("added.txt");
+    fs::write(&public, b"public content").unwrap();
+    fs::write(&secret, b"old secret").unwrap();
+    fs::write(&added, b"new encrypted file").unwrap();
+    let path = path.to_str().unwrap();
+    create(path, &[public.display().to_string()], "zip", &EngineOptions::default()).unwrap();
+    let password = EngineOptions { password: Some("test-fixture-password".into()), encryption: Some("aes256".into()), ..Default::default() };
+    update(path, "add", &[secret.display().to_string()], &password).unwrap();
+    let original = fs::read(path).unwrap();
+    fs::write(&secret, b"replacement secret").unwrap();
+    let inputs = [secret.display().to_string(), added.display().to_string()];
+    for bad in [
+        EngineOptions::default(),
+        EngineOptions { password: Some("incorrect-test-password".into()), ..Default::default() },
+        EngineOptions { encryption: Some("ZipCrypto".into()), ..password.clone() },
+    ] {
+        assert!(update(path, "add", &inputs, &bad).is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+    let options = EngineOptions { encryption: None, ..password };
+    update(path, "add", &inputs, &options).unwrap();
+    let listing = list(path, &options).unwrap();
+    assert_eq!(listing.iter().find(|entry| entry.name == "public.txt").unwrap().encrypted, false);
+    for name in ["secret.txt", "added.txt"] {
+        let entry = listing.iter().find(|entry| entry.name == name).unwrap();
+        assert!(entry.encrypted && entry.method.contains("AES-256"), "{entry:?}");
+    }
+    assert_eq!(preview(path, "secret.txt", &options).unwrap(), b"replacement secret");
+}
+
+#[cfg(windows)]
+#[test]
+fn compression_update_projects_roots_under_the_chosen_folder_for_each_mode() {
+    for mode in [UpdateMode::Add, UpdateMode::Update, UpdateMode::Fresh, UpdateMode::Sync] {
+        let dir = tempfile::tempdir().unwrap();
+        let archived = dir.path().join("target");
+        let original = archived.join("chosen");
+        let local = dir.path().join("input/chosen");
+        fs::create_dir_all(&original).unwrap();
+        fs::create_dir_all(&local).unwrap();
+        let time = 1_700_000_000;
+        write_at(&original.join("replace.txt"), b"old", time);
+        write_at(&original.join("missing.txt"), b"old", time);
+        write_at(&archived.join("keep.txt"), b"keep", time);
+        write_at(&local.join("replace.txt"), b"new", time + 120);
+        write_at(&local.join("new.txt"), b"new", time + 120);
+        let path = dir.path().join("nested.zip");
+        let path = path.to_str().unwrap();
+        create(path, &[archived.display().to_string()], "zip", &EngineOptions::default()).unwrap();
+        let opts = EngineOptions { update_mode: mode, ..Default::default() };
+        update_in_folder(path, &[local.display().to_string()], "target", &opts).unwrap();
+        let set: HashSet<_> = list(path, &opts).unwrap().into_iter().map(|entry| entry.name.replace('\\', "/")).collect();
+        assert!(set.contains("target/keep.txt"), "{set:?}");
+        assert!(!set.contains("chosen/replace.txt"), "{set:?}");
+        assert_eq!(set.contains("target/chosen/new.txt"), mode != UpdateMode::Fresh, "{set:?}");
+        assert_eq!(set.contains("target/chosen/missing.txt"), mode != UpdateMode::Sync, "{set:?}");
+        assert_eq!(preview(path, "target/chosen/replace.txt", &opts).unwrap(), b"new");
+    }
 }
 
 #[test]

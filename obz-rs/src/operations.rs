@@ -286,6 +286,11 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
                 engine::archive_add(&r.path, &r.inputs, &r.dest, &r.options)?;
                 #[cfg(not(windows))]
                 return Err("文件管理添加仅支持 Windows".into());
+            } else if r.operation == "add" && !r.dest.is_empty() {
+                #[cfg(windows)]
+                engine::update_in_folder(&r.path, &r.inputs, &r.dest, &r.options)?;
+                #[cfg(not(windows))]
+                return Err("指定压缩包内的目标目录仅支持 Windows".into());
             } else {
                 engine::update(&r.path, &r.operation, &r.inputs, &r.options)?;
             }

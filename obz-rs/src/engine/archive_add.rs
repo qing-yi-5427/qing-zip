@@ -309,14 +309,18 @@ pub(super) fn prepare(
     folder: &str,
     opts: &EngineOptions,
 ) -> Result<Prepared, String> {
-    prepare_internal(archive, inputs, folder, opts, None)
+    prepare_internal(archive, inputs, folder, opts, None, false)
+}
+
+pub(super) fn prepare_compression(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared, String> {
+    prepare_internal(archive, inputs, folder, opts, None, true)
 }
 
 #[allow(dead_code)]
 pub(super) fn prepare_for_move_proof(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared,String> {
-    prepare_internal(archive, inputs, folder, opts, Some(move_proof::Plan::default()))
+    prepare_internal(archive, inputs, folder, opts, Some(move_proof::Plan::default()), false)
 }
-fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, mut proof: Option<move_proof::Plan>) -> Result<Prepared,String> {
+fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, mut proof: Option<move_proof::Plan>, compression: bool) -> Result<Prepared,String> {
     let ctl = control(opts);
     ctl.check()?;
     if !["error", "skip", "rename", "overwrite"].contains(&opts.overwrite.as_str()) {
@@ -336,7 +340,7 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
     {
         return Err("cannot add an archive to itself".into());
     }
-    let occupied = target_inventory(archive, &folder, opts)?;
+    let mut occupied = target_inventory(archive, &folder, opts)?;
     let directory = ShellDragDirectory::create_named("qing-zip-archive-add-")?;
     let dest = directory.path().join(&folder);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -353,6 +357,18 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
         )?;
     }
     let cwd = directory.path().to_owned();
+    if compression {
+        let mut names = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let leaf = path.file_name().and_then(|name| name.to_str()).ok_or("invalid input filename")?;
+            let relative = format!("{folder}/{leaf}");
+            // Keep directory roots in the engine selection. Sync may then remove
+            // absent descendants of these roots while keeping other members.
+            plan(&cwd, &relative, &mut occupied, "overwrite", &mut Vec::new(), &ctl, &mut proof)?;
+            names.push(relative);
+        }
+        return Ok(Prepared { names, cwd, _directory: directory, proof });
+    }
     finish_projection(directory, cwd, &folder, occupied, opts, proof)
 }
 
@@ -363,7 +379,7 @@ fn target_inventory(
 ) -> Result<BTreeMap<String, bool>, String> {
     let mut listing_options = opts.clone();
     listing_options.selected.clear();
-    let mut occupied = inventory(list(
+    let occupied = inventory(list(
         archive.to_str().ok_or("invalid archive path")?,
         &listing_options,
     )?)?;

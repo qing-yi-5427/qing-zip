@@ -42,6 +42,9 @@ mod zip_preview;
 #[cfg(windows)]
 mod update_list;
 mod edit_verify;
+mod update_encryption;
+mod compression_outputs;
+pub use compression_outputs::plan_compression_outputs;
 pub use zip_preview::ZipPreviewBatch;
 #[cfg(windows)]
 pub use crate::engine_stream::canonical_input_path;
@@ -5021,6 +5024,9 @@ pub fn create(
             return Err("raw stream filename extension must match its format".into());
         }
     }
+    if opts.volume_bytes.is_some() {
+        compression_outputs::require_free_volume_base(&absolute(out)?, &control(opts))?;
+    }
     if format == "zipx" {
         return create_libarchive(out, inputs, format, opts);
     }
@@ -5104,6 +5110,7 @@ pub fn create(
     #[cfg(windows)]
     if input_stage.is_some() {
         if let Some(bytes)=opts.volume_bytes {
+            compression_outputs::require_free_volume_base(&out, &ctl)?;
             let result=create_input::split_and_publish(&staged,&out,bytes,opts,&ctl)?;
             ctl.set("complete",Some(100),"Archive created");
             return Ok(result);
@@ -5117,6 +5124,9 @@ pub fn create(
     if produced.is_empty() {
         return Err("engine produced no archive".into());
     }
+    if opts.volume_bytes.is_some() {
+        compression_outputs::require_free_volume_base(&out, &ctl)?;
+    }
     for p in &produced {
         let target = parent.join(p.file_name().unwrap());
         no_links(&target)?;
@@ -5124,12 +5134,13 @@ pub fn create(
             return Err(format!("output exists: {}", target.display()));
         }
     }
-    let mut result = Vec::new();
-    for p in produced {
-        let target = parent.join(p.file_name().unwrap());
-        publish_new_with_time(&p, &target, &ctl, opts.archive_timestamp==ArchiveTimestamp::Latest)?;
-        result.push(target.display().to_string());
-    }
+    let outputs = produced.into_iter().map(|part| {
+        let target = parent.join(part.file_name().unwrap());
+        (part, target)
+    }).collect::<Vec<_>>();
+    let result = compression_outputs::publish(
+        &outputs, &ctl, opts.archive_timestamp == ArchiveTimestamp::Latest,
+    )?;
     ctl.set("complete", Some(100), "Archive created");
     Ok(result)
 }
@@ -5225,21 +5236,34 @@ pub fn update(
     update_impl(path, action, inputs, opts, None)
 }
 
+/// Compression dialog update. A nonempty destination projects input roots
+/// into the chosen archive folder before applying the regular update rules.
+#[cfg(windows)]
+pub fn update_in_folder(path: &str, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<(), String> {
+    if folder.is_empty() {
+        return update(path, "add", inputs, opts);
+    }
+    let mut options = opts.clone();
+    options.selected.clear();
+    update_impl(path, "add", inputs, &options, Some(WorkspaceAdd { folder, export: None, compression: true }))
+}
+
 /// File-workspace add: destination folder and conflict policy are explicit.
 #[cfg(windows)]
 pub fn archive_add(path: &str, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<(), String> {
     let mut options = opts.clone();
     options.selected.clear();
-    update_impl(path, "add", inputs, &options, Some(WorkspaceAdd { folder, export: None }))
+    update_impl(path, "add", inputs, &options, Some(WorkspaceAdd { folder, export: None, compression: false }))
 }
 #[cfg(windows)]
 pub fn archive_move(path:&str,inputs:&[String],folder:&str,opts:&EngineOptions)->Result<archive_move::Report,String>{
     let mut options=opts.clone();options.selected.clear();let mut report=archive_move::Report::default();
-    update_impl_with_move(path,"add",inputs,&options,Some(WorkspaceAdd{folder,export:None}),Some(&mut report))?;
+    update_impl_with_move(path,"add",inputs,&options,Some(WorkspaceAdd{folder,export:None,compression:false}),Some(&mut report))?;
     Ok(report)
 }
 struct WorkspaceAdd<'a> {
     folder: &'a str,
+    compression: bool,
     #[cfg(windows)]
     export: Option<archive_export::Export>,
 }
@@ -5247,7 +5271,7 @@ struct WorkspaceAdd<'a> {
 fn archive_import(path: &str, export: archive_export::Export, folder: &str, opts: &EngineOptions) -> Result<(), String> {
     let roots=export.roots().to_vec();
     let mut options=opts.clone(); options.selected.clear();
-    update_impl(path,"add",&roots,&options,Some(WorkspaceAdd {folder,export:Some(export)}))
+    update_impl(path,"add",&roots,&options,Some(WorkspaceAdd {folder,export:Some(export),compression:false}))
 }
 
 fn update_impl(path: &str, action: &str, inputs: &[String], opts: &EngineOptions, workspace: Option<WorkspaceAdd<'_>>) -> Result<(), String> {
@@ -5261,7 +5285,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     if compression_times::requested(opts) {return Err("时间保存选项仅用于新建压缩包".into());}
 
     let _policy = crate::machine_policy::scope();
-    if workspace.is_some() && opts.update_mode != UpdateMode::Add {
+    if workspace.as_ref().is_some_and(|workspace| !workspace.compression) && opts.update_mode != UpdateMode::Add {
         return Err("文件管理添加仅支持保留其他成员的添加模式".into());
     }
     if opts.volume_bytes.is_some() {
@@ -5298,9 +5322,15 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         return Err("archive not found".into());
     }
     let parent = path.parent().ok_or("missing archive parent")?;
+    let protection = if action == "add" {
+        Some(update_encryption::Protection::read(&path, opts)?)
+    } else {
+        None
+    };
     #[cfg(windows)]
     let prepared = workspace.map(|workspace| match workspace.export {
         Some(export) => archive_add::prepare_export(&path, export, workspace.folder, opts),
+        None if workspace.compression => archive_add::prepare_compression(&path, inputs, workspace.folder, opts),
         None => if move_report.is_some(){archive_add::prepare_for_move_proof(&path, inputs, workspace.folder, opts)}else{archive_add::prepare(&path, inputs, workspace.folder, opts)},
     }).transpose()?;
     #[cfg(windows)]
@@ -5327,6 +5357,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     #[cfg(not(windows))]
     let direct = false;
     let mut a = base(command, opts)?;
+    if let Some(protection) = &protection {
+        protection.add_switches(&mut a);
+    }
     if action=="add" && opts.preserve_input_atime {
         a.push("-ssp".into());
         #[cfg(windows)]
@@ -5394,6 +5427,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     // decoding it a second time here; ordinary Add keeps its existing checks.
     if move_report.is_none() && !edit_verify::ordinary_zip(&staged, opts)? {
         test(staged.to_str().ok_or("invalid archive path")?, opts)?;
+    }
+    if let Some(protection) = &protection {
+        protection.verify(&staged, opts)?;
     }
     ctl.check()?;
     no_links(&path)?;
@@ -5873,10 +5909,8 @@ fn create_libarchive(
             output.sync_all().map_err(|e| e.to_string())?;
             parts.push((part, target));
         }
-        for (part, target) in parts {
-            publish_new(&part, &target, &ctl)?;
-            outputs.push(target.display().to_string());
-        }
+        compression_outputs::require_free_volume_base(&out, &ctl)?;
+        outputs = compression_outputs::publish(&parts, &ctl, false)?;
     } else {
         publish_new(&staged, &out, &ctl)?;
         outputs.push(out.display().to_string());

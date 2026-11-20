@@ -57,6 +57,12 @@ async fn probe_local_directory(path:String,names:Vec<String>)->Result<obz_core::
 }
 
 #[tauri::command]
+async fn plan_compression_outputs(paths: Vec<String>, format: String, volume_bytes: Option<u64>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || engine::plan_compression_outputs(&paths, &format, volume_bytes))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn local_streams(path: String) -> Result<engine::file_workspace::StreamInventory, String> {
     tauri::async_runtime::spawn_blocking(move || engine::file_workspace::list_streams(&path))
         .await.map_err(|e|e.to_string())?
@@ -175,9 +181,16 @@ fn pick_folder() -> String {
 }
 
 #[tauri::command]
-fn pick_archive_save(format: String) -> String {
+fn pick_archive_save(format: String, suggestion: Option<String>) -> String {
     let ext=match format.as_str(){"7z"=>"7z","tar"=>"tar","tgz"=>"tar.gz","tbz2"=>"tar.bz2","txz"=>"tar.xz","gzip"=>"gz","xz"=>"xz","bzip2"=>"bz2","wim"=>"wim","sfx"=>"exe","iso"=>"iso","zipx"=>"zipx","lzh"=>"lzh","zstd"=>"zst","brotli"=>"br","lz4"=>"lz4","lz5"=>"lz5","lizard"=>"liz",_=>"zip"};
-    rfd::FileDialog::new().set_title("新建压缩包").set_file_name(format!("archive.{ext}")).save_file().map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()
+    let suggestion = suggestion.as_deref().map(std::path::Path::new);
+    let name = suggestion.and_then(|p| p.file_name()).and_then(|n| n.to_str())
+        .map(str::to_owned).unwrap_or_else(|| format!("archive.{ext}"));
+    let mut dialog = rfd::FileDialog::new().set_title("新建压缩包").set_file_name(name);
+    if let Some(parent) = suggestion.and_then(|p| p.parent()).filter(|p| p.is_absolute()) {
+        dialog = dialog.set_directory(parent);
+    }
+    dialog.save_file().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -272,7 +285,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![browse_local, probe_local_directory, local_streams,
+        .invoke_handler(tauri::generate_handler![browse_local, probe_local_directory, plan_compression_outputs, local_streams,
             open_archive,
             extract_archive,
             create_zip,
