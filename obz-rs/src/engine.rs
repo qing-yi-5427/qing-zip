@@ -1791,6 +1791,7 @@ fn verify_stage_with_metadata(
     zone: Option<&crate::motw::ZoneIdentifier>,
 ) -> Result<(), String> {
     let _timer = PhaseTimer::new("verify-and-metadata");
+    ctl.report_files("verifying-stage", "", 0, expected.len(), None, None);
     let mut files = std::collections::HashMap::new();
     if let Some(entries) = entries {
         for entry in entries.iter().filter(|e| !e.is_dir) {
@@ -1799,6 +1800,7 @@ fn verify_stage_with_metadata(
     }
     let mut pending = vec![root.to_path_buf()];
     let mut found = HashSet::new();
+    let interval = (expected.len() / 200).max(1);
     while let Some(dir) = pending.pop() {
         ctl.check()?;
         guards.check(&dir)?;
@@ -1824,6 +1826,10 @@ fn verify_stage_with_metadata(
                     normalize_staged_entry(&path, entry, &meta, ctl, guards, zone.is_some_and(|zone| zone.is_marked()))?;
                 }
             }
+            let done = found.len();
+            if done % interval == 0 || done == expected.len() {
+                ctl.report_files("verifying-stage", "", done, expected.len(), None, None);
+            }
         }
     }
     if found.len() != expected.len() {
@@ -1832,6 +1838,9 @@ fn verify_stage_with_metadata(
     // Keep original reverse-listing semantics, including duplicate directory
     // metadata and implicit directories without an archive entry.
     if let Some(entries) = entries {
+        if entries.iter().any(|entry| entry.is_dir) {
+            ctl.set("staged-directory-metadata", None, "");
+        }
         for entry in entries.iter().rev().filter(|e| e.is_dir) {
             ctl.check()?;
             let path = root.join(validate_name(&entry.name)?);
@@ -2801,6 +2810,8 @@ fn extract_raw_to(
     };
     #[cfg(not(nana_selected_worker))]
     let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
+    let rar = has_rar_signature(&mut source_guard);
+    ctl.set("preparing-extraction", None, "");
     #[cfg(windows)]
     if let Some(source) = memory_source.as_ref() {
         let same = memory_archive_source(path, opts).is_some_and(|current| {
@@ -2958,6 +2969,7 @@ fn extract_raw_to(
         && entries.iter().filter(|e| !e.is_dir).count() >= 128
         && entries.iter().all(|e| e.is_dir || e.size <= 8 * 1024 * 1024));
     let mut file_publication_stage = false;
+    let mut target_volume_stage = false;
     stage = if let Some(transaction) = transaction.as_mut() {
         transaction.stage.take()
     } else if memory.is_none() {
@@ -2967,7 +2979,18 @@ fn extract_raw_to(
         file_publication_stage = preferred.is_some();
         Some(match preferred {
             Some(stage) => stage,
-            None => new_fallback_stage(&std::env::temp_dir(), &mut output_guards)?,
+            None => {
+                let preferred = if rar {
+                    new_rar_destination_stage(&dest, &all_entries, &mut output_guards)?
+                } else {
+                    None
+                };
+                target_volume_stage = preferred.is_some();
+                match preferred {
+                    Some(stage) => stage,
+                    None => new_fallback_stage(&std::env::temp_dir(), &mut output_guards)?,
+                }
+            }
         })
     } else {
         None
@@ -3017,7 +3040,12 @@ fn extract_raw_to(
         let stage_guards = stage_guards.as_mut().unwrap();
         stage_guards.check(stage.path())?;
         if !split_streamed {
-            ctl.set("decoding", None, "Decoding archive into temporary storage");
+            let message = match (rar, target_volume_stage) {
+                (true, true) => "Decoding RAR into temporary storage on the output volume",
+                (true, false) => "Decoding RAR into the system temporary directory",
+                (false, _) => "Decoding archive into temporary storage",
+            };
+            ctl.set("decoding", None, message);
         }
         #[cfg(nana_selected_worker)]
         let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
@@ -3102,12 +3130,13 @@ fn extract_raw_to(
                 run_staged_decode(&args, opts, None, official_zeal, None)?;
             }
         }
+        ctl.set("verifying-stage", None, "");
         let mut staged_expected = if verified_projection && projected.is_some() {
-            expected_tree(staged_entries)?
+            std::borrow::Cow::Owned(expected_tree(staged_entries)?)
         } else if streamed {
-            expected_tree(&entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>())?
+            std::borrow::Cow::Owned(expected_tree(&entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>())?)
         } else {
-            expected.clone()
+            std::borrow::Cow::Borrowed(&expected)
         };
         if crate::stream_formats::raw_format(path).is_some() {
             // Raw handlers may not know the decoded length before their single
@@ -3121,7 +3150,7 @@ fn extract_raw_to(
                 if !metadata.is_file() || metadata.file_type().is_symlink() {
                     return Err("invalid decoded raw stream".into());
                 }
-                staged_expected.get_mut(&path_key(&relative)).ok_or("raw stream missing from manifest")?.1 = metadata.len();
+                staged_expected.to_mut().get_mut(&path_key(&relative)).ok_or("raw stream missing from manifest")?.1 = metadata.len();
             }
         }
         verify_stage_with_metadata(
@@ -3150,6 +3179,7 @@ fn extract_raw_to(
         if let Some(run)=hook.borrow_mut().take() {run();}
     }); }
     let publication=(|| -> Result<usize,String> {
+    ctl.set("preparing-publication", None, "");
     policy.validate_output()?;
     if claim_destination {
         ctl.check()?;
@@ -3295,7 +3325,11 @@ fn extract_raw_to(
     let directory_receipts: HashMap<PathBuf,usize> = if output_guards.exclusive_claim {
         output_guards.created_output_dirs.iter().enumerate().map(|(i,(path,_))|(path.clone(),i)).collect()
     } else { HashMap::new() };
-    for e in entries.iter().rev().filter(|e| e.is_dir) {
+    let directories = entries.iter().rev().filter(|e| e.is_dir);
+    if directories.clone().next().is_some() {
+        ctl.set("output-directory-metadata", None, "");
+    }
+    for e in directories {
         ctl.check()?;
         let path=dest.join(validate_name(&e.name)?);
         #[cfg(windows)]
@@ -3314,7 +3348,6 @@ fn extract_raw_to(
     if let Some([moved, copied]) = publication_receipt {
         eprintln!("OA_PUBLICATION same_volume_stage=1 moved={moved} copied={copied}");
     }
-    ctl.set("complete", Some(100), "Extraction complete");
     Ok(count)
     })();
     if let (Err(reason),Some(journal))=(&publication,&journal) {
@@ -3326,6 +3359,7 @@ fn extract_raw_to(
             let examples=errors.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("; ");
             return Err(format!("{reason}; partial destination retained (foreign, changed, or unremovable entries): {} {examples}",dest.display()));
         }
+        return publication;
     }
     // Full split decoding can retain its ORIGINAL pins after successful output
     // commit. Capture suppresses issuance for a partial reuse operation: only
@@ -3335,6 +3369,14 @@ fn extract_raw_to(
         if let Some(capture)=&opts.verification_capture {
             capture.complete(source_path, source_guard, _volume_guards, all_entries);
         }
+    }
+    if publication.is_ok() {
+        if stage.is_some() {
+            ctl.set("cleaning-stage", None, "");
+            drop(output_guards);
+            drop(stage.take());
+        }
+        ctl.set("complete", Some(100), "Extraction complete");
     }
     publication
 }
@@ -3654,29 +3696,80 @@ impl Drop for ShellDragDirectory {
     }
 }
 
-// Windows TEMP can be shared or user-selected. Create the fallback with a
-// private DACL before exposing a pathname.
+// Both system TEMP and the output volume can have shared parents. The same
+// protected directory and identity checks apply before exposing the pathname.
+#[cfg(windows)]
+fn try_private_stage(
+    parent: &Path,
+    guards: &mut CheckedDirectories,
+) -> Result<Result<StagingDir, String>, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    guards.check(parent)?;
+    let parent_handle = match fs::OpenOptions::new().access_mode(0x20081).share_mode(3)
+        .custom_flags(0x02200000).open(parent)
+    {
+        Ok(handle) => handle,
+        Err(error) => return Ok(Err(error.to_string())),
+    };
+    validate_transaction_root(&parent_handle, parent)?;
+    let stage = match crate::private_stage::create(parent, &parent_handle) {
+        Ok(stage) => stage,
+        Err(error) => return Ok(Err(error)),
+    };
+    validate_transaction_root(stage.root(), stage.path())?;
+    if !private_stage_acl_handle(stage.root())? {
+        return Err("temporary stage is not private".into());
+    }
+    Ok(Ok(StagingDir::Private(stage)))
+}
+
 fn new_fallback_stage(parent: &Path, guards: &mut CheckedDirectories) -> Result<StagingDir, String> {
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt;
         let parent = absolute(parent.to_str().ok_or("invalid temporary directory")?)?;
-        guards.check(&parent)?;
-        let parent_handle = fs::OpenOptions::new().access_mode(0x20081).share_mode(3)
-            .custom_flags(0x02200000).open(&parent).map_err(|e| e.to_string())?;
-        validate_transaction_root(&parent_handle, &parent)?;
-        let stage = crate::private_stage::create(&parent, &parent_handle)?;
-        validate_transaction_root(stage.root(), stage.path())?;
-        if !private_stage_acl_handle(stage.root())? {
-            return Err("temporary stage is not private".into());
-        }
-        Ok(StagingDir::Private(stage))
+        try_private_stage(&parent, guards)?
     }
     #[cfg(not(windows))]
     {
         guards.check(parent)?;
         tempfile::Builder::new().prefix(".qing-zip-stage-").tempdir_in(parent)
             .map(StagingDir::Temporary).map_err(|e| e.to_string())
+    }
+}
+
+fn has_rar_signature(source: &mut File) -> bool {
+    let mut header = [0; 8];
+    if source.rewind().is_err() { return false; }
+    let read = source.read_exact(&mut header);
+    let _ = source.rewind();
+    read.is_ok() && (header == *b"Rar!\x1a\x07\x01\x00" || header[..7] == *b"Rar!\x1a\x07\x00")
+}
+
+fn new_rar_destination_stage(
+    dest: &Path,
+    entries: &[Entry],
+    guards: &mut CheckedDirectories,
+) -> Result<Option<StagingDir>, String> {
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    {
+        let Some(parent) = dest.parent().unwrap_or(dest).ancestors().find(|path| path.is_dir()) else {
+            return Ok(None);
+        };
+        // RAR uses the existing verified per-file publication path, which can
+        // temporarily need space for both the stage and the final copy.
+        if file_stage_reservation(entries).is_none_or(|required| !has_stage_space(parent, required)) {
+            return Ok(None);
+        }
+        guards.check(parent)?;
+        if !parent.ancestors().all(|path| guards.pinned(path)) {
+            return Ok(None);
+        }
+        Ok(try_private_stage(parent, guards)?.ok())
+    }
+    #[cfg(not(all(windows, target_pointer_width = "64")))]
+    {
+        let _ = (dest, entries, guards);
+        Ok(None)
     }
 }
 fn create_staged_output(target: &Path, guards: &mut CheckedDirectories) -> Result<File, String> {
@@ -6043,6 +6136,50 @@ fn publish_new_copy(staged:&Path,target:&Path,ctl:&JobControl,preserve_time:bool
 
 #[cfg(test)]
 mod staging_tests {
+    #[test]
+    fn stage_verification_replaces_decoder_percent_and_counts_only_checked_paths() {
+        let stage = tempfile::tempdir().unwrap();
+        fs::write(stage.path().join("file.bin"), b"x").unwrap();
+        let ctl = JobControl::new();
+        let expected = |size| {
+            let key = path_key(Path::new("file.bin"));
+            BTreeMap::from([(key, (false, size))])
+        };
+
+        ctl.set("decoding", Some(99), "");
+        let result = verify_stage_checked(stage.path(), &expected(2), &ctl, &mut CheckedDirectories::default());
+        assert!(result.unwrap_err().contains("decoded tree does not match"));
+        let failed = ctl.snapshot();
+        assert_eq!(failed.phase, "verifying-stage");
+        assert_eq!(failed.work.unwrap().items_done, 0);
+
+        verify_stage_checked(stage.path(), &expected(1), &ctl, &mut CheckedDirectories::default()).unwrap();
+        let verified = ctl.snapshot();
+        assert_eq!(verified.phase, "verifying-stage");
+        let work = verified.work.unwrap();
+        assert_eq!((work.items_done, work.items_total), (1, 1));
+    }
+
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    #[test]
+    fn rar_stage_uses_existing_output_ancestor_with_sufficient_space() {
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("new").join("output");
+        let mut guards = CheckedDirectories::default();
+        let stage = new_rar_destination_stage(&dest, &[], &mut guards).unwrap().unwrap();
+        assert_eq!(stage.path().parent(), Some(parent.path()));
+        assert!(!dest.exists());
+        assert!(stage.protected_stage());
+
+        let entry = Entry {
+            name: "x.bin".into(), size: u64::MAX, size_known: true, packed_size: 1,
+            is_dir: false, crc: String::new(), encrypted: false, modified: String::new(),
+            created: String::new(), accessed: String::new(), method: String::new(),
+            comment: String::new(), attributes: String::new(),
+        };
+        assert!(new_rar_destination_stage(&dest, &[entry], &mut guards).unwrap().is_none());
+    }
+
     use super::*;
     #[test]
     fn copy_publication_preserves_requested_time_and_never_replaces() {

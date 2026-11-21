@@ -117,6 +117,23 @@ fn latest_percent(bytes: &[u8], starts_at_origin: bool) -> Option<u8> {
         if frame.get(3) != Some(&b'%') || frame.get(4).is_some_and(|&byte| byte != b' ') {
             continue;
         }
+        // NanaZip shares this stream with archive discovery. "99% 2 Open"
+        // can precede "  0% 1 - member" in a multi-volume extraction.
+        // The optional item count is followed by a command, or a dash before
+        // a member name. Preserve real members called Open or Scan.
+        let mut fields = frame[4..]
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|field| !field.is_empty());
+        let command = fields.next().and_then(|field| {
+            if field.iter().all(u8::is_ascii_digit) {
+                fields.next()
+            } else {
+                Some(field)
+            }
+        });
+        if matches!(command, Some(b"Open" | b"Scan")) {
+            continue;
+        }
         let digits = frame[..3].strip_prefix(b" ").unwrap_or(&frame[..3]);
         let digits = digits.strip_prefix(b" ").unwrap_or(digits);
         if digits.iter().all(u8::is_ascii_digit) {
@@ -134,6 +151,17 @@ fn latest_percent(bytes: &[u8], starts_at_origin: bool) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_only_operation_percent_after_opening_or_scanning() {
+        let preparation = b" 18% Scan\r 74% Open\r 99% 7 Open\r";
+        assert_eq!(latest_percent(preparation, true), None);
+        let mut frames = preparation.to_vec();
+        frames.extend_from_slice(b"  0% 1 - redacted\r  7% 2 - Open\r 85% Scan\r");
+        assert_eq!(latest_percent(&frames, true), Some(7));
+        frames.extend_from_slice(b" 16%\r");
+        assert_eq!(latest_percent(&frames, true), Some(16));
+    }
 
     #[test]
     fn reads_only_real_carriage_return_progress_frames() {
