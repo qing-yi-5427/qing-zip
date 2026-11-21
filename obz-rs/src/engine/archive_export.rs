@@ -220,6 +220,66 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn selected_asar_export_checks_unselected_integrity_before_handoff() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("source.asar");
+        let node = |offset, byte| {
+            let hash: String = Sha256::digest([byte]).iter().map(|byte| format!("{byte:02x}")).collect();
+            serde_json::json!({
+                "size": 1, "offset": offset,
+                "integrity": {"algorithm": "SHA256", "hash": hash, "blockSize": 1, "blocks": [hash]}
+            })
+        };
+        let json = serde_json::json!({"files": {
+            "selected.txt": node("0", b'a'),
+            "omitted.txt": node("1", b'b'),
+        }}).to_string();
+        let padded = (json.len() + 3) & !3;
+        let length = 8 + padded;
+        let mut input = Vec::new();
+        for word in [4, length as u32, (length - 4) as u32, json.len() as u32] {
+            input.extend_from_slice(&word.to_le_bytes());
+        }
+        input.extend_from_slice(json.as_bytes());
+        input.resize(8 + length, 0);
+        input.extend_from_slice(b"ab");
+        fs::write(&source_path, &input).unwrap();
+        let source = Source {
+            path: source_path.display().to_string(),
+            selected: vec!["selected.txt".into()],
+            ..Default::default()
+        };
+        let ctl = JobControl::new();
+        let export = prepare(&source, &ctl).unwrap();
+        let [root] = export.roots() else { panic!("one selected root expected"); };
+        assert_eq!(fs::read(root).unwrap(), b"a");
+        assert!(!Path::new(root).with_file_name("omitted.txt").exists());
+        drop(export);
+        *input.last_mut().unwrap() = b'x';
+        fs::write(&source_path, input).unwrap();
+        assert!(prepare(&source, &ctl).is_err());
+    }
+
+    #[test]
+    fn selected_pma_export_keeps_full_verification_and_projects_only_requested_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/pma/test_archives_pmarc2_pm2.pma");
+        let opts = EngineOptions::default();
+        let path = path.to_str().unwrap();
+        let inventory = crate::rare::list(path, &opts).unwrap();
+        let member = inventory.iter().find(|entry| !entry.is_dir).unwrap();
+        let source = Source {
+            path: path.to_owned(),
+            selected: vec![member.name.clone()],
+            ..Default::default()
+        };
+        let export = prepare(&source, &JobControl::new()).unwrap();
+        let [root] = export.roots() else { panic!("one selected root expected"); };
+        assert_eq!(fs::metadata(root).unwrap().len(), member.size);
+        assert_eq!(fs::read_dir(Path::new(root).parent().unwrap()).unwrap().count(), 1);
+    }
     fn fixture(
         source_format: &str,
         target_format: &str,
