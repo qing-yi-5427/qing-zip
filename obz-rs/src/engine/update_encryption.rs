@@ -22,7 +22,7 @@ fn name(entry: &Entry) -> String {
 }
 
 impl Protection {
-    pub(super) fn read(path: &Path, opts: &EngineOptions) -> Result<Self, String> {
+    pub(super) fn read(path: &Path, opts: &EngineOptions) -> Result<(Self, Vec<Entry>), String> {
         let path_text = path.to_str().ok_or("invalid archive path")?;
         let mut listing = opts.clone();
         listing.selected.clear();
@@ -73,7 +73,7 @@ impl Protection {
                 }
             }
         }
-        Ok(Self { original, method, headers, password })
+        Ok((Self { original, method, headers, password }, entries))
     }
 
     pub(super) fn add_switches(&self, args: &mut Vec<String>) {

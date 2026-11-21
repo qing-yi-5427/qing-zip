@@ -62,7 +62,7 @@ pub(super) fn verify_candidate(candidate:&Path, plan:&Plan, opts:&EngineOptions)
     let text=candidate.to_str().ok_or("invalid candidate path")?;
     let mut verify_opts=opts.clone();verify_opts.selected.clear();verify_opts.overwrite="error".into();
     let entries=list(text,&verify_opts)?;
-    let inventory=inventory(entries)?;
+    let inventory=inventory(&entries)?;
     let wanted:Vec<_>=plan.items.iter().filter(|i|i.skipped.is_none()).collect();
     for item in &wanted {
         if inventory.get(&key(&item.member))!=Some(&item.directory) {return Err(format!("Candidate member missing or wrong type: {}",item.member));}
@@ -132,7 +132,7 @@ pub(in crate::engine) fn verify_locked_candidate(candidate:&File,plan:&Plan,opts
     let (entries,pending)=selected_worker::full_worker::prepare_hash_verification("move-proof-candidate",&reader,&options,&ctl)?
         .ok_or("当前候选格式、密码、编码或策略不支持固定句柄验证，原包与源文件保持不变")?;
     let pending=pending.ok_or("候选成员数超过固定句柄验证上限，原包与源文件保持不变")?;
-    let occupied=inventory(entries.clone())?;
+    let occupied=inventory(&entries)?;
     let sizes:BTreeMap<_,_>=entries.iter().filter(|e|!e.is_dir).map(|e|(key(&e.name),e.size)).collect();
     let wanted:Vec<_>=plan.items.iter().filter(|i|i.skipped.is_none()).collect();
     for item in &wanted {

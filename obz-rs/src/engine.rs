@@ -5501,11 +5501,16 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         None
     };
     #[cfg(windows)]
-    let prepared = workspace.map(|workspace| match workspace.export {
-        Some(export) => archive_add::prepare_export(&path, export, workspace.folder, opts),
-        None if workspace.compression => archive_add::prepare_compression(&path, inputs, workspace.folder, opts),
-        None => if move_report.is_some(){archive_add::prepare_for_move_proof(&path, inputs, workspace.folder, opts)}else{archive_add::prepare(&path, inputs, workspace.folder, opts)},
+    let prepared = workspace.map(|workspace| {
+        let (_, entries) = protection.as_ref().ok_or("archive import requires an add inventory")?;
+        match workspace.export {
+            Some(export) => archive_add::prepare_export(&path, export, workspace.folder, opts, Some(entries)),
+            None if workspace.compression => archive_add::prepare_compression(&path, inputs, workspace.folder, opts, entries),
+            None if move_report.is_some() => archive_add::prepare_move(&path, inputs, workspace.folder, opts, entries),
+            None => archive_add::prepare(&path, inputs, workspace.folder, opts, entries),
+        }
     }).transpose()?;
+    let protection = protection.map(|(protection, _)| protection);
     #[cfg(windows)]
     if let Some(report)=move_report.as_deref_mut(){report.plan(prepared.as_ref().and_then(|p|p.proof.as_ref()).ok_or("missing archive move plan")?);}
     #[cfg(windows)]

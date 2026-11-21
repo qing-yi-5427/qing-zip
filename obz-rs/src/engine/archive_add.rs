@@ -20,7 +20,7 @@ fn member(name: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
-fn inventory(entries: Vec<Entry>) -> Result<BTreeMap<String, bool>, String> {
+fn inventory(entries: &[Entry]) -> Result<BTreeMap<String, bool>, String> {
     let mut result = BTreeMap::new();
     let mut explicit = HashSet::new();
     for entry in entries {
@@ -308,19 +308,27 @@ pub(super) fn prepare(
     inputs: &[String],
     folder: &str,
     opts: &EngineOptions,
+    entries: &[Entry],
 ) -> Result<Prepared, String> {
-    prepare_internal(archive, inputs, folder, opts, None, false)
+    prepare_internal(archive, inputs, folder, opts, entries, None, false)
 }
 
-pub(super) fn prepare_compression(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared, String> {
-    prepare_internal(archive, inputs, folder, opts, None, true)
+pub(super) fn prepare_compression(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, entries: &[Entry]) -> Result<Prepared, String> {
+    prepare_internal(archive, inputs, folder, opts, entries, None, true)
 }
 
-#[allow(dead_code)]
-pub(super) fn prepare_for_move_proof(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared,String> {
-    prepare_internal(archive, inputs, folder, opts, Some(move_proof::Plan::default()), false)
+#[cfg(test)]
+fn prepare_for_move_proof(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions) -> Result<Prepared,String> {
+    let mut listing_options = opts.clone();
+    listing_options.selected.clear();
+    let entries = list(archive.to_str().ok_or("invalid archive path")?, &listing_options)?;
+    prepare_move(archive, inputs, folder, opts, &entries)
 }
-fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, mut proof: Option<move_proof::Plan>, compression: bool) -> Result<Prepared,String> {
+
+pub(super) fn prepare_move(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, entries: &[Entry]) -> Result<Prepared,String> {
+    prepare_internal(archive, inputs, folder, opts, entries, Some(move_proof::Plan::default()), false)
+}
+fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &EngineOptions, entries: &[Entry], mut proof: Option<move_proof::Plan>, compression: bool) -> Result<Prepared,String> {
     let ctl = control(opts);
     ctl.check()?;
     if !["error", "skip", "rename", "overwrite"].contains(&opts.overwrite.as_str()) {
@@ -340,7 +348,7 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
     {
         return Err("cannot add an archive to itself".into());
     }
-    let mut occupied = target_inventory(archive, &folder, opts)?;
+    let mut occupied = target_inventory(entries, &folder)?;
     let directory = ShellDragDirectory::create_named("qing-zip-archive-add-")?;
     let dest = directory.path().join(&folder);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -373,16 +381,10 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
 }
 
 fn target_inventory(
-    archive: &Path,
+    entries: &[Entry],
     folder: &str,
-    opts: &EngineOptions,
 ) -> Result<BTreeMap<String, bool>, String> {
-    let mut listing_options = opts.clone();
-    listing_options.selected.clear();
-    let occupied = inventory(list(
-        archive.to_str().ok_or("invalid archive path")?,
-        &listing_options,
-    )?)?;
+    let occupied = inventory(entries)?;
     let mut prefix = String::new();
     for component in folder.split('/').filter(|s| !s.is_empty()) {
         if !prefix.is_empty() {
@@ -401,6 +403,7 @@ pub(super) fn prepare_export(
     export: archive_export::Export,
     folder: &str,
     opts: &EngineOptions,
+    entries: Option<&[Entry]>,
 ) -> Result<Prepared, String> {
     let ctl = control(opts);
     ctl.check()?;
@@ -412,7 +415,16 @@ pub(super) fn prepare_export(
     } else {
         member(folder)?
     };
-    let occupied = target_inventory(archive, &folder, opts)?;
+    let fallback;
+    let entries = if let Some(entries) = entries {
+        entries
+    } else {
+        let mut listing_options = opts.clone();
+        listing_options.selected.clear();
+        fallback = list(archive.to_str().ok_or("invalid archive path")?, &listing_options)?;
+        &fallback
+    };
+    let occupied = target_inventory(entries, &folder)?;
     let (directory, roots) = export.into_parts();
     let cwd = directory.path().join("import");
     let dest = cwd.join(&folder);
