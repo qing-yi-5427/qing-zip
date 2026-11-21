@@ -9,8 +9,11 @@ function fixture(){
   pref:{},esc:String,btn:()=>'',extractionSummary:({recycleId,recycle})=>`<input id="${recycleId}" ${recycle?'checked':''}>`,sourceDisposition:recycle=>recycle?'回收':'保留',dialog(title,body,footer){
    calls.push(['dialog',title,body,footer]);
    for(const id of ['inputs','destination','count','list','preview','recycle','smart','conflict','source-status'])elements['oa-deep-'+id]={value:'',checked:false,dataset:{}};
+   const label={hidden:true};
+   elements['oa-deep-password']={id:'oa-deep-password',value:'',disabled:true,closest:()=>label};
+   elements['oa-deep-password-reveal']={hidden:true,dataset:{}};
    elements['oa-deep-recycle'].checked=context.s.deepRecycleAfter;
-  },$:id=>elements[id],run:async (...args)=>{calls.push(['run',...args]);return {deep_session:1,finished:false};},
+  },passwordRequiredForSource:()=>false,$:id=>elements[id],run:async (...args)=>{calls.push(['run',...args]);return {deep_session:1,finished:false};},
   invoke:async(...args)=>calls.push(['invoke',...args]),appearance:()=>calls.push(['appearance']),toast:value=>calls.push(['toast',value])
  };
  vm.createContext(context);vm.runInContext(moduleSource,context);
@@ -39,11 +42,12 @@ test('batch previews complete paths and live recycle eligibility',()=>{
 });
 test('batch forwards optional initial password and dedicated per-source destination',async()=>{
  const f=fixture();
- for(const [field,value] of Object.entries({inputs:'C:\\folder\\a\nD:\\b.7z',destination:'',conflict:'error',password:'test-only'})){
-  f.elements['oa-deep-'+field]={value};
- }
- f.elements['oa-deep-recycle']={checked:true};
- f.elements['oa-deep-smart']={checked:true};
+ f.api.batch(['C:\\folder\\a','D:\\b.7z'],{password:'test-only'});
+ assert.equal(f.elements['oa-deep-password'].disabled,false);
+ assert.equal(f.elements['oa-deep-password-reveal'].hidden,true);
+ f.elements['oa-deep-conflict'].value='error';
+ f.elements['oa-deep-recycle'].checked=true;
+ f.elements['oa-deep-smart'].checked=true;
  for(const id of ['open-after','close-after','remember'])f.elements['oa-deep-'+id]={checked:true};
  await f.handlers.click({target:{closest:()=>({dataset:{deepAction:'start-batch'}})},preventDefault(){}});
  const run=f.calls.find(c=>c[0]==='run');
@@ -67,7 +71,7 @@ test('archive-tab recycling follows the dialog-local intent and valid scope',()=
  const context={s:{archive:'a.zip',recycleAfter:true,deepRecycleAfter:false},archiveTabs:[],overlay:{querySelector:()=>submit},
   $:id=>id==='oa-recycle-after'?box:id==='oa-deep-extract'?{checked:deep}:id==='qa-conflict'?{value:policy}:null,
   canRecycleArchive:(_path,overwrite,partial)=>overwrite!=='skip'&&!partial,
-  extractSelection:()=>scope,updateExtractPreview:()=>{}};
+  extractSelection:()=>scope,syncExtractPassword:(selected,enabled)=>{assert.equal(selected,scope);assert.equal(enabled,deep);},updateExtractPreview:()=>{}};
  vm.createContext(context);vm.runInContext(source,context);
  context.syncRecycleOption();assert.equal(box.disabled,false);assert.equal(box.checked,false);
  box.dataset.wanted='true';

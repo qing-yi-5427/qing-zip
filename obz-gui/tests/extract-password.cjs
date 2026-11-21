@@ -4,8 +4,8 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '../obz-gui/frontend/app.js'), 'utf8');
-const deepSource = fs.readFileSync(path.join(__dirname, '../obz-gui/frontend/deep-extract.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+const deepSource = fs.readFileSync(path.join(__dirname, '../frontend/deep-extract.js'), 'utf8');
 const passwordLogic = source.slice(
   source.indexOf('function extractPasswordRequired('),
   source.indexOf('function archiveParent('),
