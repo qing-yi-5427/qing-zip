@@ -57,6 +57,10 @@ fn main() -> ExitCode {
         return ExitCode::from(obz_core::engine::selected_worker::run_child());
     }
     #[cfg(nana_selected_worker)]
+    if args.as_slice() == ["--internal-rar-list-worker"] {
+        return ExitCode::from(obz_core::engine::selected_worker::run_rar_list_child());
+    }
+    #[cfg(nana_selected_worker)]
     if args.as_slice() == ["--internal-zip-list-worker"] {
         return ExitCode::from(obz_core::engine::selected_worker::run_zip_list_child());
     }

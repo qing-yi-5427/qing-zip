@@ -23,8 +23,11 @@ function entryType(entry) {
   const dot = entry.leaf.lastIndexOf('.');
   return dot < 0 ? '' : entry.leaf.slice(dot + 1).toUpperCase();
 }
+const entryTimes = new WeakMap();
 function entryTime(entry, key) {
-  return entry[key+'Time'] ??= Date.parse((entry[key] || '').replace(' ', 'T'));
+  let times = entryTimes.get(entry);
+  if (!times) entryTimes.set(entry, times = {});
+  return times[key] ??= Date.parse((entry[key] || '').replace(' ', 'T'));
 }
 const flatNameOrder = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
 function compareEntries(a, b) {
@@ -104,7 +107,7 @@ function flatChildren(entries, folder) {
     if (!path.startsWith(folder) || path.length <= folder.length) continue;
     const leaf = path.slice(path.lastIndexOf('/')+1);
     if (entry.is_dir) items.set(path+'/', folderEntry(path+'/', entry));
-    else items.set(path, {...entry, name:path, leaf, size_known:entry.size_known !== false});
+    else items.set(path, entry.leaf===leaf && entry.name===path ? entry : {...entry, name:path, leaf, size_known:entry.size_known !== false});
     let end = path.lastIndexOf('/');
     while (end > 0 && end >= folder.length) {
       const parent = path.slice(0,end+1);
@@ -115,10 +118,20 @@ function flatChildren(entries, folder) {
   }
   return [...items.values()];
 }
-function indexFolderChildren(entries) {
-  const folders = new Map();
-  for (const entry of entries) {
-    const path = entry.name.replaceAll('\\','/').replace(/^\.\//,'').split('/').filter(Boolean).join('/');
+function archiveIndex(entries) {
+  let index = folderIndexes.get(entries);
+  if (index) return index;
+  const folders = new Map([['',new Map()]]);
+  const paths = new Set(['']);
+  let files = 0;
+  for (let i=0; i<entries.length; i++) {
+    const entry = entries[i];
+    if (!entry.is_dir) files++;
+    const original = entry.name;
+    let path = original.endsWith('/') ? original.slice(0,-1) : original;
+    if (path.startsWith('./') || path.startsWith('/') || path.endsWith('/') || path.includes('//') || path.includes('\\')) {
+      path = original.replaceAll('\\','/').replace(/^\.\//,'').replace(/^\/+|\/+$/g,'').replace(/\/{2,}/g,'/');
+    }
     if (!path) continue;
     let end = path.length;
     let directory = entry.is_dir;
@@ -126,27 +139,39 @@ function indexFolderChildren(entries) {
     while (end > 0) {
       const separator = path.lastIndexOf('/', end - 1);
       const parent = path.slice(0, separator + 1);
-      const leaf = path.slice(separator + 1, end);
       const name = path.slice(0, end) + (directory ? '/' : '');
       let children = folders.get(parent);
       if (!children) folders.set(parent, children = new Map());
       if (children.has(name) && !(directory && explicit)) break;
-      children.set(name, directory ? folderEntry(name, explicit ? entry : undefined)
-        : {...entry, name, leaf, is_dir:false, size_known:entry.size_known !== false});
+      children.set(name, explicit ? i : -1);
+      if (directory) paths.add(name);
       end = separator;
       directory = true;
       explicit = false;
     }
   }
-  return folders;
+  index = {folders,paths,files,directories:entries.length-files};
+  folderIndexes.set(entries, index);
+  return index;
 }
 function folderChildren(entries, folder) {
-  let index = folderIndexes.get(entries);
-  if (!index) {
-    index = indexFolderChildren(entries);
-    folderIndexes.set(entries, index);
+  const projection = [];
+  for (const [name,index] of archiveIndex(entries).folders.get(folder) || []) {
+    if (index===-1 || entries[index].is_dir) {
+      projection.push(folderEntry(name, entries[index]));
+    } else {
+      const entry=entries[index];
+      const leaf = name.slice(folder.length);
+      if (entry.leaf===leaf && entry.name===name) {
+        projection.push(entry);
+      } else {
+        const projected={};
+        for(const key of Object.keys(entry)) if(key!=='name') projected[key]=entry[key];
+        projection.push(Object.assign(projected,{name,leaf,is_dir:false,size_known:entry.size_known!==false}));
+      }
+    }
   }
-  return [...(index.get(folder)?.values() || [])];
+  return projection;
 }
 function searchEntries(){
  const folder=s.searchScope==='archive'?'':s.folder;
@@ -243,9 +268,10 @@ function jobStatus(j){
 }
 const deepCanContinue=j=>!!j.deep&&!j.deep.finished&&!j.deep.session_closed;
 function updateJobProgress(j,v){
- const {phase,percent,message,context,deep,work}=v.progress;
- const measured=j.background&&['recycling','complete'].includes(phase)?null:percent;
- Object.assign(j,{status:v.status,phase,percent:measured,message,context,deepProgress:deep,work,error:v.error});
+ const {phase,message,context,deep,work}=v.progress;
+ const sampled=QingProgress.sample(v.progress,j.progressSample);
+ Object.assign(j,{status:v.status,phase,percent:sampled.value,progressSample:sampled,message,context,deepProgress:deep,work,error:v.error});
+ QingProgress.observeOperation(j);
  const key=JSON.stringify([phase,context,work?.items_total,work?.bytes_total]);
  const now=performance.now(), bytes=work?.bytes_done;
  if(!j.rate||j.rate.key!==key||bytes<j.rate.bytes)j.rate={key,bytes,time:now};
@@ -307,7 +333,10 @@ function compressionOutputActions(job,archive,index,inline=false){
 function jobCard(j,inline=false){
  const details=inline===true,compact=details&&!!j.archives;
  const running=j.status==='running',message=j.error?taskError(j.error):j.summary||j.message||(j.work?'':'正在处理…');
- const phase=j.archives?compressionStageLabel(j):phaseLabels[j.phase]||(j.phase?'正在处理':'等待引擎响应');
+ const phase=running?(j.archives?compressionStageLabel(j):phaseLabels[j.phase]||(j.phase?'正在处理':'等待引擎响应')):jobStatus(j);
+ const percent=QingProgress.value(j);
+ const progressLabel=QingProgress.label(j,percent);
+ const stageMetric=running&&j.overall&&!j.cancelRequested?QingProgress.label({status:'running'},j.percent):'';
  const display=running?({'Verifying all archive entries':'正在验证全部归档条目',
   'Decoding archive into temporary storage':'正在解码到临时位置',
   'Reading archive directory':'正在读取压缩包目录',
@@ -316,10 +345,10 @@ function jobCard(j,inline=false){
   'Verifying complete solid archive in bounded memory':'正在验证固实压缩包',
   'Creating archive':'','Checking archive integrity':'','Archive created':'正在确认已创建的文件','Archive integrity verified':'正在确认检查结果',
   'Extraction complete':'正在确认解压结果'})[message]??message:message;
- return `<div class="qa-jobcard${compact?' oa-compression-inline':''}">
+ return `<div data-job-card="${j.id}" class="qa-jobcard${compact?' oa-compression-inline':''}">
   ${details?'':`<div class="qa-jobhead"><strong>${esc(j.label)}</strong><span class="qa-badge">${esc(jobStatus(j))}</span></div>`}
   ${j.path?`<p class="qa-sub">${esc(j.path)}</p>`:''}
-  ${running&&!details?`<p class="qa-sub">${esc(phase)+(j.startedAt==null?'':' · '+elapsedTime(j))}</p><progress aria-label="${esc(phase)}" max="100" ${j.percent==null?'':`value="${j.percent}"`}></progress>`:''}
+  ${!details&&(running||percent!==null)?`<p class="qa-sub">${esc(phase)} · ${progressLabel}${stageMetric?' · '+stageMetric:''}${j.startedAt==null?'':' · '+elapsedTime(j)}</p>${QingProgress.markup(`data-job-progress="${j.id}" aria-label="${esc(phase+' · '+progressLabel)}"`,percent,QingProgress.activity(j))}`:''}
   ${running&&j.archives?.length>1?`<p class="qa-sub">已处理 ${j.current} 个 · 后续待处理 ${j.archives.length-j.current-1} 个</p>`:''}
   ${running&&j.context?`<div class="qa-jobresult">${esc(j.context)}</div>`:''}
   ${running&&j.work?`<p class="qa-sub">${esc(jobMeasurements(j))}</p>`:''}
@@ -340,7 +369,7 @@ function renderInlineTask(){
  const running=job.status==='running';
  const text=running&&!job.cancelRequested?(job.archives&&(!job.phase||['compressing','testing'].includes(job.phase))
   ?compressionStageLabel(job):phaseLabels[job.phase]||(job.phase?'正在处理':'等待引擎响应')):jobStatus(job);
- const percent=running&&!job.cancelRequested&&Number.isFinite(job.percent)?job.percent:null;
+ const percent=QingProgress.value(job);
  const currentArchive=running?job.deepProgress:null;
  const path=currentArchive?.archive||job.path||job.archives?.[job.current]?.path||'';
  const headline=$('oa-task-toggle'),body=$('oa-task-body'),content=$('oa-task-content');
@@ -350,17 +379,19 @@ function renderInlineTask(){
  const detailsOpen=job.inlineDetails??(!running&&!!needsAttention);
  host.dataset.expanded=String(s.inlineExpanded);
  $('oa-task-title').textContent=job.label;
- $('oa-task-compact-phase').textContent=text+(percent===null?'':` · ${percent}%`);
- $('oa-task-phase').textContent=text;
- $('oa-task-metric').textContent=percent!==null?`本阶段 ${percent}%`:running&&job.startedAt!=null?elapsedTime(job):'';
+ const progressLabel=percent!==null||running&&!job.cancelRequested?QingProgress.label(job,percent):'';
+ const stageMetric=running&&job.overall&&!job.cancelRequested?QingProgress.label({status:'running'},job.percent):'';
+ $('oa-task-compact-phase').textContent=[text,progressLabel,stageMetric].filter(Boolean).join(' · ');
+ $('oa-task-phase').textContent=stageMetric?`${text} · ${stageMetric}`:text;
+ $('oa-task-metric').textContent=progressLabel;
  const file=$('oa-task-file');
  file.hidden=!path;
  file.textContent=(currentArchive?`第 ${currentArchive.depth} 层 · `:'')+filename(path);
  file.title=path;
  for(const id of ['oa-task-compact-progress','oa-task-progress']){
   const progress=$(id);
-  progress.hidden=!running||(id==='oa-task-compact-progress'?s.inlineExpanded:!s.inlineExpanded);
-  if(percent===null)progress.removeAttribute('value');else progress.value=percent;
+  progress.hidden=(!running&&percent===null)||(id==='oa-task-compact-progress'?s.inlineExpanded:!s.inlineExpanded);
+  QingProgress.render(progress,percent,QingProgress.activity(job));
  }
  cancel.hidden=!running||job.phase==='recycling'||!!job.cancelRequested;
  output.hidden=running||!job.outputPath;
@@ -431,14 +462,14 @@ function render(){if(overlay.dataset.page==='close-confirm')return;releaseListin
  const currentTab=archiveTabs.find(tab=>tab.id===currentTabId);
  const position=page.startsWith('archive:')?(transition?{top:currentTab?.scrollTop,left:currentTab?.scrollLeft}:{top:main.scrollTop,left:main.scrollLeft}):pagePositions.get(page);
  renderedPage=page;
- const pages={settings,associations:associationPage,advanced,tools:toolbox,tool:toolPage,history:historyPage,filemanager:()=>fileWorkspace.page()};main.innerHTML=s.page==='files'?(s.archive?archive():home()):`<div class="oa-page">${(pages[s.page]||toolbox)()}</div>`;renderChrome();if(s.page==='filemanager')fileWorkspace.mount(main);else fileWorkspace.suspend();if(s.page==='files'&&s.archive)rows();applyPagePosition(page,transition,position);updateColumnScroll();$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';renderInlineTask();$('oa-total').textContent=s.archive?`${s.entries.filter(e=>!e.is_dir).length} 个文件 · ${s.entries.filter(e=>e.is_dir).length} 个文件夹`:'';if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
+ const pages={settings,associations:associationPage,advanced,tools:toolbox,tool:toolPage,history:historyPage,filemanager:()=>fileWorkspace.page()};main.innerHTML=s.page==='files'?(s.archive?archive():home()):`<div class="oa-page">${(pages[s.page]||toolbox)()}</div>`;renderChrome();if(s.page==='filemanager')fileWorkspace.mount(main);else fileWorkspace.suspend();if(s.page==='files'&&s.archive)rows();applyPagePosition(page,transition,position);updateColumnScroll();$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';renderInlineTask();$('oa-total').textContent=s.archive?`${archiveIndex(s.entries).files} 个文件 · ${archiveIndex(s.entries).directories} 个文件夹`:'';if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
 
 function navigate(v){if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}if(renderedPage==='archive:'+currentTabId)saveCurrentTab();rememberPage();close(false);if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();}
 
 function dialog(title,body,footer,layout=''){clearToast();overlay.dataset.page='';returnFocus=document.activeElement;overlay.hidden=false;overlay.innerHTML=`<section class="qa-dialog ${layout}" role="dialog" aria-modal="true" aria-labelledby="qa-dialog-title"><div class="qa-dialog-header"><h2 id="qa-dialog-title">${esc(title)}</h2>${btn('关闭','close','quiet')}</div>${layout?`<div class="oa-dialog-body">${body}</div>`:body}<div id="qa-formerror" class="qa-error" role="alert"></div><div class="qa-dialog-footer">${footer}</div></section>`;root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;$('oa-menu').inert=true;$('oa-toolbar').inert=true;$('oa-archive-tabs').inert=true;overlay.querySelector('input,textarea,button')?.focus();}
-function close(restoreFocus=true){if(overlay.dataset.page==='home-inspecting'&&homeIntake){stopHomeIntake();return;}if($('qa-edit-inputs')?.closest('.qa-dialog').getAttribute('aria-busy')==='true'&&overlay.dataset.page!=='close-confirm')return;if($('qa-property-status')&&Number.isInteger(s.active))invoke('cancel_operation',{id:s.active}).catch(()=>{});if(pendingNestedOpen&&!openingArchive&&!s.active){const orphan=pendingNestedOpen.session;pendingNestedOpen=null;if(orphan)invoke('close_nested',{ids:[orphan.id],discard:false}).catch(error);}$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'&&!s.backgroundExtraction){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}if(overlay.dataset.page==='home-review')homeReview=null;overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;if($('oa-task-panel'))$('oa-task-panel').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(restoreFocus){if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}}
+function close(restoreFocus=true){if(s.active&&$('qa-open-status')?.closest('.qa-dialog')?.getAttribute('aria-busy')==='true'){action('canceljob').catch(error);return;}if(overlay.dataset.page==='home-inspecting'&&homeIntake){stopHomeIntake();return;}if($('qa-edit-inputs')?.closest('.qa-dialog').getAttribute('aria-busy')==='true'&&overlay.dataset.page!=='close-confirm')return;if($('qa-property-status')&&Number.isInteger(s.active))invoke('cancel_operation',{id:s.active}).catch(()=>{});if(pendingNestedOpen&&!openingArchive&&!s.active){const orphan=pendingNestedOpen.session;pendingNestedOpen=null;if(orphan)invoke('close_nested',{ids:[orphan.id],discard:false}).catch(error);}$('oa-menu').hidden=true;if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'&&!s.backgroundExtraction){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}if(overlay.dataset.page==='home-review')homeReview=null;overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;if($('oa-task-panel'))$('oa-task-panel').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(restoreFocus){if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}}
 
-function taskError(e){const text=String(e);if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';return text;}
+function taskError(e){const text=String(e);const directoryError=archiveDirectoryError(text);if(directoryError)return directoryError;if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';return text;}
 function showPreservationNotice(message){dialog('操作提示',`<p>${esc(message)}</p>`,btn('关闭','close'));}
 function error(e){const message=taskError(e);if(message==='任务已取消'||message==='任务已取消。内层工作副本已保留，可重试或另存为。'){toast(message);return;}if(!overlay.hidden&&$('qa-formerror'))$('qa-formerror').textContent=message;else toast(message);}
 async function copySelectedFiles(){
@@ -455,15 +486,22 @@ async function copySelectedFiles(){
  }
  toast('文件已复制到剪贴板，可在资源管理器中粘贴。');
 }
-async function run(request,label,{silent=false,recycleAfter=false,startJob=null,temporaryOutput=false}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');const background=!silent&&!temporaryOutput&&['extract','deep-extract','deep-resume','deep-discard'].includes(request.operation);
+async function run(request,label,{silent=false,recycleAfter=false,startJob=null,temporaryOutput=false,onProgress=null,batch=null}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');const background=!silent&&!temporaryOutput&&['extract','deep-extract','deep-resume','deep-discard'].includes(request.operation);
  const startedAt=performance.now();
- s.backgroundExtraction=background;s.active='starting';if(background)updateToolbar();let id;try{id=await (startJob?startJob(request):invoke('start_operation',{request,recycleAfter}));}catch(e){s.active=null;s.backgroundExtraction=false;if(background)updateToolbar();throw e;}const j={id,label,path:request.path||'',status:'running',percent:null,startedAt,background};s.jobs.push(j);s.active=id;let autoExpand;
+ s.backgroundExtraction=background;s.active='starting';if(background)updateToolbar();let id;try{id=await (startJob?startJob(request):invoke('start_operation',{request,recycleAfter}));}catch(e){s.active=null;s.backgroundExtraction=false;if(background)updateToolbar();throw e;}const j={id,label,path:request.path||'',status:'running',percent:null,startedAt,background,operation:request.operation,overall:batch?{...batch}:null};s.jobs.push(j);s.active=id;let autoExpand;
  if(background){
   close();s.inlineTask=id;s.inlineExpanded=false;s.inlineToggled=false;renderInlineTask();
   autoExpand=setTimeout(()=>{
    if(s.active===id&&!s.inlineToggled){s.inlineExpanded=true;renderInlineTask();}
   },300);
- }else if(!silent){close();s.view='jobs';render();}try{for(;;){const v=await invoke('wait_operation',{id});updateJobProgress(j,v);if(v.status!=='running'){if(v.status==='complete'||v.result?.deep_session){if(v.result?.deep_session)j.deep=v.result;if(['add','archive-add','archive-move','archive-copy','delete','rename','comment-set','nested-save'].includes(request.operation))await syncNestedSessions();if(temporaryOutput){j.summary='文件已准备好';return v.result;}j.outputPath=j.deep?v.result?.outputs?.[0]:v.result?.destination||v.result?.outputs?.[0];const protection=v.result?.input_atime;if(protection&&(protection.unavailable_handles||protection.unconfirmed_sources||protection.backend_best_effort)){j.timeWarning=QingFileWorkspace.preservationNotice(v.result);j.timeReasons=[...new Set((protection.warnings||[]).map(w=>w.source+'：'+({alternate_stream_proof:'附加数据检查无法完整保留访问时间',encrypted_source_proof:'加密文件检查无法确认访问时间保护',enhanced_open:'无法取得所需的文件权限',enhanced_reopen:'无法取得所需的文件权限',suppress_updates:'系统未能启用访问时间保护'}[w.phase]||'无法确认访问时间保护')))];if(protection.backend_best_effort)j.timeReasons.push('未能逐项确认外部引擎的访问时间保护');}j.partial=!!(v.result?.partial||v.result?.retained_sources?.length||v.result?.metadata_not_merged?.length);j.summary=v.result?.summary|| (v.result?.retained_sources?.length?`已移动 ${v.result.moved||0} 项；${v.result.retained_sources.length} 个来源仍保留，目标副本已保留。${v.result.retained_reasons?.[0]?`\n${v.result.retained_reasons[0]}`:''}`:v.result?.metadata_not_merged?.length?`已复制 ${v.result.copied||0} 个文件；${v.result.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${v.result.metadata_not_merged[0]}`:v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成');return v.result;}throw new Error(v.error||'任务已取消');}if(background)renderInlineTask();else if(s.view==='jobs')renderProgress();
+ }else if(!silent){close();s.view='jobs';render();}try{for(;;){let v=await invoke('wait_operation',{id,deferListing:request.operation==='list'});
+  if(request.operation==='list'&&v.status==='complete'){
+   try{v.result=QingArchiveListing.read(await invoke('take_archive_listing',{id}));}
+   catch(error){v={...v,status:'failed',error:String(error)};}
+  }
+  if(request.operation==='list'&&j.cancelRequested&&v.status==='complete')v={...v,status:'cancelled',error:'operation cancelled'};
+  updateJobProgress(j,v);onProgress?.(j);if(v.status!=='running'){if(v.status==='complete'||v.result?.deep_session){if(v.result?.deep_session)j.deep=v.result;if(['add','archive-add','archive-move','archive-copy','delete','rename','comment-set','nested-save'].includes(request.operation))await syncNestedSessions();if(v.result?.valid===false){j.status='failed';j.error='完整性检查未通过。';}if(temporaryOutput){j.summary='文件已准备好';return v.result;}j.outputPath=j.deep?v.result?.outputs?.[0]:v.result?.destination||v.result?.outputs?.[0];const protection=v.result?.input_atime;if(protection&&(protection.unavailable_handles||protection.unconfirmed_sources||protection.backend_best_effort)){j.timeWarning=QingFileWorkspace.preservationNotice(v.result);j.timeReasons=[...new Set((protection.warnings||[]).map(w=>w.source+'：'+({alternate_stream_proof:'附加数据检查无法完整保留访问时间',encrypted_source_proof:'加密文件检查无法确认访问时间保护',enhanced_open:'无法取得所需的文件权限',enhanced_reopen:'无法取得所需的文件权限',suppress_updates:'系统未能启用访问时间保护'}[w.phase]||'无法确认访问时间保护')))];if(protection.backend_best_effort)j.timeReasons.push('未能逐项确认外部引擎的访问时间保护');}j.partial=!!(j.partial||(recycleAfter&&v.result?.recycled!==true)||v.result?.partial||v.result?.retained_sources?.length||v.result?.metadata_not_merged?.length);if(batch&&QingProgress.complete(j)){batch.done++;j.overall.done=batch.done;}j.summary=v.result?.summary|| (v.result?.retained_sources?.length?`已移动 ${v.result.moved||0} 项；${v.result.retained_sources.length} 个来源仍保留，目标副本已保留。${v.result.retained_reasons?.[0]?`\n${v.result.retained_reasons[0]}`:''}`:v.result?.metadata_not_merged?.length?`已复制 ${v.result.copied||0} 个文件；${v.result.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${v.result.metadata_not_merged[0]}`:v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成');return v.result;}throw new Error(v.error||'任务已取消');}if(background)renderInlineTask();else if(s.view==='jobs')renderProgress();
+  renderHistoryJob(j);
  }}finally{
   if(autoExpand)clearTimeout(autoExpand);
   j.finishedAt=performance.now();
@@ -474,6 +512,7 @@ async function run(request,label,{silent=false,recycleAfter=false,startJob=null,
    renderInlineTask();updateToolbar();if(s.page==='history')render();
   }
   else if(s.view==='jobs')renderProgress();
+  renderHistoryJob(j);
   schedulePendingQueue();
  }}
 let nextCompressionJob=1;
@@ -490,6 +529,7 @@ async function runCompressionStage(job, request){
    if(snapshot.status!=='running')return snapshot;
    updateJobProgress(job,snapshot);
    renderInlineTask();
+   renderHistoryJob(job);
   }
  }finally{
   await invoke('forget_operation',{id}).catch(()=>{});
@@ -501,9 +541,10 @@ async function runCompression(requests, verify, checkOptions={}, recheck=null){
  if(tabBusy()||closingArchiveTabs||finishingArchiveTabs||removingArchiveTabs)throw Error('请先等待或取消当前任务。');
  const draft=recheck?null:overlay.querySelector('.qa-dialog');
  const rechecked=recheck?.job.archives[recheck.index];
+ const stageCount=requests.length*(verify&&!recheck?2:1);
  const job={id:`compression-${nextCompressionJob++}`,label:recheck?'检查压缩文件':'新建压缩文件',status:'running',startedAt:performance.now(),background:true,
   archives:requests.map(request=>({path:request.path,state:rechecked?'unverified':'pending',outputs:rechecked?.outputs||[],
-   encrypted:rechecked?.encrypted||!!request.options?.password})),current:0,stage:recheck?'verify':'create',verify,recheck:!!recheck};
+   encrypted:rechecked?.encrypted||!!request.options?.password})),current:0,stage:recheck?'verify':'create',verify,recheck:!!recheck,overall:stageCount>1?{done:0,total:stageCount}:null};
  s.compressionJob=job;
  s.active='starting';
  s.backgroundExtraction=true;
@@ -515,7 +556,7 @@ async function runCompression(requests, verify, checkOptions={}, recheck=null){
  renderInlineTask();
  updateToolbar();
  const runStage=async (stage, state, request)=>{
-  Object.assign(job,{stage,phase:null,percent:null,message:'',context:null,work:null,rate:null});
+  Object.assign(job,{stage,phase:null,percent:null,progressSample:null,message:'',context:null,work:null,rate:null});
   const archive=job.archives[job.current];
   archive.state=state;
   renderInlineTask();
@@ -544,6 +585,7 @@ async function runCompression(requests, verify, checkOptions={}, recheck=null){
      break;
     }
     archive.state=verify?'unverified':'created';
+    if(job.overall){job.overall.done++;job.overall.active=0;}
     archive.warning=QingFileWorkspace.preservationNotice(result);
    }
    if(verify&&!job.cancelRequested){
@@ -555,6 +597,7 @@ async function runCompression(requests, verify, checkOptions={}, recheck=null){
      break;
     }
     archive.state='verified';
+    if(job.overall){job.overall.done++;job.overall.active=0;}
    }
   }
  }finally{
@@ -649,10 +692,16 @@ function forgetRecycledArchives(paths){
  render();
 }
 async function finishExtraction(source,dest,result,{recycle=false,openAfter=false,closeAfter=false}={}){if(recycle){const last=s.jobs.at(-1);if(result.recycled){s.recent=s.recent.filter(p=>p!==source);localStorage.setItem('qing-recent',JSON.stringify(s.recent));discardArchiveTab(source,{preserveJob:true});if(last)last.summary+='；原压缩包已移入回收站。';render();}else{const message='解压已完成，但原压缩包未移入回收站：'+(result.recycle_error||'原压缩包已保留。');if(last){last.summary=message;last.partial=true;}s.inlineExpanded=true;renderProgress();toast(message);}}if(openAfter)await invoke('reveal_path',{path:result.destination||dest});if(closeAfter&&(!recycle||result.recycled))await invoke('window_action',{action:'close'});return !recycle||!!result.recycled;}
-async function openArchive(path,password='',{refresh=false,nested=null,folder='',listing=null,show=true,isCurrent=()=>true}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=listing?.path??await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;if(show)switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=listing??await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!$('qa-open-path')||!!$('oa-nested-password')});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});if(!isCurrent())return;const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};if(nested)Object.assign(tab,{nestedId:nested.id,parentArchive:nested.parent,nestedMember:nested.member,dirty:nested.dirty,conflict:nested.conflict});Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:folder&&(folderChildren(r.entries,folder).length||r.entries.some(entry=>entry.is_dir&&entry.name===folder))?folder:'',flatView:refresh&&!!s.flatView,search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);if(show)navigate('archive');}catch(e){throw new Error(archiveOpenMessage(e,!!password));}finally{openingArchive=false;}}
+async function openArchive(path,password='',{refresh=false,nested=null,folder='',listing=null,show=true,isCurrent=()=>true,onProgress=null}={}){if(openingArchive||s.active||$('qa-tools')?.contentWindow?.obzBusy)throw Error('请先等待或取消当前任务。');openingArchive=true;try{path=listing?.path??await invoke('canonical_archive_path',{path});if(typeof path!=='string'||!path)throw Error('无法解析压缩文件路径。');const existing=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(path));if(existing&&!refresh){openingArchive=false;if(show)switchArchiveTab(existing.id);rememberRecent(path);return;}const codepage=refresh?s.codepage||null:null,r=listing??await run({operation:'list',path,options:{password:password||null,codepage}},'打开压缩包',{silent:!!onProgress,onProgress});saveCurrentTab();resetPreviewState();await invoke('clear_preview_cache').catch(()=>{});if(!isCurrent())return;const defaults=load('qing-preferences',{}),tab=existing||{id:String(nextTabId++)};if(nested)Object.assign(tab,{nestedId:nested.id,parentArchive:nested.parent,nestedMember:nested.member,dirty:nested.dirty,conflict:nested.conflict});Object.assign(tab,{archive:path,password,entries:r.entries,codepage,folder:folder&&archiveIndex(r.entries).paths.has(folder)?folder:'',flatView:refresh&&!!s.flatView,search:'',sort:refresh?s.sort:'name',reverse:refresh?s.reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,listStyle:refresh?s.listStyle:(defaults.listStyle==='icons'?'icons':'details'),iconSize:refresh?s.iconSize:Math.max(80,Math.min(256,Number(defaults.iconSize)||144)),scrollTop:0,treeScroll:0});if(!existing)archiveTabs.push(tab);currentTabId=tab.id;applyTab(tab);rememberRecent(path);if(show)navigate('archive');}catch(e){throw new Error(archiveOpenMessage(e,!!password));}finally{openingArchive=false;}}
 
 
-function archiveOpenMessage(error,passwordProvided=false){const message=String(error);if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
+function archiveDirectoryError(message){
+ if(/^(?:Error:\s*)?RAR directory exceeds supported entry limit$/i.test(message))return '压缩包目录的条目数超出支持上限，无法完整读取。';
+ if(/^(?:Error:\s*)?(?:RAR directory exceeds supported metadata limit|engine listing exceeds supported limit)$/i.test(message))return '压缩包目录的元数据超出支持上限，无法完整读取。';
+ if(/^(?:Error:\s*)?RAR archive is missing a required volume$/i.test(message))return '压缩包缺少必要分卷，请将所有分卷放在同一目录后重试。';
+ return '';
+}
+function archiveOpenMessage(error,passwordProvided=false){const message=String(error);const directoryError=archiveDirectoryError(message);if(directoryError)return directoryError;if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
 function openDialog(path='',{allowDeep=false}={}){s.view=s.archive?'archive':'home';dialog('打开压缩包',`<label class="qa-field">文件路径<div class="qa-inlinefield"><input id="qa-open-path" value="${esc(path)}">${btn('浏览…','browse-open')}</div></label><label class="qa-field">密码（需要时填写）<input id="qa-open-password" type="password" autocomplete="off"></label>`,btn('取消','close')+(allowDeep?btn('改为深度解压','open-submit-deep'):'')+btn('打开','open-submit','primary'));}
 function appendArchiveInputs(input, paths) {
   if (!input?.isConnected || !Array.isArray(paths)) return;
@@ -699,11 +748,11 @@ async function routeHomeArchives(paths){
   const isCurrent=()=>homeIntake===intake;
   const showStatus=()=>{
     const status=$('oa-home-identify-status');
-    if(status)status.textContent='正在识别 '+filename(intake.path)+'…';
+    if(status)status.textContent='正在识别 '+filename(intake.path)+' · 进度待定';
   };
   intake.progress=setTimeout(()=>{
     if(!isCurrent()||!overlay.hidden)return;
-    dialog('识别压缩包','<p id="oa-home-identify-status" class="qa-sub" role="status"></p>',btn('停止识别','close'));
+    dialog('识别压缩包','<p id="oa-home-identify-status" class="qa-sub" role="status"></p>'+QingProgress.markup('aria-labelledby="oa-home-identify-status"'),btn('停止识别','close'));
     overlay.dataset.page='home-inspecting';
     showStatus();
   },220);
@@ -713,8 +762,9 @@ async function routeHomeArchives(paths){
       intake.path=path;
       showStatus();
       try{
-        const result=await invoke('inspect_home_archive',{path});
+        const body=await invoke('inspect_home_archive',{path});
         if(!isCurrent())return;
+        const result=QingArchiveListing.read(body);
         if(result.route==='browse'){
           await openArchive(result.path,'',{listing:result,show:false,isCurrent});
           if(!isCurrent())return;
@@ -734,6 +784,7 @@ async function routeHomeArchives(paths){
 }
 function homeReviewReason(reason){
   const message=archiveOpenMessage(reason);
+  if(/目录的(?:条目数|元数据)超出支持上限|缺少必要分卷/.test(message))return {text:message,choice:'skip'};
   if(/密码|password required/i.test(message))return {text:'需要密码，选择“尝试打开”后输入。',choice:'browse'};
   if(/access (?:is )?denied|permission denied|拒绝访问|权限/i.test(message))return {text:'无法读取文件，请检查访问权限。',choice:'skip'};
   if(/not found|cannot find|no such file|找不到|不存在/i.test(message))return {text:'找不到文件，请确认路径后重新选择。',choice:'skip'};
@@ -1306,7 +1357,40 @@ case'compression-advanced':{
  if(!panel.hidden)toggle.scrollIntoView({block:'start'});
  break;
 }
-case'destination-up':{const path=$('qa-destination').value.replace(/[\\/]+$/,'').replace(/[\\/][^\\/]+$/,'');await setDestination(path);break;}case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'home-smart':await pickHomeArchives();break;case'home-review-submit':submitHomeReview();break;case'open-submit-deep':{const path=$('qa-open-path').value.trim(),password=$('qa-open-password').value;if(path)deepExtract.batch([path],{password,allowBrowse:true});break;}case'open':{if(homeIntakeAvailable()){await pickHomeArchives();break;}const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0])$('qa-open-path').value=p[0];break;}case'open-submit':{const pathInput=$('qa-open-path'),passwordInput=$('qa-open-password'),dialogNode=pathInput?.closest('.qa-dialog');if(!dialogNode||pathInput.disabled)break;const path=pathInput.value.trim(),password=passwordInput.value;if(!path)throw Error('请选择压缩包。');const controls=[pathInput,passwordInput,...dialogNode.querySelectorAll('[data-action=open-submit],[data-action=browse-open]')],message=dialogNode.querySelector('#qa-formerror');message.textContent='';let status=dialogNode.querySelector('#qa-open-status');if(!status){status=document.createElement('p');status.id='qa-open-status';status.className='qa-sub';status.setAttribute('role','status');message.before(status);}status.textContent='正在打开压缩文件…';dialogNode.setAttribute('aria-busy','true');controls.forEach(control=>control.disabled=true);try{await openArchive(path,password);}catch(e){if(dialogNode.isConnected&&overlay.contains(dialogNode))message.textContent=String(e);else toast(String(e));}finally{if(dialogNode.isConnected&&overlay.contains(dialogNode)){controls.forEach(control=>control.disabled=false);dialogNode.removeAttribute('aria-busy');status.textContent='';}}break;}
+case'destination-up':{const path=$('qa-destination').value.replace(/[\\/]+$/,'').replace(/[\\/][^\\/]+$/,'');await setDestination(path);break;}case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'home-smart':await pickHomeArchives();break;case'home-review-submit':submitHomeReview();break;case'open-submit-deep':{const path=$('qa-open-path').value.trim(),password=$('qa-open-password').value;if(path)deepExtract.batch([path],{password,allowBrowse:true});break;}case'open':{if(homeIntakeAvailable()){await pickHomeArchives();break;}const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0])$('qa-open-path').value=p[0];break;}case'open-submit':{
+ const pathInput=$('qa-open-path'),passwordInput=$('qa-open-password'),dialogNode=pathInput?.closest('.qa-dialog');
+ if(!dialogNode||pathInput.disabled)break;
+ const path=pathInput.value.trim(),password=passwordInput.value;
+ if(!path)throw Error('请选择压缩包。');
+ const controls=[pathInput,passwordInput,...dialogNode.querySelectorAll('[data-action=open-submit],[data-action=browse-open],[data-action=open-submit-deep]')];
+ const message=dialogNode.querySelector('#qa-formerror');
+ const closeButton=dialogNode.querySelector('[data-action=close]');
+ const loading=document.createElement('div');
+ loading.innerHTML='<p id="qa-open-status" class="qa-sub" role="status">正在打开压缩文件 · 进度待定</p>'+QingProgress.markup('aria-labelledby="qa-open-status"');
+ message.textContent='';
+ message.before(loading);
+ dialogNode.setAttribute('aria-busy','true');
+ controls.forEach(control=>control.disabled=true);
+ closeButton.textContent='取消读取';
+ try{
+  await openArchive(path,password,{onProgress:job=>{
+   const percent=QingProgress.value(job);
+   QingProgress.render(loading.lastElementChild,percent);
+   loading.firstElementChild.textContent=job.cancelRequested?'正在取消…':`正在打开压缩文件 · ${percent===null?'进度待定':percent+'%'}`;
+  }});
+ }catch(e){
+  if(dialogNode.isConnected&&overlay.contains(dialogNode))message.textContent=taskError(e);
+  else toast(String(e));
+ }finally{
+  if(dialogNode.isConnected&&overlay.contains(dialogNode)){
+   controls.forEach(control=>control.disabled=false);
+   dialogNode.removeAttribute('aria-busy');
+   closeButton.textContent='取消';
+   loading.remove();
+  }
+ }
+ break;
+}
 case'compress':compress();break;case'compress-files':{const input=$('qa-inputs');appendArchiveInputs(input,await invoke('pick_files_for_zip'));break;}case'compress-folder':{const input=$('qa-inputs');appendArchiveInputs(input,[await invoke('pick_folder')]);break;}case'compress-save':{const save=$('qa-save'),separate=$('oa-separate').checked,path=save.value.trim();const p=separate?await invoke('pick_folder'):await invoke('pick_archive_save',{format:$('qa-format').value,suggestion:path});if(p&&save.isConnected&&separate===$('oa-separate').checked){save.value=p;changeCompressionSave(save);}break;}
 case'startcompress':{const inputs=lines('qa-inputs'),format=$('qa-format').value,separate=$('oa-separate').checked,verify=$('oa-test-after').checked;
 const password=validateCompressionPassword(format),options={level:Number($('qa-level').value)};if(password){options.password=password;options.encryption=$('oa-encryption').value;}
@@ -1338,7 +1422,7 @@ case'rename':if(s.selected.size!==1)throw Error('请只选中一个要重命名�
 case'rename-submit':{const name=$('qa-rename').value;if(!name)throw Error('名称不能为空。');await run({operation:'rename',path:s.archive,inputs:[[...s.selected][0],name],options:archiveOptions()},'重命名');await openArchive(s.archive,s.password,{refresh:true});break;}
 case'shell-settings':showTool('shell-enable','资源管理器右键入口');break;
 case'batch-pick':{const p=await invoke('pick_files');$('qa-batch-inputs').value=p.join('\n');break;}case'batch-dest':{const p=await invoke('pick_folder');if(p)$('qa-batch-dest').value=p;break;}case'batch-stop':s.batchStop=true;if(s.active)await invoke('cancel_operation',{id:s.active});toast('队列已停止');break;
-case'batch-start':{const paths=lines('qa-batch-inputs'),operation=$('qa-batch-op').value,dest=$('qa-batch-dest').value.trim();if(!paths.length||(operation==='extract'&&!dest))throw Error('请填写压缩包列表和解压目标。');if(s.active)throw Error('已有任务正在运行。');s.batchStop=false;close();s.view='jobs';render();for(const [i,path] of paths.entries()){if(s.batchStop)break;try{await run({operation,path,dest:operation==='extract'?dest+'\\'+(i+1)+'-'+filename(path).replace(/\.[^.]+$/,''):'',options:{overwrite:s.overwrite}},`批量 ${i+1}/${paths.length} · ${operation==='test'?'检查':'解压'}`);}catch(e){toast(String(e));}}break;}
+case'batch-start':{const paths=lines('qa-batch-inputs'),operation=$('qa-batch-op').value,dest=$('qa-batch-dest').value.trim();if(!paths.length||(operation==='extract'&&!dest))throw Error('请填写压缩包列表和解压目标。');if(s.active)throw Error('已有任务正在运行。');s.batchStop=false;const batch={done:0,total:paths.length};close();s.view='jobs';render();for(const [i,path] of paths.entries()){if(s.batchStop)break;try{await run({operation,path,dest:operation==='extract'?dest+'\\'+(i+1)+'-'+filename(path).replace(/\.[^.]+$/,''):'',options:{overwrite:s.overwrite}},`批量 ${i+1}/${paths.length} · ${operation==='test'?'检查':'解压'}`,{batch});}catch(e){toast(String(e));}}break;}
 case'profile-save':{const name=$('qa-profile-name').value.trim();if(!name)throw Error('请输入预设名称。');s.profiles=s.profiles.filter(p=>p.name!==name);s.profiles.push({name,format:$('qa-profile-format').value,level:Number($('qa-profile-level').value)});localStorage.setItem('qing-profiles',JSON.stringify(s.profiles));render();break;}
 }}
 
@@ -1357,14 +1441,7 @@ const archiveFolderTrees = new WeakMap();
 function folderTree(entries, collapsed) {
   let tree = archiveFolderTrees.get(entries);
   if (!tree) {
-    const folders = new Set(['']);
-    for (const entry of entries) {
-      const parts = entry.name.replaceAll('\\','/').split('/').filter(Boolean);
-      if (!entry.is_dir) parts.pop();
-      let path = '';
-      for (const part of parts) { path += part + '/'; folders.add(path); }
-    }
-    const names = [...folders].sort();
+    const names = [...archiveIndex(entries).paths].sort();
     tree = names.map((path, i) => ({
       path, depth:path.split('/').filter(Boolean).length,
       hasChildren:i + 1 < names.length && names[i + 1].startsWith(path)
@@ -1751,7 +1828,55 @@ function syncRecycleOption(){
  }
  updateExtractPreview();
 }
-function refreshJobContent(html){const content=$('oa-dialog-content');if(!content)return false;const focused=document.activeElement,action=content.contains(focused)?focused.dataset.action:null;content.innerHTML=html;if(action){const target=Array.from(content.querySelectorAll('[data-action]')).find(b=>b.dataset.action===action&&!b.disabled)||content.querySelector('[data-action="reveal-output"]')||overlay.querySelector('.qa-dialog-footer [data-action="close"]');if(target){if(target.dataset.action==='close')target.disabled=!!s.active;if(!target.disabled)target.focus({preventScroll:true});}}return true;}
+function replaceSiblings(current,next){
+ while(current.previousSibling)current.previousSibling.remove();
+ while(current.nextSibling)current.nextSibling.remove();
+ while(next.previousSibling)current.before(next.parentNode.firstChild);
+ while(next.nextSibling)current.after(next.parentNode.lastChild);
+}
+function refreshJobMarkup(host,html){
+ const current=host.querySelector('[data-job-progress]');
+ if(current){
+  const template=document.createElement('template');
+  template.innerHTML=html;
+  const next=template.content.querySelector('[data-job-progress]');
+  if(next?.dataset.jobProgress===current.dataset.jobProgress){
+   current.setAttribute('aria-label',next.getAttribute('aria-label'));
+   const amount=next.getAttribute('aria-valuenow');
+   QingProgress.render(current,amount===null?null:Number(amount),next.hasAttribute('data-progress-activity'));
+   const currentCard=current.parentNode,nextCard=next.parentNode;
+   if(currentCard.parentNode===host)replaceSiblings(currentCard,nextCard);
+   replaceSiblings(current,next);
+   return;
+  }
+ }
+ host.innerHTML=html;
+}
+function renderHistoryJob(job){
+ if(s.page!=='history')return;
+ const card=main.querySelector('[data-job-card="'+job.id+'"]');
+ if(!card)return;
+ const active=document.activeElement;
+ const action=card.contains(active)?active.dataset.action:null;
+ const template=document.createElement('template');
+ template.innerHTML=jobCard(job);
+ const next=template.content.firstElementChild;
+ const current=card.querySelector('[data-job-progress]');
+ const nextBar=next.querySelector('[data-job-progress]');
+ if(current&&nextBar){
+  current.setAttribute('aria-label',nextBar.getAttribute('aria-label'));
+  const amount=nextBar.getAttribute('aria-valuenow');
+  QingProgress.render(current,amount===null?null:Number(amount),nextBar.hasAttribute('data-progress-activity'));
+  replaceSiblings(current,nextBar);
+ }else{
+  card.replaceChildren(...next.childNodes);
+ }
+ if(action){
+  const control=[...card.querySelectorAll('[data-action]')].find(button=>button.dataset.action===action&&!button.disabled);
+  control?.focus({preventScroll:true});
+ }
+}
+function refreshJobContent(html){const content=$('oa-dialog-content');if(!content)return false;const focused=document.activeElement,action=content.contains(focused)?focused.dataset.action:null;refreshJobMarkup(content,html);if(action){const target=Array.from(content.querySelectorAll('[data-action]')).find(b=>b.dataset.action===action&&!b.disabled)||content.querySelector('[data-action="reveal-output"]')||overlay.querySelector('.qa-dialog-footer [data-action="close"]');if(target){if(target.dataset.action==='close')target.disabled=!!s.active;if(!target.disabled)target.focus({preventScroll:true});}}return true;}
 function renderProgress(){renderInlineTask();if(overlay.dataset.page==='close-confirm')return;if(s.view!=='jobs')return;if(!refreshJobContent(jobs()))render();overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';updateToolbar();}
 const toolCatalog=[['深度解压',[['deep-batch','批量深度解压','自动识别并展开多层压缩包','folder-output']]],['归档维护',[['test','完整性检查','检查文件是否完整','shield'],['repair','修复 ZIP 压缩包','恢复受损 ZIP 中可读取的内容','archive'],['checksum','文件校验值','计算 SHA、BLAKE、CRC 与更多校验值','check'],['preview','图片预览','查看压缩包内的图片','file']]],['效率与安全',[['file-split','分割文件','将大文件分成多个独立小文件','file'],['file-combine','合并文件','按卷序还原分割的文件','file'],['benchmark','引擎基准测试','测量 LZMA 压缩和解压能力','grid'],['batch','批量处理','为多个压缩文件执行同一操作','grid'],['profiles','压缩预设','保存并复用常用压缩参数','settings'],['vault-list','密码管理器','管理本机保存的归档密码','shield'],['recover','密码恢复','按候选密码或字符集有限尝试，不保证成功','archive']]],['更多',[['associations','文件关联设置','选择文件格式，并前往 Windows 设置默认应用','settings'],['all','全部归档操作','列表、创建、解压、更新、注释等','grid'],['shell-enable','资源管理器右键入口','添加或移除文件右键操作','settings'],['capabilities','支持能力','查看当前引擎与格式支持情况','file']]]];
 function toolbox(){return `<div class="qa-heading"><h1>工具箱</h1></div><button class="oa-toolrow" data-view="filemanager">${icon('folder-open')}<span><strong>文件管理</strong><small>在两个位置之间复制、移动、添加或解压</small></span>${icon('chevron')}</button>${toolCatalog.map(([group,items])=>`<section class="oa-toolgroup"><h3>${group}</h3>${items.map(([op,title,desc,ico])=>`<button class="oa-toolrow" ${op==='deep-batch'||op==='batch'||op==='profiles'||op==='associations'?`data-action="${op}"`:op==='all'?'data-action="all-tools"':`data-launch-tool="${op}" data-tool-title="${title}"`}>${icon(ico)}<span><strong>${title}</strong><small>${desc}</small></span>${icon('chevron')}</button>`).join('')}</section>`).join('')}`;}

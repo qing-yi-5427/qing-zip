@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 const block=source.slice(source.indexOf('const archiveFolderTrees ='),source.indexOf('// End folder tree model.'));
-const context={};vm.createContext(context);vm.runInContext(block,context);
+const context={};vm.createContext(context);vm.runInContext(source.slice(source.indexOf('const folderViews ='),source.indexOf('function searchEntries()'))+block,context);
 const tree=(entries,collapsed=[])=>JSON.parse(JSON.stringify(context.folderTree(entries,new Set(collapsed))));
 test('implicit, explicit and Windows-separated folders are deduplicated',()=>{
  assert.deepEqual(tree([{name:'a/b/c.txt'},{name:'a/',is_dir:true},{name:'a/b/d.txt'},{name:'empty/',is_dir:true},{name:'windows\\child.txt'}]),[

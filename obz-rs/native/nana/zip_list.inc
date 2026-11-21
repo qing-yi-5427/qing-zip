@@ -1,30 +1,35 @@
 // Read-only isolated ZIP directory operation. Reuses the sealed official loader
 // and bounded source stream, but never exposes filesystem paths or output sinks.
 namespace {
-HRESULT __stdcall zip_list_trace(void *, uint32_t, uint32_t, int32_t, int32_t, uint64_t) { return S_OK; }
-void zip_list_property(IInArchive *arc, const QzZipListHost &host, uint32_t index,
-                       uint32_t ordinal, PROPID id) {
+HRESULT __stdcall directory_list_trace(void *, uint32_t, uint32_t, int32_t, int32_t, uint64_t) { return S_OK; }
+void emit_listing_property(IInArchive *arc, void *context, QzListingPropertyFn emit,
+                           uint32_t index, uint32_t ordinal, PROPID id) {
   Variant value;
   exact(index == UINT32_MAX ? arc->GetArchiveProperty(id, &value.v)
-                           : arc->GetProperty(index, id, &value.v), "ZIP metadata property");
+                           : arc->GetProperty(index, id, &value.v), "archive metadata property");
   QzZipListProperty out{}; out.id = ordinal;
   const auto &v = value.v;
-  std::wstring owned;
   switch (v.vt) {
     case VT_EMPTY: break;
     case VT_UI4: case VT_UI8: out.type = 1; out.number = number(v); break;
     case VT_BOOL: out.type = 2; out.number = boolean(v); break;
-    case VT_BSTR:
-      owned = text(v); out.type = 3; out.text = owned.data();
-      out.text_units = uint32_t(owned.size()); break;
+    case VT_BSTR: {
+      const UINT length = SysStringLen(v.bstrVal);
+      if (length > 32767 || (length && !v.bstrVal)) fail("oversized listing property");
+      if (length && std::wmemchr(v.bstrVal, L'\0', length)) fail("embedded NUL in listing property");
+      out.type = 3;
+      out.text = v.bstrVal;
+      out.text_units = length;
+      break;
+    }
     case VT_FILETIME:
       out.type = 4;
       out.number = (uint64_t(v.filetime.dwHighDateTime) << 32) | v.filetime.dwLowDateTime;
       out.precision = v.wReserved1; out.sub100ns = v.wReserved2; out.reserved3 = v.wReserved3;
       break;
-    default: fail("unsupported ZIP metadata variant");
+    default: fail("unsupported archive metadata variant");
   }
-  exact(host.property(host.context, index, &out), "ZIP metadata consumer");
+  exact(emit(context, index, &out), "archive metadata consumer");
 }
 }
 
@@ -43,7 +48,7 @@ extern "C" HRESULT __stdcall qz_list_zip_at(const QzZipListRequest *request, uin
     // Adapter contains no output grants. VolumeStream only uses these callbacks.
     QzSelectedHost source{};
     source.context = host.context; source.read_volume_at = host.read_at;
-    source.cancelled = host.cancelled; source.trace = zip_list_trace;
+    source.cancelled = host.cancelled; source.trace = directory_list_trace;
     auto operation = std::make_shared<OperationStatus>(source, std::wstring_view{});
     exact(operation->check(), "cancelled");
     if (effective_policy_or_unknown()) fail("native ZIP listing restricted", E_ACCESSDENIED);
@@ -61,14 +66,14 @@ extern "C" HRESULT __stdcall qz_list_zip_at(const QzZipListRequest *request, uin
     const PROPID archive_props[] = {kpidErrorFlags, kpidWarningFlags, kpidNumErrors,
       kpidError, kpidWarning, kpidOffset, kpidPhySize, kpidTailSize};
     for (uint32_t j = 0; j < std::size(archive_props); ++j)
-      zip_list_property(arc.get(), host, UINT32_MAX, j, archive_props[j]);
+      emit_listing_property(arc.get(), host.context, host.property, UINT32_MAX, j, archive_props[j]);
     const PROPID item_props[] = {kpidPath, kpidIsDir, kpidSize, kpidPackSize, kpidCRC,
       kpidEncrypted, kpidMTime, kpidMethod, kpidComment, kpidAttrib, kpidSymLink,
       kpidHardLink, kpidIsAltStream, kpidPosixAttrib, kpidCTime, kpidATime};
     for (uint32_t i = 0; i < count; ++i) {
       exact(operation->check(), "ZIP metadata cancelled");
       for (uint32_t j = 0; j < std::size(item_props); ++j)
-        zip_list_property(arc.get(), host, i, j, item_props[j]);
+        emit_listing_property(arc.get(), host.context, host.property, i, j, item_props[j]);
     }
     exact(arc->Close(), "ZIP Close");
     exact(operation->check(), "ZIP source failed or cancelled");

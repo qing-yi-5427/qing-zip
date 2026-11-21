@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
 const context={};vm.createContext(context);
-vm.runInContext(source.split('\n').find(line=>line.startsWith('function archiveOpenMessage(')),context);
+vm.runInContext(source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function openDialog(')),context);
 test('encrypted directory asks for a password instead of exposing console cancellation',()=>{
  const result=context.archiveOpenMessage('archive engine failed (255): Enter password (will not be echoed): Break signaled');
  assert.match(result,/目录已加密/);assert.doesNotMatch(result,/255|Break/);

@@ -1,7 +1,7 @@
 //! Read-only, positioned official ZIP listing for proven large-prefix inputs.
 use super::*;
 const ZIP_LIST_VERSION: u32 = 2;
-const ITEM_PROPERTIES: [&str; 16] = [
+pub(super) const ITEM_PROPERTIES: [&str; 16] = [
     "Path",
     "Folder",
     "Size",
@@ -28,14 +28,14 @@ extern "C" {
     ) -> u32;
 }
 
-#[derive(Debug)]
-struct Property {
-    kind: u32,
-    number: u64,
-    precision: u16,
-    sub: u16,
-    reserved: u16,
-    text: String,
+#[derive(Debug, Default)]
+pub(super) struct Property {
+    pub(super) kind: u32,
+    pub(super) number: u64,
+    pub(super) precision: u16,
+    pub(super) sub: u16,
+    pub(super) reserved: u16,
+    pub(super) text: String,
 }
 impl Property {
     fn read(f: &mut Fields) -> Result<Self, String> {
@@ -57,12 +57,12 @@ impl Property {
             text,
         })
     }
-    fn render(&self, ordinal: usize) -> Result<Option<String>, String> {
+    pub(super) fn check_type(&self, ordinal: usize) -> Result<(), String> {
         if ordinal >= ITEM_PROPERTIES.len() {
             return Err("unknown ZIP metadata field".into());
         }
         if self.kind == 0 {
-            return Ok(None);
+            return Ok(());
         }
         let expected = match ordinal {
             0 | 7 | 8 | 10 | 11 => 3,
@@ -71,7 +71,15 @@ impl Property {
             _ => 1,
         };
         if self.kind != expected {
-            return Err("unexpected ZIP metadata field type".into());
+            return Err("unexpected archive metadata field type".into());
+        }
+        Ok(())
+    }
+
+    fn render(&self, ordinal: usize) -> Result<Option<String>, String> {
+        self.check_type(ordinal)?;
+        if self.kind == 0 {
+            return Ok(None);
         }
         Ok(Some(match self.kind {
             1 if ordinal == 4 => format!(
@@ -117,7 +125,7 @@ fn listing_member(
 
 // Formatting follows the pinned official PropIDUtils.cpp/PropVariantConv.cpp;
 // original sources are distributed under the accompanying 7-Zip LGPL license.
-fn attributes(mut attrs: u32) -> String {
+pub(super) fn attributes(mut attrs: u32) -> String {
     let posix = (attrs & 0x8000 != 0).then_some(attrs >> 16);
     if posix.is_some() && attrs & 0xf0000000 != 0 {
         attrs &= 0x3fff;
@@ -155,7 +163,7 @@ fn attributes(mut attrs: u32) -> String {
     }
     s
 }
-fn timestamp(p: &Property) -> Result<String, String> {
+pub(super) fn timestamp(p: &Property) -> Result<String, String> {
     #[repr(C)]
     struct SystemTime {
         year: u16,

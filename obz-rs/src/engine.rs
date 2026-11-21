@@ -837,22 +837,9 @@ fn listing_entry(
         return Err("archive links or alternate streams are unsupported".into());
     }
     let attrs = props.get(Field::Attributes).unwrap_or("");
-    if attrs.starts_with('l') || attrs.contains(" lrwx") {
-        return Err("archive symbolic link unsupported".into());
-    }
-    let is_dir = props.get(Field::Folder) == Some("+")
-        || attrs.starts_with('D')
-        || attrs.starts_with('d')
-        || name.ends_with('/');
-    if matches!(name, "." | "./") {
-        if !is_dir {
-            return Err("archive root must be a directory".into());
-        }
+    let Some(is_dir) = validate_listing_member(name, props.get(Field::Folder) == Some("+"), attrs, seen)? else {
         return Ok(None);
-    }
-    if !seen.insert(path_key(&validate_name(name)?)) {
-        return Err("duplicate or case-colliding archive names".into());
-    }
+    };
     let size = match props.get(Field::Size).filter(|value| !value.is_empty()) {
         Some(value) => Some(value.parse::<u64>().map_err(|_| "invalid archive entry size")?),
         None => None,
@@ -876,6 +863,25 @@ fn listing_entry(
         attributes: attrs.to_string(),
     }))
 }
+fn validate_listing_member(
+    name: &str, folder: bool, attrs: &str, seen: &mut HashSet<String>,
+) -> Result<Option<bool>, String> {
+    if attrs.starts_with('l') || attrs.contains(" lrwx") {
+        return Err("archive symbolic link unsupported".into());
+    }
+    let is_dir = folder || attrs.starts_with('D') || attrs.starts_with('d') || name.ends_with('/');
+    if matches!(name, "." | "./") {
+        if !is_dir {
+            return Err("archive root must be a directory".into());
+        }
+        return Ok(None);
+    }
+    if !seen.insert(path_key(&validate_name(name)?)) {
+        return Err("duplicate or case-colliding archive names".into());
+    }
+    Ok(Some(is_dir))
+}
+
 fn unsupported_utc_listing_switch(error: &str) -> bool {
     // Older external engines can lack -slmu. Retry only the explicit command
     // line rejection of this one switch; never retry password/data/I/O errors.
@@ -899,16 +905,18 @@ fn unsupported_utc_listing_switch(error: &str) -> bool {
 fn list_raw(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     control(opts).check()?;
     let mut source = crate::engine_stream::pin(&absolute(path)?)?;
-    read_directory(path, opts, &mut source, true).map(|(entries, _)| entries)
+    read_directory(path, opts, &mut source).map(|(entries, _)| entries)
 }
 enum PayloadSource {
     Engine,
+    #[cfg(nana_selected_worker)]
+    Rar { _volumes: Vec<crate::engine_stream::PinnedSource> },
     VerifiedEmptyZip,
     OfficialZeal,
     VerifiedZeal(MemoryFiles),
 }
 fn list_raw_with_source(path: &str, opts: &EngineOptions, source: &mut File) -> Result<(Vec<Entry>, PayloadSource), String> {
-    read_directory(path, opts, source, false)
+    read_directory(path, opts, source)
 }
 
 fn verified_empty_zip(path: &str, opts: &EngineOptions, source: &mut File, ctl: &JobControl) -> Result<bool, String> {
@@ -923,7 +931,7 @@ fn verified_empty_zip(path: &str, opts: &EngineOptions, source: &mut File, ctl: 
 }
 
 fn read_directory(
-    path: &str, opts: &EngineOptions, source: &mut File, overlap_allowed: bool,
+    path: &str, opts: &EngineOptions, source: &mut File,
 ) -> Result<(Vec<Entry>, PayloadSource), String> {
     let _timer = PhaseTimer::new("list-total");
     let ctl = control(opts);
@@ -942,6 +950,13 @@ fn read_directory(
             return Ok((entries, PayloadSource::Engine));
         }
     }
+    #[cfg(nana_selected_worker)]
+    if raw_format.is_none() {
+        if let Some((entries, volumes)) = selected_worker::rar_listing::try_list(path, source, opts, &ctl)? {
+            ctl.set("complete", Some(100), "Archive directory ready");
+            return Ok((entries, PayloadSource::Rar { _volumes: volumes }));
+        }
+    }
     let probe = if raw_format.is_none() && crate::machine_policy::scope().handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
         Some(crate::zealfs_guard::SourceProbe::read(source)?)
     } else { None };
@@ -956,10 +971,10 @@ fn read_directory(
         absolute(path)?.display().to_string(),
     ]);
     if !candidate { args.insert(1, "-ba".into()); }
-    let overlap = overlap_allowed && !candidate && opts.password.is_none() && cfg!(windows)
-        && Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-        && directory_capture::large_zip_hint(source);
-    let (mut log, live_entries) = run_technical_listing_with_directory(&mut args, opts, candidate, overlap)?;
+    // Password prompts and format-discovery headers require the legacy
+    // whole-output parser. Bare directories can be checked record by record.
+    let stream_directory = !candidate && raw_format.is_none() && opts.password.is_none() && cfg!(windows);
+    let (mut log, live_entries) = run_technical_listing_with_directory(&mut args, opts, candidate, stream_directory)?;
     if let Some(entries) = live_entries {
         ctl.set("complete", Some(100), "Archive directory ready");
         return Ok((entries, PayloadSource::Engine));
@@ -5620,7 +5635,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
 }
 
 /// Compute the smart layout from the extraction listing while the source is pinned.
-pub(crate) fn extract_smart_zip(
+pub(crate) fn extract_smart_engine(
     path: &str,
     base: &str,
     opts: &EngineOptions,

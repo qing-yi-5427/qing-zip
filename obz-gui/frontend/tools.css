@@ -24,7 +24,6 @@ textarea { min-height: 78px; resize: vertical; }
 details, #result { border-top: 1px solid var(--qa-line); margin-top: var(--qa-space-4); padding-top: var(--qa-space-4); }
 summary { cursor: default; margin-bottom: var(--qa-space-3); }
 #runbar { display: flex; gap: var(--qa-space-2); margin-top: var(--qa-space-6); align-items: center; }
-progress { width: 100%; height: 8px; margin: var(--qa-space-3) 0; accent-color: var(--qa-accent); }
 #status, #result, td { overflow-wrap: anywhere; }
 #status.error { color: var(--qa-danger); }
 #status, #hint, table { font-size: var(--qa-font-caption); }

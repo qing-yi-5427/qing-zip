@@ -1,20 +1,21 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const QingProgress=require('../frontend/progress.js');
 const src=fs.readFileSync(require.resolve('../frontend/app.js'),'utf8');
 test('progress replacement restores logical action, falls back on completion, never steals outside focus',()=>{
  let focused=null;const cancel={dataset:{action:'canceljob'},focus(){focused='cancel'}},output={dataset:{action:'reveal-output'},focus(){focused='output'}},close={dataset:{action:'close'},focus(){focused='close'}};
- let controls=[cancel],inside=true;const content={contains:()=>inside,querySelectorAll:()=>controls,querySelector:()=>controls.find(b=>b===output)};
- const context={document:{activeElement:cancel},$:()=>content,overlay:{querySelector:()=>close},s:{active:1}};vm.createContext(context);vm.runInContext(src.slice(src.indexOf('function refreshJobContent('),src.indexOf('function renderProgress(')),context);
+ let controls=[cancel],inside=true;const content={contains:()=>inside,querySelectorAll:()=>controls,querySelector:selector=>selector.includes('reveal-output')?controls.find(b=>b===output):null};
+ const context={document:{activeElement:cancel},$:()=>content,overlay:{querySelector:()=>close},s:{active:1}};vm.createContext(context);vm.runInContext(src.slice(src.indexOf('function replaceSiblings('),src.indexOf('function renderProgress(')),context);
  context.refreshJobContent('running');assert.equal(focused,'cancel');controls=[output];context.refreshJobContent('done');assert.equal(focused,'output');controls=[];context.s.active=null;context.refreshJobContent('failed');assert.equal(focused,'close');focused=null;inside=false;context.refreshJobContent('running');assert.equal(focused,null);
 });
-test('background progress stays visible while collapsed, reflects unknown work, and hides at completion',()=>{
+test('background progress stays visible while collapsed, reflects unknown work, and persists confirmed completion',()=>{
  const elements=new Map();
  const get=id=>{
-  if(!elements.has(id))elements.set(id,{dataset:{},setAttribute(){},removeAttribute(name){delete this[name];}});
+  if(!elements.has(id))elements.set(id,{dataset:{},style:{setProperty(){},removeProperty(){}},hasAttribute(name){return name in this;},toggleAttribute(name,enabled){if(enabled)this[name]='';else delete this[name];},getAttribute(name){return this[name]??null;},setAttribute(name,value){this[name]=value;},removeAttribute(name){delete this[name];}});
   return elements.get(id);
  };
  const job={id:1,label:'解压到此处',status:'running',startedAt:0,percent:null,inlineDetails:false};
  const s={active:1,jobs:[job],inlineTask:1,inlineExpanded:false};
- const context={s,$:get,document:{activeElement:null},shellQueuePaused:false,filename:path=>path,performance:{now:()=>1000}};
+ const context={s,QingProgress,$:get,document:{activeElement:null},shellQueuePaused:false,filename:path=>path,performance:{now:()=>1000}};
  vm.createContext(context);
  vm.runInContext(src.slice(src.indexOf('const phaseLabels='),src.indexOf('function updateJobProgress(')),context);
  vm.runInContext(src.slice(src.indexOf('function elapsedTime('),src.indexOf('function compressionStageLabel(')),context);
@@ -22,21 +23,73 @@ test('background progress stays visible while collapsed, reflects unknown work, 
  const compact=get('oa-task-compact-progress'),expanded=get('oa-task-progress');
  context.renderInlineTask();
  assert.equal(compact.hidden,false);
- assert.equal(compact.value,undefined);
+ assert.equal(compact.getAttribute('aria-valuenow'),null);
  assert.equal(expanded.hidden,true);
  job.percent=38;
  context.renderInlineTask();
- assert.equal(compact.value,38);
+ assert.equal(compact.getAttribute('aria-valuenow'),'38');
  s.inlineExpanded=true;
  context.renderInlineTask();
  assert.equal(compact.hidden,true);
  assert.equal(expanded.hidden,false);
- assert.equal(expanded.value,38);
+ assert.equal(expanded.getAttribute('aria-valuenow'),'38');
  job.cancelRequested=true;
  context.renderInlineTask();
- assert.equal(expanded.value,undefined);
+ assert.equal(expanded.getAttribute('aria-valuenow'),null);
  job.status='cancelled';
  context.renderInlineTask();
  assert.equal(compact.hidden,true);
  assert.equal(expanded.hidden,true);
+ job.status='complete';
+ job.cancelRequested=false;
+ context.renderInlineTask();
+ assert.equal(expanded.hidden,false);
+ assert.equal(expanded.getAttribute('aria-valuenow'),'100');
+ job.partial=true;
+ context.renderInlineTask();
+ assert.equal(expanded.hidden,true);
+ assert.equal(expanded.getAttribute('aria-valuenow'),null);
+});
+
+test('measured progress uses genuine stage totals and does not invent deep totals',()=>{
+ assert.equal(QingProgress.sample({phase:'decoding',percent:90,work:{bytes_done:14,bytes_total:40}}).value,35);
+ const high=QingProgress.sample({phase:'testing',percent:92});
+ assert.equal(QingProgress.sample({phase:'testing',percent:88},high).value,92);
+ assert.equal(QingProgress.sample({phase:'testing',percent:100},high).value,99);
+ assert.equal(QingProgress.sample({phase:'publishing-files',work:{items_done:1,items_total:4}},high).value,25);
+ assert.equal(QingProgress.sample({phase:'listing',message:'Identifying archive directory',percent:99}).value,null);
+ assert.equal(QingProgress.sample({phase:'listing',message:'Reading archive entries',percent:99}).value,99);
+ assert.equal(QingProgress.sample({phase:'deep-inspect',deep:{depth:3}},high).value,null);
+ assert.equal(QingProgress.value({status:'complete',deep:{finished:false}}),null);
+ assert.equal(QingProgress.value({status:'complete',deep:{finished:true}}),100);
+});
+
+test('matching per-operation measurements advance the total and survive unmeasured finalization',()=>{
+ const job={status:'running',phase:'compressing',percent:62};
+ assert.equal(QingProgress.value(job),62);
+ job.archives=[{}];
+ job.stage='create';
+ job.overall={done:0,total:2};
+ QingProgress.observeOperation(job);
+ assert.equal(QingProgress.value(job),31);
+ job.phase='publishing';
+ job.percent=null;
+ QingProgress.observeOperation(job);
+ assert.equal(QingProgress.value(job),31);
+ assert.equal(QingProgress.activity(job),true);
+ job.overall.done=1;
+ job.overall.active=0;
+ job.stage='verify';
+ job.phase='testing';
+ job.percent=60;
+ QingProgress.observeOperation(job);
+ assert.equal(QingProgress.value(job),80);
+ assert.equal(QingProgress.activity(job),false);
+ job.phase='complete';
+ job.percent=null;
+ QingProgress.observeOperation(job);
+ assert.equal(QingProgress.value(job),80);
+ job.overall.done=2;
+ job.status='complete';
+ assert.equal(QingProgress.value(job),100);
 });

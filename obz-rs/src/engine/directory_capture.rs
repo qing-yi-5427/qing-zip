@@ -1,10 +1,10 @@
 //! Read the ordinary engine's technical listing while it is being written.
 //! The private spool remains authoritative for errors and unusual records.
-use super::{append_listing_lines, zip_u16, Entry, JobControl, OUTPUT_LIMIT};
+use super::{append_listing_lines, Entry, JobControl, OUTPUT_LIMIT};
 use std::{
     collections::HashSet,
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Write},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -34,25 +34,6 @@ pub(super) fn pipe() -> std::io::Result<(File, File)> {
 #[cfg(not(windows))]
 pub(super) fn pipe() -> std::io::Result<(File, File)> {
     Err(std::io::ErrorKind::Unsupported.into())
-}
-
-pub(super) fn large_zip_hint(file: &mut File) -> bool {
-    // The terminal classic count is a routing hint only. ZIP64, comments and
-    // other layouts always retain the original path and all validations.
-    let Ok(position) = file.stream_position() else {
-        return false;
-    };
-    let mut tail = [0; 22];
-    let found = file
-        .seek(SeekFrom::End(-22))
-        .and_then(|_| file.read_exact(&mut tail))
-        .is_ok()
-        && tail.starts_with(b"PK\x05\x06")
-        && tail[4..8] == [0; 4]
-        && tail[20..] == [0; 2]
-        && tail[8..10] == tail[10..12]
-        && (2048..u16::MAX).contains(&zip_u16(&tail, 10));
-    file.seek(SeekFrom::Start(position)).is_ok() && found
 }
 
 pub(super) struct DirectoryCapture {
@@ -135,22 +116,47 @@ fn available(_: &File) -> Result<usize, String> {
     Err("unsupported pipe platform".into())
 }
 
+// This allowance applies only to a bare listing that is being reduced to
+// validated entries. Keep the legacy replay and diagnostic spool at its
+// original limit and never spool the excess.
+#[derive(Clone, Copy)]
+struct DirectoryLimits {
+    spool: u64,
+    wire: u64,
+    entries: usize,
+    text: usize,
+    record: usize,
+}
+const DIRECTORY_LIMITS: DirectoryLimits = DirectoryLimits {
+    spool: OUTPUT_LIMIT,
+    wire: 256 * 1024 * 1024,
+    entries: 512_000,
+    text: 128 * 1024 * 1024,
+    record: 1024 * 1024,
+};
+
 fn capture(
+    pipe: File,
+    spool: File,
+    ctl: &JobControl,
+    stopped: &AtomicBool,
+) -> Result<Option<Vec<Entry>>, String> {
+    capture_with_limits(pipe, spool, ctl, stopped, DIRECTORY_LIMITS)
+}
+
+fn capture_with_limits(
     mut pipe: File,
     mut spool: File,
     ctl: &JobControl,
     stopped: &AtomicBool,
+    limits: DirectoryLimits,
 ) -> Result<Option<Vec<Entry>>, String> {
-    const LIVE_ENTRIES: usize = 16_384;
-    const LIVE_TEXT_BYTES: u64 = 8 * 1024 * 1024;
-    const LARGE_RECORD: usize = 256 * 1024;
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     let mut pending = Vec::new();
     let mut block = vec![0; 128 * 1024];
     let mut total = 0_u64;
-    let mut accepted = 0_u64;
-    let mut deferred = false;
+    let mut text_bytes = 0;
     let mut ordinary = true;
     loop {
         ctl.check()?;
@@ -167,80 +173,106 @@ fn capture(
         if count == 0 {
             break;
         }
+        let spool_bytes = limits.spool.saturating_sub(total).min(count as u64) as usize;
+        spool
+            .write_all(&block[..spool_bytes])
+            .map_err(|e| e.to_string())?;
         total += count as u64;
-        if total > OUTPUT_LIMIT {
+        if total > limits.wire {
             return Err("engine listing exceeds supported limit".into());
         }
-        spool
-            .write_all(&block[..count])
-            .map_err(|e| e.to_string())?;
-        if ordinary && !deferred {
-            if total > LIVE_TEXT_BYTES {
-                deferred = true;
-            } else {
-                let start = pending.len();
-                pending.extend_from_slice(&block[..count]);
-                if let Some(end) = boundary(&pending, start) {
-                    // Bound how many entries a batch can add before retaining it.
-                    let upper = pending[..end].len() / 6 + 1;
-                    if entries.len().saturating_add(upper) > LIVE_ENTRIES
-                        && entries.len().saturating_add(
-                            pending[..end]
-                                .split(|b| *b == b'\n')
-                                .filter(|l| l.is_empty() || *l == b"\r")
-                                .count()
-                                + 1,
-                        ) > LIVE_ENTRIES
-                    {
-                        deferred = true;
-                    } else {
-                        ordinary = parse(&pending[..end], &mut entries, &mut seen);
-                        accepted += end as u64;
-                        pending.drain(..end);
-                    }
-                }
+        if ordinary {
+            let start = pending.len();
+            pending.extend_from_slice(&block[..count]);
+            if let Some(end) = boundary(&pending, start) {
+                ordinary = extend_directory(
+                    &pending[..end],
+                    &mut entries,
+                    &mut seen,
+                    &mut text_bytes,
+                    limits,
+                )?;
+                pending.drain(..end);
             }
-            if pending.len() > LARGE_RECORD {
-                deferred = true;
+            if pending.len() > limits.record {
+                return Err("engine listing record exceeds supported limit".into());
             }
-            if deferred {
+            if !ordinary {
+                entries = Vec::new();
+                seen = HashSet::new();
                 pending = Vec::new();
             }
         }
-    }
-    if ordinary && deferred {
-        pending.clear();
-        spool
-            .seek(SeekFrom::Start(accepted))
-            .map_err(|e| e.to_string())?;
-        while accepted < total {
-            ctl.check()?;
-            let length = (total - accepted).min(block.len() as u64) as usize;
-            spool
-                .read_exact(&mut block[..length])
-                .map_err(|e| e.to_string())?;
-            let start = pending.len();
-            pending.extend_from_slice(&block[..length]);
-            accepted += length as u64;
-            if let Some(end) = boundary(&pending, start) {
-                ordinary = parse(&pending[..end], &mut entries, &mut seen);
-                if !ordinary {
-                    break;
-                }
-                pending.drain(..end);
-            }
+        if !ordinary && total > limits.spool {
+            return Err("engine listing exceeds supported limit".into());
         }
     }
-    Ok(
-        (ordinary && parse(&pending, &mut entries, &mut seen) && !entries.is_empty())
-            .then_some(entries),
-    )
+    let valid = ordinary
+        && extend_directory(&pending, &mut entries, &mut seen, &mut text_bytes, limits)?
+        && !entries.is_empty();
+    if valid {
+        Ok(Some(entries))
+    } else if total > limits.spool {
+        Err("engine listing exceeds supported limit".into())
+    } else {
+        Ok(None)
+    }
+}
+
+fn extend_directory(
+    block: &[u8],
+    entries: &mut Vec<Entry>,
+    seen: &mut HashSet<String>,
+    text_bytes: &mut usize,
+    limits: DirectoryLimits,
+) -> Result<bool, String> {
+    if block.len() > limits.record {
+        let mut start = 0;
+        for i in 0..block.len() {
+            if is_record_end(block, i) {
+                if i + 1 - start > limits.record {
+                    return Err("engine listing record exceeds supported limit".into());
+                }
+                start = i + 1;
+            }
+        }
+        if block.len() - start > limits.record {
+            return Err("engine listing record exceeds supported limit".into());
+        }
+    }
+    let old_count = entries.len();
+    let valid = parse(block, entries, seen);
+    if entries.len() > limits.entries {
+        return Err("engine listing exceeds supported entry limit".into());
+    }
+    *text_bytes += entries[old_count..]
+        .iter()
+        .map(|entry| {
+            // Account for the name and separately retained collision key.
+            entry.name.len() * 2
+                + entry.created.len()
+                + entry.accessed.len()
+                + entry.crc.len()
+                + entry.modified.len()
+                + entry.method.len()
+                + entry.comment.len()
+                + entry.attributes.len()
+        })
+        .sum::<usize>();
+    if *text_bytes > limits.text {
+        return Err("engine listing exceeds supported metadata limit".into());
+    }
+    Ok(valid)
+}
+
+fn is_record_end(buf: &[u8], i: usize) -> bool {
+    buf[i] == b'\n' && (buf[..i].ends_with(b"\n") || buf[..i].ends_with(b"\n\r"))
 }
 
 fn boundary(buf: &[u8], start: usize) -> Option<usize> {
     (start..buf.len())
         .rev()
-        .find(|&i| buf[i] == b'\n' && (buf[..i].ends_with(b"\n") || buf[..i].ends_with(b"\n\r")))
+        .find(|&i| is_record_end(buf, i))
         .map(|i| i + 1)
 }
 
@@ -257,6 +289,7 @@ fn parse(block: &[u8], entries: &mut Vec<Entry>, seen: &mut HashSet<String>) -> 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::io::Seek;
 
     #[test]
     fn finished_writer_with_another_open_handle_drains_without_waiting_for_eof() {
@@ -323,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_spool_keeps_one_collision_set_and_all_variable_length_properties() {
+    fn streaming_keeps_one_collision_set_and_all_variable_length_properties() {
         let mut text = String::new();
         for i in 0..17_000 {
             use std::fmt::Write;
@@ -341,6 +374,77 @@ mod tests {
         let entries = through_pipe(wide.into_bytes()).unwrap();
         assert_eq!(entries[1].comment.len(), 350_000);
         assert_eq!(entries.last().unwrap().name, "after");
+    }
+
+    #[test]
+    fn ordinary_directory_can_exceed_diagnostic_spool_without_losing_entries() {
+        let text = "Path = first\nSize = 4\n\nPath = second\nSize = 6\n".as_bytes();
+        let (reader, mut writer) = pipe().unwrap();
+        writer.write_all(text).unwrap();
+        let mut spool = tempfile::tempfile().unwrap();
+        let entries = capture_with_limits(
+            reader,
+            spool.try_clone().unwrap(),
+            &JobControl::new(),
+            &AtomicBool::new(true),
+            DirectoryLimits {
+                spool: 24,
+                ..DIRECTORY_LIMITS
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        spool.rewind().unwrap();
+        let mut captured = Vec::new();
+        spool.read_to_end(&mut captured).unwrap();
+        assert_eq!(&captured, &text[..24]);
+    }
+
+    #[test]
+    fn directory_budgets_are_terminal_even_if_legacy_replay_fits() {
+        let text = b"Path = first\nSize = 4\n\nPath = second\nSize = 6\n\n";
+        for (limits, category) in [
+            (
+                DirectoryLimits {
+                    record: 20,
+                    ..DIRECTORY_LIMITS
+                },
+                "record",
+            ),
+            (
+                DirectoryLimits {
+                    entries: 1,
+                    ..DIRECTORY_LIMITS
+                },
+                "entry",
+            ),
+            (
+                DirectoryLimits {
+                    text: 4,
+                    ..DIRECTORY_LIMITS
+                },
+                "metadata",
+            ),
+        ] {
+            let (reader, mut writer) = pipe().unwrap();
+            writer.write_all(text).unwrap();
+            let error = capture_with_limits(
+                reader,
+                tempfile::tempfile().unwrap(),
+                &JobControl::new(),
+                &AtomicBool::new(true),
+                limits,
+            )
+            .unwrap_err();
+            assert!(error.contains(category), "{error}");
+        }
     }
 
     #[test]

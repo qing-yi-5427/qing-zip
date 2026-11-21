@@ -275,3 +275,4 @@ extern "C" int qing_selected_worker_main(const wchar_t *runtime) noexcept {retur
 extern "C" int qing_full_worker_main(const wchar_t *runtime) noexcept {return selected_worker_main(runtime, true);}
 
 #include "zip_list_worker.inc"
+#include "rar_list_worker.inc"

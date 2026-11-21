@@ -16,7 +16,7 @@ function fixture(){
   root:{...target('root:'),setPointerCapture(){captured=true},hasPointerCapture(){return captured},
    releasePointerCapture(id){captured=false;events.get('root:lostpointercapture')({pointerId:id,target:this});}},
   window:target('window:'),crypto:{randomUUID:()=> '21968181-d961-4b93-bfb1-0b36a1b9849a'},
-  performance,schedulePendingQueue:()=>{},toast:t=>toasts.push(t),invoke:async(name,args)=>{
+  QingProgress:require('../frontend/progress.js'),renderHistoryJob() {},performance,schedulePendingQueue:()=>{},toast:t=>toasts.push(t),invoke:async(name,args)=>{
    calls.push({name,args});if(name==='start_drag_preparation')return start.promise;
    if(name==='wait_operation')return wait.promise;if(name==='finish_drag')return finish.promise;
    if(!['cancel_drag_preparation','forget_operation','discard_drag'].includes(name))throw Error(name);

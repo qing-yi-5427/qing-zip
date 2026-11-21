@@ -13,7 +13,7 @@ function fixture(responses, chosen = []) {
   s: {page:'files',archive:''},
   overlay: {hidden:true,dataset:{page:''},querySelector:()=>null,querySelectorAll:()=>[]},
   $: id=>fields[id], esc: String, filename: path.win32.basename, archiveKey:p=>p.toLowerCase(),
-  tabBusy:()=>false, schedulePendingQueue:()=>{}, archiveOpenMessage:String,
+  QingProgress:require('../frontend/progress.js'), QingArchiveListing:{read:body=>body}, tabBusy:()=>false, schedulePendingQueue:()=>{}, archiveOpenMessage:String,
   setTimeout:fn=>{const id=Symbol();timers.set(id,fn);return id;},
   clearTimeout:id=>timers.delete(id),
   btn:(_label,action)=>action,

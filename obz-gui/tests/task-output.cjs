@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const makeContext=value=>vm.createContext(Object.assign(value,{deepExtract:{jobActions:()=>''},performance,updateToolbar:()=>{},schedulePendingQueue:()=>{}}));
-const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('const tabs='));
+const makeContext=value=>vm.createContext(Object.assign(value,{QingProgress:require('../frontend/progress.js'),renderHistoryJob() {},deepExtract:{jobActions:()=>''},performance,updateToolbar:()=>{},schedulePendingQueue:()=>{}}));
+const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('const tabs=')) + source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('));
 const runSource=source=>source.slice(source.indexOf('async function run('),source.indexOf('function forgetRecycledArchives('));
 
 
@@ -12,6 +12,7 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const field={textContent:''};const notices=[];
   const context=makeContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
+  vm.runInContext(source.slice(source.indexOf('function archiveOpenMessage('),source.indexOf('function openDialog(')),context);
   for(const prefix of ['function taskError(', 'function error(', 'function historyPage()'])
     vm.runInContext(source.split('\n').find(line=>line.startsWith(prefix)),context);
   vm.runInContext(taskSource(source),context);
@@ -57,14 +58,31 @@ test('clicking a task result reveals that task output, including numeric native 
 test('listing results belong to the caller and are not retained in task history', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
   const run = taskSource(source)+runSource(source);
-  const result = {entries: [{name: 'member.txt'}]};
+  const wire = fs.readFileSync(path.join(__dirname, '../frontend/archive-listing.js'), 'utf8');
+  const result = new TextEncoder().encode(JSON.stringify({
+    rows:[['文件/member.txt',6,28,18,'01112223','2021-02-03','A','Deflate']]
+  }));
   const state = {jobs: []};
+  const calls = [];
   const context = makeContext({
-    s: state,
-    invoke: async command => command === 'wait_operation' ? {status:'complete', progress:{}, result} : 1
+    s: state, TextDecoder,
+    invoke: async (command,args) => {
+      calls.push(command);
+      if(command==='wait_operation'){
+        assert.equal(args.deferListing,true);
+        return {status:'complete',progress:{},result:null};
+      }
+      if(command==='take_archive_listing')return result;
+      return 1;
+    },
   });
-  vm.runInContext(run, context);
-  assert.equal(await context.run({operation:'list'}, 'list', {silent:true}), result);
+  vm.runInContext(wire+run, context);
+  const received = await context.run({operation:'list'}, 'list', {silent:true});
+  assert.deepEqual(JSON.parse(JSON.stringify(received)),{entries:[{
+    name:'文件/member.txt',is_dir:false,encrypted:true,size_known:true,size:28,packed_size:18,crc:'01112223',
+    modified:'2021-02-03',attributes:'A',method:'Deflate',created:'',accessed:'',comment:'',leaf:'member.txt',
+  }]});
+  assert.deepEqual(calls,['start_operation','wait_operation','take_archive_listing','forget_operation']);
   assert.equal(state.jobs.length, 1);
   assert.equal(state.jobs[0].status, 'complete');
   assert.ok(!JSON.stringify(state.jobs).includes('member.txt'));
@@ -159,4 +177,20 @@ test('access-time warnings survive task cleanup without marking archive data fai
    assert.ok(!html.includes('读取句柄'));
   }
  }
+});
+
+test('batch count excludes failed integrity and advances the next job from the completed steps',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+ const state={jobs:[]}, batch={done:0,total:3};
+ let valid=true;
+ const context=makeContext({s:state,invoke:async name=>name==='wait_operation'?{status:'complete',progress:{},result:{valid}}:1});
+ vm.runInContext(taskSource(source)+runSource(source),context);
+ await context.run({operation:'test'},'a',{silent:true,batch});
+ valid=false;
+ await context.run({operation:'test'},'b',{silent:true,batch});
+ valid=true;
+ await context.run({operation:'test'},'c',{silent:true,batch});
+ const values=state.jobs.map(require('../frontend/progress.js').value);
+ assert.deepEqual(values,[33,null,66]);
+ assert.equal(batch.done,2);
 });

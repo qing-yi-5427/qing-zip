@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>归档工具</title>
-<link rel="stylesheet" href="ui.css"><link rel="stylesheet" href="tools.css"></head><body class="qa-tools">
+<link rel="stylesheet" href="ui.css"><link rel="stylesheet" href="progress.css"><link rel="stylesheet" href="tools.css"></head><body class="qa-tools">
 <h1>归档工具</h1><p>创建、提取、检查与维护压缩包。所有操作均使用真实归档引擎。</p>
 <form id="form"><fieldset id="fields"><div class="grid">
 <div class="wide"><label for="operation">操作</label><select id="operation">
@@ -24,5 +24,5 @@
 <div class="wide hidden" id="recovery-group"><label for="candidates">候选密码（每行一个，仅用于你有权访问的压缩包）</label><textarea id="candidates" autocomplete="off"></textarea><label for="charset">或枚举字符集（填写后优先使用，留空使用候选列表）</label><input id="charset" autocomplete="off" placeholder="例如：0123456789"><div class="grid"><div><label for="min-length">最短长度</label><input id="min-length" type="number" min="1" max="64" value="1"></div><div><label for="max-length">最长长度</label><input id="max-length" type="number" min="1" max="64" value="4"></div></div><label for="max-attempts">最多尝试次数</label><input id="max-attempts" type="number" min="1" max="1000000" value="1000"></div>
 </div>
 <details id="advanced"><summary>压缩与兼容性设置</summary><div class="grid"><div><label for="level">压缩级别</label><select id="level"><option value="">默认</option><option value="0">仅存储</option><option value="1">快速</option><option value="5">标准</option><option value="9">最大</option></select></div><div><label for="threads">线程数（留空由引擎决定）</label><input id="threads" type="number" min="1" max="256"></div><div><label for="volume">分卷大小（MiB，留空不分卷）</label><input id="volume" type="number" min="1"></div><div><label for="codepage">旧格式文件名代码页（例如 936）</label><input id="codepage" type="number" min="1"></div></div></details>
-<div id="hint"></div></fieldset><div id="runbar"><button class="qa-button primary" type="submit" id="run">执行</button><button class="qa-button" type="button" id="cancel" disabled>取消任务</button><span id="status">就绪</span></div><progress id="progress" class="hidden" max="100"></progress></form><div id="result" aria-live="polite"></div>
-<script src="compression-options.js"></script><script src="appearance.js"></script><script src="tools.js"></script></body></html>
+<div id="hint"></div></fieldset><div id="runbar"><button class="qa-button primary" type="submit" id="run">执行</button><button class="qa-button" type="button" id="cancel" disabled>取消任务</button><span id="status">就绪</span></div><div id="progress" class="qa-progress hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="status"><span></span></div></form><div id="result" aria-live="polite"></div>
+<script src="compression-options.js"></script><script src="appearance.js"></script><script src="progress.js"></script><script src="tools.js"></script></body></html>

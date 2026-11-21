@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -217,6 +218,25 @@ struct VolumeMap {
   std::vector<uint64_t> sizes;
   std::wstring terminal;
   uint64_t total = 0;
+  // RAR discovers its own volume naming convention. The callback may open
+  // only siblings pre-approved and pinned by the parent.
+  VolumeMap(const QzSelectedVolume *volumes, uint32_t count, std::shared_ptr<OperationStatus> s)
+      : operation(std::move(s)) {
+    if (!count || count > MAX_VOLUMES) fail("invalid captured RAR volume count");
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto &v = volumes[i];
+      if (!v.approved_leaf || !v.leaf_units || v.leaf_units > 32767 ||
+          !v.fixed_size || v.fixed_size > INT64_MAX || v.fixed_size > UINT64_MAX - total)
+        fail("invalid captured RAR volume");
+      std::wstring name(v.approved_leaf, v.leaf_units);
+      if (name == L"." || name == L".." || name.find_first_of(L"\\/:\0", 0, 4) != name.npos)
+        fail("invalid captured RAR volume name");
+      for (const auto &previous : names)
+        if (CompareStringOrdinal(previous.c_str(), -1, name.c_str(), -1, TRUE) == CSTR_EQUAL)
+          fail("ambiguous RAR volume name");
+      names.push_back(std::move(name)); sizes.push_back(v.fixed_size); total += v.fixed_size;
+    }
+  }
   VolumeMap(const QzSelectedRequest &r, std::shared_ptr<OperationStatus> s) : operation(std::move(s)) {
     if (!r.volumes || !r.volume_count || r.volume_count > MAX_VOLUMES)
       fail("invalid captured volume count");
@@ -248,16 +268,17 @@ struct VolumeMap {
 
 class OpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolumeCallback, public ICryptoGetTextPassword {
   std::atomic<ULONG> refs_{1};
-  const VolumeMap &map_; bool volume_requests_; bool detect_password_;
+  const VolumeMap &map_; bool volume_requests_; bool detect_password_; bool rar_;
 public:
-  OpenCallback(const VolumeMap &m, bool allow, bool detect_password = false) : map_(m), volume_requests_(allow), detect_password_(detect_password) {}
+  OpenCallback(const VolumeMap &m, bool allow, bool detect_password = false, bool rar = false)
+      : map_(m), volume_requests_(allow), detect_password_(detect_password), rar_(rar) {}
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **p) noexcept override {
     if (!p) return E_POINTER; *p = nullptr;
     if (iid == IID_IUnknown || iid == IID_IArchiveOpenCallback)
       *p = static_cast<IArchiveOpenCallback *>(this);
     else if (iid == IID_IArchiveOpenVolumeCallback)
       *p = static_cast<IArchiveOpenVolumeCallback *>(this);
-    else if (iid == IID_ICryptoGetTextPassword && !volume_requests_ && (detect_password_ || !map_.operation->password.empty()))
+    else if (iid == IID_ICryptoGetTextPassword && (!volume_requests_ || rar_) && (detect_password_ || !map_.operation->password.empty()))
       *p = static_cast<ICryptoGetTextPassword *>(this);
     else return E_NOINTERFACE;
     AddRef(); return S_OK;
@@ -301,7 +322,14 @@ public:
         exact(map_.operation->observe(12, UINT32_MAX, 1, S_FALSE), "trace failure");
         predetermined_eof = true; return S_FALSE;
       }
-      auto i = std::find(map_.names.begin(), map_.names.end(), leaf);
+      auto i = std::find_if(map_.names.begin(), map_.names.end(), [&](const std::wstring &name) {
+        return rar_ ? CompareStringOrdinal(name.c_str(), -1, leaf.c_str(), -1, TRUE) == CSTR_EQUAL
+                    : name == leaf;
+      });
+      if (rar_ && i == map_.names.end()) {
+        // The official handler reports the missing name when it needs the volume.
+        predetermined_eof = true; return S_FALSE;
+      }
       if (i == map_.names.end()) return E_FAIL;
       uint32_t index = uint32_t(i - map_.names.begin());
       exact(map_.operation->observe(12, index), "trace failure");
@@ -816,3 +844,4 @@ extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *reques
 #include "create_zip.inc"
 
 #include "zip_list.inc"
+#include "rar_list.inc"

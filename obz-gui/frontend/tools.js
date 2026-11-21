@@ -83,7 +83,56 @@ if(op==='checksum'){
 }
 if(op==='recover'&&$('charset').value){request.charset=$('charset').value;request.min_length=Number($('min-length').value);request.max_length=Number($('max-length').value);}
 if(['delete','vault-delete','shell-enable','shell-disable'].includes(op)&&!confirm('确认执行“'+$('operation').selectedOptions[0].textContent+'”？'))return;
-try{if(op.startsWith('shell-'))request.path=await invoke('current_executable');window.obzBusy=true;$('fields').disabled=true;$('run').disabled=true;$('run').setAttribute('aria-busy','true');$('result').replaceChildren();$('status').className='';$('status').textContent='开始处理…';show('progress',true);$('progress').removeAttribute('value');active=await invoke('start_operation',{request});$('cancel').disabled=!['list','extract','create','test','add','delete','rename','preview','recover','checksum','benchmark','file-split','file-combine'].includes(op);$('password').value='';$('candidates').value='';while(true){const s=await invoke('wait_operation',{id:active});if(s.progress.percent!==null)$('progress').value=s.progress.percent;else $('progress').removeAttribute('value');if(s.status!=='running'){if(s.status==='complete'){render(op,s.result);$('status').textContent='已完成';}else if(s.status==='cancelled'){$('status').textContent='已取消';}else{throw new Error(s.error||'任务失败');}break;}$('status').textContent=s.progress.percent!==null?`处理中 · ${s.progress.percent}%`:'处理中…';}}catch(err){$('status').textContent=String(err);$('status').className='error';}finally{if(active!==null){await invoke('forget_operation',{id:active}).catch(()=>{});active=null;}window.obzBusy=false;$('fields').disabled=false;$('run').disabled=false;$('run').removeAttribute('aria-busy');$('cancel').disabled=true;show('progress',false);}};
+let finished=false;
+try{
+ if(op.startsWith('shell-'))request.path=await invoke('current_executable');
+ window.obzBusy=true;
+ $('fields').disabled=true;
+ $('run').disabled=true;
+ $('run').setAttribute('aria-busy','true');
+ $('result').replaceChildren();
+ $('status').className='';
+ $('status').textContent='开始处理 · 进度待定';
+ const progress=$('progress');
+ QingProgress.render(progress,null);
+ show('progress',true);
+ active=await invoke('start_operation',{request});
+ $('cancel').disabled=!['list','extract','create','test','add','delete','rename','preview','recover','checksum','benchmark','file-split','file-combine'].includes(op);
+ $('password').value='';
+ $('candidates').value='';
+ let measured;
+ while(true){
+  const snapshot=await invoke('wait_operation',{id:active});
+  if(snapshot.status!=='running'){
+   if(snapshot.status==='complete'){
+    render(op,snapshot.result);
+    finished=QingProgress.complete(snapshot);
+    QingProgress.render(progress,finished?100:null);
+    $('status').textContent=finished?'已完成 · 100%':'已返回结果，请查看详情';
+   }else if(snapshot.status==='cancelled'){
+    $('status').textContent='已取消';
+   }else{
+    throw new Error(snapshot.error||'任务失败');
+   }
+   break;
+  }
+  measured=QingProgress.sample(snapshot.progress,measured);
+  QingProgress.render(progress,measured.value);
+  $('status').textContent=measured.value===null?'处理中 · 进度待定':`处理中 · 本阶段 ${measured.value}%`;
+ }
+}catch(err){
+ $('status').textContent=String(err);
+ $('status').className='error';
+}finally{
+ if(active!==null){await invoke('forget_operation',{id:active}).catch(()=>{});active=null;}
+ window.obzBusy=false;
+ $('fields').disabled=false;
+ $('run').disabled=false;
+ $('run').removeAttribute('aria-busy');
+ $('cancel').disabled=true;
+ show('progress',finished);
+}};
+
 if (window.parent !== window) {
  document.documentElement.style.colorScheme = window.parent.document.documentElement.style.colorScheme;
 }

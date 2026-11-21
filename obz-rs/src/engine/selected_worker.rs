@@ -49,6 +49,7 @@ extern "C" {
     fn qing_full_worker_main(runtime: *const u16) -> i32;
     fn qing_spawn_full_worker(exe: *const u16, process: *mut Handle,input:*mut Handle,output:*mut Handle)->u32;
     fn qing_selected_worker_main(runtime: *const u16) -> i32;
+    fn qing_rar_list_worker_main(runtime: *const u16) -> i32;
     fn qing_zip_list_worker_main(runtime: *const u16) -> i32;
     fn qing_spawn_selected_worker(
         exe: *const u16,
@@ -60,6 +61,8 @@ extern "C" {
 
 #[path = "create_zip.rs"]
 pub mod create_zip;
+#[path = "rar_listing.rs"]
+pub(super) mod rar_listing;
 #[path = "zip_listing.rs"]
 pub mod zip_listing;
 #[path="full_worker.rs"]
@@ -100,6 +103,13 @@ pub fn run_zip_list_child() -> u8 {
     let Ok(Some(runtime)) = runtime_dir() else { return 3; };
     let wide: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe { qing_zip_list_worker_main(wide.as_ptr()) as u8 }
+}
+
+#[doc(hidden)]
+pub fn run_rar_list_child() -> u8 {
+    let Ok(Some(runtime)) = runtime_dir() else { return 3; };
+    let wide: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe { qing_rar_list_worker_main(wide.as_ptr()) as u8 }
 }
 
 fn pin_runtime(
@@ -413,7 +423,7 @@ impl Session {
             std::ptr::null_mut(),
         );
         let error = unsafe {
-            if mode == 3 {qing_spawn_full_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
+            if mode == 4 {rar_listing::qing_spawn_rar_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 3 {qing_spawn_full_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
         };
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error as i32).to_string());

@@ -134,13 +134,14 @@ struct QzZipListProperty {
   uint32_t text_units;
   uint16_t precision, sub100ns, reserved3, padding;
 };
+typedef HRESULT (__stdcall *QzListingPropertyFn)(void *, uint32_t, const struct QzZipListProperty *);
 struct QzZipListHost {
   uint32_t abi_version, struct_bytes;
   void *context;
   HRESULT (__stdcall *read_at)(void *, uint32_t, uint64_t, void *, uint32_t, uint32_t *);
   int32_t (__stdcall *cancelled)(void *);
   // index == UINT32_MAX carries archive diagnostics before item metadata.
-  HRESULT (__stdcall *property)(void *, uint32_t index, const struct QzZipListProperty *);
+  QzListingPropertyFn property;
 };
 struct QzZipListRequest {
   uint32_t abi_version, struct_bytes;
@@ -153,3 +154,20 @@ HRESULT __stdcall qz_list_zip_at(const struct QzZipListRequest *, uint32_t *item
 #ifdef __cplusplus
 }
 #endif
+struct QzRarListHost {
+  void *context;
+  HRESULT (__stdcall *read_at)(void *, uint32_t, uint64_t, void *, uint32_t, uint32_t *);
+  int32_t (__stdcall *cancelled)(void *);
+  QzListingPropertyFn property;
+  HRESULT (__stdcall *begin_items)(void *, uint32_t);
+};
+
+extern "C" HRESULT __stdcall qz_list_rar(
+    const wchar_t *runtime, const QzSelectedVolume *volumes, uint32_t volume_count,
+    bool rar5, const QzRarListHost *host, const wchar_t *password, uint32_t password_units,
+    uint32_t *item_count, uint32_t *phase);
+
+// Hard caps apply to both ends of the RAR directory protocol.
+inline constexpr uint32_t QZ_RAR_LIST_VERSION = 1;
+inline constexpr uint32_t QZ_RAR_LIST_MAX_ITEMS = 512000;
+inline constexpr uint64_t QZ_RAR_LIST_MAX_BYTES = 128 * 1024 * 1024;

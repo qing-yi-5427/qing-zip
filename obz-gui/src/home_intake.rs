@@ -5,8 +5,6 @@ use obz_core::{
 use serde::Serialize;
 use std::path::Path;
 
-#[derive(Serialize)]
-#[serde(tag = "route", rename_all = "snake_case")]
 pub enum Intake {
     Browse { path: String, entries: Vec<Entry> },
     Deep { path: String },
@@ -14,10 +12,28 @@ pub enum Intake {
 }
 
 #[tauri::command]
-pub async fn inspect_home_archive(path: String) -> Result<Intake, String> {
-    tauri::async_runtime::spawn_blocking(move || inspect(path))
-        .await
-        .map_err(|e| e.to_string())
+pub async fn inspect_home_archive(path: String) -> Result<tauri::ipc::Response, String> {
+    #[derive(Serialize)]
+    #[serde(tag = "route", rename_all = "snake_case")]
+    enum Payload<'a> {
+        Browse { path: &'a str, rows: crate::archive_listing::Listing<'a> },
+        Deep { path: &'a str },
+        Review { path: &'a str, reason: &'a str },
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = inspect(path);
+        let payload = match &result {
+            Intake::Browse { path, entries } => Payload::Browse {
+                path, rows: crate::archive_listing::Listing(entries),
+            },
+            Intake::Deep { path } => Payload::Deep { path },
+            Intake::Review { path, reason } => Payload::Review { path, reason },
+        };
+        crate::archive_listing::response(payload)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

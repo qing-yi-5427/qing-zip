@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
 const start = source.indexOf('let nextCompressionJob=');
 const end = source.indexOf('function forgetRecycledArchives(', start);
+const QingProgress = require('../frontend/progress.js');
 const input = (name, options = {}) => ({operation: 'create', path: `C:\\out\\${name}.zip`, inputs: [`C:\\in\\${name}`], options});
 const done = result => ({status: 'complete', result});
 
@@ -18,11 +19,11 @@ function harness(respond) {
   const ui = vm.createContext({
     s, performance, overlay: {querySelector: () => draft}, tabBusy: () => Boolean(s.active),
     closingArchiveTabs: false, finishingArchiveTabs: false, removingArchiveTabs: false,
-    close() {}, updateToolbar() {}, schedulePendingQueue() {}, taskError: String,
+    close() {}, updateToolbar() {}, renderHistoryJob() {}, schedulePendingQueue() {}, taskError: String,
     QingFileWorkspace: {preservationNotice: () => ''},
     renderInlineTask() {
       const job = s.jobs.at(-1);
-      frames.push({stage: job.stage, index: job.current, percent: job.percent, background: s.backgroundExtraction});
+      frames.push({stage: job.stage, index: job.current, percent: job.percent, overall:QingProgress.value(job), done:job.overall?.done, background: s.backgroundExtraction});
     },
     updateJobProgress(job, snapshot) { job.percent = snapshot.progress.percent; },
     async invoke(command, args) {
@@ -105,4 +106,20 @@ test('result buttons resolve their own archive, including after a later job has 
   s.active = null;
   await ui.useCompressionResult({dataset});
   assert.deepEqual(events, [['open', second.path], ['dialog', second.path], ['error', 'file no longer exists']]);
+});
+
+test('multi-archive progress counts acknowledged create and verify steps monotonically', async () => {
+ const {ui,frames}=harness(request=>request.operation==='test'?done({valid:true}):done({outputs:[request.path]}));
+ await ui.runCompression([input('a'),input('b')],true);
+ assert.deepEqual([...new Set(frames.map(frame=>frame.overall))],[0,25,50,75,100]);
+ assert.ok(frames.some(frame=>frame.stage==='verify'&&frame.index===1&&frame.overall===75));
+});
+
+test('an integrity failure cannot fill the last step',async()=>{
+ const {ui,frames,s}=harness(request=>request.operation==='test'?done({valid:false}):done({outputs:[request.path]}));
+ await ui.runCompression([input('a')],true);
+ assert.equal(s.jobs[0].status,'failed');
+ assert.ok(frames.some(frame=>frame.stage==='verify'&&frame.overall===50));
+ assert.equal(frames.at(-1).overall,null);
+ assert.equal(frames.some(frame=>frame.overall===100),false);
 });

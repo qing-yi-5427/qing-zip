@@ -234,10 +234,44 @@ fn wait_snapshot(job: &Job, id: u64, timeout: Duration) -> Result<Snapshot,Strin
 }
 
 #[tauri::command]
-pub async fn wait_operation(id:u64)->Result<Snapshot,String>{
+pub async fn wait_operation(id: u64, defer_listing: Option<bool>) -> Result<Snapshot, String> {
     let job=registry().lock().map_err(|_|"job registry unavailable")?.get(&id).cloned().ok_or("任务不存在或已释放")?;
-    tauri::async_runtime::spawn_blocking(move||wait_snapshot(&job,id,Duration::from_millis(150)))
-        .await.map_err(|e|e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut snapshot = wait_snapshot(&job, id, Duration::from_millis(150))?;
+        if defer_listing == Some(true)
+            && matches!(snapshot.result.as_deref(), Some(OperationResponse::Listing { .. }))
+        {
+            snapshot.result = None;
+        }
+        Ok(snapshot)
+    })
+    .await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+pub async fn take_archive_listing(id: u64) -> Result<tauri::ipc::Response, String> {
+    #[derive(Serialize)]
+    struct Payload<'a> {
+        rows: crate::archive_listing::Listing<'a>,
+    }
+
+    let job=registry().lock().map_err(|_|"job registry unavailable")?.get(&id).cloned().ok_or("任务不存在或已释放")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = {
+            let mut state = job.state.lock().map_err(|_| "job state unavailable")?;
+            if !matches!(state.result.as_deref(), Some(OperationResponse::Listing { .. })) {
+                return Err("压缩包目录尚未就绪或已经读取".into());
+            }
+            state.result.take().unwrap()
+        };
+        match result.as_ref() {
+            OperationResponse::Listing { entries } => {
+                crate::archive_listing::response(Payload { rows: crate::archive_listing::Listing(entries) })
+            }
+            OperationResponse::Json(_) => unreachable!(),
+        }
+    })
+    .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

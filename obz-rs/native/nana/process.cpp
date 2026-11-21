@@ -23,7 +23,7 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
   try {
     Handle child_in, parent_in, child_out, parent_out, child_err;
     if (!CreatePipe(&child_in.value, &parent_in.value, nullptr, 0) ||
-        !CreatePipe(&parent_out.value, &child_out.value, nullptr, archive ? 64 * 1024 : 0)) return GetLastError();
+        !CreatePipe(&parent_out.value, &child_out.value, nullptr, archive || mode == 4 ? 64 * 1024 : 0)) return GetLastError();
     SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     child_err.value = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                   &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -64,7 +64,7 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
       if (threads) command += L" -mmt=" + std::to_wstring(threads);
       command += L" -- \"" + std::wstring(file) + L"\"";
     } else {
-      command += mode == 3 ? L" --full-archive-worker" : mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
+      command += mode == 4 ? L" --internal-rar-list-worker" : mode == 3 ? L" --full-archive-worker" : mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
     }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
@@ -98,4 +98,8 @@ extern "C" DWORD qing_spawn_zip_list_worker(const wchar_t *exe, HANDLE *process,
 
 extern "C" DWORD qing_spawn_full_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
   return spawn_archive_worker(exe, nullptr, 0, process, input, output, 3);
+}
+
+extern "C" DWORD qing_spawn_rar_list_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output, 4);
 }
