@@ -457,6 +457,9 @@ pub fn extract(path: &str, dest: &str, o: &EngineOptions) -> Result<usize, Strin
             tmp.persist_noclobber(&p).map_err(|e| e.error.to_string())?;
         }
         engine::restore_metadata(&p, e)?;
+        // ZPAQ's keyed input decrypts the entire stream, including the
+        // archive signature and index. It has no plaintext fallback.
+        engine::confirm_encrypted_output(e, o.extraction_password_use.as_deref());
         count += 1;
     }
     Ok(count)

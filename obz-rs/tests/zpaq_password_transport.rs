@@ -57,6 +57,50 @@ fn unicode_password_and_all_recovery_candidates_use_stdin() {
 }
 
 #[test]
+fn password_evidence_requires_successful_keyed_zpaq_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("data.txt"), b"zpaq password evidence fixture").unwrap();
+    fs::write(root.join("other.txt"), b"an unselected member").unwrap();
+    let encrypted = root.join("encrypted.zpaq");
+    let plain = root.join("plain.zpaq");
+    let password = "fixture-password";
+    let args = |path| ["a", path, "data.txt", "other.txt", "-method", "0", "-threads", "1"];
+    let mut keyed_args = args(encrypted.to_str().unwrap()).to_vec();
+    keyed_args.push("-key-stdin");
+    assert!(run(root, &keyed_args, password).status.success());
+    assert!(command(root, &args(plain.to_str().unwrap())).output().unwrap().status.success());
+
+    for (name, archive, supplied, successful, verified) in [
+        ("encrypted", &encrypted, Some(password), true, true),
+        ("wrong", &encrypted, Some("wrong"), false, false),
+        ("plain", &plain, None, true, false),
+        ("plain-with-key", &plain, Some(password), false, false),
+        ("skip", &encrypted, Some(password), true, false),
+    ] {
+        let evidence = std::sync::Arc::new(obz_core::engine::ExtractionPasswordUse::default());
+        let dest = root.join(name);
+        if name == "skip" {
+            fs::create_dir(&dest).unwrap();
+            fs::write(dest.join("data.txt"), b"existing").unwrap();
+        }
+        let result = rare::extract(archive.to_str().unwrap(), dest.to_str().unwrap(), &EngineOptions {
+            password: supplied.map(str::to_owned),
+            selected: vec!["data.txt".into()],
+            overwrite: if name == "skip" { "skip" } else { "error" }.into(),
+            extraction_password_use: Some(evidence.clone()),
+            ..Default::default()
+        });
+        assert_eq!(result.is_ok(), successful, "{name}: {result:?}");
+        assert_eq!(evidence.verified(result.unwrap_or(0)), verified, "{name}");
+        assert!(!dest.join("other.txt").exists());
+        if name == "encrypted" {
+            assert_eq!(fs::read(dest.join("data.txt")).unwrap(), b"zpaq password evidence fixture");
+        }
+    }
+}
+
+#[test]
 fn malformed_input_fails_closed_without_echo() {
     let temp=tempfile::tempdir().unwrap();
     for input in [b"".as_slice(),b"\n",b"unterminated",b"a\0b\n",b"a\rb\n"] {
