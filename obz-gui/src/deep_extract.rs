@@ -1,7 +1,7 @@
 //! GUI-owned deep sessions survive ordinary job eviction and password dialogs.
 use crate::{
     desktop::ArchiveRecycleGuard,
-    jobs::{commit_recycle, confirm_single_volume},
+    jobs::{commit_recycle, confirm_single_volume, pinned_zip_entries},
 };
 use obz_core::{
     engine::{deep_extract::Session, JobControl},
@@ -73,6 +73,11 @@ fn recycle_completed(
             ..Request::default()
         };
         crate::nested::validate_request(&request, true)?;
+        if pinned_zip_entries(guard.file()).map_err(|error| format!("{file}：{error}"))?.is_some()
+            || obz_core::engine::standalone_7z_source(guard.file()).map_err(|error| format!("{file}：{error}"))?
+        {
+            return Ok(());
+        }
         request.options.codepage = codepage;
         let result = if passwords.is_empty() {
             confirm_single_volume(&request, control)
@@ -93,17 +98,12 @@ fn recycle_completed(
         result.map_err(|e| format!("{file}：{e}"))
     });
     confirm?;
-    for (path, guard) in &guards {
-        guard
-            .unchanged()
-            .map_err(|e| format!("{}：{e}", path.display()))?;
-    }
     commit_recycle(control)?;
     let mut recycled = Vec::new();
     let mut retained = Vec::new();
     let mut warnings = Vec::new();
     for (path, guard) in guards {
-        match guard.recycle() {
+        match guard.recycle(|| Ok(())) {
             Ok(()) => recycled.push(path.to_string_lossy().into_owned()),
             Err(error) => {
                 warnings.push(format!("{}：{error}", path.display()));

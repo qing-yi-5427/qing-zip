@@ -7,6 +7,7 @@ use std::{
 thread_local! {
     static HINTS: RefCell<Vec<(PathBuf, String, Option<u64>)>> = const { RefCell::new(Vec::new()) };
     static ACTIVE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    static VIEWS: RefCell<Vec<(PathBuf, PathBuf)>> = const { RefCell::new(Vec::new()) };
 }
 
 struct Scope;
@@ -15,6 +16,13 @@ impl Drop for Scope {
         ACTIVE.with(|paths| {
             paths.borrow_mut().pop();
         });
+    }
+}
+
+struct ViewScope;
+impl Drop for ViewScope {
+    fn drop(&mut self) {
+        VIEWS.with(|views| { views.borrow_mut().pop(); });
     }
 }
 
@@ -155,6 +163,12 @@ pub(crate) fn with_source<T>(
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
     let numeric = numeric_zip(input, ext);
     let input = absolute(path)?;
+    if let Some(fixed) = VIEWS.with(|views| {
+        views.borrow().iter().rev().find(|(source, _)| *source == input)
+            .map(|(_, snapshot)| snapshot.clone())
+    }) {
+        return action(fixed.to_str().ok_or("invalid ZIP snapshot path")?);
+    }
     if ACTIVE.with(|paths| paths.borrow().contains(&input)) {
         return action(path);
     }
@@ -227,6 +241,10 @@ pub(crate) fn with_source<T>(
     // captured family, with no names a concurrent source-directory writer can add.
     let stage = private_family(&input, &mut parts, &ctl)?;
     let fixed = stage.path().join(requested);
+    // Re-entrant listing, preview and export calls using either spelling see
+    // the same pinned family. The aliases vanish before its stage or pins.
+    VIEWS.with(|views| views.borrow_mut().push((input.clone(), fixed.clone())));
+    let _view = ViewScope;
     ACTIVE.with(|paths| paths.borrow_mut().push(fixed.clone()));
     let _scope = Scope;
     action(fixed.to_str().ok_or("invalid ZIP snapshot path")?)
@@ -269,6 +287,16 @@ fn private_family(
             }
         }
     }
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    {
+        let required = parts.iter().try_fold(0u64, |size, (_, file)| {
+            let bytes = file.metadata().map_err(|error| error.to_string())?.len();
+            size.checked_add(bytes).ok_or_else(|| "ZIP volume snapshot size overflow".to_owned())
+        })?;
+        if !has_stage_space(&std::env::temp_dir(), required) {
+            return Err("临时磁盘空间不足，无法读取分卷 ZIP；请释放临时磁盘空间".into());
+        }
+    }
     let stage = new_fallback_stage(&std::env::temp_dir(), &mut guards)?;
     let mut scratch = vec![0u8; 1024 * 1024];
     for (part, file) in parts {
@@ -295,6 +323,31 @@ fn private_family(
 #[cfg(windows)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbered_zip_reuses_one_pinned_view_for_nested_original_path_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("sample.zip.001");
+        let second = temp.path().join("sample.zip.002");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&second, b"two").unwrap();
+        let path = first.to_str().unwrap();
+        let opts = EngineOptions::default();
+        let resolved = with_source(path, &opts, |fixed| {
+            assert_ne!(Path::new(fixed), first);
+            assert_eq!(fs::read(fixed).unwrap(), b"one");
+            assert_eq!(fs::read(Path::new(fixed).with_extension("002")).unwrap(), b"two");
+            with_source(path, &opts, |nested| {
+                assert_eq!(nested, fixed);
+                assert!(File::options().write(true).open(&second).is_err());
+                Ok(())
+            })?;
+            Ok(PathBuf::from(fixed))
+        }).unwrap();
+        assert!(!resolved.exists());
+        assert_eq!(fs::read(first).unwrap(), b"one");
+        assert_eq!(fs::read(second).unwrap(), b"two");
+    }
 
     #[test]
     fn read_hint_does_not_interpret_literal_member_names_as_switches() {

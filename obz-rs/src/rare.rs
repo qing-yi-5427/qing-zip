@@ -9,6 +9,13 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+const METADATA_BUDGET: usize = 128 * 1024 * 1024;
+const BUDGET_ERROR: &str = "此格式的目录超过 128 MiB 元数据预算，请按原归档工具拆成较小归档";
+fn reserve_metadata(used: &mut usize, amount: usize) -> Result<(), String> {
+    *used = used.saturating_add(amount);
+    if *used > METADATA_BUDGET { return Err(BUDGET_ERROR.into()); }
+    Ok(())
+}
 const MAX_FILE: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 32 * 1024 * 1024 * 1024;
 fn check(o: &EngineOptions) -> Result<(), String> {
@@ -50,12 +57,11 @@ fn validate(entries: &[Entry]) -> Result<(), String> {
     let mut tree = BTreeMap::new();
     let mut seen = HashSet::new();
     let mut total = 0u64;
-    if entries.len() > 100000 {
-        return Err("too many archive members".into());
-    }
+    let mut metadata_bytes = 0usize;
     for e in entries {
         let rel = engine::validate_name(&e.name)?;
         let key = rel.to_string_lossy().to_lowercase();
+        reserve_metadata(&mut metadata_bytes, 384 + key.len().saturating_mul(4))?;
         if !seen.insert(key.clone()) {
             return Err("duplicate archive path".into());
         }
@@ -67,13 +73,21 @@ fn validate(entries: &[Entry]) -> Result<(), String> {
             .skip(1)
             .filter(|p| !p.as_os_str().is_empty())
         {
-            if tree.insert(p.to_string_lossy().to_lowercase(), true) == Some(false) {
-                return Err("archive file is a parent directory".into());
+            let parent = p.to_string_lossy().to_lowercase();
+            match tree.entry(parent) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    reserve_metadata(&mut metadata_bytes, 96 + entry.key().len())?;
+                    entry.insert(true);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if !entry.get() => {
+                    return Err("archive file is a parent directory".into());
+                }
+                _ => {}
             }
         }
         total = total.checked_add(e.size).ok_or("size overflow")?;
         if e.size > MAX_FILE || total > MAX_TOTAL {
-            return Err("uncommon archive size limit exceeded".into());
+            return Err("此格式单个成员最多 8 GiB，累计解码最多 32 GiB，请使用较小的归档".into());
         }
     }
     Ok(())
@@ -238,6 +252,7 @@ fn pma(path: &str, stage: Option<&Path>, o: &EngineOptions) -> Result<Vec<Entry>
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut reader = delharc::LhaDecodeReader::new(file).map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
+    let mut metadata_bytes = 0usize;
     let mut total_size = 0u64;
     let mut seen = HashSet::new();
     loop {
@@ -266,12 +281,12 @@ fn pma(path: &str, stage: Option<&Path>, o: &EngineOptions) -> Result<Vec<Entry>
         total_size = total_size
             .checked_add(e.size)
             .ok_or("PMA total size overflow")?;
+        reserve_metadata(&mut metadata_bytes, 384 + key.len().saturating_mul(4))?;
         if !seen.insert(key)
-            || entries.len() >= 100000
             || e.size > MAX_FILE
             || total_size > MAX_TOTAL
         {
-            return Err("PMA duplicate or size/count limit exceeded".into());
+            return Err("PMA 成员重名或解码量超出格式限制，请按原归档工具拆分".into());
         }
         entries.push(e);
         let mut out = if let Some(root) = stage {

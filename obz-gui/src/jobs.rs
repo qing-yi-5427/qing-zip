@@ -110,25 +110,82 @@ pub(crate) fn confirm_single_volume(request: &Request, control: &JobControl) -> 
     let text=String::from_utf8_lossy(&bytes);
     let (header,_)=text.split_once("----------").ok_or("归档信息不完整，不能自动回收")?;
     validate_archive_header(header)?;
-    if header.lines().any(|l|l.trim().eq_ignore_ascii_case("Type = zip")) {confirm_zip_disk(&request.path)?;}
+    if header.lines().any(|line| line.trim().eq_ignore_ascii_case("Type = zip"))
+        && pinned_zip_entries(&File::open(&request.path).map_err(|error| error.to_string())?)?.is_none()
+    {
+        return Err("无法在原压缩包上验证 ZIP 单卷结束记录，原压缩包已保留".into());
+    }
     check_cancel(control)
 }
-fn confirm_zip_disk(path: &str) -> Result<(), String> {
-    let mut file=File::open(path).map_err(|e|e.to_string())?;
-    let length=file.metadata().map_err(|e|e.to_string())?.len();
-    let tail_length=length.min(65557);file.seek(SeekFrom::End(-(tail_length as i64))).map_err(|e|e.to_string())?;
-    let mut bytes=Vec::new();file.read_to_end(&mut bytes).map_err(|e|e.to_string())?;
-    let position=(0..bytes.len().saturating_sub(21)).rev().find(|&p|bytes[p..].starts_with(b"PK\x05\x06")
-        && p+22+u16::from_le_bytes([bytes[p+20],bytes[p+21]]) as usize==bytes.len()).ok_or("ZIP 结束记录无效，不能自动回收")?;
-    let h=&bytes[position..];let u16at=|p|u16::from_le_bytes([h[p],h[p+1]]);
-    if u16at(4)!=0 || u16at(6)!=0 || u16at(8)!=u16at(10) {return Err("ZIP 分卷记录不允许自动回收".into());}
-    if position>=20 && bytes[position-20..position-16]==*b"PK\x06\x07" {
-        let locator=&bytes[position-20..position];
-        let disk=u32::from_le_bytes(locator[4..8].try_into().unwrap());
-        let disks=u32::from_le_bytes(locator[16..20].try_into().unwrap());
-        if disk!=0 || disks!=1 {return Err("ZIP64 分卷记录不允许自动回收".into());}
+
+// Read the end record from the same pinned file held through publication.
+pub(crate) fn pinned_zip_entries(mut file: &File) -> Result<Option<usize>, String> {
+    let mut signature = [0; 4];
+    file.seek(SeekFrom::Start(0)).and_then(|_| file.read_exact(&mut signature))
+        .map_err(|e| e.to_string())?;
+    if !matches!(&signature, b"PK\x03\x04" | b"PK\x05\x06") {
+        return Ok(None);
     }
-    Ok(())
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    // Include the ZIP64 locator even with a maximum-length classic comment.
+    let tail_length = length.min(65_577);
+    file.seek(SeekFrom::End(-(tail_length as i64))).map_err(|e| e.to_string())?;
+    let mut bytes = vec![0; tail_length as usize];
+    file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    let invalid = || "ZIP 单卷结束记录无效，原压缩包已保留".to_owned();
+    let u16_at = |bytes: &[u8], offset| u16::from_le_bytes(bytes[offset..offset+2].try_into().unwrap());
+    let u32_at = |bytes: &[u8], offset| u32::from_le_bytes(bytes[offset..offset+4].try_into().unwrap());
+    let u64_at = |bytes: &[u8], offset| u64::from_le_bytes(bytes[offset..offset+8].try_into().unwrap());
+    let mut ends = bytes.windows(22).enumerate().rev().filter_map(|(position, record)| {
+        (record.starts_with(b"PK\x05\x06")
+            && position + 22 + usize::from(u16_at(record, 20)) == bytes.len())
+            .then_some(position)
+    });
+    let pos = ends.next().ok_or_else(invalid)?;
+    if ends.next().is_some() {
+        return Err(invalid());
+    }
+    let classic = &bytes[pos..];
+    let count = u16_at(classic, 10);
+    if u16_at(classic, 4) != 0 || u16_at(classic, 6) != 0 || u16_at(classic, 8) != count {
+        return Err(invalid());
+    }
+    let classic_offset = length - tail_length + pos as u64;
+    let size = u32_at(classic, 12);
+    let offset = u32_at(classic, 16);
+    if pos >= 20 && bytes[pos-20..pos].starts_with(b"PK\x06\x07") {
+        let locator = &bytes[pos-20..pos];
+        let record_offset = u64_at(locator, 8);
+        let locator_offset = classic_offset.checked_sub(20).ok_or_else(invalid)?;
+        if u32_at(locator, 4) != 0 || u32_at(locator, 16) != 1
+            || record_offset.checked_add(56).is_none_or(|end| end > locator_offset)
+        {
+            return Err(invalid());
+        }
+        let mut record = [0; 56];
+        file.seek(SeekFrom::Start(record_offset)).and_then(|_| file.read_exact(&mut record))
+            .map_err(|e| e.to_string())?;
+        let total = u64_at(&record, 32);
+        let zip64_size = u64_at(&record, 40);
+        let zip64_offset = u64_at(&record, 48);
+        if !record.starts_with(b"PK\x06\x06")
+            || u64_at(&record, 4) < 44
+            || record_offset.checked_add(12).and_then(|start| start.checked_add(u64_at(&record, 4))) != Some(locator_offset)
+            || u32_at(&record, 16) != 0 || u32_at(&record, 20) != 0
+            || u64_at(&record, 24) != total
+            || zip64_offset.checked_add(zip64_size) != Some(record_offset)
+            || (count != u16::MAX && u64::from(count) != total)
+            || (size != u32::MAX && u64::from(size) != zip64_size)
+            || (offset != u32::MAX && u64::from(offset) != zip64_offset)
+        {
+            return Err(invalid());
+        }
+        return usize::try_from(total).map(Some).map_err(|_| invalid());
+    }
+    if count == u16::MAX || u64::from(offset) + u64::from(size) != classic_offset {
+        return Err(invalid());
+    }
+    Ok(Some(usize::from(count)))
 }
 pub(crate) fn commit_recycle(control: &JobControl) -> Result<(), String> {
     let mut phase=control.progress.lock().unwrap_or_else(|e|e.into_inner());
@@ -138,7 +195,7 @@ pub(crate) fn commit_recycle(control: &JobControl) -> Result<(), String> {
 }
 fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -> Result<(),String> {
     check_cancel(control)?;
-    if result.get("files").and_then(Value::as_u64)!=Some(expected) {
+    if expected == 0 || result.get("files").and_then(Value::as_u64)!=Some(expected) {
         return Err("实际解压文件数不匹配，原压缩包保持不变".into());
     }
     Ok(())
@@ -161,22 +218,41 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
     result
 }
 
-fn execute_archive_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
+fn execute_archive_job(request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
+    execute_archive_job_with_recycler(request, recycle_after, control, |guard| {
+        guard.recycle(|| commit_recycle(control))
+    })
+}
+fn execute_archive_job_with_recycler(
+    mut request: Request, recycle_after: bool, control: &JobControl,
+    recycle_source: impl FnOnce(crate::desktop::ArchiveRecycleGuard) -> Result<(), String>,
+) -> Result<OperationResponse,String> {
     if !recycle_after {return operations::execute_request(request);}
-    validate_recycle_request(&request)?;check_cancel(control)?;
-    if let Some(id)=request.password_id.take() {
-        if request.options.password.is_some(){return Err("choose password or password_id, not both".into());}
-        request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.get(&id)?);
+    check_cancel(control)?;
+    if request.operation != "extract" {
+        return operations::execute_request(request);
     }
-    let guard=crate::desktop::ArchiveRecycleGuard::acquire(&request.path)?;
-    confirm_single_volume(&request,control)?;
-    let entries=operations::list_archive(&request.path,&request.options)?;
-    let expected=entries.iter().filter(|e|!e.is_dir).count() as u64;
-    let mut result=operations::execute(request)?;
-    let recycle=(||{
-        verify_completed_files(&result,expected,control)?;
-        commit_recycle(control)?;
-        guard.recycle()
+    let inventory = Arc::new(OnceLock::new());
+    request.options.extraction_inventory = Some(inventory.clone());
+    let proof = (|| {
+        validate_recycle_request(&request)?;
+        let guard = crate::desktop::ArchiveRecycleGuard::acquire(&request.path)?;
+        let zip_entries = pinned_zip_entries(guard.file())?;
+        if zip_entries.is_none() && !obz_core::engine::standalone_7z_source(guard.file())? {
+            confirm_single_volume(&request, control)?;
+        }
+        Ok::<_, String>((guard, zip_entries))
+    })();
+    check_cancel(control)?;
+    let mut result = operations::execute(request)?;
+    let recycle = (|| {
+        let (guard, zip_entries) = proof?;
+        let completed = inventory.get().ok_or("未取得完整解压的文件清单，原压缩包已保留")?;
+        if zip_entries.is_some_and(|total| completed.entries != total) {
+            return Err("ZIP 目录与结束记录的项目数不匹配，原压缩包已保留".into());
+        }
+        verify_completed_files(&result, completed.files as u64, control)?;
+        recycle_source(guard)
     })();
     result["recycled"]=Value::Bool(recycle.is_ok());
     if let Err(error)=recycle {result["recycle_error"]=Value::String(error);}
@@ -473,6 +549,57 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         let volumes=engine::create(&split,&[input.display().to_string()],"7z",&split_options).unwrap();
         request.path=volumes[0].clone();request.options=options;
         assert!(confirm_single_volume(&request,&JobControl::new()).is_err());
+    }
+    #[test] fn recycle_credits_only_complete_proven_outputs() {
+        use obz_core::engine::{self, EngineOptions};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let input = root.join("member.txt");
+        std::fs::write(&input, b"recycle completion test").unwrap();
+        let path = root.join("archive.zip").display().to_string();
+        engine::create(&path, &[input.display().to_string()], "zip", &EngineOptions::default()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let run = |destination: &str, selected: Vec<String>, overwrite: &str, expected_recycle| {
+            let control = JobControl::new();
+            let request = Request {
+                operation: "extract".into(), path: path.clone(), dest: root.join(destination).display().to_string(),
+                options: EngineOptions { selected, overwrite: overwrite.into(), control: Some(control.clone()), ..Default::default() },
+                ..Default::default()
+            };
+            let actual = std::cell::Cell::new(false);
+            let result = execute_archive_job_with_recycler(request, true, &control, |guard| {
+                guard.unchanged()?;
+                actual.set(true);
+                Err("test does not use the system recycle bin".into())
+            }).unwrap();
+            let OperationResponse::Json(result) = result else { panic!("extraction has no JSON report"); };
+            assert_eq!(actual.get(), expected_recycle);
+            assert_eq!(result["recycled"], false);
+            assert!(result["recycle_error"].is_string());
+            assert_eq!(std::fs::read(root.join(destination).join("member.txt")).unwrap(), b"recycle completion test");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        };
+        run("all", vec![], "error", true);
+        run("selected", vec!["member.txt".into()], "error", false);
+        run("skip", vec![], "skip", false);
+        std::fs::write(root.join("archive.z01"), b"not a real companion").unwrap();
+        run("companion", vec![], "error", false);
+    }
+    #[test] fn pinned_zip_proof_rejects_ambiguous_and_split_end_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("end.zip");
+        let mut classic = [0; 22];
+        classic[..4].copy_from_slice(b"PK\x05\x06");
+        std::fs::write(&path, classic).unwrap();
+        assert_eq!(pinned_zip_entries(&File::open(&path).unwrap()).unwrap(), Some(0));
+        let mut ambiguous = classic.to_vec();
+        ambiguous[20] = 22;
+        ambiguous.extend_from_slice(&classic);
+        std::fs::write(&path, ambiguous).unwrap();
+        assert!(pinned_zip_entries(&File::open(&path).unwrap()).is_err());
+        classic[4] = 1;
+        std::fs::write(&path, classic).unwrap();
+        assert!(pinned_zip_entries(&File::open(&path).unwrap()).is_err());
     }
     #[test] fn cancelled_or_incomplete_extraction_cannot_commit_recycle() {
         let control=JobControl::new();

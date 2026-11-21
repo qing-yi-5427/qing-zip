@@ -1,5 +1,6 @@
 //! Multi-format operations through bundled NanaZip with official 7-Zip fallback.
 //! No shell is used. Eligible archives decode through checked output handles.
+mod compressed_tar;
 #[cfg(nana_selected_worker)]
 pub mod selected_worker;
 #[cfg(windows)]
@@ -138,6 +139,12 @@ pub(crate) mod compression_times;
 mod create_input;
 pub use compression_times::ArchiveTimestamp;
 
+/// Counts from the inventory actually bound to an extraction source.
+pub struct ExtractionInventory {
+    pub entries: usize,
+    pub files: usize,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
@@ -176,6 +183,8 @@ pub struct EngineOptions {
     #[serde(skip)]
     pub control: Option<JobControl>,
     #[serde(skip)]
+    pub extraction_inventory: Option<Arc<std::sync::OnceLock<ExtractionInventory>>>,
+    #[serde(skip)]
     pub zone_identifier: Option<crate::motw::ZoneIdentifier>,
     #[cfg(windows)]
     #[serde(skip)]
@@ -209,6 +218,7 @@ impl Default for EngineOptions {
             selected: Vec::new(),
             overwrite: "error".into(),
             control: None,
+            extraction_inventory: None,
             zone_identifier: None,
             #[cfg(windows)]
             edit_receipt: None,
@@ -551,7 +561,7 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None)
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None)
         .map(|(log, _)| log)
 }
 fn run_staged_decode(
@@ -562,7 +572,7 @@ fn run_staged_decode(
     output_size: Option<u64>,
 ) -> Result<(), String> {
     let (log, _) = run_program_log_with_directory(
-        executable()?, args, None, opts, output, allow_zealfs, false, output_size,
+        executable()?, args, None, opts, output, allow_zealfs, false, output_size, None,
     )?;
     // Match the regular runner's output validation.
     read_engine_output(log)?;
@@ -579,6 +589,7 @@ fn run_program_log_with_directory(
     allow_zealfs: bool,
     collect_directory: bool,
     output_size: Option<u64>,
+    stream_input: Option<File>,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
@@ -615,8 +626,14 @@ fn run_program_log_with_directory(
         guarded_args.insert(1, "-stxZealFS".into());
     }
     let mut cmd = Command::new(program);
+    if stream_input.is_some() && opts.password.is_some() {
+        return Err("archive stream input cannot carry password prompts".into());
+    }
+    let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
+        if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
+    });
     cmd.args(&guarded_args)
-        .stdin(if opts.password.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(stdin)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(errors.as_file().try_clone().map_err(|e| e.to_string())?));
     if let Some(c) = cwd {
@@ -1115,7 +1132,7 @@ fn run_technical_listing_with_directory(
     args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool, collect_directory: bool,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let execute = |args: &[String]| run_program_log_with_directory(
-        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None,
+        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None, None,
     );
     match execute(args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
@@ -2807,13 +2824,52 @@ fn extract_raw_with_selection(
     opts: &EngineOptions,
     allow_unencrypted_projection: bool,
 ) -> Result<usize, String> {
-    extract_raw_to(path, opts, allow_unencrypted_projection, |_| absolute(dest))
+    extract_raw_to(path, opts, allow_unencrypted_projection, None, |_| absolute(dest))
 }
+
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn ensure_archive_space(
+    destination: &Path, selected: &[&Entry], stage: Option<(&Path, &[Entry])>, reserve: u64,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    fn volume(path: &Path) -> Option<u32> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let handle = File::options().access_mode(0x80).share_mode(7).custom_flags(0x02000000)
+            .open(path).ok()?;
+        directory_identity(&handle).ok().map(|(serial, _)| serial)
+    }
+    let bytes = |total: u64, entry: &Entry| {
+        total.checked_add(if entry.is_dir { 0 } else if entry.size_known { entry.size } else { 65536 })
+            .ok_or_else(|| "空间需求溢出".to_owned())
+    };
+    let output = selected.iter().try_fold(reserve, |total, entry| bytes(total, entry))?;
+    let mut needed = output;
+    if let Some((path, entries)) = stage {
+        let decoded = entries.iter().try_fold(0, bytes)?;
+        let same_volume = volume(destination).zip(volume(path)).map(|(left, right)| left == right);
+        if same_volume != Some(true) && !has_stage_space(path, decoded) {
+            return Err("解码暂存磁盘空间不足，请释放空间后重试".into());
+        }
+        if same_volume != Some(false) {
+            needed = needed.checked_add(decoded).ok_or("空间需求溢出")?;
+        }
+    }
+    if !has_stage_space(destination, needed) {
+        return Err("恢复目录所在磁盘空间不足；请更改位置或释放空间后重试".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(all(windows, target_pointer_width = "64")))]
+fn ensure_archive_space(
+    _destination: &Path, _selected: &[&Entry], _stage: Option<(&Path, &[Entry])>, _reserve: u64,
+) -> Result<(), String> { Ok(()) }
 
 fn extract_raw_to(
     path: &str,
     opts: &EngineOptions,
     allow_unencrypted_projection: bool,
+    recovery_reserve: Option<u64>,
     destination: impl FnOnce(&[Entry]) -> Result<PathBuf, String>,
 ) -> Result<usize, String> {
     #[cfg(windows)]
@@ -2880,6 +2936,7 @@ fn extract_raw_to(
         }
     }
     let expected = expected_tree(&all_entries)?;
+    let dest = destination(&all_entries)?;
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
         .iter()
@@ -2898,7 +2955,10 @@ fn extract_raw_to(
     if unencrypted_projection {
         drop(full_worker.take());
     }
-    let dest = destination(&all_entries)?;
+    if let Some(inventory) = &opts.extraction_inventory {
+        let files = all_entries.iter().filter(|entry| !entry.is_dir).count();
+        let _ = inventory.set(ExtractionInventory { entries: all_entries.len(), files });
+    }
     // Win32 normalizes ordinary drive paths before filesystem access. Use one
     // spelling for the guarded namespace as well, including CLI slash paths.
     #[cfg(nana_selected_worker)]
@@ -2914,6 +2974,9 @@ fn extract_raw_to(
     if let Some(mut pending) = direct_worker.take() {
         if !unencrypted_projection {
             if let Some(claim) = selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)? {
+                if let Some(reserve) = recovery_reserve {
+                    ensure_archive_space(&dest, &entries, None, reserve)?;
+                }
                 return pending.extract(&all_entries, &dest, claim, opts, output_guards, &ctl);
             }
         }
@@ -3072,6 +3135,12 @@ fn extract_raw_to(
         .as_ref()
         .map(|s| s.guards(transaction.as_ref().map(|t| &t.root)))
         .transpose()?;
+    if let Some(reserve) = recovery_reserve {
+        let staged = stage.as_ref().map(|stage| {
+            (stage.path(), projected.as_deref().unwrap_or(&all_entries))
+        });
+        ensure_archive_space(&dest, &entries, staged, reserve)?;
+    }
     #[cfg(nana_selected_worker)]
     let split_streamed = if let Some(plan) = split_plan {
         let root = stage.as_ref().ok_or("selected worker stage unavailable")?.path();
@@ -3092,6 +3161,9 @@ fn extract_raw_to(
         file_publication_stage = false;
         publication_receipt = None;
         let fallback = new_fallback_stage(&std::env::temp_dir(), &mut output_guards)?;
+        if let Some(reserve) = recovery_reserve {
+            ensure_archive_space(&dest, &entries, Some((fallback.path(), &all_entries)), reserve)?;
+        }
         stage_guards = Some(fallback.guards(None)?);
         stage = Some(fallback);
     }
@@ -3120,6 +3192,7 @@ fn extract_raw_to(
             stage_guards,
             &ctl,
         )?);
+        let mut selected_tar_stage = false;
         if let Some(plan) = bounded_plan.take() {
             plan.decode(&all_entries, stage.path(), stage_guards, &ctl, opts.threads)?;
         } else if let Some(files) = &memory {
@@ -3140,7 +3213,19 @@ fn extract_raw_to(
             if let Some(format) = crate::stream_formats::raw_format(path) {
                 args.push(format!("-t{format}"));
             }
-            if unencrypted_projection {
+            // The TAR parser has no solid codec context. Verify the whole
+            // container in the engine, then ask it to materialize exact names.
+            let tar_selection = !opts.selected.is_empty() && !unencrypted_projection
+                && Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("tar"))
+                && compressed_tar::has_ustar_header(&source_guard)?;
+            if tar_selection {
+                let mut verify = base("t", opts)?;
+                verify.extend(["-ttar".into(), "--".into(), absolute(path)?.display().to_string()]);
+                run_staged_decode(&verify, opts, None, false, None)?;
+                args.push("-ttar".into());
+                selected_tar_stage = true;
+            }
+            if unencrypted_projection || tar_selection {
                 use std::io::Write;
                 let mut list = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
                 for entry in &entries {
@@ -3194,7 +3279,7 @@ fn extract_raw_to(
         ctl.set("verifying-stage", None, "");
         let mut staged_expected = if verified_projection && projected.is_some() {
             std::borrow::Cow::Owned(expected_tree(staged_entries)?)
-        } else if streamed {
+        } else if streamed || selected_tar_stage {
             std::borrow::Cow::Owned(expected_tree(&entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>())?)
         } else {
             std::borrow::Cow::Borrowed(&expected)
@@ -5227,9 +5312,6 @@ pub fn create(
         let output = absolute(out)?;
         no_links(&output)?;
         reject_output_in_inputs(output.parent().ok_or("output has no parent")?, &paths)?;
-        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let tar = temp.path().join("contents.tar").display().to_string();
-        create(&tar, inputs, "tar", opts)?;
         let codec = if matches!(format, "tgz" | "tar.gz") {
             "gzip"
         } else if matches!(format, "tbz2" | "tar.bz2") {
@@ -5237,6 +5319,12 @@ pub fn create(
         } else {
             "xz"
         };
+        if let Some(result) = compressed_tar::create_stream(&output, inputs, codec, opts)? {
+            return Ok(result);
+        }
+        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let tar = temp.path().join("contents.tar").display().to_string();
+        create(&tar, inputs, "tar", opts)?;
         return create(out, &[tar], codec, opts);
     }
     let ctl = control(opts);
@@ -5903,6 +5991,24 @@ mod bounded_preview_tests {
 
 }
 
+/// Recognizes a complete, standalone 7z file by its CRC-checked start record.
+pub fn standalone_7z_source(mut file: &File) -> Result<bool, String> {
+    let mut header = [0u8; 32];
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    if length < header.len() as u64 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(0)).and_then(|_| file.read_exact(&mut header))
+        .map_err(|e| e.to_string())?;
+    if !header.starts_with(b"7z\xbc\xaf\x27\x1c") || header[6] != 0 {
+        return Ok(false);
+    }
+    let offset = u64::from_le_bytes(header[12..20].try_into().unwrap());
+    let size = u64::from_le_bytes(header[20..28].try_into().unwrap());
+    Ok(crc32fast::hash(&header[12..32]) == zip_u32(&header, 8)
+        && offset.checked_add(size).and_then(|end| end.checked_add(32)) == Some(length))
+}
+
 fn compound_tar(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
     [
@@ -5919,11 +6025,7 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
     let mut a = base("x", opts)?;
     // This route promises a declared compressed TAR container. Do not let a
     // renamed filesystem image bypass its typed listing by autodetection here.
-    let lower = path.to_ascii_lowercase();
-    let format = if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") { "gzip" }
-        else if [".tar.bz2", ".tbz", ".tbz2"].iter().any(|s| lower.ends_with(s)) { "bzip2" }
-        else if lower.ends_with(".tar.xz") || lower.ends_with(".txz") { "xz" }
-        else { return Err("unsupported compressed TAR container".into()); };
+    let format = compressed_tar::codec(path).ok_or("unsupported compressed TAR container")?;
     a.push(format!("-t{format}"));
     a.extend([
         "-so".into(),
@@ -5943,6 +6045,9 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
     let read = || with_zip_source(path, opts, |path| {
         if compound_tar(path) {
+            if let Some(result) = compressed_tar::scan(path, opts, compressed_tar::Request::List)? {
+                return Ok(result.entries);
+            }
             let (_temp, inner) = unpack_tar(path, opts)?;
             list_raw(&inner, opts)
         } else {
@@ -5990,7 +6095,7 @@ pub(crate) fn extract_smart_engine(
     }
     with_zip_source(path, &options, |source| {
         let mut destination = String::new();
-        let files = extract_raw_to(source, &options, allow_unencrypted_projection, |entries| {
+        let files = extract_raw_to(source, &options, allow_unencrypted_projection, None, |entries| {
             destination = crate::smart_extract::destination(path, base, entries, &options)?;
             absolute(&destination)
         })?;
@@ -6001,12 +6106,16 @@ pub(crate) fn extract_smart_engine(
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
     with_zip_source(path, opts, |path| {
-        test_raw(path, opts)?;
-        if compound_tar(path) {
-            let (_temp, inner) = unpack_tar(path, opts)?;
-            test_raw(&inner, opts)?;
+        if !compound_tar(path) {
+            return test_raw(path, opts);
         }
-        Ok(())
+        if compressed_tar::scan(path, opts, compressed_tar::Request::Test)?.is_some() {
+            return Ok(());
+        }
+        // Unpacking checks the outer decoder status and checksum. Then the
+        // engine tests extensions that the streaming reader leaves to it.
+        let (_temp, inner) = unpack_tar(path, opts)?;
+        test_raw(&inner, opts)
     })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
@@ -6018,6 +6127,10 @@ pub fn preview_limited(path: &str, name: &str, opts: &EngineOptions, limit: u64)
     if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid archive preview limit".into()); }
     let bytes = with_zip_source(path, opts, |path| {
         if compound_tar(path) {
+            let requested = validate_name(name)?;
+            if let Some(result) = compressed_tar::scan(path, opts, compressed_tar::Request::Preview(&requested, limit))? {
+                return result.bytes.ok_or_else(|| "preview entry not found".to_owned());
+            }
             let (_temp, inner) = unpack_tar(path, opts)?;
             preview_raw(&inner, name, opts, limit)
         } else {

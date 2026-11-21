@@ -426,6 +426,9 @@ fn recycle_candidates(paths: Vec<String>) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 fn recycle_inner(paths: Vec<String>) -> Result<usize, String> {
+    recycle_inner_with(paths, || Ok(()))
+}
+fn recycle_inner_with(paths: Vec<String>, before_perform: impl FnOnce() -> Result<(), String>) -> Result<usize, String> {
     let paths = recycle_candidates(paths)?;
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED)
@@ -462,6 +465,7 @@ fn recycle_inner(paths: Vec<String>) -> Result<usize, String> {
                 SHCreateItemFromParsingName(PCWSTR(p.as_ptr()), None).map_err(|e| e.to_string())?;
             op.DeleteItem(&item, None).map_err(|e| e.to_string())?;
         }
+        before_perform()?;
         op.PerformOperations().map_err(|e| e.to_string())?;
         if op
             .GetAnyOperationsAborted()
@@ -532,18 +536,51 @@ fn single_archive_name(path: &Path, allow_content_detection: bool) -> Result<(),
         return Err("此格式尚未验证单卷自动回收，请使用普通解压".into());
     }
     let stem = path.file_stem().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
-    let mut count = 0;
-    for entry in fs::read_dir(path.parent().ok_or("无效压缩包路径")?).map_err(|e|e.to_string())? {
-        count += 1;
-        if count > 100000 { return Err("目录过大，不能确认分卷状态，请使用普通解压".into()); }
-        let entry = entry.map_err(|e|e.to_string())?;
-        let candidate = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if candidate != name && (candidate.starts_with(&(name.clone()+"."))
-            || candidate.starts_with(&(stem.clone()+"."))) && volume_name(&candidate) {
-            return Err("检测到关联分卷，保留所有压缩包，请使用普通解压".into());
-        }
+    let parent = path.parent().ok_or("无效压缩包路径")?;
+    if volume_companion_exists(parent, &name, &stem)?
+        || (stem != name && volume_companion_exists(parent, &name, &name)?)
+    {
+        return Err("检测到关联分卷，保留所有压缩包，请使用普通解压".into());
     }
     Ok(())
+}
+fn volume_companion_exists(parent: &Path, name: &str, prefix: &str) -> Result<bool, String> {
+    use windows::Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, HANDLE},
+        Storage::FileSystem::{
+            FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
+            FIND_FIRST_EX_LARGE_FETCH, WIN32_FIND_DATAW,
+        },
+    };
+    let pattern = parent.join(format!("{prefix}.*"));
+    let pattern = wide(pattern.to_str().ok_or("无效压缩包路径")?)?;
+    let mut record = WIN32_FIND_DATAW::default();
+    let handle = match unsafe { FindFirstFileExW(
+        PCWSTR(pattern.as_ptr()), FindExInfoBasic, (&mut record as *mut WIN32_FIND_DATAW).cast(),
+        FindExSearchNameMatch, None, FIND_FIRST_EX_LARGE_FETCH,
+    ) } {
+        Ok(handle) => handle,
+        Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    struct Search(HANDLE);
+    impl Drop for Search {
+        fn drop(&mut self) { let _ = unsafe { FindClose(self.0) }; }
+    }
+    let search = Search(handle);
+    let prefix = format!("{prefix}.");
+    loop {
+        let end = record.cFileName.iter().position(|&c| c == 0).unwrap_or(record.cFileName.len());
+        let candidate = String::from_utf16_lossy(&record.cFileName[..end]).to_ascii_lowercase();
+        if candidate != name && candidate.starts_with(&prefix) && volume_name(&candidate) {
+            return Ok(true);
+        }
+        match unsafe { FindNextFileW(search.0, &mut record) } {
+            Ok(()) => {}
+            Err(error) if error.code() == ERROR_NO_MORE_FILES.to_hresult() => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 /// Held for the entire decode and publication. Windows denies writes and renames
 /// while the guard is live; no completion claim is accepted from the frontend.
@@ -568,6 +605,7 @@ impl ArchiveRecycleGuard {
         let identity = archive_identity(&file)?;
         Ok(Self { file, path, identity, allow_content_detection })
     }
+    pub(crate) fn file(&self) -> &File { &self.file }
     pub(crate) fn unchanged(&self) -> Result<(), String> {
         single_archive_name(&self.path, self.allow_content_detection)?;
         let current = readonly_archive(&self.path)?;
@@ -576,13 +614,16 @@ impl ArchiveRecycleGuard {
         }
         Ok(())
     }
-    pub(crate) fn recycle(self) -> Result<(), String> {
-        self.unchanged()?;
+    pub(crate) fn recycle(self, commit: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let path = self.path.to_string_lossy().into_owned();
-        // IFileOperation needs DELETE access. Release the write/delete-denying
-        // source handle only at the final, non-cancellable commit boundary.
-        drop(self);
-        recycle_inner(vec![path.clone()])?;
+        recycle_inner_with(vec![path.clone()], move || {
+            // Keep the source pin while the shell prepares the item and checks
+            // its namespace. DELETE access is required only when it executes.
+            self.unchanged()?;
+            commit()?;
+            drop(self);
+            Ok(())
+        })?;
         if Path::new(&path).exists() {
             return Err("回收站未移走原压缩包，未尝试永久删除".into());
         }

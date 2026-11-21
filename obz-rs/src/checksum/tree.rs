@@ -1,13 +1,21 @@
 //! Retain directory namespace pins until the complete recursive result validates.
 use std::{fs::{self, File}, path::{Path, PathBuf}, time::SystemTime};
 use super::EngineOptions;
+const METADATA_BUDGET: usize = 96 * 1024 * 1024;
+const BUDGET_ERROR: &str = "校验目录的元数据超过 96 MiB 预算，请分批选择较小的子目录";
+const MAX_DEPTH: usize = 256;
+fn reserve(used: &mut usize, bytes: usize) -> Result<(), String> {
+    *used = used.saturating_add(bytes);
+    if *used > METADATA_BUDGET { return Err(BUDGET_ERROR.into()); }
+    Ok(())
+}
 #[derive(Debug, PartialEq, Eq)]
 struct Entry { name: std::ffi::OsString, directory: bool, size: u64, modified: Option<SystemTime> }
 struct Directory { path: PathBuf, _file: File, entries: Vec<Entry> }
 pub(super) struct Inputs {
     pub files: Vec<String>, pub has_directories: bool,
     directories: Vec<Directory>, _ancestors: Vec<File>, _leaves: Vec<File>,
-    seen_files: std::collections::HashSet<PathBuf>, seen_dirs: std::collections::HashSet<PathBuf>, count: usize,
+    seen_files: std::collections::HashSet<PathBuf>, seen_dirs: std::collections::HashSet<PathBuf>, metadata_bytes: usize,
 }
 #[cfg(test)]
 mod tests {
@@ -47,7 +55,7 @@ mod tests {
         let paths=vec![file.to_str().unwrap().into(),tmp.path().to_str().unwrap().into(),sub.to_str().unwrap().into(),file.to_str().unwrap().into()];
         let inputs=Inputs::collect(&paths,&Default::default()).unwrap();
         assert_eq!(inputs.files.len(),2);assert_eq!(inputs.directories.len(),2);
-        assert_eq!(inputs.count,4);
+        assert_eq!(inputs.seen_files.len() + inputs.seen_dirs.len(),4);
     }
     #[cfg(windows)]
     #[test]
@@ -85,7 +93,7 @@ mod tests {
         for i in 0..6000 { fs::write(tmp.path().join(format!("{i:04}.txt")),b"abc").unwrap(); }
         let baseline=handles();let started=std::time::Instant::now();
         let inputs=Inputs::collect(&[tmp.path().to_str().unwrap().into()],&Default::default()).unwrap();
-        let retained=handles();assert_eq!(inputs.count,6001);
+        let retained=handles();assert_eq!(inputs.seen_files.len() + inputs.seen_dirs.len(),6001);
         assert_eq!(inputs._leaves.len(), 6000);
         assert_eq!(inputs.directories.len(), 1);
         assert!(inputs._ancestors.len() < 100);
@@ -124,17 +132,19 @@ pub(super) fn is_directory(path: &str) -> Result<bool, String> {
 }
 fn inventory(path: &Path, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let ctl = opts.control.clone().unwrap_or_default(); let mut result = Vec::new();
+    let mut bytes = 0usize;
     for item in fs::read_dir(path).map_err(|e|e.to_string())? {
         ctl.check()?; let item = item.map_err(|e|e.to_string())?;
         let meta = fs::symlink_metadata(item.path()).map_err(|e|e.to_string())?; regular(&meta)?;
-        result.push(Entry { name:item.file_name(), directory:meta.is_dir(), size:if meta.is_file(){meta.len()}else{0}, modified:meta.modified().ok() });
-        if result.len()>100_000 { return Err("too many checksum directory entries".into()); }
+        let name = item.file_name();
+        reserve(&mut bytes, std::mem::size_of::<Entry>() + name.as_encoded_bytes().len())?;
+        result.push(Entry { name, directory:meta.is_dir(), size:if meta.is_file(){meta.len()}else{0}, modified:meta.modified().ok() });
     }
     result.sort_by(|a,b|a.name.cmp(&b.name)); Ok(result)
 }
 impl Inputs {
     pub fn collect(paths: &[String], opts: &EngineOptions) -> Result<Self,String> {
-        let mut out = Self { files:Vec::new(),has_directories:false,directories:Vec::new(),_ancestors:Vec::new(),_leaves:Vec::new(),seen_files:Default::default(),seen_dirs:Default::default(),count:0 };
+        let mut out = Self { files:Vec::new(),has_directories:false,directories:Vec::new(),_ancestors:Vec::new(),_leaves:Vec::new(),seen_files:Default::default(),seen_dirs:Default::default(),metadata_bytes:0 };
         let kinds=paths.iter().map(|p|is_directory(p)).collect::<Result<Vec<_>,_>>()?;
         if !kinds.iter().any(|d|*d) { out.files=paths.to_vec();return Ok(out); }
         for raw in paths {
@@ -144,7 +154,7 @@ impl Inputs {
                 let pin=crate::engine_stream::pin(&path)?;
                 let key=fs::canonicalize(&path).map_err(|e|e.to_string())?;
                 if out.seen_files.insert(key) {
-                    out.bump()?;let (leaf,parents)=pin.into_handle_parts();out._leaves.push(leaf);out._ancestors.extend(parents);out.files.push(raw.clone());
+                    out.reserve_path(&path)?;let (leaf,parents)=pin.into_handle_parts();out._leaves.push(leaf);out._ancestors.extend(parents);out.files.push(raw.clone());
                 }
                 continue;
             }
@@ -161,20 +171,20 @@ impl Inputs {
         }
         Ok(out)
     }
-    fn bump(&mut self)->Result<(),String>{
-        self.count+=1;if self.count>100_000 {return Err("checksum directory traversal limit exceeded".into());}Ok(())
+    fn reserve_path(&mut self, path: &Path) -> Result<(), String> {
+        // Canonical name, display name, directory inventory and pinned handles.
+        reserve(&mut self.metadata_bytes, 384 + path.as_os_str().as_encoded_bytes().len().saturating_mul(4))
     }
     fn walk(&mut self,path:PathBuf,file:File,opts:&EngineOptions,depth:usize)->Result<(),String> {
         opts.control.clone().unwrap_or_default().check()?;
-        if depth>256 || self.directories.len()+self.files.len()>100_000 { return Err("checksum directory traversal limit exceeded".into()); }
+        if depth > MAX_DEPTH { return Err("校验目录超过 256 层，请直接选择较深的子目录".into()); }
         let metadata=file.metadata().map_err(|e|e.to_string())?; regular(&metadata)?;
         if !metadata.is_dir() { return Err("checksum directory changed".into()); }
         if !self.seen_dirs.insert(fs::canonicalize(&path).map_err(|e|e.to_string())?) {return Ok(());}
-        self.bump()?;
+        self.reserve_path(&path)?;
         let entries=inventory(&path,opts)?;
         for entry in &entries {
             opts.control.clone().unwrap_or_default().check()?;
-            if self.directories.len()+self.files.len()>100_000 { return Err("checksum directory traversal limit exceeded".into()); }
             let child=path.join(&entry.name);
             if entry.directory {
                 #[cfg(windows)] let handle=crate::private_stage::open_checksum_child(&file,&entry.name,true)?;
@@ -187,7 +197,7 @@ impl Inputs {
                 if !meta.is_file(){return Err("checksum file changed".into());}
                 let key=fs::canonicalize(&child).map_err(|e|e.to_string())?;
                 if self.seen_files.insert(key) {
-                    self.bump()?;self._leaves.push(leaf);
+                    self.reserve_path(&child)?;self._leaves.push(leaf);
                     self.files.push(child.into_os_string().into_string().map_err(|_|"invalid checksum file name")?);
                 }
             }

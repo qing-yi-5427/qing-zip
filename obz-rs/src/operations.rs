@@ -89,14 +89,40 @@ fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool,all
     let mut inherited = opts.clone();
     if inherited.zone_identifier.is_none() { inherited.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(path))?); }
     let opts = &inherited;
-    let mut complete = inherited.clone();
-    if export { complete.selected.clear(); }
-    let adapter_opts = &complete;
-    if crate::rare::supports(path){return crate::rare::extract(path,dest,adapter_opts);}
-    if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,adapter_opts);}
-    if crate::stream_formats::is_supported(path){return crate::stream_formats::extract(path,dest,adapter_opts);}
-    if let Some(data)=crate::installer::recognize(path)? {return crate::installer::extract(&data,dest,adapter_opts);}
-    if crate::korean::is_supported(path){crate::korean::extract(path,dest,adapter_opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,adapter_opts)}else{engine::extract_with_projection(path,dest,opts,allow_unencrypted_projection)}
+    if crate::rare::supports(path){return crate::rare::extract(path,dest,opts);}
+    if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,opts);}
+    if crate::stream_formats::is_supported(path) {
+        return if export {
+            crate::stream_formats::extract_for_export(path, dest, opts)
+        } else {
+            crate::stream_formats::extract(path, dest, opts)
+        };
+    }
+    if let Some(data)=crate::installer::recognize(path)? {
+        return if export {
+            crate::installer::extract_for_export(&data, dest, opts)
+        } else {
+            crate::installer::extract(&data, dest, opts)
+        };
+    }
+    let korean = crate::korean::is_supported(path);
+    if korean || crate::legacy::is_supported(path) {
+        // These decoders need a complete stage to prove solid/split members.
+        let mut complete;
+        let options = if export {
+            complete = inherited.clone();
+            complete.selected.clear();
+            &complete
+        } else {
+            opts
+        };
+        return if korean {
+            crate::korean::extract(path, dest, options)
+        } else {
+            crate::legacy::extract(path, dest, options)
+        };
+    }
+    engine::extract_with_projection(path,dest,opts,allow_unencrypted_projection)
 }
 pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,String>{
     preview_archive_limited(path, name, opts, 32 * 1024 * 1024)

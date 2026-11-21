@@ -159,8 +159,8 @@ pub fn prepare(source: &Source, ctl: &JobControl) -> Result<Export, String> {
             let selected = selections(source, &entries)?;
             let mut extraction = options.clone();
             extraction.selected = selected.clone();
-            // Native selected extraction already verifies all decoded bytes; adapter
-            // routes materialize all members only for this export entry point.
+            // Export must verify the complete source before handing the
+            // selected files to another archive or the local workspace.
             crate::operations::extract_archive_for_export(
                 resolved,
                 data.to_str().ok_or("invalid export path")?,
@@ -442,7 +442,7 @@ mod tests {
         let export = prepare(&source, &JobControl::new()).unwrap();
         let old_path = PathBuf::from(&export.roots()[0]);
         let before = directory_identity(&File::open(&old_path).unwrap()).unwrap();
-        let prepared = archive_add::prepare_export(&target, export, "backup", &opts).unwrap();
+        let prepared = archive_add::prepare_export(&target, export, "backup", &opts, None).unwrap();
         assert!(!old_path.exists());
         let after = directory_identity(&File::open(prepared.cwd.join("backup/a (2).txt")).unwrap())
             .unwrap();

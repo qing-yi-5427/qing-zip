@@ -407,6 +407,14 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
     })
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_inner(path, dest, opts, false)
+}
+
+pub(crate) fn extract_for_export(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_inner(path, dest, opts, true)
+}
+
+fn extract_inner(path: &str, dest: &str, opts: &EngineOptions, verify_unselected: bool) -> Result<usize, String> {
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return crate::engine::extract(path, dest, opts); }
     if raw_format(path).is_some() { validate_raw_options(opts)?; return engine::extract(path, dest, opts); }
@@ -431,8 +439,15 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             }
         }
         let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
-        for item in &chosen {
+        let decoded = a.items.iter().filter(|item| verify_unselected || selection.contains(&item.entry.name));
+        for item in decoded {
             check(opts)?;
+            if !selection.contains(&item.entry.name) {
+                if !item.entry.is_dir {
+                    copy_item(&mut a.file, item, &mut std::io::sink(), opts)?;
+                }
+                continue;
+            }
             let path = stage.path().join(engine::validate_name(&item.entry.name)?);
             if item.entry.is_dir {
                 fs::create_dir_all(path).map_err(|e| e.to_string())?;

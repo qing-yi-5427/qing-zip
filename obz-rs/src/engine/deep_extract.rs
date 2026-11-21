@@ -123,6 +123,7 @@ pub struct Session {
     assigned_targets: HashMap<usize, PathBuf>,
     outputs: Vec<String>,
     published: BTreeSet<usize>,
+    published_files: BTreeSet<usize>,
     supplied_inputs: Vec<PathBuf>,
     root_inputs: HashSet<PathBuf>,
     attached: BTreeSet<usize>,
@@ -803,6 +804,7 @@ impl Session {
             assigned_targets: HashMap::new(),
             outputs: vec![],
             published: BTreeSet::new(),
+            published_files: BTreeSet::new(),
             supplied_inputs: peers,
             root_inputs,
             attached: BTreeSet::new(),
@@ -921,91 +923,90 @@ impl Session {
                 self.locator(id).join(" → ")
             ),
         );
-        let entries = match source.kind {
-            Kind::Archive => {
-                let path = string(&source.path)?;
-                with_zip_source(&path, &opts, |p| list_raw(p, &opts))?
-            }
-            Kind::Stream(format) => vec![Entry {
-                name: stream_name(&source.path)?,
-                size: 0,
-                size_known: false,
-                is_dir: false,
-                packed_size: 0,
-                encrypted: false,
-                created: String::new(),
-                accessed: String::new(),
-                modified: String::new(),
-                crc: String::new(),
-                method: format.into(),
-                comment: String::new(),
-                attributes: String::new(),
-            }],
-            Kind::Invalid(ref error) => return Err(error.clone()),
-            Kind::MissingFirst(ref expected) => {
-                return Err(format!("缺少第一卷 {expected}；现有分卷已保留"))
-            }
-        };
-        // Validate ALL names and namespaces, including unselected entries.
-        expected_tree(&entries)?;
-        if application_container(&entries) {
-            self.plan.nodes[id].state = State::Protected;
-            return Ok(());
-        }
         let selected = Selection::new(&opts.selected);
-        if opts.password.is_none()
-            && entries
-                .iter()
-                .any(|e| e.encrypted && selected.contains(&e.name))
-        {
-            return Err("此压缩包需要密码".into());
-        }
-        let files = entries
-            .iter()
-            .filter(|e| !e.is_dir && selected.contains(&e.name))
-            .count() as u64;
-        let declared = entries
-            .iter()
-            .filter(|e| !e.is_dir && selected.contains(&e.name))
-            .try_fold(0u64, |sum, e| {
-                e.size_known.then(|| sum.checked_add(e.size)).flatten()
-            });
-        self.plan.preflight(files, declared)?;
         let reserve = self.plan.limits.reserve_bytes;
-        let required = declared
-            .unwrap_or(65536)
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(reserve))
-            .ok_or("空间需求溢出")?;
         let stage = self.stage.as_ref().ok_or("恢复目录已关闭")?;
-        if !has_stage_space(stage.path(), required) {
-            return Err("恢复目录所在磁盘空间不足；请更改位置或释放空间后重试".into());
-        }
         self.serial += 1;
         let tree = stage.path().join(format!("node-{id}-{}", self.serial));
-        fs::create_dir(&tree).map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        let mut declared = None;
+        let mut files = 0;
+        let mut prepared = false;
+        let mut protected = false;
+        let archive = matches!(source.kind, Kind::Archive);
+        let mut prepare = |inventory: &[Entry]| -> Result<PathBuf, String> {
+            if application_container(inventory) {
+                protected = true;
+                return Err("检测到应用程序容器".into());
+            }
+            if opts.password.is_none()
+                && inventory.iter().any(|e| e.encrypted && selected.contains(&e.name))
+            {
+                return Err("此压缩包需要密码".into());
+            }
+            let members = || inventory.iter().filter(|e| !e.is_dir && selected.contains(&e.name));
+            files = members().count() as u64;
+            declared = members().try_fold(0u64, |sum, e| {
+                e.size_known.then(|| sum.checked_add(e.size)).flatten()
+            });
+            self.plan.preflight(files, declared)?;
+            // Archive routes perform this check once the engine chooses
+            // a direct writer or a particular private staging volume.
+            if !archive {
+                let required = declared.unwrap_or(65536).checked_add(reserve).ok_or("空间需求溢出")?;
+                if !has_stage_space(stage.path(), required) {
+                    return Err("恢复目录所在磁盘空间不足；请更改位置或释放空间后重试".into());
+                }
+            }
+            fs::create_dir(&tree).map_err(|e| e.to_string())?;
+            prepared = true;
+            entries.extend_from_slice(inventory);
+            Ok(tree.clone())
+        };
         let result = match source.kind {
             Kind::Archive => with_zip_source(&string(&source.path)?, &opts, |p| {
-                extract_raw_with_selection(p, &string(&tree)?, &opts, true)
+                extract_raw_to(p, &opts, true, Some(reserve), prepare)
             })
             .map(|_| ()),
             Kind::Stream(format) => {
-                let target = tree.join(&entries[0].name);
+                let name = stream_name(&source.path)?;
+                let inventory = [Entry {
+                    name: name.clone(),
+                    size: 0,
+                    size_known: false,
+                    is_dir: false,
+                    packed_size: 0,
+                    encrypted: false,
+                    created: String::new(),
+                    accessed: String::new(),
+                    modified: String::new(),
+                    crc: String::new(),
+                    method: format.into(),
+                    comment: String::new(),
+                    attributes: String::new(),
+                }];
+                prepare(&inventory)?;
                 decode_stream(
                     &source.path,
-                    &target,
+                    &tree.join(name),
                     format,
                     &opts,
                     self.plan.remaining_bytes(),
                     reserve,
-                )
-                .map(|_| ())
+                ).map(|_| ())
             }
             Kind::Invalid(ref error) => Err(error.clone()),
             Kind::MissingFirst(ref expected) => {
                 Err(format!("缺少第一卷 {expected}；现有分卷已保留"))
             }
         };
+        if protected {
+            self.plan.nodes[id].state = State::Protected;
+            return Ok(());
+        }
+        if !prepared {
+            return result;
+        }
         // Accounting survives decoder/checksum/cancellation failure and subsequent retries.
         let observed = measure(&tree, &JobControl::new())?;
         // Known-size failed native stages can be cleaned internally. Charge their full
@@ -1360,7 +1361,7 @@ impl Session {
         ctl: &JobControl,
         protection: &file_workspace::DeepInputProtection,
     ) -> Result<(), String> {
-        let mut tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
+        let tree = PathBuf::from(self.plan.nodes[id].tree.as_ref().ok_or("缺少最终结果")?);
         let mut entries = vec![];
         collect_entries(&tree, &tree, &mut entries, ctl)?;
         let mut opts = self.options.clone();
@@ -1385,27 +1386,34 @@ impl Session {
         } else {
             base.join(crate::extract::relative_path(&folder)?)
         };
-        let target = if target == base && self.dedicated_output {
-            // The prepared tree already has a same-named wrapper. Publish its
-            // children directly into the dedicated output, preserving its spelling.
-            let [wrapper]: [fs::DirEntry; 1] = fs::read_dir(&tree)
-                .map_err(|e| e.to_string())?
-                .collect::<std::io::Result<Vec<_>>>()
-                .map_err(|e| e.to_string())?
-                .try_into()
-                .map_err(|_| "已校验的顶层目录发生变化")?;
-            tree = wrapper.path();
-            base.join(wrapper.file_name())
+        let mut roots = entries.iter().filter(|entry| !entry.name.contains('/'));
+        let wrapper = if target == base && self.dedicated_output {
+            let wrapper = roots.next().ok_or("已校验的顶层目录发生变化")?;
+            if !wrapper.is_dir || roots.next().is_some() {
+                return Err("已校验的顶层目录发生变化".into());
+            }
+            Some(wrapper.name.as_str())
         } else {
-            target
+            None
         };
+        let target = wrapper.map_or(target, |wrapper| base.join(wrapper));
+        let inputs = entries.iter().filter(|entry| {
+            if let Some(wrapper) = wrapper {
+                entry.name.strip_prefix(wrapper).and_then(|name| name.strip_prefix('/'))
+                    .is_some_and(|name| !name.contains('/'))
+            } else {
+                !entry.name.contains('/')
+            }
+        }).map(|entry| validate_name(&entry.name).and_then(|path| string(&tree.join(path))))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bytes = entries.iter().filter(|entry| !entry.is_dir).try_fold(0u64, |size, entry| {
+            size.checked_add(entry.size).ok_or("空间需求溢出")
+        })?;
         if !has_stage_space(
             base.ancestors()
                 .find(|p| p.is_dir())
                 .ok_or("目标路径无效")?,
-            measure(&tree, ctl)?
-                .1
-                .saturating_add(self.plan.limits.reserve_bytes),
+            bytes.saturating_add(self.plan.limits.reserve_bytes),
         ) {
             return Err("目标磁盘空间不足，已校验结果保留在恢复目录".into());
         }
@@ -1442,11 +1450,6 @@ impl Session {
             target
         };
         drop(guards); // The existing copier acquires its own publication-compatible pins.
-        let inputs = fs::read_dir(&tree)
-            .map_err(|e| e.to_string())?
-            .map(|e| e.map_err(|e| e.to_string()).and_then(|e| string(&e.path())))
-            .collect::<Result<Vec<_>, _>>()?;
-
         ctl.set(
             "deep-publish",
             None,
@@ -1478,6 +1481,9 @@ impl Session {
             ));
         }
         self.published.insert(id);
+        if entries.iter().any(|entry| !entry.is_dir) {
+            self.published_files.insert(id);
+        }
         Ok(())
     }
     pub fn report(&self) -> Report {
@@ -1605,7 +1611,7 @@ impl Session {
         }
         for id in &self.plan.roots {
             let source = &self.sources[&self.plan.nodes[*id].source];
-            if !self.published.contains(id)
+            if !self.published_files.contains(id)
                 || !self.plan.fully_expanded(*id)
                 || source.parts.len() != 1
                 || !self.supplied_inputs.contains(&source.path)

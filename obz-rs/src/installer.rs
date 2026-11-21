@@ -162,7 +162,8 @@ fn check(opts: &EngineOptions) -> Result<(), String> {
 fn decode(
     pkg: &setup::SetupPackage<'_>,
     es: &[Entry],
-    stage: &Path,
+    stage: Option<&Path>,
+    verify_unselected: bool,
     opts: &EngineOptions,
 ) -> Result<(), String> {
     let names: HashSet<_> = es.iter().map(|e| e.name.as_str()).collect();
@@ -171,7 +172,8 @@ fn decode(
     for e in &pkg.archive.entries {
         check(opts)?;
         let name = format!("payload/{}", e.name.replace('\\', "/"));
-        if !names.contains(name.as_str()) || e.is_dir {
+        let selected = names.contains(name.as_str());
+        if (!selected && !verify_unselected) || e.is_dir {
             continue;
         }
         let bytes = if let Some(fi) = e.folder_index {
@@ -208,38 +210,50 @@ fn decode(
         if e.crc.is_some_and(|c| crc32(bytes) != c) {
             return Err(format!("CRC mismatch: {name}"));
         }
-        let target = stage.join(engine::validate_name(&name)?);
-        fs::create_dir_all(target.parent().ok_or("missing parent")?).map_err(|e| e.to_string())?;
-        fs::write(target, bytes).map_err(|e| e.to_string())?;
+        if let Some(stage) = stage.filter(|_| selected) {
+            let target = stage.join(engine::validate_name(&name)?);
+            fs::create_dir_all(target.parent().ok_or("missing parent")?).map_err(|e| e.to_string())?;
+            fs::write(target, bytes).map_err(|e| e.to_string())?;
+        }
     }
     for e in &pkg.ui_entries {
         check(opts)?;
         let name = format!("ui/{}", e.name.replace('\\', "/"));
-        if !names.contains(name.as_str()) || e.name.ends_with(['/', '\\']) {
+        let selected = names.contains(name.as_str());
+        if (!selected && !verify_unselected) || e.name.ends_with(['/', '\\']) {
             continue;
         }
         let bytes = zipfmt::extract_entry(pkg.data, pkg.zip_offset, e)?;
         if bytes.len() as u64 != e.size || crc32(&bytes) != e.crc {
             return Err(format!("CRC/size mismatch: {name}"));
         }
-        let target = stage.join(engine::validate_name(&name)?);
-        fs::create_dir_all(target.parent().ok_or("missing parent")?).map_err(|e| e.to_string())?;
-        fs::write(target, bytes).map_err(|e| e.to_string())?;
+        if let Some(stage) = stage.filter(|_| selected) {
+            let target = stage.join(engine::validate_name(&name)?);
+            fs::create_dir_all(target.parent().ok_or("missing parent")?).map_err(|e| e.to_string())?;
+            fs::write(target, bytes).map_err(|e| e.to_string())?;
+        }
     }
     check(opts)
 }
 fn decoded(
     pkg: &setup::SetupPackage<'_>,
     es: &[Entry],
-    stage: &Path,
+    stage: Option<&Path>,
+    verify_unselected: bool,
     opts: &EngineOptions,
 ) -> Result<(), String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        decode(pkg, es, stage, opts)
+        decode(pkg, es, stage, verify_unselected, opts)
     }))
     .map_err(|_| "malformed installer data".to_string())?
 }
 pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_inner(data, dest, opts, false)
+}
+pub(crate) fn extract_for_export(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_inner(data, dest, opts, true)
+}
+fn extract_inner(data: &[u8], dest: &str, opts: &EngineOptions, verify_unselected: bool) -> Result<usize, String> {
     let _policy = crate::machine_policy::native("setup package adapter")?;
     check(opts)?;
     let pkg = package(data)?;
@@ -261,7 +275,7 @@ pub fn extract(data: &[u8], dest: &str, opts: &EngineOptions) -> Result<usize, S
         }
     }
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
-    decoded(&pkg, &es, stage.path(), opts)?;
+    decoded(&pkg, &es, Some(stage.path()), verify_unselected, opts)?;
     let mut count = 0;
     for e in &es {
         check(opts)?;
@@ -299,8 +313,7 @@ pub fn test(data: &[u8], opts: &EngineOptions) -> Result<(), String> {
     check(opts)?;
     let pkg = package(data)?;
     let es = inventory(&pkg)?;
-    let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
-    decoded(&pkg, &es, stage.path(), opts)
+    decoded(&pkg, &es, None, false, opts)
 }
 pub fn preview(data: &[u8], name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
     let _policy = crate::machine_policy::native("setup package adapter")?;
@@ -315,7 +328,7 @@ pub fn preview(data: &[u8], name: &str, opts: &EngineOptions) -> Result<Vec<u8>,
     }
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
     let path = stage.path().join(engine::validate_name(&e.name)?);
-    decoded(&pkg, &[e], stage.path(), opts)?;
+    decoded(&pkg, &[e], Some(stage.path()), false, opts)?;
     fs::read(path).map_err(|e| e.to_string())
 }
 
