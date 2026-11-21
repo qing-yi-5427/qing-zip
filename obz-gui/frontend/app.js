@@ -711,7 +711,7 @@ function archiveDirectoryError(message){
  if(/^(?:Error:\s*)?RAR archive is missing a required volume$/i.test(message))return '压缩包缺少必要分卷，请将所有分卷放在同一目录后重试。';
  return '';
 }
-function archivePasswordError(error){return /password|密码|encrypted archive/i.test(String(error));}
+function archivePasswordError(error){return /(?:wrong|incorrect|invalid|enter|empty) password|password (?:is )?(?:required|incorrect|empty)|cannot open encrypted archive|需要密码|请输入密码|密码错误|密码不正确/i.test(String(error));}
 function archiveOpenMessage(error,passwordProvided=false){const message=String(error);const directoryError=archiveDirectoryError(message);if(directoryError)return directoryError;if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
 function openDialog(path='',{allowDeep=false}={}){s.view=s.archive?'archive':'home';dialog('打开压缩包',`<label class="qa-field">文件路径<div class="qa-inlinefield"><input id="qa-open-path" value="${esc(path)}">${btn('浏览…','browse-open')}</div></label><label class="qa-field">密码（需要时填写）<input id="qa-open-password" type="password" autocomplete="off"></label>`,btn('取消','close')+(allowDeep?btn('改为深度解压','open-submit-deep'):'')+btn('打开','open-submit','primary'));}
 function appendArchiveInputs(input, paths) {
