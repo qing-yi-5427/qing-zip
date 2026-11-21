@@ -26,7 +26,7 @@ pub(in crate::engine) fn streams_preserving_access(source: &File, ctl: &JobContr
         Err(CaptureError::Proof(error)) => return Err(error),
     };
     plan.verify()?;
-    let digest = streams_with_input(source, None, ctl, &mut plan, None)?;
+    let digest = streams_with_input(source, None, ctl, &mut plan, None, &mut false)?;
     plan.verify()?;
     Ok(PreservedProof { digest, protection: Preservation::Applied })
 }

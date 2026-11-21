@@ -24,7 +24,7 @@ pub fn create_item(parent: &str, name: &str, directory: bool, opts: &EngineOptio
         }
         let mut temp=crate::private_stage::create_local_directory_output(&parent,&pin)?;
         let attempt=(||{
-            let proof=LocalStreamProof{digest:streams(temp.as_file(),None,&ctl)?,control:ctl.clone()};
+            let proof=LocalStreamProof{digest:streams(temp.as_file(),None,&ctl)?,control:ctl.clone(),ordinary:false};
             ctl.check()?;
             temp.commit_local_streams(&target,false,&proof)
         })();

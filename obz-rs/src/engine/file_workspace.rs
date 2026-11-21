@@ -266,12 +266,12 @@ pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) ->
 }
 pub(super) fn streams_observed(source: &File, target: Option<&File>, ctl: &JobControl, alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
     let mut input = Backup { file: source, context: std::ptr::null_mut(), writing: false };
-    streams_with_input(source, target, ctl, &mut input, alternate_read)
+    streams_with_input(source, target, ctl, &mut input, alternate_read, &mut false)
 }
 // Complete parser shared by native copying and the create-only protected reader.
 // Native retains the original reader, with no additional enumeration or plan.
 fn streams_with_input(source: &File, target: Option<&File>, ctl: &JobControl,
-                      input: &mut dyn BackupInput, mut alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
+                      input: &mut dyn BackupInput, mut alternate_read:Option<&mut dyn FnMut()>, ordinary: &mut bool) -> Result<[u8; 32], String> {
     use super::file_workspace_compression as compression;
     use super::file_workspace_sparse as sparse;
     ctl.check()?;
@@ -291,6 +291,7 @@ fn streams_with_input(source: &File, target: Option<&File>, ctl: &JobControl,
     let mut seen_ea = false;
     let mut pending:Option<PendingStorage>=None;
     let mut main_record_seen=false;
+    let mut only_primary = main_compression == 0 && main_sparse.is_none();
     for _ in 0..4096 {
         ctl.check()?;
         let mut header = [0u8; 20];
@@ -308,12 +309,14 @@ fn streams_with_input(source: &File, target: Option<&File>, ctl: &JobControl,
                     sparse::restore(target,layout,ctl)?;
                 }
             }
+            *ordinary = only_primary;
             return Ok(hash.finalize().into());
         }
         input.exact(&mut header[n..])?;
         let id = u32::from_le_bytes(header[..4].try_into().unwrap());
         let mut size = u64::from_le_bytes(header[8..16].try_into().unwrap());
         let namesize = u32::from_le_bytes(header[16..].try_into().unwrap()) as usize;
+        only_primary &= id == 1 && !main_record_seen;
         if id!=9 {finish_storage(target,pending.take(),ctl)?;}
         if !matches!(id, 1 | 2 | 4 | 9) || namesize > 65536 || namesize % 2 != 0 {
             return Err("此文件含暂不支持的特殊数据，源文件保持不变".into());
@@ -407,6 +410,12 @@ fn streams_with_input(source: &File, target: Option<&File>, ctl: &JobControl,
             ctl.check()?;
             let amount = size.min(buffer.len() as u64) as usize;
             input.exact(&mut buffer[..amount])?;
+            #[cfg(test)]
+            COPY_PAYLOAD_BYTES.with(|bytes| {
+                if let Some((read, written)) = bytes.get() {
+                    bytes.set(Some((read + amount as u64, written + if output.is_some() { amount as u64 } else { 0 })));
+                }
+            });
             hash.update(&buffer[..amount]);
             if let Some(out) = output.as_mut() {
                 out.write(&buffer[..amount])?;
@@ -468,10 +477,12 @@ fn hash_sparse(hash:&mut Sha256,layout:Option<&super::file_workspace_sparse::Lay
 /// Only this module can construct a proof, after source and private target have
 /// matching complete main/named data streams and EA. Archive publication never uses it.
 pub(crate) struct LocalStreamProof {
+    ordinary: bool,
     digest: [u8; 32],
     control: JobControl,
 }
 impl crate::private_stage::LocalOutputProof for LocalStreamProof {
+    fn ordinary_primary(&self) -> bool { self.ordinary }
     fn verify(&self, file: &File) -> Result<Vec<u8>, String> {
         let actual = streams(file, None, &self.control)?;
         if actual != self.digest {
@@ -972,6 +983,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                         });
                         ctl.check()?;
                         let proof = LocalStreamProof {
+                            ordinary: false,
                             digest: expected,
                             control: ctl.clone(),
                         };
@@ -1075,14 +1087,23 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
             }
             let input = node.handle.as_ref().unwrap();
             let (output, expected) = with_output_temp(parent, &guards, |temp| {
-                let expected = streams(input, Some(temp.as_file()), &ctl).map_err(|e|format!("复制文件数据流：{e}"))?;
+                let mut backup = Backup { file: input, context: std::ptr::null_mut(), writing: false };
+                let mut ordinary = false;
+                let expected = streams_with_input(input, Some(temp.as_file()), &ctl, &mut backup, None, &mut ordinary).map_err(|e|format!("复制文件数据流：{e}"))?;
+                drop(backup);
+                const ORDINARY_ATTRIBUTES: u32 = 0x01 | 0x02 | 0x04 | 0x20 | 0x80 | 0x2000;
+                ordinary &= input.metadata().map_err(|e| e.to_string())?.file_attributes() & !ORDINARY_ATTRIBUTES == 0
+                    && temp.inner.supports_ordinary_local_proof();
+                #[cfg(test)]
+                { ordinary &= !COPY_BASELINE.with(|flag| flag.get()); }
                 temp.as_file().sync_all().map_err(|e| e.to_string())?;
-                if streams(temp.as_file(), None, &ctl)? != expected {
+                if !ordinary && streams(temp.as_file(), None, &ctl)? != expected {
                     return Err("目标文件验证失败，源文件保持不变".into());
                 }
                 copy_basic_metadata(input, temp.as_file()).map_err(|e|format!("复制文件基本属性：{e}"))?;
                 ctl.check()?;
                 let proof = LocalStreamProof {
+                    ordinary,
                     digest: expected,
                     control: ctl.clone(),
                 };
@@ -1250,6 +1271,8 @@ thread_local! {
  static BEFORE_TRANSACTION_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static BEFORE_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_DIRECTORY_COMMIT:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
+ static COPY_BASELINE:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};
+ static COPY_PAYLOAD_BYTES:std::cell::Cell<Option<(u64,u64)>>=const {std::cell::Cell::new(None)};
  static AFTER_CHUNK:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static BEFORE_COPY:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
  static AFTER_ATOMIC:std::cell::RefCell<Option<Box<dyn FnOnce()>>>=const {std::cell::RefCell::new(None)};
@@ -1260,6 +1283,52 @@ thread_local! {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn ordinary_local_copy_verifies_private_and_published_payload() {
+        let fixture = tempfile::Builder::new().prefix("qing-zip-normal-copy-").tempdir().unwrap();
+        let destination = fixture.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let source = fixture.path().join("example.bin");
+        let mib: usize = std::env::var("QING_ZIP_ORDINARY_COPY_TEST_MIB")
+            .ok().map(|value| value.parse().unwrap()).unwrap_or(1);
+        assert!((1..=512).contains(&mib));
+        let mut input = File::create(&source).unwrap();
+        let mut state = 0x8358e39au32;
+        let mut block = vec![0;1024*1024];
+        for chunk in block.chunks_exact_mut(4) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            chunk.copy_from_slice(&state.to_ne_bytes());
+        }
+        for _ in 0..mib { input.write_all(&block).unwrap(); }
+        input.sync_all().unwrap();
+        drop(input);
+        let expected_len = mib as u64 * 1024 * 1024;
+        let target = destination.join("example.bin");
+        for baseline in [true, false, false, true, true, false] {
+            COPY_BASELINE.with(|flag| flag.set(baseline));
+            COPY_PAYLOAD_BYTES.with(|bytes| bytes.set(Some((0,0))));
+            let started = std::time::Instant::now();
+            let result = transfer(&[source.display().to_string()], destination.to_str().unwrap(), false, &EngineOptions::default());
+            let elapsed = started.elapsed();
+            COPY_BASELINE.with(|flag| flag.set(false));
+            let counts = COPY_PAYLOAD_BYTES.with(|bytes| bytes.take().unwrap());
+            assert_eq!(result.unwrap().copied, 1);
+            assert_eq!(counts, (expected_len * if baseline { 6 } else { 3 }, expected_len));
+            assert_eq!(source.metadata().unwrap().modified().unwrap(), target.metadata().unwrap().modified().unwrap());
+            let mut output = File::open(&target).unwrap();
+            let mut actual = vec![0;block.len()];
+            for _ in 0..mib {
+                output.read_exact(&mut actual).unwrap();
+                assert_eq!(actual, block);
+            }
+            assert_eq!(output.metadata().unwrap().len(), expected_len);
+            drop(output);
+            fs::remove_file(&target).unwrap();
+            println!("ordinary copy baseline={baseline} read={} written={} ms={:.3}", counts.0, counts.1, elapsed.as_secs_f64()*1000.0);
+        }
+    }
     struct CopyMoveGuard;
     #[test]
     fn local_disk_separator_normalization_preserves_dot_case_and_special_namespaces() {
@@ -2177,6 +2246,7 @@ mod tests {
         let error = with_output_temp(&dest, &guards, |temp| {
             let expected = streams(&input, Some(temp.as_file()), &ctl)?;
             let proof = LocalStreamProof {
+                ordinary: false,
                 digest: expected,
                 control: ctl.clone(),
             };

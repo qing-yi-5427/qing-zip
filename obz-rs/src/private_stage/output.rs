@@ -484,6 +484,7 @@ fn verify_empty_directory(file:&File)->Result<(),String>{
 /// Only local copy producers supply complete stream proofs. Archive publishers
 /// retain their ordinary single-stream validation path.
 pub(crate) trait LocalOutputProof {
+    fn ordinary_primary(&self) -> bool { false }
     fn verify(&self, file: &File) -> Result<Vec<u8>, String>;
 }
 pub(crate) struct NativeOutputReservation {
@@ -663,9 +664,26 @@ impl PrivateOutputFile {
         verify_empty_directory(self.as_file())?;
         result
     }
+    pub(crate) fn supports_ordinary_local_proof(&self) -> bool {
+        use std::path::{Component, Prefix};
+        #[link(name = "kernel32")]
+        extern "system" { fn GetDriveTypeW(root: *const u16) -> u32; }
+        let drive = match self.path.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        let root = [u16::from(drive), 58, 92, 0];
+        !self.direct && !self.directory && self.state == State::Private
+            && self.permissions.is_some()
+            && unsafe { GetDriveTypeW(root.as_ptr()) } == 3
+            && direct_output_supported(self.as_file())
+    }
     /// Explicit local-file mode; default/archive output still rejects custom ADS.
     pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&dyn LocalOutputProof)->Result<File,String>{
-        proof.verify(self.as_file())?;
+        if !proof.ordinary_primary() { proof.verify(self.as_file())?; }
         self.commit_journaled(target,replace,None,&mut |_|Ok(()),Some(proof))
     }
     fn commit_journaled(
@@ -706,7 +724,14 @@ impl PrivateOutputFile {
                 return Err("destination permissions changed; output was not published".into());
             }
             let committed_handle = if self.direct {self.as_file().try_clone().map_err(|e|e.to_string())?} else if self.directory {directory_metadata_handle(self.as_file())?}else{metadata_handle(self.as_file(), 7)?};
+            let reusable = local_proof.is_some_and(LocalOutputProof::ordinary_primary);
+            // The same share-zero handle spans the full read, ACL change and rename.
+            // Reads can affect last-access time, so exclude that field from the stamp.
+            let exclusive_stamp = |file: &File| {
+                info(file).map(|mut fields| { fields[3..5].fill(0); fields })
+            };
             let marker = match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?};
+            let receipt = reusable.then(|| exclusive_stamp(self.as_file())).transpose()?;
             let private = descriptor(self.as_file())?;
             step(Step::ApplyPermissions)?;
             let transition = (|| {
@@ -715,7 +740,14 @@ impl PrivateOutputFile {
                 if !same_file_permissions(live.0, fresh.0)? {
                     return Err("destination permissions changed; output was not published".into());
                 }
-                if info(self.as_file())?[10] != 1 || (match local_proof {Some(proof)=>Some(proof.verify(self.as_file())?),None=>output_marker(self.as_file())?}) != marker {
+                let streams_match = match receipt {
+                    Some(stamp) => exclusive_stamp(self.as_file())? == stamp,
+                    None => (match local_proof {
+                        Some(proof) => Some(proof.verify(self.as_file())?),
+                        None => output_marker(self.as_file())?,
+                    }) == marker,
+                };
+                if info(self.as_file())?[10] != 1 || !streams_match {
                     return Err("private output links or streams changed".into());
                 }
                 if self.directory {verify_empty_directory(self.as_file())?;}
