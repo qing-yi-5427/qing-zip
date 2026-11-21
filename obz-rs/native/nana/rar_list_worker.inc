@@ -5,6 +5,12 @@ struct RarList {
   uint64_t sent = 0;
   uint32_t rows = 0;
   std::atomic<ULONGLONG> last_parent_check{0};
+  // RAR commonly reads a small header prefix, then its remaining bytes.
+  // Keep one small window and let the decoder skip compressed data normally.
+  std::array<uint8_t, 192> header{};
+  uint32_t header_volume = no_index;
+  uint64_t header_offset = 0;
+  DWORD header_size = 0;
 
   explicit RarList(Worker &w) : worker(w), batch(w.message()) {
     put(batch, rows);
@@ -63,7 +69,54 @@ HRESULT __stdcall rar_list_begin(void *context, uint32_t count) {
 }
 HRESULT __stdcall rar_list_read(void *context, uint32_t index, uint64_t offset,
                                 void *buffer, uint32_t size, uint32_t *got) {
-  return read_at(&static_cast<RarList *>(context)->worker, index, offset, buffer, size, got);
+  auto &list = *static_cast<RarList *>(context);
+  auto &w = list.worker;
+  *got = 0;
+  return guarded(w, [&]() -> HRESULT {
+    if (index >= w.sources.size() || offset > INT64_MAX || offset > w.volumes[index].fixed_size ||
+        size > w.volumes[index].fixed_size - offset) return E_INVALIDARG;
+    if (!size) return S_OK;
+
+    std::lock_guard<std::mutex> lock(w.source_lock);
+    if (index == list.header_volume && offset >= list.header_offset) {
+      const auto within = offset - list.header_offset;
+      if (within <= list.header_size && size <= list.header_size - within) {
+        memcpy(buffer, list.header.data() + within, size);
+        *got = size;
+        return S_OK;
+      }
+    }
+
+    auto read = [&](void *destination, DWORD count, DWORD &actual) -> HRESULT {
+      // These duplicated handles are synchronous. An OVERLAPPED offset gives
+      // the exact position in one ReadFile call and still completes inline.
+      OVERLAPPED at{};
+      at.Offset = static_cast<DWORD>(offset);
+      at.OffsetHigh = static_cast<DWORD>(offset >> 32);
+      if (!ReadFile(w.sources[index], destination, count, &actual, &at))
+        return HRESULT_FROM_WIN32(GetLastError());
+      return S_OK;
+    };
+    if (size <= 32) {
+      const auto available = static_cast<DWORD>(
+          std::min<uint64_t>(list.header.size(), w.volumes[index].fixed_size - offset));
+      list.header_volume = no_index;
+      DWORD actual = 0;
+      if (read(list.header.data(), available, actual) == S_OK && actual >= size) {
+        list.header_volume = index;
+        list.header_offset = offset;
+        list.header_size = actual;
+        memcpy(buffer, list.header.data(), size);
+        *got = size;
+        return S_OK;
+      }
+      // A read-ahead failure must leave the requested range to decide success.
+    }
+    DWORD actual = 0;
+    const auto result = read(buffer, size, actual);
+    *got = actual;
+    return result;
+  });
 }
 int32_t __stdcall rar_list_cancelled(void *context) {
   auto &list = *static_cast<RarList *>(context);

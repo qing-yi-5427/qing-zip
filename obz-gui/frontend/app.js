@@ -129,9 +129,10 @@ function archiveIndex(entries) {
     if (!entry.is_dir) files++;
     const original = entry.name;
     let path = original.endsWith('/') ? original.slice(0,-1) : original;
-    if (path.startsWith('./') || path.startsWith('/') || path.endsWith('/') || path.includes('//') || path.includes('\\')) {
-      path = original.replaceAll('\\','/').replace(/^\.\//,'').replace(/^\/+|\/+$/g,'').replace(/\/{2,}/g,'/');
-    }
+    if (path.includes('\\')) path = original.replaceAll('\\','/');
+    if (path.startsWith('./')) path = path.slice(2);
+    if (path.startsWith('/') || path.endsWith('/')) path = path.replace(/^\/+|\/+$/g,'');
+    if (path.includes('//')) path = path.replace(/\/{2,}/g,'/');
     if (!path) continue;
     let end = path.length;
     let directory = entry.is_dir;

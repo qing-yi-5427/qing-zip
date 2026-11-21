@@ -88,6 +88,27 @@ test('listing results belong to the caller and are not retained in task history'
   assert.ok(!JSON.stringify(state.jobs).includes('member.txt'));
 });
 
+test('compact directories restore the original path when adjacent rows share a parent', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/archive-listing.js'), 'utf8');
+  const body = new TextEncoder().encode(JSON.stringify({ rows: [
+    ['父\\目录\\甲.txt', 4, 2, 1],
+    ['乙.txt', 12, 3, 2, 'C82F0A11'],
+    ['同/层/a.txt', 4, 4, 3],
+    ['b.txt', 12, 5, 4],
+    ['root.txt', 4, 6, 5],
+  ] }));
+  const context = makeContext({ TextDecoder, body });
+  const rows = vm.runInContext(source + '\nQingArchiveListing.read(body).entries', context);
+  assert.deepEqual(Array.from(rows, row => row.name), [
+    '父\\目录\\甲.txt', '父\\目录\\乙.txt', '同/层/a.txt', '同/层/b.txt', 'root.txt',
+  ]);
+  assert.deepEqual(Array.from(rows, row => row.leaf), [
+    '父\\目录\\甲.txt', '父\\目录\\乙.txt', 'a.txt', 'b.txt', 'root.txt',
+  ]);
+  assert.equal(rows[1].crc, 'C82F0A11');
+  assert.equal(rows[1].size_known, true);
+});
+
 test('clipboard export discards incomplete output and publishes only a completed selection', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
   const copy = source.slice(source.indexOf('async function copySelectedFiles('), source.indexOf('async function run('));
