@@ -505,6 +505,7 @@ fn base64(data: &[u8]) -> String {
         let archive = root.path().join("mixed.zip");
         let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
         let options = zip::write::SimpleFileOptions::default();
+        writer.add_directory("public/", options).unwrap();
         writer.start_file("public/readme.txt", options).unwrap();
         writer.write_all(b"public").unwrap();
         writer.start_file("private/secret.txt", options.with_aes_encryption(zip::AesMode::Aes256, "fixture-pass")).unwrap();
@@ -517,7 +518,8 @@ fn base64(data: &[u8]) -> String {
                 ("public/", true, true),
                 ("private/", true, false),
             ] {
-                let target = root.path().join(format!("out-{smart}-{scope}-{enabled}"));
+                let target = root.path().join(format!("out-{smart}-{}-{enabled}", scope.trim_end_matches('/')));
+                std::fs::create_dir(&target).unwrap();
                 let result = execute(Request {
                     operation: "extract".into(),
                     path: archive.display().to_string(),
