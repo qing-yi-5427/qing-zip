@@ -156,6 +156,7 @@ fn snapshot(
     proof: &mut Option<move_proof::Plan>,
     snapshot_root: &Path,
     opts: &EngineOptions,
+    skip_conflict: Option<bool>,
 ) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     use std::os::windows::{
@@ -171,6 +172,11 @@ fn snapshot(
     if meta.file_attributes() & 0x400 != 0 || (!meta.is_file() && !meta.is_dir()) {
         return Err("不能添加链接或特殊对象".into());
     }
+    // This projected root has no encoder or deletion consumer when its
+    // already-resolved destination conflict selects Skip.
+    if skip_conflict.is_some_and(|target_is_dir| !meta.is_dir() || !target_is_dir) {
+        return Ok(());
+    }
     if meta.is_file(){if let Some(report)=&opts.input_atime_report{report.lock().unwrap_or_else(|e|e.into_inner()).record(source,status);}}
     let mut primary_sha = None;
     let output = if meta.is_dir() {
@@ -178,7 +184,7 @@ fn snapshot(
         for child in fs::read_dir(source).map_err(|e| e.to_string())? {
             ctl.check()?;
             let child = child.map_err(|e| e.to_string())?;
-            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents, proof, snapshot_root, opts)?;
+            snapshot(&child.path(), &target.join(child.file_name()), ctl, parents, proof, snapshot_root, opts, None)?;
         }
         File::options()
             .access_mode(0xc0000100)
@@ -353,15 +359,28 @@ fn prepare_internal(archive: &Path, inputs: &[String], folder: &str, opts: &Engi
     let dest = directory.path().join(&folder);
     fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
     let mut parents = CheckedDirectories::default();
+    let mut input_names = HashSet::new();
     for path in &paths {
+        let leaf = path.file_name().and_then(|part| part.to_str()).ok_or("invalid input name")?;
+        let relative = if folder.is_empty() { leaf.to_owned() } else { format!("{folder}/{leaf}") };
+        let name = key(&member(&relative)?);
+        if !input_names.insert(name.clone()) {
+            return Err(format!("多个源项目映射到同一名称：{relative}"));
+        }
+        let skip_conflict = if !compression && proof.is_none() && opts.overwrite == "skip" {
+            occupied.get(&name).copied()
+        } else {
+            None
+        };
         snapshot(
             path,
-            &dest.join(path.file_name().ok_or("missing input name")?),
+            &dest.join(leaf),
             &ctl,
             &mut parents,
             &mut proof,
             directory.path(),
             opts,
+            skip_conflict,
         )?;
     }
     let cwd = directory.path().to_owned();
@@ -578,6 +597,23 @@ mod tests {
         let mut result = BTreeMap::new();
         walk(output, output, &mut result);
         result
+    }
+
+    #[test]
+    fn workspace_add_skips_conflicting_root_without_reading_its_payload() {
+        let (_temp, archive, local) = fixture("zip");
+        let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = reads.clone();
+        BEFORE_SOURCE_READ.with(|hook| {
+            hook.borrow_mut().replace(Box::new(move |path, _| observed.borrow_mut().push(path.to_path_buf())));
+        });
+        let opts = EngineOptions { overwrite: "skip".into(), ..Default::default() };
+        let result = archive_add(archive.to_str().unwrap(), &[
+            local.join("a.txt").display().to_string(), local.join("b.txt").display().to_string(),
+        ], "folder", &opts);
+        BEFORE_SOURCE_READ.with(|hook| { hook.borrow_mut().take(); });
+        result.unwrap();
+        assert_eq!(*reads.borrow(), [local.join("b.txt")]);
     }
 
     #[test]

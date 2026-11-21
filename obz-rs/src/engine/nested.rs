@@ -80,14 +80,15 @@ fn digest(file: &mut impl Read, control: &JobControl) -> Result<[u8; 32], String
     }
 }
 
-// Use the same archive layout, namespace, integrity and member checks as
-// selected extraction for ordinary ZIPs, sending the chosen member to SHA-256.
+// Bind one validated ZIP namespace to the held source and send the exact
+// member to SHA-256. Candidate publication also verifies all unrelated members.
 // Other decoders retain the private extraction path and its verification.
 fn zip_member_digest(
     path: &Path,
     member: &str,
     options: &EngineOptions,
     source: &mut engine_stream::PinnedSource,
+    whole_archive: bool,
 ) -> Result<Option<[u8; 32]>, String> {
     use std::io::{Seek, SeekFrom};
 
@@ -123,6 +124,7 @@ fn zip_member_digest(
     for (index, entry) in order.into_iter().map(|index| &entries[index]).enumerate() {
         job.check()?;
         let selected = !entry.is_dir && super::path_key(&super::validate_name(&entry.name)?) == wanted;
+        if !whole_archive && !selected { continue; }
         let mut file = archive.by_index(index).map_err(|error| error.to_string())?;
         let mut whole = crc32fast::Hasher::new();
         let mut selected_hash = selected.then(Sha256::new);
@@ -212,8 +214,9 @@ impl NestedArchive {
         member: &str,
         options: &EngineOptions,
         source: &mut engine_stream::PinnedSource,
+        whole_archive: bool,
     ) -> Result<[u8; 32], String> {
-        if let Some(hash) = zip_member_digest(parent, member, options, source)? {
+        if let Some(hash) = zip_member_digest(parent, member, options, source, whole_archive)? {
             Ok(hash)
         } else {
             Ok(Self::open(utf8(parent)?, member, options)?.original_hash)
@@ -261,7 +264,7 @@ impl NestedArchive {
         if super::directory_identity(&current)? != super::directory_identity(&revision.after)? {
             return Ok(false);
         }
-        if Self::member_proof(&self.parent, &self.member, options, &mut current)? != self.original_hash {
+        if Self::member_proof(&self.parent, &self.member, options, &mut current, false)? != self.original_hash {
             return Ok(false);
         }
         self.parent_identity = revision.after.try_clone().map_err(|error| error.to_string())?;
@@ -284,7 +287,7 @@ impl NestedArchive {
         {
             let mut current = engine_stream::pin(&self.parent)?;
             if super::directory_identity(&current)? != super::directory_identity(&self.parent_identity)?
-                || Self::member_proof(&self.parent, &self.member, options, &mut current)? != self.original_hash
+                || Self::member_proof(&self.parent, &self.member, options, &mut current, false)? != self.original_hash
             {
                 return Err("parent archive or its member changed since opening".into());
             }
@@ -309,7 +312,7 @@ impl NestedArchive {
         super::run(&args, Some(self.directory.path()), options, None)?;
         {
             let mut proposed = engine_stream::pin(staged)?;
-            if Self::member_proof(staged, &self.member, options, &mut proposed)? != next_hash {
+            if Self::member_proof(staged, &self.member, options, &mut proposed, true)? != next_hash {
                 return Err("nested archive write-back verification failed".into());
             }
         }
@@ -351,10 +354,25 @@ mod tests {
         let mut pinned = engine_stream::pin(&parent).unwrap();
         let expected: [u8; 32] = Sha256::digest(b"working bytes").into();
         assert_eq!(
-            zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned).unwrap(),
+            zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned, false).unwrap(),
             Some(expected)
         );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        drop(pinned);
+
+        // Damage the unrelated member. A rebind proves the exact requested
+        // member only, while a proposed write-back must reject the whole ZIP.
+        let mut bytes = fs::read(&parent).unwrap();
+        let position = zip::ZipArchive::new(Cursor::new(&bytes))
+            .unwrap().by_index(1).unwrap().data_start().unwrap() as usize;
+        bytes[position] ^= 1;
+        fs::write(&parent, bytes).unwrap();
+        let mut pinned = engine_stream::pin(&parent).unwrap();
+        assert_eq!(
+            zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned, false).unwrap(),
+            Some(expected)
+        );
+        assert!(zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned, true).is_err());
     }
 
     #[test]
