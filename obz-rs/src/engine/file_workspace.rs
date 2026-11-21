@@ -1441,6 +1441,55 @@ mod tests {
         assert!(second.next.is_none());
     }
     #[test]
+    fn zip_member_targeting_its_source_preserves_the_source_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.zip");
+        let mut archive = zip::ZipWriter::new(File::create(&source).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        archive.start_file("source.zip", stored).unwrap();
+        archive.write_all(b"replacement member").unwrap();
+        archive.finish().unwrap();
+        let before = fs::read(&source).unwrap();
+        let options = EngineOptions { overwrite: "overwrite".into(), ..Default::default() };
+        let outcome = crate::operations::extract_archive(
+            source.to_str().unwrap(), root.path().to_str().unwrap(), &options,
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn ordinary_copy_keeps_source_and_racing_target_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("entry.bin");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"source bytes").unwrap();
+        let target = destination.join("entry.bin");
+        let options = EngineOptions::default();
+        let inputs = [source.display().to_string()];
+        assert!(transfer(&inputs, root.path().to_str().unwrap(), false, &options).is_err());
+        for racing in [false, true] {
+            if racing {
+                let competitor = target.clone();
+                AFTER_CHUNK.with(|hook| {
+                    hook.borrow_mut().replace(Box::new(move || fs::write(competitor, b"competitor").unwrap()));
+                });
+            } else {
+                fs::write(&target, b"competitor").unwrap();
+            }
+            let result = transfer(&inputs, destination.to_str().unwrap(), false, &options);
+            assert!(result.is_err());
+            assert_eq!(fs::read(&source).unwrap(), b"source bytes");
+            assert_eq!(fs::read(&target).unwrap(), b"competitor");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            fs::remove_file(&target).unwrap();
+        }
+    }
+
+    #[test]
     fn local_disk_separator_normalization_preserves_dot_case_and_special_namespaces() {
         assert_eq!(local_path("c:/Mixed/./Folder/../file/").unwrap().as_os_str(),std::ffi::OsStr::new("c:\\Mixed\\.\\Folder\\..\\file\\"));
         for special in [r"\\server\share/folder/../file",r"\\?\C:\folder/file",r"\\?\UNC\server\share/folder"] {
