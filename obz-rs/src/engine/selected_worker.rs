@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 
 const LIMIT: usize = 16 * 1024 * 1024;
+const DIRECT_MANIFEST_LIMIT: usize = 128 * 1024 * 1024;
 const MAX_ITEMS: usize = 100_000;
 const MAX_NAME_UNITS: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT_HANDLES: usize = 512;
@@ -67,6 +68,8 @@ pub(super) mod rar_listing;
 pub mod zip_listing;
 #[path="full_worker.rs"]
 pub(super) mod full_worker;
+#[path = "direct_worker.rs"]
+pub(super) mod direct_worker;
 
 fn runtime_dir() -> Result<Option<PathBuf>, String> {
     let exe = executable()?;
@@ -390,6 +393,9 @@ impl<'a> Fields<'a> {
 
 type Frame = Option<(u8, Vec<u8>)>;
 fn read_frame(stdout: &mut impl std::io::Read, limit:usize) -> Result<Frame, String> {
+    read_frame_with_direct_manifest(stdout, limit, false)
+}
+fn read_frame_with_direct_manifest(stdout: &mut impl std::io::Read, limit: usize, direct: bool) -> Result<Frame, String> {
     let mut kind = [0];
     let mut n = [0; 4];
     if stdout.read(&mut kind).map_err(|e| e.to_string())? == 0 {
@@ -397,7 +403,7 @@ fn read_frame(stdout: &mut impl std::io::Read, limit:usize) -> Result<Frame, Str
     }
     stdout.read_exact(&mut n).map_err(|e| e.to_string())?;
     let length = u32::from_le_bytes(n) as usize;
-    if length > limit {
+    if length > if direct && kind[0] == 26 { DIRECT_MANIFEST_LIMIT } else { limit } {
         return Err("selected worker frame exceeds size limit".into());
     }
     let mut body = vec![0; length];
@@ -415,6 +421,9 @@ impl Session {
         Self::start_mode(exe, u8::from(create_zip))
     }
     fn start_mode(exe: &Path, mode: u8) -> Result<Self, String> {
+        Self::start_reader(exe, mode, false)
+    }
+    fn start_reader(exe: &Path, mode: u8, direct: bool) -> Result<Self, String> {
         let create_zip = mode == 1;
         let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
         let (mut process, mut input, mut output) = (
@@ -442,7 +451,7 @@ impl Session {
             std::thread::Builder::new()
                 .name("selected-worker-output".into())
                 .spawn(move || loop {
-                    let frame = read_frame(&mut stdout, if create_zip { 1024 } else { LIMIT });
+                    let frame = read_frame_with_direct_manifest(&mut stdout, if create_zip { 1024 } else { LIMIT }, direct);
                     let last = !matches!(&frame, Ok(Some(_)));
                     if tx.send(frame).is_err() || last {
                         break;

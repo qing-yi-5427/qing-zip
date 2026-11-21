@@ -16,8 +16,11 @@ impl AckWriter {
         let (tx,rx)=mpsc::sync_channel::<(u8,Vec<u8>)>(1);let (done,results)=mpsc::sync_channel(1);
         let thread=std::thread::Builder::new().name("verification-ack".into()).spawn(move||{
             while let Ok((kind,bytes))=rx.recv(){
-                let result=pipe.write_all(&[kind]).and_then(|_|pipe.write_all(&(bytes.len() as u32).to_le_bytes()))
-                    .and_then(|_|pipe.write_all(&bytes)).and_then(|_|pipe.flush()).map_err(|e|e.to_string());
+                let mut packet = [0u8; 33];
+                packet[0] = kind;
+                packet[1..5].copy_from_slice(&28u32.to_le_bytes());
+                packet[5..].copy_from_slice(&bytes);
+                let result = pipe.write_all(&packet).map_err(|e| e.to_string());
                 let failed=result.is_err();if done.send(result).is_err()||failed{break;}
             }
         }).map_err(|e|e.to_string())?;
@@ -26,8 +29,8 @@ impl AckWriter {
         Ok(Self{sender:Some(tx),results,thread:Some(thread),child,pending:false})
     }
     pub(super) fn send(&mut self,kind:u8,body:Vec<u8>,ctl:&JobControl)->Result<(),String>{
-        // Every ACK is nonce(16), index(4), offset(8); no secret or payload.
-        if body.len()!=28||!matches!(kind,13|15|17)||self.pending{return Err("invalid verification ACK".into());}
+        // Every ACK is nonce(16), index(4), and offset or output handle(8).
+        if body.len()!=28||!matches!(kind,13|15|17|28)||self.pending{return Err("invalid worker ACK".into());}
         ctl.check()?;self.sender.as_ref().ok_or("ACK writer closed")?.try_send((kind,body)).map_err(|_|"ACK queue unavailable")?;self.pending=true;
         let result=loop{
             if ctl.check().is_err(){unsafe{TerminateProcess(self.child.as_raw_handle(),2);CancelSynchronousIo(self.thread.as_ref().unwrap().as_raw_handle());}}

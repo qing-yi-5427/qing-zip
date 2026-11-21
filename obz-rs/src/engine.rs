@@ -1,5 +1,5 @@
 //! Multi-format operations through bundled NanaZip with official 7-Zip fallback.
-//! No shell is used. Extraction stages preflighted archives before publishing files.
+//! No shell is used. Eligible archives decode through checked output handles.
 #[cfg(nana_selected_worker)]
 pub mod selected_worker;
 #[cfg(windows)]
@@ -291,6 +291,23 @@ impl JobControl {
             percent: (total != 0).then(|| (done.saturating_mul(100) / total) as u8),
             message: name.into(),
             work: Some(ProgressWork { items_done: done, items_total: total, bytes_done, bytes_total }),
+            ..Progress::default()
+        };
+    }
+    #[cfg(nana_selected_worker)]
+    fn report_decoding(&self, name: &str, files: usize, files_total: usize, bytes: u64, bytes_total: u64) {
+        let fraction = if bytes_total > 0 {
+            bytes.saturating_mul(100) / bytes_total
+        } else {
+            files.saturating_mul(100) as u64 / files_total.max(1) as u64
+        };
+        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress {
+            phase: "decoding".into(),
+            percent: Some(fraction.min(99) as u8),
+            message: name.into(),
+            work: Some(ProgressWork {
+                items_done: files, items_total: files_total, bytes_done: Some(bytes), bytes_total: Some(bytes_total),
+            }),
             ..Progress::default()
         };
     }
@@ -2739,12 +2756,21 @@ fn preflight_output_targets(
 #[derive(Default)]
 pub(crate) struct PublicationJournal {
     #[cfg(windows)]
-    files: Mutex<Vec<crate::private_stage::OutputReceipt>>,
+    files: Mutex<std::collections::VecDeque<crate::private_stage::OutputReceipt>>,
 }
 impl PublicationJournal {
     #[cfg(windows)]
     pub(crate) fn record(&self,receipt:crate::private_stage::OutputReceipt){
-        self.files.lock().unwrap_or_else(|p|p.into_inner()).push(receipt);
+        self.files.lock().unwrap_or_else(|p|p.into_inner()).push_back(receipt);
+    }
+    #[cfg(nana_selected_worker)]
+    fn retain_latest(&self, limit: usize) -> bool {
+        let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        if files.len() > limit {
+            files.pop_front();
+            return true;
+        }
+        false
     }
     #[cfg(test)]
     pub(crate) fn rollback_for_output_test(&self)->Vec<String>{self.rollback()}
@@ -2802,11 +2828,18 @@ fn extract_raw_to(
         None
     };
     #[cfg(nana_selected_worker)]
-    let prefetched = if _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
+    let direct = if _volume_guards.is_empty() && opts.verification_reuse.is_none()
+        && crate::stream_formats::raw_format(path).is_none()
+    {
+        selected_worker::direct_worker::prepare(&source_path, &mut source_guard, opts, &ctl)?
+    } else { None };
     #[cfg(nana_selected_worker)]
-    let (all_entries,payload_source,mut full_worker)=match prefetched {
-        Some((entries,pending))=>(entries,PayloadSource::Engine,pending),
-        None=>{let (entries,payload)=list_raw_with_source(path,opts,&mut source_guard)?;(entries,payload,None)},
+    let prefetched = if direct.is_none() && _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
+    #[cfg(nana_selected_worker)]
+    let (all_entries,mut payload_source,mut full_worker,mut direct_worker)=match (direct,prefetched) {
+        (Some((entries,pending)), _) => (entries,PayloadSource::Engine,None,Some(pending)),
+        (None, Some((entries,pending))) => (entries,PayloadSource::Engine,pending,None),
+        (None, None) => {let (entries,payload)=list_raw_with_source(path,opts,&mut source_guard)?;(entries,payload,None,None)},
     };
     #[cfg(not(nana_selected_worker))]
     let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
@@ -2856,11 +2889,29 @@ fn extract_raw_to(
         drop(full_worker.take());
     }
     let dest = destination(&all_entries)?;
+    // Win32 normalizes ordinary drive paths before filesystem access. Use one
+    // spelling for the guarded namespace as well, including CLI slash paths.
+    #[cfg(nana_selected_worker)]
+    let dest = if matches!(dest.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_))) {
+        std::path::absolute(dest).map_err(|e| e.to_string())?
+    } else { dest };
     // Declaration order releases all output locks before TempDir cleanup, also
     // on early errors (the output may share TEMP ancestors).
     let mut stage;
     let mut output_guards = CheckedDirectories::default();
     output_guards.check(&dest)?;
+    #[cfg(nana_selected_worker)]
+    if let Some(mut pending) = direct_worker.take() {
+        if !unencrypted_projection {
+            if let Some(claim) = selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)? {
+                return pending.extract(&all_entries, &dest, claim, opts, output_guards, &ctl);
+            }
+        }
+        if rar {
+            let volumes = std::mem::take(&mut pending.volumes).into_iter().map(|(_, pin)| pin).collect();
+            payload_source = PayloadSource::Rar { _volumes: volumes };
+        }
+    }
     // With no members there is no per-entry destination check below. An
     // existing regular file must not be reported as a successful output folder.
     if all_entries.is_empty() {

@@ -22,20 +22,24 @@ fn manifest_entries(body:&[u8],nonce:&[u8;16])->Result<Vec<Entry>,String> {
     manifest_entries_mode(body,nonce,false)
 }
 fn manifest_entries_mode(body:&[u8],nonce:&[u8;16],verification:bool)->Result<Vec<Entry>,String> {
+    parse_manifest(body, nonce, verification, false)
+}
+pub(super) fn parse_manifest(body: &[u8], nonce: &[u8;16], verification: bool, direct: bool) -> Result<Vec<Entry>,String> {
     let mut data=Fields(body);
     if data.take(16)? != nonce {return Err("full worker nonce mismatch".into());}
     let count=data.u32()? as usize;
-    if (!verification && count==0) || count>MAX_ITEMS {return Err("full worker manifest count limit".into());}
+    let (max_items, max_names) = if direct { (512_000, 32 * 1024 * 1024) } else { (MAX_ITEMS, MAX_NAME_UNITS) };
+    if (!verification && count==0) || count>max_items {return Err("full worker manifest count limit".into());}
     let mut entries=Vec::with_capacity(count);let mut names=HashSet::new();let mut units=0usize;let mut total=0u64;
     for _ in 0..count {
         let name=data.wide()?.replace('\\',"/");
-        units=units.checked_add(name.encode_utf16().count()).filter(|n|*n<=MAX_NAME_UNITS).ok_or("full worker name budget")?;
+        units=units.checked_add(name.encode_utf16().count()).filter(|n|*n<=max_names).ok_or("full worker name budget")?;
         let key=path_key(&validate_name(&name)?);
         if !names.insert(key) {return Err("duplicate full worker member".into());}
         let size=data.u64()?;total=total.checked_add(size).ok_or("full worker size overflow")?;
         let is_dir=data.bit()?;let present=data.bit()?;let attrs=data.u32()?;
         let crc_present=data.bit()?;let crc=data.u32()?;
-        let encrypted=if verification{data.bit()?}else{false};
+        let encrypted=if verification || direct {data.bit()?}else{false};
         let times=[data.time()?,data.time()?,data.time()?];let kind=(attrs>>16)&0xf000;
         if (is_dir && size!=0) || attrs&0x400!=0 || !matches!(kind,0|0x4000|0x8000) ||
             (kind!=0 && (kind==0x4000)!=is_dir) {return Err("unsafe full worker member metadata".into());}
@@ -53,7 +57,8 @@ fn manifest_entries_mode(body:&[u8],nonce:&[u8;16],verification:bool)->Result<Ve
             crc:if crc_present {format!("{crc:08X}")}else{String::new()},encrypted,modified,
             method:String::new(),comment:String::new(),attributes:format!("{}{}",if is_dir{"D"}else{"A"},if present && attrs&1!=0{"R"}else{""})});
     }
-    data.end()?;expected_tree(&entries)?;
+    data.end()?;
+    if !direct { expected_tree(&entries)?; }
     Ok(entries)
 }
 

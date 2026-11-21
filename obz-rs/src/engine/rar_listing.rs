@@ -208,11 +208,29 @@ fn rar_leaf(name: &str) -> bool {
 }
 
 type Pins = Vec<crate::engine_stream::PinnedSource>;
+pub(super) fn direct_volumes(
+    path: &Path, source: &mut File, ctl: &JobControl,
+) -> Result<Option<(u32, NamedPins)>, String> {
+    let Some((format, may_have_volumes)) = rar_format(source)? else { return Ok(None) };
+    let Some(leaf) = path.file_name().and_then(OsStr::to_str) else { return Ok(None) };
+    if may_have_volumes && !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("rar")) {
+        return Ok(None);
+    }
+    if matches!(crate::deep_volume_plan::classify(leaf, &[]), crate::deep_volume_plan::Member::Later { .. }) {
+        return Ok(None);
+    }
+    if may_have_volumes {
+        capture_siblings(path, leaf, ctl).map(|parts| parts.map(|parts| (format, parts)))
+    } else {
+        Ok(Some((format, Vec::new())))
+    }
+}
+pub(super) type NamedPins = Vec<(String, crate::engine_stream::PinnedSource)>;
 fn capture_siblings(
     path: &Path,
     leaf: &str,
     ctl: &JobControl,
-) -> Result<Option<Vec<(String, crate::engine_stream::PinnedSource)>>, String> {
+) -> Result<Option<NamedPins>, String> {
     let parent = path.parent().ok_or("RAR archive has no parent directory")?;
     let Ok(directory) = std::fs::read_dir(parent) else {
         return Ok(None);

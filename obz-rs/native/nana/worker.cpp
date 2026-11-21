@@ -13,6 +13,7 @@
 
 namespace {
 constexpr size_t frame_limit = 16 * 1024 * 1024;
+constexpr size_t direct_manifest_limit = 128 * 1024 * 1024;
 constexpr uint32_t no_index = UINT32_MAX;
 using Bytes = std::vector<uint8_t>;
 
@@ -28,12 +29,12 @@ void transfer(HANDLE pipe, void *data, size_t length, bool writing) {
     bytes += count;
   }
 }
-void append(Bytes &bytes, const void *src, size_t n) {
-  if (n > frame_limit - bytes.size()) throw std::runtime_error("worker frame limit exceeded");
+void append(Bytes &bytes, const void *src, size_t n, size_t limit = frame_limit) {
+  if (bytes.size() > limit || n > limit - bytes.size()) throw std::runtime_error("worker frame limit exceeded");
   const auto *p = static_cast<const uint8_t *>(src);
   bytes.insert(bytes.end(), p, p + n);
 }
-template<class T> void put(Bytes &bytes, T value) { append(bytes, &value, sizeof(value)); }
+template<class T> void put(Bytes &bytes, T value, size_t limit = frame_limit) { append(bytes, &value, sizeof(value), limit); }
 struct Reader {
   Bytes bytes;
   size_t at = 0;
@@ -62,6 +63,14 @@ struct Channel {
   void send(uint8_t kind, Bytes &bytes) {
     std::lock_guard<std::mutex> lock(write_lock);
     auto length = static_cast<uint32_t>(bytes.size());
+    if (length <= 32) {
+      uint8_t packet[37];
+      packet[0] = kind;
+      memcpy(packet + 1, &length, 4);
+      memcpy(packet + 5, bytes.data(), length);
+      transfer(output, packet, length + 5, true);
+      return;
+    }
     transfer(output, &kind, 1, true); transfer(output, &length, 4, true);
     transfer(output, bytes.data(), length, true);
   }
@@ -90,10 +99,14 @@ struct Worker {
     if (received != nonce) throw std::runtime_error("worker job identity mismatch");
   }
   uint32_t single_mode = 0;
-  bool verification = false, hashing = false, reuse = false;
+  bool verification = false, hashing = false, reuse = false, direct = false;
   std::mutex stream_lock;
   std::vector<uint64_t> sizes, offsets;
-  std::vector<uint8_t> opened, closed;
+  std::vector<uint8_t> opened, closed, completed;
+  std::array<uint8_t, 192> rar_header{};
+  uint32_t rar_header_volume = no_index;
+  uint64_t rar_header_offset = 0;
+  DWORD rar_header_size = 0;
   uint32_t cp_present = 0, codepage = 0;
   uint32_t thread_limit = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
@@ -117,7 +130,20 @@ struct Worker {
     }
     auto units = r.get<uint32_t>();
     if(kind==1){auto mode=r.get<uint32_t>();if(mode>1)throw std::runtime_error("invalid selected verification mode");reuse=mode!=0;}
-    if (kind == 11) { single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>(); if (single_mode != 1 && single_mode != 2 && single_mode != 5 && single_mode != 6 && single_mode != 7 && single_mode != 8) throw std::runtime_error("invalid single archive mode"); verification = single_mode > 2; hashing = single_mode > 6; if (verification) { single_mode -= hashing ? 6 : 4; cp_present=r.get<uint32_t>(); codepage=r.get<uint32_t>(); if(cp_present>1 || (!cp_present && codepage)) throw std::runtime_error("invalid codepage field"); } }
+    if (kind == 11) {
+      single_mode = r.get<uint32_t>(); thread_limit = r.get<uint32_t>();
+      direct = single_mode >= 10 && single_mode <= 13;
+      if (direct) single_mode -= 9;
+      else {
+        if (single_mode != 1 && single_mode != 2 && single_mode != 5 && single_mode != 6 && single_mode != 7 && single_mode != 8)
+          throw std::runtime_error("invalid single archive mode");
+        verification = single_mode > 2; hashing = single_mode > 6;
+        if (verification) {
+          single_mode -= hashing ? 6 : 4; cp_present=r.get<uint32_t>(); codepage=r.get<uint32_t>();
+          if(cp_present>1 || (!cp_present && codepage)) throw std::runtime_error("invalid codepage field");
+        }
+      }
+    }
     if (units > 32767) throw std::runtime_error("password input length exceeds limit");
     r.end();
     if (units) {
@@ -137,7 +163,38 @@ HRESULT __stdcall read_at(void *context, uint32_t index, uint64_t offset, void *
   return guarded(w, [&]() -> HRESULT {
     if (index >= w.sources.size() || offset > INT64_MAX || offset > w.volumes[index].fixed_size ||
         size > w.volumes[index].fixed_size - offset) return E_INVALIDARG;
+    if (!size) return S_OK;
     std::lock_guard<std::mutex> lock(w.source_lock);
+    if (w.direct && w.single_mode >= 3) {
+      if (index == w.rar_header_volume && offset >= w.rar_header_offset) {
+        const auto within = offset - w.rar_header_offset;
+        if (within <= w.rar_header_size && size <= w.rar_header_size - within) {
+          memcpy(buffer, w.rar_header.data() + within, size);
+          *got = size; return S_OK;
+        }
+      }
+      // Buffered synchronous handles with an explicit offset, matching the
+      // RAR listing worker's bounded small-header read-ahead.
+      auto read = [&](void *destination, DWORD bytes, DWORD &count) -> HRESULT {
+        OVERLAPPED at{};
+        at.Offset = static_cast<DWORD>(offset);
+        at.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        return ReadFile(w.sources[index], destination, bytes, &count, &at)
+            ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+      };
+      DWORD count = 0;
+      if (size <= 32) {
+        const auto want = static_cast<DWORD>(std::min<uint64_t>(w.rar_header.size(), w.volumes[index].fixed_size - offset));
+        w.rar_header_volume = no_index;
+        if (read(w.rar_header.data(), want, count) == S_OK && count >= size) {
+          w.rar_header_volume = index; w.rar_header_offset = offset; w.rar_header_size = count;
+          memcpy(buffer, w.rar_header.data(), size);
+          *got = size; return S_OK;
+        }
+      }
+      const auto result = read(buffer, size, count);
+      *got = count; return result;
+    }
     LARGE_INTEGER pos{}; pos.QuadPart = static_cast<LONGLONG>(offset); DWORD n = 0;
     if (!SetFilePointerEx(w.sources[index], pos, nullptr, FILE_BEGIN) ||
         !ReadFile(w.sources[index], buffer, size, &n, nullptr)) return HRESULT_FROM_WIN32(GetLastError());
@@ -148,22 +205,24 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
   auto &w = *static_cast<Worker *>(context);
   return guarded(w, [&]() -> HRESULT {
     Bytes msg = w.message(); put(msg, count);
+    const size_t limit = w.direct ? direct_manifest_limit : frame_limit;
     for (uint32_t i = 0; i < count; ++i) {
       const auto &e = items[i]; if (e.index != i) return E_FAIL;
-      put(msg, e.name_units); append(msg, e.name, size_t(e.name_units) * 2);
-      put(msg, e.size); put(msg, e.is_dir); put(msg, e.attrs_present); put(msg, e.attrs);
-      put(msg, e.crc_present); put(msg, e.crc);
-      if(w.verification) put(msg,e.encrypted);
-      for (auto t : {e.ctime, e.atime, e.mtime}) { put(msg, t.present); put(msg, t.filetime_100ns); }
+      put(msg, e.name_units, limit); append(msg, e.name, size_t(e.name_units) * 2, limit);
+      put(msg, e.size, limit); put(msg, e.is_dir, limit); put(msg, e.attrs_present, limit); put(msg, e.attrs, limit);
+      put(msg, e.crc_present, limit); put(msg, e.crc, limit);
+      if(w.verification || w.direct) put(msg,e.encrypted, limit);
+      for (auto t : {e.ctime, e.atime, e.mtime}) { put(msg, t.present, limit); put(msg, t.filetime_100ns, limit); }
     }
-    w.channel.send(2, msg);
+    w.channel.send(w.direct ? 26 : 2, msg);
     auto r = w.channel.read(3); w.match_nonce(r);
     if (r.get<uint32_t>() != count) return E_FAIL;
     w.outputs.assign(count, nullptr); w.selected.resize(count);
     if(w.hashing){w.sizes.resize(count);w.offsets.assign(count,0);w.opened.assign(count,0);w.closed.assign(count,0);}
+    if(w.direct) { w.opened.assign(count,0); w.closed.assign(count,0); w.completed.assign(count,0); }
     for (uint32_t i = 0; i < count; ++i) {
       auto selected = r.get<uint8_t>(); auto handle = reinterpret_cast<HANDLE>(r.get<uint64_t>());
-      if (selected > 1 || bool(handle) != bool(selected && !items[i].is_dir && !w.hashing)) return E_FAIL;
+      if (selected > 1 || bool(handle) != bool(selected && !items[i].is_dir && !w.hashing && !w.direct)) return E_FAIL;
       if (handle) {
         BY_HANDLE_FILE_INFORMATION info{};
         if (GetFileType(handle) != FILE_TYPE_DISK || !GetFileInformationByHandle(handle, &info) ||
@@ -181,10 +240,28 @@ void stream_ack(Worker &w,uint8_t kind,uint32_t index,uint64_t offset) {
   auto r=w.channel.read(kind);w.match_nonce(r);
   if(r.get<uint32_t>()!=index || r.get<uint64_t>()!=offset)throw std::runtime_error("invalid hash stream acknowledgement");r.end();
 }
+void direct_completed(Worker &w, uint32_t index) {
+  if (w.closed[index] && w.completed[index]) {
+    Bytes msg = w.message(); put(msg, index); w.channel.send(29, msg);
+  }
+}
 HRESULT __stdcall open_output(void *context, uint32_t index, uint64_t *token) {
   auto &w = *static_cast<Worker *>(context);
   return guarded(w,[&]()->HRESULT{
-    if(w.hashing){
+    if (w.direct) {
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if(index >= w.selected.size() || !w.selected[index] || w.opened[index]) return E_FAIL;
+      Bytes msg = w.message(); put(msg, index); w.channel.send(27, msg);
+      auto r = w.channel.read(28); w.match_nonce(r);
+      if (r.get<uint32_t>() != index) return E_FAIL;
+      auto handle = reinterpret_cast<HANDLE>(r.get<uint64_t>());
+      r.end();
+      BY_HANDLE_FILE_INFORMATION info{};
+      if (GetFileType(handle) != FILE_TYPE_DISK || !GetFileInformationByHandle(handle, &info) ||
+          info.nNumberOfLinks != 1 || info.nFileSizeHigh || info.nFileSizeLow ||
+          (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return E_FAIL;
+      w.outputs[index] = handle; w.opened[index] = 1;
+    } else if(w.hashing){
       std::lock_guard<std::mutex> lock(w.stream_lock);
       if(index>=w.selected.size()||!w.selected[index]||w.opened[index]||w.closed[index])return E_FAIL;
       Bytes msg=w.message();put(msg,index);put(msg,w.sizes[index]);w.channel.send(12,msg);stream_ack(w,13,index,w.sizes[index]);w.opened[index]=1;
@@ -213,6 +290,15 @@ HRESULT __stdcall write_output(void *context, uint64_t token, const void *buffer
 HRESULT __stdcall close_output(void *context, uint64_t token) {
   auto &w = *static_cast<Worker *>(context);
   return guarded(w,[&]()->HRESULT{
+    if (w.direct) {
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if (token >= w.outputs.size() || !w.outputs[size_t(token)] || w.closed[size_t(token)]) return E_FAIL;
+      auto index = uint32_t(token);
+      if (!CloseHandle(w.outputs[index])) return HRESULT_FROM_WIN32(GetLastError());
+      w.outputs[index] = nullptr; w.closed[index] = 1;
+      direct_completed(w, index);
+      return S_OK;
+    }
     if(w.hashing){
       std::lock_guard<std::mutex> lock(w.stream_lock);
       if(token>=w.selected.size()||!w.opened[size_t(token)]||w.closed[size_t(token)]||w.offsets[size_t(token)]!=w.sizes[size_t(token)])return E_FAIL;
@@ -234,7 +320,7 @@ void __stdcall progress(void *p, uint64_t decoded, uint64_t total) {
     Bytes msg = w.message(); put(msg, decoded); put(msg, total); w.channel.send(4, msg); return S_OK;
   });
 }
-HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t result, uint64_t value) {
+HRESULT __stdcall observe(void *p, uint32_t event, uint32_t index, int32_t, int32_t result, uint64_t value) {
   auto &w = *static_cast<Worker *>(p);
   if (event == QZ_TRACE_THREADS_APPLIED) {
     return guarded(w, [&]() -> HRESULT {
@@ -248,9 +334,23 @@ HRESULT __stdcall observe(void *p, uint32_t event, uint32_t, int32_t, int32_t re
     });
   }
   if ((event == 22 || event == 23) && result != 0) w.operation_error = result;
+  if (event == 22 && result == 0 && w.direct) {
+    return guarded(w, [&]() -> HRESULT {
+      std::lock_guard<std::mutex> lock(w.stream_lock);
+      if (index >= w.opened.size()) return E_FAIL;
+      if (w.opened[index]) {
+        if (w.completed[index]) return E_FAIL;
+        w.completed[index] = 1;
+        direct_completed(w, index);
+      }
+      return S_OK;
+    });
+  }
   return S_OK;
 }
 }
+
+extern "C" HRESULT __stdcall qz_extract_direct(const QzSelectedRequest *, QzSelectedReceipt *, uint32_t, const wchar_t *, uint32_t);
 
 static int selected_worker_main(const wchar_t *runtime, bool single) noexcept {
   try {
@@ -259,7 +359,12 @@ static int selected_worker_main(const wchar_t *runtime, bool single) noexcept {
                         open_output, write_output, close_output, cancelled, progress, observe};
     QzSelectedRequest req{1, sizeof(QzSelectedRequest), runtime, w.volumes.data(),
                           uint32_t(w.volumes.size()), w.single_mode, &host};
-    QzSelectedReceipt result{}; HRESULT hr = single ? (w.verification ? qz_verify_single_with_threads(&req, &result, w.thread_limit, w.password.data(), static_cast<uint32_t>(w.password.size()), w.cp_present, w.codepage) : qz_extract_single_with_threads(&req, &result, w.thread_limit)) : qz_extract_selected_reusing_verified(&req, &result, w.password.data(), static_cast<uint32_t>(w.password.size()), w.reuse ? 1 : 0);
+    QzSelectedReceipt result{};
+    const auto units = static_cast<uint32_t>(w.password.size());
+    HRESULT hr = w.direct ? qz_extract_direct(&req, &result, w.thread_limit, w.password.data(), units)
+        : single ? (w.verification ? qz_verify_single_with_threads(&req, &result, w.thread_limit, w.password.data(), units, w.cp_present, w.codepage)
+                                   : qz_extract_single_with_threads(&req, &result, w.thread_limit))
+                 : qz_extract_selected_reusing_verified(&req, &result, w.password.data(), units, w.reuse ? 1 : 0);
     Bytes msg = w.message(); put(msg, uint32_t(hr)); put(msg, result.outcome); put(msg, result.item_count);
     put(msg, result.completion_count); put(msg, result.item_errors); put(msg, result.block_errors);
     put(msg, result.streams_open); put(msg, result.decoded_bytes); put(msg, result.selected_bytes);

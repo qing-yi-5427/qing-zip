@@ -138,7 +138,7 @@ struct Shared {
   std::atomic<uint64_t> decoded{0}, selected_bytes{0}, total{0};
   std::atomic<uint32_t> item_errors{0}, block_errors{0}, streams_open{0};
   uint32_t current = NONE;
-  bool reuse = false;
+  bool reuse = false, direct = false;
   explicit Shared(std::shared_ptr<OperationStatus> s) : operation(std::move(s)), host(operation->host) {}
   HRESULT check() const { return operation->check(); }
   void record(HRESULT hr) noexcept { operation->finish(hr); }
@@ -376,6 +376,8 @@ public:
       }
       if (wrote > size || (size && !wrote && result == S_OK)) return E_FAIL;
       state_->count(index_, wrote);
+      if (state_->direct && wrote)
+        state_->host.progress(state_->host.context, state_->decoded.load(), state_->total.load());
       if (processed) *processed = wrote;
       return result;
     });
@@ -454,12 +456,13 @@ public:
     HRESULT hr = boundary([&]() -> HRESULT {
       std::lock_guard<std::mutex> lock(state_->ledger);
       uint32_t i = state_->current;
-      exact(state_->operation->observe(22, i, 0, result), "trace failure");
       if (i == NONE || !state_->prepared[i] || state_->done[i]) return E_FAIL;
       if (result != NArchive::NExtract::NOperationResult::kOK) {
+        exact(state_->operation->observe(22, i, 0, result), "trace failure");
         ++state_->item_errors; return E_FAIL;
       }
       if ((!state_->reuse || state_->selected[i]) && state_->bytes[i] != state_->items[i].value.size) return E_FAIL;
+      exact(state_->operation->observe(22, i, 0, result), "trace failure");
       state_->done[i] = 1; state_->current = NONE;
       return state_->check();
     });
@@ -601,11 +604,12 @@ static_assert(!verification_method(L"Copy Copy Copy Copy Copy Copy Copy Copy Cop
 static_assert(!verification_method(L"LZMA2:" L"111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111", false, false));
 static_assert(!verification_method(L"AES-256 Deflate Extra", true, true));
 static_assert(!verification_method(L"BCJ2 LZMA2:19 7zAES:19", false, false));
-void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0, bool verification = false) {
+void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t single_mode = 0,
+              bool verification = false, const VolumeMap *rar = nullptr, bool direct = false) {
   // Only the new single-archive fast path declines wrappers/tails. The original
   // listing and complete decoder retain authority over their compatibility;
   // no output handle has been requested. Split and post-decode health stay strict.
-  if (single_mode) {
+  if (single_mode && !rar) {
     for (PROPID id : {kpidOffset, kpidTailSize, kpidWarningFlags}) {
       Variant v; exact(arc->GetArchiveProperty(id, &v.v), "single layout query");
       if (number(v.v, true)) throw UnsupportedLayout{"single archive wrapper or warning"};
@@ -618,20 +622,37 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   archive_health(arc);
   { Variant v; exact(arc->GetArchiveProperty(kpidOffset, &v.v), "archive offset");
     if (number(v.v, true)) fail("embedded archive is outside supported method set"); }
-  { Variant v; exact(arc->GetArchiveProperty(kpidPhySize, &v.v), "archive physical size");
+  if (!rar) { Variant v; exact(arc->GetArchiveProperty(kpidPhySize, &v.v), "archive physical size");
     if (number(v.v) != source_size) fail("fixed volumes do not exactly contain archive"); }
+  if (rar) {
+    Variant count, first, extent;
+    exact(arc->GetArchiveProperty(kpidNumVolumes, &count.v), "RAR volume count");
+    exact(arc->GetArchiveProperty(kpidPhySize, &first.v), "RAR first volume extent");
+    const auto used = number(count.v);
+    const auto first_bytes = number(first.v);
+    if (used != rar->sizes.size() || !first_bytes || first_bytes > rar->sizes[0])
+      throw UnsupportedLayout{"RAR volume layout"};
+    if (used > 1) exact(arc->GetArchiveProperty(kpidTotalPhySize, &extent.v), "RAR total extent");
+    const auto physical = used == 1 ? first_bytes : number(extent.v);
+    if (physical < first_bytes || physical > source_size || (used == 1 && physical != source_size))
+      throw UnsupportedLayout{"RAR volume extent"};
+  }
   bool solid = false, has_copy = false, has_compressed = false;
   { Variant v; exact(arc->GetArchiveProperty(kpidSolid, &v.v), "archive solid flag");
-    solid = boolean(v.v, single_mode == 2); }
+    solid = boolean(v.v, single_mode == 2 || rar); }
   UInt32 n = 0; exact(arc->GetNumberOfItems(&n), "manifest item count");
   if (!n && single_mode && !verification) throw UnsupportedLayout{"empty single archive"};
-  if ((!n && !verification) || n > MAX_ITEMS) fail("manifest size limit");
+  if (direct && n > QZ_RAR_LIST_MAX_ITEMS) throw UnsupportedLayout{"direct manifest size limit"};
+  if ((!n && !verification) || (!direct && n > MAX_ITEMS)) fail("manifest size limit");
   state.items.reserve(n); uint64_t name_units = 0, total = 0;
+  const uint64_t name_limit = direct ? 32ull * 1024 * 1024 : MAX_MANIFEST_UNITS;
   for (UInt32 i = 0; i < n; ++i) {
     exact(state.check(), "cancelled");
     Item item; item.value.index = i;
     { Variant v; exact(arc->GetProperty(i, kpidPath, &v.v), "item path"); item.name = text(v.v); }
-    if (item.name.empty() || item.name.size() > MAX_MANIFEST_UNITS - name_units) fail("manifest names limit");
+    if (direct && item.name.size() > name_limit - name_units)
+      throw UnsupportedLayout{"direct manifest names limit"};
+    if (item.name.empty() || item.name.size() > name_limit - name_units) fail("manifest names limit");
     name_units += item.name.size();
     { Variant v; exact(arc->GetProperty(i, kpidIsDir, &v.v), "item type"); item.value.is_dir = boolean(v.v); }
     { Variant v; exact(arc->GetProperty(i, kpidSize, &v.v), "item size");
@@ -647,8 +668,17 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
     }
     { Variant v; exact(arc->GetProperty(i, kpidNtSecure, &v.v), "item security property");
       if (v.v.vt != VT_EMPTY) throw UnsupportedLayout{"archived security descriptor"}; }
+    if (rar) {
+      for (PROPID id : {kpidSplitBefore, kpidSplitAfter}) {
+        Variant v; exact(arc->GetProperty(i, id, &v.v), "RAR split status");
+        if (boolean(v.v)) fail("RAR archive is missing a required volume");
+      }
+    }
     { Variant flag; exact(arc->GetProperty(i, kpidEncrypted, &flag.v), "item encryption");
       bool encrypted = boolean(flag.v); item.value.encrypted = encrypted;
+      if (rar) {
+        if (encrypted && state.operation->password.empty()) throw UnsupportedLayout{"RAR password required"};
+      } else {
       Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
       if (single_mode && encrypted && !verification) throw UnsupportedLayout{"encrypted single archive"};
@@ -673,7 +703,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
       else if (item.value.size || !method.empty()) {
         if (single_mode) throw UnsupportedLayout{"unsupported 7z method"};
         fail("unexpected 7z item method");
-      } }
+      } } }
     { Variant v; exact(arc->GetProperty(i, kpidAttrib, &v.v), "item attributes");
       if (v.v.vt != VT_EMPTY) {
         if (v.v.vt != VT_UI4) fail("invalid attributes type");
@@ -693,7 +723,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
   }
   // Only positive layout identifications may defer to the existing decoder.
   // Decide before the manifest ACK, granting output handles, or extracting.
-  if (!verification && ((solid && !has_compressed) || (has_copy && has_compressed)))
+  if (!rar && !verification && ((solid && !has_compressed) || (has_copy && has_compressed)))
     throw UnsupportedLayout{"unsupported 7z method combination"};
   state.total = total;
   state.gotten.resize(n); state.prepared.resize(n); state.done.resize(n); state.bytes.resize(n);
@@ -712,7 +742,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
 void reason(QzSelectedReceipt &r, const char *s) { strncpy_s(r.reason, sizeof(r.reason), s, _TRUNCATE); }
 } // namespace
 
-static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false, uint32_t cp_present = 0, uint32_t codepage = 0, bool reuse = false) {
+static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelectedReceipt *receipt, const wchar_t *password, uint32_t units, uint32_t thread_limit, bool verification = false, uint32_t cp_present = 0, uint32_t codepage = 0, bool reuse = false, bool direct = false) {
   if (!receipt) return E_POINTER;
   *receipt = {}; receipt->outcome = QZ_SELECTED_FAILED; receipt->result = E_FAIL;
   std::shared_ptr<OperationStatus> operation;
@@ -731,7 +761,10 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     if (host.cancelled(host.context)) fail("cancelled", E_ABORT);
     if (units > 32767 || (units && !password)) fail("invalid password frame length");
     operation = std::make_shared<OperationStatus>(host, units ? std::wstring_view(password, units) : std::wstring_view{});
-    VolumeMap map(*request, operation); // Own names/sizes; no request-array reads later.
+    const bool rar = direct && (request->reserved == 3 || request->reserved == 4);
+    const bool rar5 = request->reserved == 3;
+    VolumeMap map = rar ? VolumeMap(request->volumes, request->volume_count, operation)
+                        : VolumeMap(*request, operation); // Own names/sizes.
     if (effective_policy_or_unknown()) {
       if (host.cancelled(host.context)) fail("cancelled", E_ABORT);
       fail("active or unknown policy: selected worker unavailable", E_ACCESSDENIED);
@@ -745,15 +778,16 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     Ref<IInArchive> split;
     Ref<IInArchive> inner;
     Ref<IInStream> first(new VolumeStream(operation, 0, map.sizes[0]));
-    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, false, request->reserved != 0));
+    Ref<IArchiveOpenCallback> inner_callback(new OpenCallback(map, rar, request->reserved != 0, rar));
     Ref<IArchiveOpenCallback> outer_callback;
     Ref<IInArchiveGetStream> joined_provider;
     Ref<ISequentialInStream> joined_sequential;
     Ref<IInStream> joined;
     UInt64 start = 0;
     if (request->reserved) {
-      if (units && !verification) throw UnsupportedLayout{"password on single archive"};
-      runtime.handler(request->reserved == 1 ? L"7z" : L"zip", request->reserved == 1 ? "7z" : "zip", inner.put());
+      if (units && !verification && !rar) throw UnsupportedLayout{"password on single archive"};
+      runtime.handler(rar ? (rar5 ? L"Rar5" : L"Rar") : request->reserved == 1 ? L"7z" : L"zip",
+                      rar ? (rar5 ? "Rar5" : "Rar") : request->reserved == 1 ? "7z" : "zip", inner.put());
       if (thread_limit || cp_present) {
         Ref<ISetProperties> properties;
         exact(inner->QueryInterface(IID_ISetProperties, reinterpret_cast<void **>(properties.put())), "decoder thread property interface");
@@ -781,9 +815,9 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     exact(inner->Open(joined.get(), &start, inner_callback.get()), "7z Open failed");
     }
     state = std::make_shared<Shared>(operation);
-    state->reuse=reuse;
+    state->reuse=reuse; state->direct=direct;
     if(reuse && (verification || request->reserved || units)) fail("invalid reuse configuration");
-    manifest(inner.get(), *state, map.total, request->reserved, verification);
+    manifest(inner.get(), *state, map.total, request->reserved, verification, rar ? &map : nullptr, direct);
     exact(state->check(), "cancelled");
     exact(host.prepare_private_tree(host.context), "private selected directory preparation");
     Ref<IArchiveExtractCallback> callback(new ExtractCallback(state));
@@ -835,6 +869,11 @@ extern "C" HRESULT __stdcall qz_verify_single_with_threads(const QzSelectedReque
 }
 extern "C" HRESULT __stdcall qz_extract_single_with_threads(const QzSelectedRequest *request, QzSelectedReceipt *receipt, uint32_t threads) {
   return extract_selected_impl(request, receipt, nullptr, 0, threads);
+}
+
+extern "C" HRESULT __stdcall qz_extract_direct(const QzSelectedRequest *request,
+    QzSelectedReceipt *receipt, uint32_t threads, const wchar_t *password, uint32_t units) {
+  return extract_selected_impl(request, receipt, password, units, threads, false, 0, 0, false, true);
 }
 
 extern "C" HRESULT __stdcall qz_extract_selected(const QzSelectedRequest *request, QzSelectedReceipt *receipt) {
