@@ -64,23 +64,57 @@ test('cancelled session remains manageable and recovery is directly reachable',(
 test('retained ordinary companions are shown without a failure or new retry action',()=>{const f=fixture(),html=f.api.jobActions({deep:{deep_session:4,finished:true,partial:false,retained_matching_files:['outer.zip → bundle.002']}});assert.match(html,/保留的同名匹配文件/);assert.match(html,/bundle.002/);assert.doesNotMatch(html,/data-deep-action="manage"/);});
 test('completion preferences survive password pause and later resume',async()=>{const f=fixture();await f.api.finish({deep_session:1,finished:false,outputs:['C:\\out']},{openAfter:true,closeAfter:true});assert.equal(f.calls.filter(c=>c[0]==='invoke').length,0);await f.api.finish({deep_session:1,finished:true,partial:false,outputs:['C:\\out']});assert.deepEqual(f.calls.filter(c=>c[0]==='invoke').map(c=>c[1]),['reveal_path','window_action']);});
 test('discard ignores invalid edited limits and clears password field',async()=>{const f=fixture();f.elements['oa-deep-session']={value:'1'};f.elements['oa-deep-password']={value:'private'};f.elements['oa-deep-depth']={value:'invalid'};await f.handlers.click({target:{closest:()=>({dataset:{deepAction:'discard'}})},preventDefault(){}});const run=f.calls.find(c=>c[0]==='run');assert.equal(run[1].operation,'deep-discard');assert.equal(f.elements['oa-deep-password'].value,'');assert.equal(run[1].deep,undefined);});
-test('archive-tab recycling follows the dialog-local intent and valid scope',()=>{
- const source=app.slice(app.indexOf('function syncRecycleOption()'),app.indexOf('function refreshJobContent('));
- let deep=true,scope=[],policy='error';
- const box={dataset:{wanted:'false'},disabled:false,checked:true,closest:()=>({title:''})},submit={lastChild:{textContent:''}};
- const context={s:{archive:'a.zip',recycleAfter:true,deepRecycleAfter:false},archiveTabs:[],overlay:{querySelector:()=>submit},
-  $:id=>id==='oa-recycle-after'?box:id==='oa-deep-extract'?{checked:deep}:id==='qa-conflict'?{value:policy}:null,
-  canRecycleArchive:(_path,overwrite,partial)=>overwrite!=='skip'&&!partial,
-  extractSelection:()=>scope,syncExtractPassword:(selected,enabled)=>{assert.equal(selected,scope);assert.equal(enabled,deep);},updateExtractPreview:()=>{}};
- vm.createContext(context);vm.runInContext(source,context);
- context.syncRecycleOption();assert.equal(box.disabled,false);assert.equal(box.checked,false);
- box.dataset.wanted='true';
- context.syncRecycleOption();assert.equal(box.checked,true);assert.match(submit.lastChild.textContent,/回收/);
- scope=['a.txt'];
- context.syncRecycleOption();assert.equal(box.disabled,true);assert.equal(box.checked,false);
- scope=[];policy='skip';
- context.syncRecycleOption();assert.equal(box.disabled,true);assert.equal(box.checked,false);
- deep=false;policy='error';
- context.syncRecycleOption();assert.equal(box.disabled,false);assert.equal(box.checked,true);
- assert.equal(context.s.deepRecycleAfter,false);
-});
+for(const deep of [false,true]){
+ test(`archive-tab recycle status follows scope and conflict choices (${deep?'deep':'smart'})`,()=>{
+  const section=(start,end)=>app.slice(app.indexOf(start),app.indexOf(end));
+  const code=section('function extractSelection(', 'function extractPasswordRequired(')+
+   section('function extractionSummary(', 'function updateExtractPreview(')+
+   section('function extract({', 'async function submitExtraction(')+
+   section('function recycleBlockReason(', 'function replaceSiblings(')+
+   app.split('\n').find(line=>line.startsWith("root.addEventListener('change',e=>{const t=e.target;if(t.id==='oa-add-preserve-atime'"));
+  const box={id:'oa-recycle-after',dataset:{}},status={dataset:{}},submit={lastChild:{}},scope={name:'extract-scope',dataset:{}};
+  const conflict={id:'qa-conflict',value:'error',dataset:{}};
+  const elements={'oa-recycle-after':box,'oa-extract-source-status':status,'oa-deep-extract':{checked:deep},'qa-conflict':conflict,'qa-destination':{value:''}};
+  const state={archive:'one.zip',selected:new Set(['only.txt']),overwrite:'error',sameFolder:true,recycleAfter:true,deepRecycleAfter:true};
+  let onChange;
+  const context={s:state,archiveTabs:[],archiveKey:String,$:id=>elements[id],root:{addEventListener:(_event,fn)=>{onChange=fn;}},
+   overlay:{querySelector:selector=>selector.includes('extract-scope')?scope:submit},timePreferenceIds:[],
+   dialog(_title,body,footer){
+    scope.value=body.match(/name="extract-scope" value="([^"]+)" checked/)[1];
+    box.checked=/id="oa-recycle-after"[^>]+checked/.test(footer);
+    assert.match(footer,/aria-describedby="oa-extract-source-status"/);
+   },deepExtract:{passwordMarkup:()=>'',switchMarkup:()=>'',limitsMarkup:()=>'',sync(){}},
+   esc:String,btn:()=>'',filename:String,archiveParent:()=>'',conflicts:()=>'',invoke:()=>Promise.resolve({}),error:assert.fail,
+   syncExtractPassword(){},updateExtractPreview(){},setDestination(){}};
+  vm.createContext(context);vm.runInContext(code,context);
+  context.extract({forceDeep:deep});
+  assert.equal(scope.value,'selected');
+  assert.equal(box.disabled,true);
+  assert.equal(box.checked,false);
+  assert.match(status.textContent,/请选择「整个压缩包」/);
+
+  scope.value='all';onChange({target:scope});
+  assert.equal(box.disabled,false);
+  assert.equal(box.checked,true);
+  assert.match(submit.lastChild.textContent,/回收/);
+  conflict.value='skip';onChange({target:conflict});
+  assert.equal(box.disabled,true);
+  assert.equal(box.checked,false);
+  assert.match(status.textContent,/跳过已有文件/);
+  conflict.value='rename';onChange({target:conflict});
+  assert.equal(box.disabled,false);
+  assert.equal(box.checked,true);
+  assert.match(status.textContent,/全部成功后.*移入回收站/);
+
+  state.nestedId='inner';context.syncRecycleOption();
+  assert.equal(box.disabled,true);
+  assert.match(status.textContent,/关闭内层标签/);
+  delete state.nestedId;
+  state.archive='split.7z.001';context.syncRecycleOption();
+  assert.equal(box.disabled,true);
+  assert.match(status.textContent,/分卷压缩包/);
+  state.archive='renamed.dat';context.syncRecycleOption();
+  assert.equal(box.disabled,!deep);
+  if(!deep)assert.match(status.textContent,/此格式在普通解压时无法自动回收/);
+ });
+}

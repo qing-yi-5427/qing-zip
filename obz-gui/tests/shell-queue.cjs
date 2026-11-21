@@ -4,6 +4,7 @@ const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/ap
 const names=['archiveKey','canRecycleArchive','finishExtraction','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
+const recyclePolicy=source.slice(source.indexOf('function recycleBlockReason('),source.indexOf('function canRecycleArchive('));
 function fixture(options={}){
  const timers=[],calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
  const context={
@@ -25,7 +26,7 @@ function fixture(options={}){
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
  const naming=source.slice(source.indexOf('const compressionExtensions='),source.indexOf('function sourceFields('));
- vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+functions,context);
+ vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+recyclePolicy+functions,context);
  const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);

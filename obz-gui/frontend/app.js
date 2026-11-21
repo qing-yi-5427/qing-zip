@@ -1166,13 +1166,12 @@ function extractionSummary({pathsId,statusId,recycleId,recycle=false,batch=false
   <div class="oa-extract-disposition">
    <span id="${statusId}" class="oa-source-disposition" role="status"></span>
    <label class="oa-disposition-control">成功后回收
-    <input id="${recycleId}" class="oa-switch" role="switch" type="checkbox" aria-label="全部成功后将原包移入回收站" ${recycle?'checked':''}>
+    <input id="${recycleId}" class="oa-switch" role="switch" type="checkbox" aria-label="全部成功后将原包移入回收站" aria-describedby="${statusId}" ${recycle?'checked':''}>
    </label>
   </div>
  </div>`;
 }
-function sourceDisposition(recycle,{blocked=false,deep=false}={}){
- if(blocked)return '原包：当前选项下保留。';
+function sourceDisposition(recycle,{deep=false}={}){
  if(!recycle)return '原包：保留。';
  return deep?'原包：全部成功后将符合条件的原包移入回收站。':'原包：全部成功后移入回收站。';
 }
@@ -1291,7 +1290,19 @@ async function quickExtract(){
  await runExtraction({source,dest,selected,sameFolder:s.sameFolder,overwrite:s.overwrite,recycle:false,deep:s.deepExtract,
   openAfter:s.openAfter,closeAfter:s.closeAfter,limits:s.deepLimits,password:requiresPassword?s.password||null:null,requiresPassword,codepage:s.codepage||null});
 }
-async function entry(name,{preview=false}={}){const e=visibleEntries().find(e=>e.name===name);if(!e)throw Error('此条目不在当前列表中，请重新选择。');if(e.is_dir){s.folder=name;s.selected.clear();s.search='';render();focusEntry(visibleEntries()[0]?.name);return;}if(s.active&&(!s.backgroundExtraction||!isText(name)||s.jobs.some(job=>job.id===s.active&&archiveKey(job.path)===archiveKey(s.archive))))throw Error('请先等待或取消当前任务。');if(isNestedArchive(name)&&!preview){await openNestedEntry(name);return;}if(isImage(name)&&!preview){if(openingImage)return;openingImage=true;const generation=previewGeneration;toast('正在准备原始图片…');try{await invoke('open_archive_image',previewArgs(name));if(generation===previewGeneration)toast('已用系统默认看图程序打开原始图片。');}finally{openingImage=false;}return;}dialog(e.leaf,`<p class="qa-sub">${esc(e.name)} · ${entrySize(e)}</p><div id="qa-file-preview" role="status">${isText(name)?'正在读取文本…':''}</div>`,btn('返回','close')+btn('解压此文件','extractfile','primary'));s.focusFile=e.name;const target=$('qa-file-preview'),generation=previewGeneration;if(isText(name)){overlay.querySelector('.qa-dialog').classList.add('oa-text-dialog');target.innerHTML=`<div class="oa-text-toolbar"><label>文本编码<select id="oa-text-encoding">${opts([['auto','自动检测'],['utf-8','UTF-8'],['gbk','简体中文 GBK'],['utf-16le','UTF-16 LE'],['utf-16be','UTF-16 BE'],['windows-1252','西欧 Windows-1252']],'auto')}</select></label><span id="oa-text-meta" class="oa-preview-meta" role="status"></span></div><pre id="oa-text-preview" class="oa-text-preview" tabindex="0"></pre>`;target.oaTextContext={name,generation,args:previewArgs(name)};await loadTextPreview(target,'auto');}else if(isImage(name)||/\.avif$/i.test(name)){try{const r=await run({operation:'preview',path:s.archive,name,options:archiveOptions()},'图片预览',{silent:true});if(target===$('qa-file-preview')&&generation===previewGeneration){const img=document.createElement('img');img.src=r.data_url;img.alt=e.leaf;img.className='qa-preview';target.append(img);}}catch(e){if(target===$('qa-file-preview'))error(e);}}else{target.textContent='此文件暂不支持内嵌预览，可解压后打开。';}}
+async function entry(name,{preview=false}={}){const e=visibleEntries().find(e=>e.name===name);if(!e)throw Error('此条目不在当前列表中，请重新选择。');if(e.is_dir){s.folder=name;s.selected.clear();s.search='';render();focusEntry(visibleEntries()[0]?.name);return;}if(s.active&&(!s.backgroundExtraction||!isText(name)||s.jobs.some(job=>job.id===s.active&&archiveKey(job.path)===archiveKey(s.archive))))throw Error('请先等待或取消当前任务。');if(isNestedArchive(name)&&!preview){await openNestedEntry(name);return;}if(isImage(name)&&!preview){if(openingImage)return;openingImage=true;const generation=previewGeneration;toast('正在准备原始图片…');try{await invoke('open_archive_image',previewArgs(name));if(generation===previewGeneration)toast('已用系统默认看图程序打开原始图片。');}finally{openingImage=false;}return;}
+ const textFile=isText(name),folder=e.name.slice(0,Math.max(0,e.name.lastIndexOf('/')));
+ dialog(e.leaf,`
+  <div class="qa-sub oa-preview-details">
+   ${folder?`<div>包内目录 <bdi>${esc(folder)}</bdi></div>`:''}
+   <div>大小 ${entrySize(e)}</div>
+  </div>
+  <div id="qa-file-preview" role="status">${textFile?'正在读取文本…':''}</div>`,
+  btn('返回','close')+btn('解压此文件','extractfile','primary'),
+  textFile?'oa-file-preview-dialog oa-text-dialog':'oa-file-preview-dialog');
+ s.focusFile=e.name;
+ const target=$('qa-file-preview'),generation=previewGeneration;
+ if(textFile){target.innerHTML=`<div class="oa-text-toolbar"><label>文本编码<select id="oa-text-encoding">${opts([['auto','自动检测'],['utf-8','UTF-8'],['gbk','简体中文 GBK'],['utf-16le','UTF-16 LE'],['utf-16be','UTF-16 BE'],['windows-1252','西欧 Windows-1252']],'auto')}</select></label><span id="oa-text-meta" class="oa-preview-meta" role="status"></span></div><pre id="oa-text-preview" class="oa-text-preview" tabindex="0"></pre>`;target.oaTextContext={name,generation,args:previewArgs(name)};await loadTextPreview(target,'auto');}else if(isImage(name)||/\.avif$/i.test(name)){try{const r=await run({operation:'preview',path:s.archive,name,options:archiveOptions()},'图片预览',{silent:true});if(target===$('qa-file-preview')&&generation===previewGeneration){const img=document.createElement('img');img.src=r.data_url;img.alt=e.leaf;img.className='qa-preview';target.append(img);}}catch(e){if(target===$('qa-file-preview'))error(e);}}else{target.textContent='此文件暂不支持内嵌预览，可解压后打开。';}}
 const archiveOptions=()=>({password:s.password||null,codepage:s.codepage||null});
 const lines=id=>$(id).value.split(/\r?\n/).map(p=>p.trim()).filter(Boolean);
 function showAddForm(paths=[]){
@@ -1901,23 +1912,31 @@ root.querySelector('.qa-titlebar').addEventListener('pointerdown',e=>{if(e.butto
 root.querySelector('.qa-titlebar').addEventListener('dblclick',e=>{if(!e.target.closest('button'))invoke('window_action',{action:'maximize'}).catch(error);});
 window.__TAURI__.event.listen('close-requested',()=>{if(!tabBusy()){closeArchiveTabs('exit');return;}if($('oa-exit-confirm'))return;clearToast();s.returnPage=overlay.dataset.page;overlay.dataset.page='close-confirm';overlay.hidden=false;root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;overlay.querySelectorAll('.qa-dialog').forEach(e=>e.inert=true);const box=document.createElement('section');box.id='oa-exit-confirm';box.className='qa-dialog';box.style.position='absolute';box.style.zIndex='40';box.innerHTML='<h2>任务正在进行</h2><p>取消当前任务并关闭？已完成的输出会保留。</p><div class="qa-dialog-footer">'+btn('继续任务','keep-running')+btn('取消任务并退出','cancel-exit','danger')+'</div>';overlay.append(box);box.querySelector('button').focus();}).catch(error);
 
-function canRecycleArchive(path,overwrite,partial=false){return !partial&&overwrite!=='skip'&&!/\.(?:\d{3,}|z\d{2,}|r\d{2,})$|\.part\d+\.rar$/i.test(path)&&/\.(zip|zipx|7z|tar|gz|gzip|bz2|bzip2|xz|tgz|tbz|tbz2|txz)$/i.test(path);}
+function recycleBlockReason(path,overwrite,{partial=false,deep=false,nested=false}={}){
+ if(nested)return '有内层压缩包打开，请先保存并关闭内层标签。';
+ if(/\.(?:\d{3,}|[zr]\d{2,})$|\.part\d+\.rar$/i.test(path))return '分卷压缩包无法自动回收。';
+ if(!deep&&!/\.(zip|zipx|7z|tar|gz|gzip|bz2|bzip2|xz|tgz|tbz|tbz2|txz)$/i.test(path))return '此格式在普通解压时无法自动回收。';
+ if(partial)return '请选择「整个压缩包」以启用回收。';
+ if(overwrite==='skip')return '请将同名文件处理改为「跳过已有文件」以外的选项。';
+ return '';
+}
+function canRecycleArchive(path,overwrite){return !recycleBlockReason(path,overwrite);}
 function syncRecycleOption(){
  const box=$('oa-recycle-after');
  if(!box)return;
  const selected=extractSelection(),partial=selected.length>0,deep=$('oa-deep-extract').checked,overwrite=$('qa-conflict').value;
  syncExtractPassword(selected,deep);
  const nested=!!s.nestedId||archiveTabs.some(tab=>archiveKey(tab.parentArchive||'')===archiveKey(s.archive));
- box.disabled=nested||(deep?(partial||overwrite==='skip'):!canRecycleArchive(s.archive,overwrite,partial));
+ const reason=recycleBlockReason(s.archive,overwrite,{partial,deep,nested});
+ box.disabled=!!reason;
  box.checked=!box.disabled&&box.dataset.wanted==='true';
  const note=$('oa-recycle-once-note');
- if(note)note.textContent=box.disabled?'当前范围或格式无法回收，原压缩包会保留。':'仅应用于此次解压。';
- box.closest('label').title=nested?'请先保存并关闭内层标签':box.disabled?'仅支持完整解压且不跳过已有文件的受支持格式':'';
+ if(note)note.hidden=box.disabled;
  const submit=overlay.querySelector('[data-action=startextract]');
  submit.lastChild.textContent=box.checked?(deep?'深度解压并回收':'解压并回收'):deep?'开始深度解压':'开始解压';
  const disposition=$('oa-extract-source-status');
  if(disposition){
-  disposition.textContent=sourceDisposition(box.checked,{blocked:box.disabled,deep});
+  disposition.textContent=reason?`原包：保留。${reason}`:sourceDisposition(box.checked,{deep});
   disposition.dataset.recycle=String(box.checked);
  }
  updateExtractPreview();
