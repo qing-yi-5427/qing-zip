@@ -32,6 +32,8 @@ pub struct Request {
     pub max_attempts: Option<usize>,
     pub max_bytes: Option<u64>,
     pub smart: bool,
+    pub detect_header_encryption: bool,
+    pub allow_unencrypted_projection: bool,
     pub hashes: Vec<String>,
     pub benchmark: Option<engine::benchmark::Options>,
     #[cfg(all(windows,target_pointer_width="64"))]
@@ -75,15 +77,15 @@ pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     if crate::korean::is_supported(path){crate::korean::test(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::test(path,opts)}else{engine::test(path,opts)}
 }
 pub fn extract_archive(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
-    extract_archive_inner(path,dest,opts,false)
+    extract_archive_inner(path,dest,opts,false,false)
 }
 #[cfg(windows)]
 pub(crate) fn extract_archive_for_export(path:&str,dest:&str,opts:&EngineOptions)->Result<usize,String>{
-    extract_archive_inner(path,dest,opts,true)
+    extract_archive_inner(path,dest,opts,true,false)
 }
-fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool)->Result<usize,String>{
+fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool,allow_unencrypted_projection:bool)->Result<usize,String>{
     let policy = crate::machine_policy::scope();
-    if policy.restricted() { return engine::extract(path, dest, opts); }
+    if policy.restricted() { return engine::extract_with_projection(path, dest, opts, allow_unencrypted_projection); }
     let mut inherited = opts.clone();
     if inherited.zone_identifier.is_none() { inherited.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(path))?); }
     let opts = &inherited;
@@ -94,7 +96,7 @@ fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool)->R
     if crate::envelopes::is_supported(path){return crate::envelopes::extract(path,dest,adapter_opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::extract(path,dest,adapter_opts);}
     if let Some(data)=crate::installer::recognize(path)? {return crate::installer::extract(&data,dest,adapter_opts);}
-    if crate::korean::is_supported(path){crate::korean::extract(path,dest,adapter_opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,adapter_opts)}else{engine::extract(path,dest,opts)}
+    if crate::korean::is_supported(path){crate::korean::extract(path,dest,adapter_opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,adapter_opts)}else{engine::extract_with_projection(path,dest,opts,allow_unencrypted_projection)}
 }
 pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,String>{
     preview_archive_limited(path, name, opts, 32 * 1024 * 1024)
@@ -131,6 +133,8 @@ pub enum OperationResponse {
     Listing {
         #[serde(serialize_with = "serialize_listing_entries")]
         entries: Vec<engine::Entry>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        header_encrypted: Option<bool>,
     },
     Json(Value),
 }
@@ -154,7 +158,13 @@ fn serialize_listing_entries<S: serde::Serializer>(entries: &[engine::Entry], se
 /// Compatibility entry point for callers that inspect or mutate the JSON tree.
 pub fn execute(r: Request) -> Result<Value, String> {
     match execute_request(r)? {
-        OperationResponse::Listing { entries } => Ok(json!({ "entries": entries })),
+        OperationResponse::Listing { entries, header_encrypted } => {
+            let mut result = json!({ "entries": entries });
+            if let Some(encrypted) = header_encrypted {
+                result["header_encrypted"] = json!(encrypted);
+            }
+            Ok(result)
+        },
         OperationResponse::Json(value) => Ok(value),
     }
 }
@@ -175,7 +185,23 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
         r.options.password = Some(services::Vault::open(vault_path()?)?.get(id)?);
     }
     if r.operation == "list" {
-        return Ok(OperationResponse::Listing { entries: list_archive(&r.path, &r.options)? });
+        let header_encrypted = r.detect_header_encryption.then_some(false);
+        if r.detect_header_encryption && r.options.password.is_some() {
+            let mut no_password = r.options.clone();
+            no_password.password = None;
+            match list_archive(&r.path, &no_password) {
+                Ok(entries) => return Ok(OperationResponse::Listing { entries, header_encrypted }),
+                Err(error) => {
+                    let error_lower = error.to_ascii_lowercase();
+                    if !["password", "encrypted archive"].iter().any(|term| error_lower.contains(term)) {
+                        return Err(error);
+                    }
+                }
+            }
+            let entries = list_archive(&r.path, &r.options)?;
+            return Ok(OperationResponse::Listing { entries, header_encrypted: Some(true) });
+        }
+        return Ok(OperationResponse::Listing { entries: list_archive(&r.path, &r.options)?, header_encrypted });
     }
     #[cfg(windows)]
     let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move"|"create") {
@@ -245,13 +271,14 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "test" => { test_archive(&r.path, &r.options)?; Ok(json!({"valid":true})) },
         "extract" => {
             if r.dest.is_empty() { return Err("extraction destination required".into()); }
+            let projection = r.allow_unencrypted_projection && r.options.password.is_none();
             if r.smart {
                 let archive = std::path::Path::new(&r.path);
                 if archive.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip") || extension.eq_ignore_ascii_case("rar"))
                     && archive.is_file()
                     && (restricted || crate::installer::recognize(&r.path)?.is_none())
                 {
-                    let (files, destination) = engine::extract_smart_engine(&r.path, &r.dest, &r.options)?;
+                    let (files, destination) = engine::extract_smart_engine(&r.path, &r.dest, &r.options, projection)?;
                     return Ok(json!({"files":files,"destination":destination}));
                 }
                 return engine::with_zip_source(&r.path, &r.options, |source| {
@@ -261,11 +288,11 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
                     if options.zone_identifier.is_none() {
                         options.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(&r.path))?);
                     }
-                    let files = extract_archive(source, &destination, &options)?;
+                    let files = extract_archive_inner(source, &destination, &options, false, projection)?;
                     Ok(json!({"files":files,"destination":destination}))
                 });
             }
-            let count = extract_archive(&r.path, &r.dest, &r.options)?;
+            let count = extract_archive_inner(&r.path, &r.dest, &r.options, false, projection)?;
             Ok(json!({"files": count, "destination": r.dest}))
         },
         "create" => {
@@ -466,9 +493,77 @@ fn base64(data: &[u8]) -> String {
         };
         for entries in [Vec::new(), vec![entry]] {
             let legacy = json!({ "entries": &entries });
-            let response = OperationResponse::Listing { entries };
+            let response = OperationResponse::Listing { entries, header_encrypted: None };
             assert_eq!(serde_json::to_vec_pretty(&response).unwrap(), serde_json::to_vec_pretty(&legacy).unwrap());
             assert_eq!(serde_json::to_vec(&response).unwrap(), serde_json::to_vec(&legacy).unwrap());
+        }
+    }
+    #[test]
+    fn mixed_zip_plaintext_scope_is_opt_in_for_both_extraction_modes() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("mixed.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("public/readme.txt", options).unwrap();
+        writer.write_all(b"public").unwrap();
+        writer.start_file("private/secret.txt", options.with_aes_encryption(zip::AesMode::Aes256, "fixture-pass")).unwrap();
+        writer.write_all(b"private").unwrap();
+        writer.finish().unwrap();
+        let source = std::fs::read(&archive).unwrap();
+        for smart in [false, true] {
+            for (scope, enabled, success) in [
+                ("public/", false, false),
+                ("public/", true, true),
+                ("private/", true, false),
+            ] {
+                let target = root.path().join(format!("out-{smart}-{scope}-{enabled}"));
+                let result = execute(Request {
+                    operation: "extract".into(),
+                    path: archive.display().to_string(),
+                    dest: target.display().to_string(),
+                    smart,
+                    allow_unencrypted_projection: enabled,
+                    options: EngineOptions { selected: vec![scope.into()], ..Default::default() },
+                    ..Default::default()
+                });
+                if success {
+                    let result = result.unwrap();
+                    let output = std::path::Path::new(result["destination"].as_str().unwrap());
+                    assert_eq!(std::fs::read(output.join("public/readme.txt")).unwrap(), b"public");
+                    assert!(!output.join("private").exists());
+                } else {
+                    assert!(result.unwrap_err().to_ascii_lowercase().contains("password"));
+                    assert!(!target.join("public/readme.txt").exists());
+                }
+            }
+        }
+        assert_eq!(std::fs::read(&archive).unwrap(), source);
+    }
+    #[test]
+    fn listing_distinguishes_encrypted_directory_from_supplied_password() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("payload.txt");
+        std::fs::write(&source, b"data").unwrap();
+        for (archive_name, encrypted) in [("plain.zip", false), ("locked.7z", true)] {
+            let archive = root.path().join(archive_name);
+            let path = archive.display().to_string();
+            let password = Some("fixture-pass".to_string());
+            let create_options = EngineOptions {
+                password: if encrypted { password.clone() } else { None },
+                header_encryption: encrypted.then_some(true),
+                ..Default::default()
+            };
+            engine::create(&path, &[source.display().to_string()], if encrypted { "7z" } else { "zip" }, &create_options).unwrap();
+            let result = execute(Request {
+                operation: "list".into(),
+                path,
+                detect_header_encryption: true,
+                options: EngineOptions { password, ..Default::default() },
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(result["header_encrypted"], encrypted);
+            assert_eq!(result["entries"][0]["name"], "payload.txt");
         }
     }
     #[test]

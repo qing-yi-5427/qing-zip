@@ -2756,10 +2756,6 @@ thread_local! {
     static FORCE_SELECTED_TRANSACTION_FALLBACK: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
     static BEFORE_SELECTED_DIRECTORY_CLAIM: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
 }
-fn extract_raw(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
-    extract_raw_with_selection(path, dest, opts, false)
-}
-
 fn extract_raw_with_selection(
     path: &str,
     dest: &str,
@@ -2838,7 +2834,7 @@ fn extract_raw_to(
     if !opts.selected.is_empty() && entries.is_empty() {
         return Err("selected archive entries were not found".into());
     }
-    // Deep selection can read public members without credentials when an
+    // An opted-in selection can read public members without credentials when an
     // unrelated member is encrypted. Names for the whole archive remain validated.
     let unencrypted_projection = allow_unencrypted_projection
         && !opts.selected.is_empty()
@@ -5655,6 +5651,9 @@ pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     result
 }
 pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, String> {
+    extract_with_projection(path, dest, opts, false)
+}
+pub(crate) fn extract_with_projection(path: &str, dest: &str, opts: &EngineOptions, allow_unencrypted_projection: bool) -> Result<usize, String> {
     let _policy = crate::machine_policy::scope();
     let mut marked;
     let opts = if opts.zone_identifier.is_none() {
@@ -5667,9 +5666,9 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     with_zip_source(path, opts, |path| {
         if compound_tar(path) {
             let (_temp, inner) = unpack_tar(path, opts)?;
-            extract_raw(&inner, dest, opts)
+            extract_raw_with_selection(&inner, dest, opts, allow_unencrypted_projection)
         } else {
-            extract_raw(path, dest, opts)
+            extract_raw_with_selection(path, dest, opts, allow_unencrypted_projection)
         }
     })
 }
@@ -5679,6 +5678,7 @@ pub(crate) fn extract_smart_engine(
     path: &str,
     base: &str,
     opts: &EngineOptions,
+    allow_unencrypted_projection: bool,
 ) -> Result<(usize, String), String> {
     let mut options = opts.clone();
     if options.zone_identifier.is_none() {
@@ -5686,7 +5686,7 @@ pub(crate) fn extract_smart_engine(
     }
     with_zip_source(path, &options, |source| {
         let mut destination = String::new();
-        let files = extract_raw_to(source, &options, false, |entries| {
+        let files = extract_raw_to(source, &options, allow_unencrypted_projection, |entries| {
             destination = crate::smart_extract::destination(path, base, entries, &options)?;
             absolute(&destination)
         })?;

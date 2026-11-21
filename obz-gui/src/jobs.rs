@@ -253,6 +253,8 @@ pub async fn take_archive_listing(id: u64) -> Result<tauri::ipc::Response, Strin
     #[derive(Serialize)]
     struct Payload<'a> {
         rows: crate::archive_listing::Listing<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        header_encrypted: Option<bool>,
     }
 
     let job=registry().lock().map_err(|_|"job registry unavailable")?.get(&id).cloned().ok_or("任务不存在或已释放")?;
@@ -265,8 +267,8 @@ pub async fn take_archive_listing(id: u64) -> Result<tauri::ipc::Response, Strin
             state.result.take().unwrap()
         };
         match result.as_ref() {
-            OperationResponse::Listing { entries } => {
-                crate::archive_listing::response(Payload { rows: crate::archive_listing::Listing(entries) })
+            OperationResponse::Listing { entries, header_encrypted } => {
+                crate::archive_listing::response(Payload { rows: crate::archive_listing::Listing(entries), header_encrypted: *header_encrypted })
             }
             OperationResponse::Json(_) => unreachable!(),
         }
@@ -363,7 +365,7 @@ pub fn forget_operation(id:u64)->Result<(),String>{
         let job = registry().lock().unwrap().get(&id).cloned().unwrap();
         let first = wait_snapshot(&job, id, Duration::from_secs(30)).unwrap();
         assert_eq!(first.status, "complete", "{:?}", first.error);
-        assert!(matches!(first.result.as_deref(), Some(OperationResponse::Listing { entries }) if entries.len() == 1));
+        assert!(matches!(first.result.as_deref(), Some(OperationResponse::Listing { entries, .. }) if entries.len() == 1));
         let second = operation_status(id).unwrap();
         assert!(Arc::ptr_eq(first.result.as_ref().unwrap(), second.result.as_ref().unwrap()));
         forget_operation(id).unwrap();
