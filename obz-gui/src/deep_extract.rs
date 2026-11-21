@@ -262,7 +262,15 @@ pub fn execute(
             report.protected_archives.len()
         ));
     }
+    let password_book_error = if finished && !report.partial && !control.cancelled.load(Ordering::SeqCst) {
+        crate::password_book::remember(state.engine.used_passwords()).err()
+    } else {
+        None
+    };
     let mut result = serde_json::to_value(report).map_err(|e| e.to_string())?;
+    if let Some(error) = password_book_error {
+        result["password_book_error"] = error.into();
+    }
     result["deep_session"] = Value::from(id);
     result["cancelled"] = control.cancelled.load(Ordering::SeqCst).into();
     result["recycled_sources"] = recycled.len().into();

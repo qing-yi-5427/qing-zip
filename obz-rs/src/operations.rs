@@ -46,8 +46,7 @@ pub struct Request {
 }
 
 pub fn vault_path() -> Result<PathBuf, String> {
-    let root = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA unavailable")?;
-    Ok(PathBuf::from(root).join("OpenBandiZip").join("passwords.dpapi"))
+    services::Vault::default_path()
 }
 
 pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
@@ -308,9 +307,11 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
                     return Ok(json!({"files":files,"destination":destination}));
                 }
                 return engine::with_zip_source(&r.path, &r.options, |source| {
-                    let entries = list_archive(source, &r.options)?;
-                    let destination = crate::smart_extract::destination(&r.path, &r.dest, &entries, &r.options)?;
                     let mut options = r.options.clone();
+                    let password_evidence = options.extraction_password_use.take();
+                    let entries = list_archive(source, &options)?;
+                    let destination = crate::smart_extract::destination(&r.path, &r.dest, &entries, &options)?;
+                    options.extraction_password_use = password_evidence;
                     if options.zone_identifier.is_none() {
                         options.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(&r.path))?);
                     }
@@ -565,6 +566,91 @@ fn base64(data: &[u8]) -> String {
             }
         }
         assert_eq!(std::fs::read(&archive).unwrap(), source);
+    }
+    #[test]
+    fn extraction_password_evidence_requires_encrypted_output_or_authenticated_headers() {
+        use std::{io::Write, sync::Arc};
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("mixed.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("public.txt", options).unwrap();
+        writer.write_all(b"public").unwrap();
+        writer.start_file("secret.txt", options.with_aes_encryption(zip::AesMode::Aes256, "fixture-pass")).unwrap();
+        writer.write_all(b"secret").unwrap();
+        writer.finish().unwrap();
+        for mode in ["full", "smart", "selected", "public", "skip-encrypted", "skip-public", "wrong", "cancel"] {
+            let dest = root.path().join(mode);
+            std::fs::create_dir(&dest).unwrap();
+            if mode == "skip-encrypted" || mode == "skip-public" {
+                let name = if mode == "skip-encrypted" { "secret.txt" } else { "public.txt" };
+                std::fs::write(dest.join(name), b"existing").unwrap();
+            }
+            let evidence = Arc::new(engine::ExtractionPasswordUse::default());
+            let control = engine::JobControl::new();
+            if mode == "cancel" {
+                control.cancel();
+            }
+            let result = execute(Request {
+                operation: "extract".into(),
+                path: archive.display().to_string(),
+                dest: dest.display().to_string(),
+                smart: mode == "smart",
+                allow_unencrypted_projection: mode == "public",
+                options: EngineOptions {
+                    password: Some(if mode == "wrong" { "bad" } else { "fixture-pass" }.into()),
+                    overwrite: if mode.starts_with("skip-") { "skip" } else { "error" }.into(),
+                    selected: match mode {
+                        "selected" => vec!["secret.txt".into()],
+                        "public" => vec!["public.txt".into()],
+                        _ => vec![],
+                    },
+                    control: Some(control),
+                    extraction_password_use: Some(evidence.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            if matches!(mode, "wrong" | "cancel") {
+                assert!(result.is_err(), "{mode}");
+            } else {
+                let count = result.unwrap_or_else(|error| panic!("{mode}: {error}"))["files"].as_u64().unwrap() as usize;
+                assert_eq!(evidence.verified(count), matches!(mode, "full" | "smart" | "selected" | "skip-public"), "{mode}");
+            }
+        }
+
+        let source = root.path().join("payload.txt");
+        std::fs::write(&source, b"one file").unwrap();
+        let empty = root.path().join("empty.txt");
+        std::fs::write(&empty, []).unwrap();
+        for (name, source, encrypted, header_only) in [
+            ("plain.7z", &source, false, false),
+            ("headers.7z", &source, true, false),
+            ("header-only.7z", &empty, true, true),
+        ] {
+            let archive = root.path().join(name);
+            let path = archive.to_str().unwrap();
+            engine::create(path, &[source.display().to_string()], "7z", &EngineOptions {
+                password: encrypted.then(|| "fixture-pass".into()),
+                header_encryption: encrypted.then_some(true),
+                ..Default::default()
+            }).unwrap();
+            if header_only {
+                let entries = list_archive(path, &EngineOptions {
+                    password: Some("fixture-pass".into()),
+                    ..Default::default()
+                }).unwrap();
+                assert_eq!(entries.len(), 1);
+                assert!(!entries[0].encrypted);
+            }
+            let evidence = Arc::new(engine::ExtractionPasswordUse::default());
+            let count = extract_archive(path, root.path().join(format!("out-{name}")).to_str().unwrap(), &EngineOptions {
+                password: Some("fixture-pass".into()),
+                extraction_password_use: Some(evidence.clone()),
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(evidence.verified(count), encrypted);
+        }
     }
     #[test]
     fn listing_distinguishes_encrypted_directory_from_supplied_password() {

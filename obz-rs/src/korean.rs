@@ -400,6 +400,16 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     }
     let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
     decode(&mut a, stage.path(), &chosen, opts)?;
+    // EGG's listing flag is archive-wide when any member is encrypted.
+    // For credential capture, only the individual member's flag is evidence.
+    let encrypted_egg_members = match &a {
+        Archive::Egg(a) if opts.extraction_password_use.is_some() => Some(
+            a.entries.iter().filter(|e| e.encrypt_info.is_some())
+                .map(|e| e.file_name.replace('\\', "/"))
+                .collect::<std::collections::HashSet<_>>(),
+        ),
+        _ => None,
+    };
     let mut count = 0;
     for e in &chosen {
         check(opts)?;
@@ -431,6 +441,11 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             tmp.persist(p).map_err(|e| e.error.to_string())?;
         } else {
             tmp.persist_noclobber(p).map_err(|e| e.error.to_string())?;
+        }
+        if let Some(evidence) = &opts.extraction_password_use {
+            if encrypted_egg_members.as_ref().map_or(e.encrypted, |names| names.contains(&e.name)) {
+                evidence.confirm();
+            }
         }
         count += 1;
     }

@@ -213,7 +213,17 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
     crate::nested::validate_request(&request, recycle_after)?;
     let edit_path = request.path.clone();
     let receipt = crate::nested::track(&mut request);
-    let result = execute_archive_job(request, recycle_after, control);
+    let password_use = request.options.extraction_password_use.clone()
+        .and_then(|evidence| request.options.password.clone().map(|password| (evidence, password)));
+    let mut result = execute_archive_job(request, recycle_after, control);
+    if let (Some((evidence, password)), Ok(OperationResponse::Json(output))) = (password_use, &mut result) {
+        let published = output.get("files").and_then(Value::as_u64).unwrap_or(0) as usize;
+        if !control.cancelled.load(Ordering::SeqCst) && evidence.verified(published) {
+            if let Err(error) = crate::password_book::remember([(edit_path.as_str(), password.as_str())]) {
+                output["password_book_error"] = Value::String(error);
+            }
+        }
+    }
     if let Some(revision) = receipt.and_then(|r|r.take()) { crate::nested::committed(&edit_path, &revision); }
     result
 }
@@ -259,7 +269,6 @@ fn execute_archive_job_with_recycler(
     Ok(OperationResponse::Json(result))
 }
 
-#[tauri::command]
 pub fn start_operation(request: Request, recycle_after: Option<bool>) -> Result<u64, String> {
     start_controlled(request, recycle_after.unwrap_or(false), JobControl::new(), |_| {})
 }

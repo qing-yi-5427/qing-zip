@@ -145,6 +145,27 @@ pub struct ExtractionInventory {
     pub files: usize,
 }
 
+/// Evidence consumed only after an extraction successfully publishes its output.
+#[derive(Default)]
+pub struct ExtractionPasswordUse {
+    confirmed: AtomicBool,
+}
+impl ExtractionPasswordUse {
+    pub(crate) fn confirm(&self) {
+        self.confirmed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn verified(&self, published_files: usize) -> bool {
+        published_files != 0 && self.confirmed.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) fn confirm_encrypted_output(entry: &Entry, evidence: Option<&ExtractionPasswordUse>) {
+    if let Some(evidence) = evidence.filter(|_| entry.encrypted) {
+        evidence.confirm();
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineOptions {
@@ -185,6 +206,8 @@ pub struct EngineOptions {
     #[serde(skip)]
     pub extraction_inventory: Option<Arc<std::sync::OnceLock<ExtractionInventory>>>,
     #[serde(skip)]
+    pub extraction_password_use: Option<Arc<ExtractionPasswordUse>>,
+    #[serde(skip)]
     pub zone_identifier: Option<crate::motw::ZoneIdentifier>,
     #[cfg(windows)]
     #[serde(skip)]
@@ -219,6 +242,7 @@ impl Default for EngineOptions {
             overwrite: "error".into(),
             control: None,
             extraction_inventory: None,
+            extraction_password_use: None,
             zone_identifier: None,
             #[cfg(windows)]
             edit_receipt: None,
@@ -1031,7 +1055,15 @@ fn read_directory(
         }
     }
     let listing = read_engine_output(log)?;
-    let listing = if opts.password.is_some() { crate::engine_password::listing_payload(&listing) } else { &listing };
+    let listing = if opts.password.is_some() {
+        let payload = crate::engine_password::listing_payload(&listing);
+        if payload.len() != listing.len() {
+            if let Some(evidence) = &opts.extraction_password_use {
+                evidence.confirm();
+            }
+        }
+        payload
+    } else { &listing };
     let bare_listing;
     let listing = if candidate {
         let kind = crate::zealfs_guard::first_type(listing)?;
@@ -3409,7 +3441,7 @@ fn extract_raw_to(
             &ctl,
             &mut output_guards,
             opts.zone_identifier.as_ref(), journal.as_ref(), conflict_policy,
-            opts.threads,
+            opts.threads, opts.extraction_password_use.as_deref(),
         )?
     } else {
         let mut count = 0;
@@ -3446,6 +3478,7 @@ fn extract_raw_to(
                 // the helper also finalized permissions before returning success.
                 // The caller performs no additional file metadata writes.
                 if let Some(receipt) = publication_receipt.as_mut() { receipt[0] += 1; }
+                confirm_encrypted_output(e, opts.extraction_password_use.as_deref());
                 count += 1;
                 continue;
             }
@@ -3463,6 +3496,7 @@ fn extract_raw_to(
                 Ok(())
             })?;
             if let Some(receipt) = publication_receipt.as_mut() { receipt[1] += 1; }
+            confirm_encrypted_output(e, opts.extraction_password_use.as_deref());
             count += 1;
         }
         count
@@ -4651,7 +4685,7 @@ fn publish_small_files_parallel(
     ctl: &JobControl,
     guards: &mut CheckedDirectories,
 ) -> Result<usize, String> {
-    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None, None, "error", None)
+    publish_staged_files_parallel(entries, dest, StagedContents::Disk(stage), ctl, guards, None, None, "error", None, None)
 }
 fn publication_workers(requested: Option<u32>, available: usize, files: usize) -> usize {
     // Keep the measured four-worker ceiling and honor a lower user limit.
@@ -4723,6 +4757,7 @@ fn publish_staged_files_parallel(
     guards: &mut CheckedDirectories,
     zone: Option<&crate::motw::ZoneIdentifier>,journal:Option<&PublicationJournal>, policy: &str,
     requested_threads: Option<u32>,
+    password_evidence: Option<&ExtractionPasswordUse>,
 ) -> Result<usize, String> {
     use std::sync::atomic::AtomicUsize;
     for e in entries.iter().filter(|e| e.is_dir) {
@@ -4830,6 +4865,7 @@ fn publish_staged_files_parallel(
                                 Ok(true)
                             })?;
                             if !committed { return Ok(()); }
+                            confirm_encrypted_output(entry, password_evidence);
                             progress(entry);
                         }
                         Ok(())
@@ -8444,7 +8480,7 @@ mod staging_tests {
         let out = tempfile::tempdir().unwrap();
         assert_eq!(publish_staged_files_parallel(&entries.iter().collect::<Vec<_>>(), out.path(),
             StagedContents::Memory(&files), &JobControl::new(), &mut CheckedDirectories::default(),
-            None, None, "error", Some(1)).unwrap(), 160);
+            None, None, "error", Some(1), None).unwrap(), 160);
         for (i, entry) in entries.iter().filter(|e| !e.is_dir).enumerate() {
             assert_eq!(fs::read(out.path().join(&entry.name)).unwrap(),
                 if i == 0 { vec![] } else { vec![i as u8; 128 * 1024] });
@@ -8533,7 +8569,7 @@ mod staging_tests {
                 StagedContents::Memory(&contents),
                 &JobControl::new(),
                 &mut guard,
-                None, None, "error", Some(2)
+                None, None, "error", Some(2), None
             )
             .unwrap(),
             160

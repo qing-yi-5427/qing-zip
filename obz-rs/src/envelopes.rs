@@ -442,6 +442,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
             temp.persist_noclobber(target)
                 .map_err(|e| e.error.to_string())?;
         }
+        engine::confirm_encrypted_output(e, opts.extraction_password_use.as_deref());
         count += 1;
     }
     Ok(count)

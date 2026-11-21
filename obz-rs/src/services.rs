@@ -1,6 +1,6 @@
 //! Optional desktop services. These are independent implementations, not recovered
 //! Bandisoft code. Operations which persist secrets or modify Explorer integration
-//! run only when explicitly called by the user-facing command.
+//! are exposed through the desktop application and command-line tools.
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -16,6 +16,8 @@ struct VaultEntry {
     id: String,
     label: String,
     password: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    automatic: bool,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct VaultData {
@@ -120,10 +122,21 @@ impl Vault {
         Ok(())
     }
     pub fn list(&self) -> Result<Vec<VaultLabel>, String> {
+        self.list_entries(false)
+    }
+
+    pub fn extraction_passwords(&self) -> Result<Vec<VaultLabel>, String> {
+        let mut entries = self.list_entries(true)?;
+        entries.reverse();
+        Ok(entries)
+    }
+
+    fn list_entries(&self, automatic: bool) -> Result<Vec<VaultLabel>, String> {
         Ok(self
             .load()?
             .entries
             .into_iter()
+            .filter(|entry| entry.automatic == automatic)
             .map(|e| VaultLabel {
                 id: e.id,
                 label: e.label,
@@ -136,32 +149,85 @@ impl Vault {
         }
         let _lock = self.write_lock()?;
         let mut data = self.load()?;
+        if data.entries.iter().any(|entry| entry.id == id && entry.automatic) {
+            return Err("vault ID already belongs to a saved extraction password".into());
+        }
         data.entries.retain(|e| e.id != id);
         data.entries.push(VaultEntry {
             id: id.into(),
             label: label.into(),
             password: password.into(),
+            automatic: false,
         });
         self.save(&data)
     }
     pub fn get(&self, id: &str) -> Result<String, String> {
+        self.get_entry(id, false)
+    }
+
+    pub fn extraction_password(&self, id: &str) -> Result<String, String> {
+        self.get_entry(id, true)
+    }
+
+    fn get_entry(&self, id: &str, automatic: bool) -> Result<String, String> {
         self.load()?
             .entries
             .into_iter()
-            .find(|e| e.id == id)
+            .find(|e| e.id == id && e.automatic == automatic)
             .map(|e| e.password)
             .ok_or_else(|| "password entry not found".into())
     }
     pub fn remove(&self, id: &str) -> Result<bool, String> {
+        self.remove_entry(id, false)
+    }
+
+    pub fn remove_extraction_password(&self, id: &str) -> Result<bool, String> {
+        self.remove_entry(id, true)
+    }
+
+    fn remove_entry(&self, id: &str, automatic: bool) -> Result<bool, String> {
         let _lock = self.write_lock()?;
         let mut data = self.load()?;
         let before = data.entries.len();
-        data.entries.retain(|e| e.id != id);
+        data.entries.retain(|e| e.id != id || e.automatic != automatic);
         if data.entries.len() == before {
             return Ok(false);
         }
         self.save(&data)?;
         Ok(true)
+    }
+
+    pub fn remember_extraction_passwords<'a>(
+        &self,
+        passwords: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<(), String> {
+        let _lock = self.write_lock()?;
+        let mut data = self.load()?;
+        let before = data.entries.len();
+        for (label, password) in passwords {
+            if password.is_empty() || password.len() > 65536
+                || data.entries.iter().any(|entry| entry.automatic && entry.password == password)
+            {
+                continue;
+            }
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "system clock unavailable")?
+                .as_nanos();
+            let id = (0u64..).map(|index| format!("extract-{timestamp:x}-{index:x}"))
+                .find(|id| data.entries.iter().all(|entry| &entry.id != id))
+                .expect("vault entry space exhausted");
+            data.entries.push(VaultEntry {
+                id,
+                label: if label.is_empty() { "解压密码".into() } else { label.chars().take(256).collect() },
+                password: password.into(),
+                automatic: true,
+            });
+        }
+        if data.entries.len() != before {
+            self.save(&data)?;
+        }
+        Ok(())
     }
 }
 
@@ -1551,6 +1617,43 @@ mod tests {
         assert_eq!(vault.get("example").unwrap(), "new-secret");
         assert!(vault.remove("example").unwrap());
         assert!(vault.get("example").is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn extraction_password_book_deduplicates_without_changing_manual_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("vault.dpapi");
+        let vault = Vault::open(&path).unwrap();
+        vault.put("manual", "手动密码", "manual-secret").unwrap();
+        let workers: Vec<_> = (0..4).map(|index| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let archive = format!("不同归档-{index}.zip");
+                Vault::open(path).unwrap()
+                    .remember_extraction_passwords([(archive.as_str(), "fixture-secret")])
+                    .unwrap();
+            })
+        }).collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let first = vault.extraction_passwords().unwrap();
+        assert_eq!(first.len(), 1);
+        vault.remember_extraction_passwords([(first[0].label.as_str(), "second-secret")]).unwrap();
+        let entries = vault.extraction_passwords().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(vault.extraction_password(&entries[0].id).unwrap(), "second-secret");
+        assert_eq!(vault.extraction_password(&entries[1].id).unwrap(), "fixture-secret");
+        assert_eq!(first[0].id, entries[1].id);
+        assert!(!vault.remove(&entries[1].id).unwrap());
+        assert!(!vault.remove_extraction_password("manual").unwrap());
+        assert!(vault.put(&entries[1].id, "manual", "replacement").is_err());
+        assert!(vault.remove_extraction_password(&entries[1].id).unwrap());
+        assert!(vault.extraction_password(&entries[1].id).is_err());
+        assert_eq!(vault.list().unwrap().len(), 1);
+        assert_eq!(vault.get("manual").unwrap(), "manual-secret");
+        let bytes = fs::read(path).unwrap();
+        assert!(!bytes.windows(13).any(|part| part == b"second-secret"));
     }
     #[cfg(windows)]
     #[test]

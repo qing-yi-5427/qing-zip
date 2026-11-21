@@ -185,9 +185,13 @@ fn visible_header_encryption_reuses_session_password_and_resume_keeps_done_work(
         zip(&[("locked.zip", &fs::read(encrypted).unwrap())]),
     )
     .unwrap();
-    let mut s = start(t.path(), &[&source], Default::default());
+    let mut s = start(t.path(), &[&source], EngineOptions {
+        extraction_password_use: Some(Default::default()),
+        ..Default::default()
+    });
     let pending = s.drive(&JobControl::new()).unwrap();
     assert_eq!(pending.pending.len(), 1);
+    assert_eq!(s.used_passwords().count(), 0);
     let spent = pending.accounted_bytes;
     s.resume(
         pending.pending[0].node,
@@ -207,6 +211,7 @@ fn visible_header_encryption_reuses_session_password_and_resume_keeps_done_work(
         b"secret"
     );
     assert_eq!(report.accounted_bytes, spent + 6);
+    assert_eq!(s.used_passwords().collect::<Vec<_>>(), vec![("locked.zip", "fixture-pass")]);
     let mut reused = start(
         t.path(),
         &[&source],

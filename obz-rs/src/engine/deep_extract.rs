@@ -131,6 +131,7 @@ pub struct Session {
     publish_error: Option<String>,
     serial: usize,
     passwords: Vec<String>,
+    used_passwords: Vec<(String, String)>,
     probes: HashMap<PathBuf, Option<Kind>>,
     verified_bytes: u64,
     estimated: bool,
@@ -812,6 +813,7 @@ impl Session {
             publish_error: None,
             serial: 0,
             passwords,
+            used_passwords: Vec::new(),
             probes: HashMap::new(),
             verified_bytes: 0,
             estimated: false,
@@ -905,6 +907,8 @@ impl Session {
             return Err(error.clone());
         }
         let mut opts = self.options.clone();
+        opts.extraction_password_use = (opts.extraction_password_use.is_some() && opts.password.is_some())
+            .then(|| Arc::new(ExtractionPasswordUse::default()));
         opts.control = Some(ctl.clone());
         opts.overwrite = "error".into();
         opts.zone_identifier = Some(crate::motw::archive_context(&source.path)?);
@@ -1159,6 +1163,13 @@ impl Session {
             }
         }
         self.plan.decoded(id, string(&tree)?, candidates, pure);
+        if let Some((evidence, password)) = opts.extraction_password_use.zip(opts.password) {
+            if evidence.verified(observed.0 as usize)
+                && !self.used_passwords.iter().any(|(_, used)| used == &password)
+            {
+                self.used_passwords.push((self.plan.nodes[id].name.clone(), password));
+            }
+        }
         Ok(())
     }
     fn assemble(&mut self, id: usize) -> Result<(), String> {
@@ -1264,6 +1275,10 @@ impl Session {
         self.options.password = None;
         *ctl.context.lock().unwrap_or_else(|e| e.into_inner()) = None;
         result
+    }
+
+    pub fn used_passwords(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.used_passwords.iter().map(|(label, password)| (label.as_str(), password.as_str()))
     }
     fn drive_inner(&mut self, ctl: &JobControl) -> Result<Report, String> {
         loop {

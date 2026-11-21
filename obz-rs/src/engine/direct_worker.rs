@@ -125,13 +125,17 @@ pub(in crate::engine) fn prepare(
         pending.session.send(6, SecretFrame::new(password), ctl)?;
     }
     let mut thread_ack = threads.is_none();
+    let mut password_requested = false;
     while let Some((kind, body)) = pending.session.next(ctl)? {
         let mut data = Fields(&body);
         if data.take(16)? != nonce {
             return Err("direct extraction worker identity mismatch".into());
         }
         match kind {
-            7 => data.end()?,
+            7 => {
+                data.end()?;
+                password_requested = true;
+            }
             8 if !thread_ack => {
                 if Some(data.u32()?) != threads {
                     return Err("worker thread limit mismatch".into());
@@ -141,6 +145,11 @@ pub(in crate::engine) fn prepare(
             }
             26 if thread_ack => {
                 let entries = full_worker::parse_manifest(&body, &nonce, false, true)?;
+                if password_requested && units != 0 {
+                    if let Some(evidence) = &opts.extraction_password_use {
+                        evidence.confirm();
+                    }
+                }
                 return Ok(Some((entries, pending)));
             }
             // No output paths or handles have been granted. Reuse the legacy
@@ -413,6 +422,7 @@ impl Pending {
                             policy.validate_output()?;
                         }
                         drop(output.commit_owned(&target, &journal)?);
+                        confirm_encrypted_output(entry, opts.extraction_password_use.as_deref());
                         released += usize::from(journal.retain_latest(ROLLBACK_FILES));
                         verified_files[index] = true;
                         count += 1;

@@ -139,6 +139,31 @@ test('clipboard export discards incomplete output and publishes only a completed
   }
 });
 
+test('the native extraction job never records a password for temporary output', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const rememberPassword = [];
+  const context = makeContext({
+    s: {jobs: []},
+    invoke: async (command, args) => {
+      if (command === 'start_operation') {
+        rememberPassword.push(args.rememberPassword);
+        return rememberPassword.length;
+      }
+      if (command === 'wait_operation') {
+        return {status: 'complete', progress: {}, result: {
+          files: 1, destination: 'C:/test-output', password_book_error: 'fixture backend detail',
+        }};
+      }
+    },
+  });
+  vm.runInContext(taskSource(source) + runSource(source), context);
+  const request = {operation: 'extract', options: {password: 'fixture'}};
+  await context.run(request, 'copy', {temporaryOutput: true, silent: true});
+  await context.run(request, 'extract', {silent: true});
+  assert.deepEqual(rememberPassword, [false, true]);
+  assert.match(context.s.jobs[1].summary, /解压密码未能保存到密码本/);
+  assert.doesNotMatch(context.s.jobs[1].summary, /fixture/);
+});
 
 test('partial moves retain counts and the backend reason in task history', async () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
