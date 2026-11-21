@@ -49,8 +49,8 @@ fn load_view(path: &str) -> Result<ArchiveView, String> {
 }
 
 #[tauri::command]
-async fn browse_local(path: String) -> Result<obz_core::engine::file_workspace::Directory, String> {
-    tauri::async_runtime::spawn_blocking(move || obz_core::engine::file_workspace::browse(&path))
+async fn browse_local(path: String, cursor: Option<obz_core::engine::file_workspace::BrowseCursor>) -> Result<obz_core::engine::file_workspace::Directory, String> {
+    tauri::async_runtime::spawn_blocking(move || obz_core::engine::file_workspace::browse_page(&path, cursor))
         .await.map_err(|e|e.to_string())?
 }
 

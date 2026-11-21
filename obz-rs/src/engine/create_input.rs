@@ -49,38 +49,47 @@ pub(super) struct Snapshot {
     identity: (u32,u64),
     logical_time:[u64;3],
     digest: [u8;32],
+    ordinary: bool,
     preserve: bool,
     report: Option<std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>,
     pub(super) children: Vec<OsString>,
 }
-fn digest(file:&File,ctl:&JobControl,path:&Path,preserve:bool,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<[u8;32],String>{
+fn digest(file:&File,ctl:&JobControl,path:&Path,preserve:bool,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<([u8;32], bool),String>{
     if file.metadata().map_err(|e|e.to_string())?.file_attributes()&0x4000!=0 {
         if let Some(report)=report {report.lock().unwrap_or_else(|e|e.into_inner()).record_unconfirmed(path,crate::source_access::Phase::EncryptedSourceProof);}
-        file_workspace_efs::archive_input_digest(file,ctl)
+        file_workspace_efs::archive_input_digest(file,ctl).map(|digest| (digest, false))
     }else if preserve {
         let proof=file_workspace::streams_preserving_access(file,ctl)?;
         if proof.protection!=crate::source_access::Preservation::Applied {
             if let Some(report)=report {report.lock().unwrap_or_else(|e|e.into_inner()).record(path,proof.protection);}
         }
-        Ok(proof.digest)
-    }else{file_workspace::streams(file,None,ctl)}
+        Ok((proof.digest, proof.ordinary))
+    }else{file_workspace::ordinary_stream_digest(file,ctl)}
 }
 impl Snapshot {
     pub(super) fn capture(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl)->Result<Self,String>{
         Self::capture_reported(path,relative,source,metadata,ctl,false,None)
     }
     fn capture_reported(path:&Path,relative:&Path,source:&File,metadata:&fs::Metadata,ctl:&JobControl,preserve:bool,report:Option<&std::sync::Arc<std::sync::Mutex<crate::source_access::Report>>>)->Result<Self,String>{
-        let proof=digest(source,ctl,path,preserve,report)?;
+        let (proof, ordinary) = digest(source,ctl,path,preserve,report)?;
+        let ordinary = ordinary && metadata.is_file()
+            && metadata.file_attributes() & !(0x01 | 0x02 | 0x04 | 0x20 | 0x80 | 0x2000) == 0;
         if PhaseTimer::enabled() && relative.components().count()==1 {eprintln!("OA_TIME_CAPTURE atime={}",metadata.last_access_time());}
         // Metadata was obtained before streams or any child-name resolution.
         Ok(Self{path:path.to_owned(),relative:relative.to_owned(),source:source.try_clone().map_err(|e|e.to_string())?,
-            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:proof,preserve,report:report.cloned(),children:Vec::new()})
+            metadata:metadata.clone(),identity:directory_identity(source)?,logical_time:[metadata.creation_time(),metadata.last_access_time(),metadata.last_write_time()],digest:proof,ordinary,preserve,report:report.cloned(),children:Vec::new()})
     }
-    fn verify(&self,ctl:&JobControl)->Result<(),String>{
+    fn verify(&self,ctl:&JobControl,before_encoding:bool)->Result<(),String>{
         ctl.check()?;let now=self.source.metadata().map_err(|e|e.to_string())?;
         if directory_identity(&self.source)?!=self.identity || now.file_attributes()!=self.metadata.file_attributes()
             || now.creation_time()!=self.metadata.creation_time() || now.last_write_time()!=self.metadata.last_write_time()
-            || now.file_size()!=self.metadata.file_size() || digest(&self.source,ctl,&self.path,self.preserve,self.report.as_ref())?!=self.digest {
+            || now.file_size()!=self.metadata.file_size() {
+            return Err("creation source changed while preparing timestamp snapshot".into());
+        }
+        // The retained source handle denies content writes and replacement.
+        // Keep directory inventories and special-stream proofs at both edges.
+        if !(before_encoding && self.ordinary)
+            && digest(&self.source,ctl,&self.path,self.preserve,self.report.as_ref())?.0 != self.digest {
             return Err("creation source changed while preparing timestamp snapshot".into());
         }
         if now.is_dir(){
@@ -134,12 +143,15 @@ impl Prepared {
     }
     pub(super) fn trace_root(&self,_label:&str)->Result<(),String>{Ok(())}
     pub(super) fn verify(&self,ctl:&JobControl)->Result<(),String>{
+        self.verify_snapshots(ctl,false)
+    }
+    fn verify_snapshots(&self,ctl:&JobControl,before_encoding:bool)->Result<(),String>{
         for ancestor in &self.ancestors {
             ctl.check()?;
             let m=crate::private_stage::checked_metadata(ancestor)?;
             if !m.is_dir() || m.file_attributes()&0x400!=0 {return Err("source ancestor changed".into());}
         }
-        for snapshot in &self.snapshots {snapshot.verify(ctl)?;}
+        for snapshot in &self.snapshots {snapshot.verify(ctl,before_encoding)?;}
         Ok(())
     }
 }
@@ -201,7 +213,7 @@ pub(super) fn prepare(paths:&[PathBuf],parent:&Path,opts:&EngineOptions,ctl:&Job
         }
     }
     let ready=Prepared{snapshots,ancestors,root_indices,roots:paths.to_vec()};
-    ready.snapshot_manifest(None)?;ready.verify(ctl)?;Ok(ready)
+    ready.snapshot_manifest(None)?;ready.verify_snapshots(ctl,true)?;Ok(ready)
 }
 
 #[cfg(test)]
@@ -381,10 +393,10 @@ mod preserved_snapshot_tests {
         let ctl=JobControl::new();
         let snapshot=Snapshot::capture_reported(&p,Path::new("source"),&file,&file.metadata().unwrap(),&ctl,true,Some(&report)).unwrap();
         let before=crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow().len());
-        snapshot.verify(&ctl).unwrap();
+        snapshot.verify(&ctl,false).unwrap();
         let after=crate::source_access::SUPPRESS_CALLS.with(|v|v.borrow().len());assert!(after>=before+2);
         assert_eq!(report.lock().unwrap().unconfirmed_sources,0);assert_eq!(report.lock().unwrap().unavailable_handles,0);
-        fs::write(&ads,b"modified").unwrap();assert!(snapshot.verify(&ctl).is_err());
+        fs::write(&ads,b"modified").unwrap();assert!(snapshot.verify(&ctl,false).is_err());
     }
     #[test]
     fn protected_snapshot_handles_4100_empty_directories_without_unconfirmed_fallback(){

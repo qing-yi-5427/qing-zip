@@ -22,6 +22,18 @@ test('a large local folder renders a bounded page while retaining selections out
  p.entries=Array.from({length:10000},(_,i)=>({name:'f'+i,path:'C:/'+i,size:i,is_dir:false}));p.loaded=true;p.selected.add('C:/9000');
  assert.equal((workspace.page().match(/class="fm-row /g)||[]).length,200);p.offset=200;assert.ok(workspace.page().includes('data-index="399"'));assert.deepEqual([...p.selected],['C:/9000']);
 });
+test('the next local page uses the revision cursor and retains loaded selections',async()=>{
+ let click;const calls=[];const cursor={revision:'source',directory:false,name:[102]};
+ const make=(i)=>({name:'f'+i,path:'C:/source/'+i,size:i,is_dir:false});
+ const workspace=create({esc:String,icon:()=>'',render(){},error:e=>{throw e},invoke:async(name,args)=>{
+  calls.push([name,args]);return {path:'C:/source',entries:[make(200)],total:201,next:null};
+ }});
+ for(const p of workspace.state.panes)p.loaded=true;
+ const p=workspace.state.panes[0];Object.assign(p,{path:'C:/source',total:201,next:cursor,entries:Array.from({length:200},(_,i)=>make(i))});p.selected.add('C:/source/2');
+ workspace.mount({querySelector:()=>({addEventListener:(kind,fn)=>{if(kind==='click')click=fn;}})});
+ click({preventDefault(){},target:{closest:()=>({dataset:{fm:'next',pane:'0'}})}});await new Promise(setImmediate);
+ assert.deepEqual(calls,[['browse_local',{path:'C:/source',cursor}]]);assert.deepEqual([...p.selected],['C:/source/2']);assert.equal(p.offset,200);assert.equal(p.entries.length,201);assert.equal(p.next,null);
+});
 test('an old archive refresh cannot overwrite a newer local navigation',async()=>{
  let finish,click;const updates=[];const ui={esc:String,icon:()=>'',render:()=>{},error:e=>{throw e},updated:(...a)=>updates.push(a),run:()=>new Promise(r=>finish=r),invoke:async()=>({path:'D:/target',parent:'D:/',entries:[{name:'local.txt',path:'D:/target/local.txt',size:1,is_dir:false}]})};
  const workspace=create(ui);for(const p of workspace.state.panes)p.loaded=true;

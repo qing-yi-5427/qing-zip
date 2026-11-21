@@ -38,6 +38,14 @@ pub struct Directory {
     pub parent: Option<String>,
     pub entries: Vec<LocalEntry>,
     pub revision: String,
+    pub total: usize,
+    pub next: Option<BrowseCursor>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct BrowseCursor {
+    revision: String,
+    directory: bool,
+    name: Vec<u16>,
 }
 // Ordinary Windows disk paths accept either separator. Normalize only that
 // spelling so existing directory guards can pin the path; preserve case, dot
@@ -53,13 +61,23 @@ fn local_path(text: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 pub fn browse(path: &str) -> Result<Directory, String> {
+    browse_page(path, None)
+}
+
+pub fn browse_page(path: &str, cursor: Option<BrowseCursor>) -> Result<Directory, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    const PAGE_LIMIT: usize = 1000;
+    const MAX_PAGE_WIRE_BYTES: usize = 2 * 1024 * 1024;
+    let sort_key = |directory: bool, name: &std::ffi::OsStr| {
+        (!directory, name.to_string_lossy().to_lowercase(), name.encode_wide().collect::<Vec<_>>())
+    };
     if path.is_empty() {
         #[link(name = "kernel32")]
         extern "system" {
             fn GetLogicalDrives() -> u32;
         }
         let mask = unsafe { GetLogicalDrives() };
-        let entries = (0..26)
+        let entries: Vec<_> = (0..26)
             .filter(|i| mask & (1 << i) != 0)
             .map(|i| {
                 let path = format!("{}:\\", char::from(b'A' + i));
@@ -76,6 +94,8 @@ pub fn browse(path: &str) -> Result<Directory, String> {
         return Ok(Directory {
             path: String::new(),
             parent: None,
+            total: entries.len(),
+            next: None,
             entries,
             revision: String::new(),
         });
@@ -86,33 +106,69 @@ pub fn browse(path: &str) -> Result<Directory, String> {
     if !root.is_dir() {
         return Err("不是文件夹".into());
     }
-    let revision=stamp::directory_revision(&guards.held.get(&root).ok_or("缺少目录锁")?.0)?;
-    let mut entries = Vec::new();
+    let handle = &guards.held.get(&root).ok_or("缺少目录锁")?.0;
+    let revision = stamp::directory_revision(handle)?;
+    let after = cursor.map(|cursor| {
+        if cursor.revision != revision || cursor.name.is_empty() || cursor.name.len() > 1024 {
+            return Err("文件夹已变更，请刷新后继续浏览");
+        }
+        Ok(sort_key(cursor.directory, &std::ffi::OsString::from_wide(&cursor.name)))
+    }).transpose()?;
+    // On Windows DirEntry::metadata uses the directory enumeration record and
+    // does not follow links. Keep only the next bounded, sorted set of records.
+    let mut candidates = std::collections::BTreeMap::new();
+    let mut total = 0;
+    let mut remaining = 0;
     for child in fs::read_dir(&root).map_err(|e| e.to_string())? {
         let child = child.map_err(|e| e.to_string())?;
-        let meta = fs::symlink_metadata(child.path()).map_err(|e| e.to_string())?;
+        total += 1;
+        let metadata = child.metadata().map_err(|e| e.to_string())?;
+        let key = sort_key(metadata.is_dir(), &child.file_name());
+        if after.as_ref().is_some_and(|after| &key <= after) {
+            continue;
+        }
+        remaining += 1;
+        if candidates.len() == PAGE_LIMIT {
+            if candidates.last_key_value().is_some_and(|(last, _)| &key >= last) {
+                continue;
+            }
+            candidates.pop_last();
+        }
+        candidates.insert(key, (child, metadata));
+    }
+    let mut entries = Vec::new();
+    let mut last = None;
+    let mut bytes_left = MAX_PAGE_WIRE_BYTES;
+    let root_units = root.as_os_str().encode_wide().count();
+    for ((file, _, name), (child, metadata)) in candidates {
+        // Worst-case JSON-escaped UTF-16 code units in the name and full path.
+        let wire_bytes = 6 * (root_units + 2 * name.len()) + 512;
+        if wire_bytes > bytes_left {
+            break;
+        }
+        bytes_left -= wire_bytes;
+        let path = child.path();
         entries.push(LocalEntry {
             name: child.file_name().to_string_lossy().into_owned(),
-            path: child.path().display().to_string(),
-            is_dir: meta.is_dir(),
-            linked: meta.file_attributes() & 0x400 != 0,
-            size: meta.len(),
-            revision: stamp::entry_revision(&meta),
+            path: path.display().to_string(),
+            is_dir: metadata.is_dir(),
+            linked: metadata.file_attributes() & 0x400 != 0,
+            size: metadata.len(),
+            revision: stamp::entry_revision(&metadata),
         });
-        if entries.len() > 100000 {
-            return Err("目录项目过多，请选择更具体的位置".into());
-        }
+        last = Some(BrowseCursor { revision: revision.clone(), directory: !file, name });
     }
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    if stamp::directory_revision(handle)? != revision {
+        return Err("文件夹已变更，请刷新后继续浏览".into());
+    }
+    let next = if remaining > entries.len() { last } else { None };
     Ok(Directory {
         path: root.display().to_string(),
         parent: root.parent().map(|p| p.display().to_string()),
         entries,
         revision,
+        total,
+        next,
     })
 }
 
@@ -264,6 +320,13 @@ impl BackupInput for Backup<'_> {
 pub(super) fn streams(source: &File, target: Option<&File>, ctl: &JobControl) -> Result<[u8; 32], String> {
     streams_observed(source,target,ctl,None)
 }
+pub(super) fn ordinary_stream_digest(source: &File, ctl: &JobControl) -> Result<([u8; 32], bool), String> {
+    let mut input = Backup { file: source, context: std::ptr::null_mut(), writing: false };
+    let mut ordinary = false;
+    let digest = streams_with_input(source, None, ctl, &mut input, None, &mut ordinary)?;
+    Ok((digest, ordinary))
+}
+
 pub(super) fn streams_observed(source: &File, target: Option<&File>, ctl: &JobControl, alternate_read:Option<&mut dyn FnMut()>) -> Result<[u8; 32], String> {
     let mut input = Backup { file: source, context: std::ptr::null_mut(), writing: false };
     streams_with_input(source, target, ctl, &mut input, alternate_read, &mut false)
@@ -538,19 +601,32 @@ struct Source {
     directory: bool,
     skipped: bool,
 }
+impl Source {
+    fn pin_budget_bytes(path: &Path, relative: &Path) -> usize {
+        use std::os::windows::ffi::OsStrExt;
+        // A fixed per-entry allowance also charges retained source and
+        // published handles. Long paths consume the budget proportionately.
+        512 + 2 * (path.as_os_str().encode_wide().count() + relative.as_os_str().encode_wide().count())
+    }
+}
+
 fn collect(
     path: &Path,
     relative: PathBuf,
     moving: bool,
     nodes: &mut Vec<Source>,
+    budget: &mut usize,
     ctl: &JobControl,
 ) -> Result<(), String> {
     ctl.check()?;
     if relative.components().count() > 256 {
         return Err("文件夹层级过深".into());
     }
-    if nodes.len() >= 100000 {
-        return Err("一次操作最多处理100000个项目".into());
+    const MAX_PIN_BUDGET: usize = 96 * 1024 * 1024;
+    *budget = budget.checked_add(Source::pin_budget_bytes(path, &relative))
+        .ok_or("来源项目资源预算溢出")?;
+    if *budget > MAX_PIN_BUDGET {
+        return Err("来源项目及路径占用过多锁定资源，请分批操作".into());
     }
     let handle = File::options()
         .access_mode(0x80000000 | if moving { 0x10000 } else { 0 })
@@ -581,6 +657,7 @@ fn collect(
                 relative.join(child.file_name()),
                 moving,
                 nodes,
+                budget,
                 ctl,
             )?;
         }
@@ -727,24 +804,23 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
         .map(|p| local_path(p))
         .collect::<Result<Vec<_>, _>>()?;
     let mut keys = HashSet::new();
-    for (i, path) in paths.iter().enumerate() {
+    for path in &paths {
         if path.file_name().is_none() || !keys.insert(path_key(path)) {
             return Err("不能选择根目录或重复的源".into());
         }
-        if paths
-            .iter()
-            .enumerate()
-            .any(|(j, other)| i != j && path_key(path).starts_with(&(path_key(other) + "/")))
-        {
+    }
+    let destination_key = path_key(&dest);
+    for key in &keys {
+        if key.match_indices('/').any(|(index, _)| keys.contains(&key[..index])) {
             return Err("所选文件夹与其子项目不能重复操作".into());
         }
-        if path_key(&dest) == path_key(path) || path_key(&dest).starts_with(&(path_key(path) + "/"))
-        {
+        if destination_key == *key || destination_key.strip_prefix(key).is_some_and(|suffix| suffix.starts_with('/')) {
             return Err("目标不能位于源文件夹内".into());
         }
     }
     let mut sources = CheckedDirectories::default();
     let mut nodes = Vec::new();
+    let mut source_budget = 0;
     for path in &paths {
         sources.check(path.parent().ok_or("缺少源父目录")?)?;
         if let Some(capture)=capture.as_deref_mut(){
@@ -755,6 +831,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
             PathBuf::from(path.file_name().unwrap()),
             moving,
             &mut nodes,
+            &mut source_budget,
             &ctl,
         )?;
         }
@@ -849,6 +926,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                     let root = nodes.iter().find(|n| n.path == *path).unwrap();
                     check_directory_streams(root.handle.as_ref().unwrap(), &ctl)?;
                     let relative = root.relative.clone();
+                    source_budget = nodes.iter().map(|node| Source::pin_budget_bytes(&node.path, &node.relative)).sum();
                     for child in fs::read_dir(path).map_err(|e| e.to_string())? {
                         let child = child.map_err(|e| e.to_string())?;
                         collect(
@@ -856,6 +934,7 @@ fn transfer_inner(inputs:&[String],destination:&str,moving:bool,opts:&EngineOpti
                             relative.join(child.file_name()),
                             true,
                             &mut nodes,
+                            &mut source_budget,
                             &ctl,
                         )?;
                     }
@@ -1330,6 +1409,26 @@ mod tests {
         }
     }
     struct CopyMoveGuard;
+    #[test]
+    fn local_directory_pages_preserve_total_order_and_budget() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("last-directory")).unwrap();
+        for i in (0..1002).rev() {
+            fs::write(root.path().join(format!("file-{i:04}")), b"ordinary").unwrap();
+        }
+        let path = root.path().to_str().unwrap();
+        let first = browse(path).unwrap();
+        assert_eq!(first.total, 1003);
+        assert_eq!(first.entries.len(), 1000);
+        assert!(first.entries[0].is_dir);
+        let second = browse_page(path, first.next).unwrap();
+        assert_eq!(second.total, first.total);
+        assert_eq!(second.entries.len(), 3);
+        assert_eq!(first.entries[999].name, "file-0998");
+        assert_eq!(second.entries[0].name, "file-0999");
+        assert_eq!(second.entries[2].name, "file-1001");
+        assert!(second.next.is_none());
+    }
     #[test]
     fn local_disk_separator_normalization_preserves_dot_case_and_special_namespaces() {
         assert_eq!(local_path("c:/Mixed/./Folder/../file/").unwrap().as_os_str(),std::ffi::OsStr::new("c:\\Mixed\\.\\Folder\\..\\file\\"));

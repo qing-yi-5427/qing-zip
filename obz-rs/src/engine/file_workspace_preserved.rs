@@ -8,6 +8,7 @@ const MAX_PINS: usize = 4096;
 
 pub(in crate::engine) struct PreservedProof {
     pub digest: [u8; 32],
+    pub ordinary: bool,
     // Unavailable means the complete ORIGINAL proof ran, not that proof was skipped.
     pub protection: Preservation,
 }
@@ -21,14 +22,15 @@ pub(in crate::engine) fn streams_preserving_access(source: &File, ctl: &JobContr
         Ok(plan) => plan,
         Err(CaptureError::Protection(status)) => {
             ctl.check()?;
-            return Ok(PreservedProof { digest: streams(source, None, ctl)?, protection: status });
+            return Ok(PreservedProof { digest: streams(source, None, ctl)?, protection: status, ordinary: false });
         }
         Err(CaptureError::Proof(error)) => return Err(error),
     };
     plan.verify()?;
-    let digest = streams_with_input(source, None, ctl, &mut plan, None, &mut false)?;
+    let mut ordinary = false;
+    let digest = streams_with_input(source, None, ctl, &mut plan, None, &mut ordinary)?;
     plan.verify()?;
-    Ok(PreservedProof { digest, protection: Preservation::Applied })
+    Ok(PreservedProof { digest, protection: Preservation::Applied, ordinary })
 }
 
 #[link(name="kernel32")]
