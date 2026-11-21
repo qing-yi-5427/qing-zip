@@ -28,7 +28,7 @@ pub(in crate::engine) fn prepare(
     let (mode, volumes) =
         if let Some((format, volumes)) = rar_listing::direct_volumes(path, source, ctl)? {
             (if format == 5 { 3u32 } else { 4u32 }, volumes)
-        } else if opts.password.is_none() && !zip_volume_view::positioned_zip_hint(path) {
+        } else if !zip_volume_view::positioned_zip_hint(path) {
             if zip_input_probe::signature(source)? == Some("7z") {
                 (1, Vec::new())
             } else {
@@ -453,7 +453,14 @@ impl Pending {
                 || count != file_count
                 || active.is_some()
             {
-                if receipt.code == 9 || (opts.password.is_some() && matches!(receipt.code, 2 | 3)) {
+                if receipt.code == 9
+                    || (opts.password.is_some()
+                        && entries.iter().any(|entry| entry.encrypted)
+                        && (matches!(receipt.code, 2 | 3)
+                            || (receipt.code == -1
+                                && receipt.reason
+                                    == "sticky source callback failure or cancellation")))
+                {
                     return Err("incorrect password or damaged encrypted archive".into());
                 }
                 if receipt.code == 3 {

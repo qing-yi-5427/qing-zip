@@ -681,11 +681,15 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
       } else {
       Variant v; exact(arc->GetProperty(i, kpidMethod, &v.v), "item method");
       auto method = text(v.v, item.value.is_dir || item.value.size == 0);
-      if (single_mode && encrypted && !verification) throw UnsupportedLayout{"encrypted single archive"};
-      if (verification) {
-        if (encrypted && state.operation->password.empty()) fail("password required");
+      if (single_mode && encrypted && !verification && !direct) throw UnsupportedLayout{"encrypted single archive"};
+      if (verification || (direct && encrypted)) {
+        if (encrypted && state.operation->password.empty()) {
+          if (direct) throw UnsupportedLayout{"archive password required"};
+          fail("password required");
+        }
         if (!(method.empty() && item.value.size==0 && !encrypted) && !verification_method(method,single_mode==2,encrypted))
           throw UnsupportedLayout{"unsupported verification coder chain"};
+        if (direct && single_mode == 1) has_compressed = true;
       } else if (single_mode == 2) {
         if (!method.empty() && method != L"Store" && method != L"Deflate")
           throw UnsupportedLayout{"unsupported ZIP method"};
@@ -697,7 +701,7 @@ void manifest(IInArchive *arc, Shared &state, uint64_t source_size, uint32_t sin
             !std::all_of(rounds.begin(), rounds.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }) ||
             !single_lzma_coder(coder)) fail("unexpected encrypted item method");
         has_compressed = true;
-      } else if (item.value.size && !state.operation->password.empty() && !verification) fail("mixed encrypted item layout");
+      } else if (item.value.size && !state.operation->password.empty() && !verification && !direct) fail("mixed encrypted item layout");
       else if (method == L"Copy") has_copy = true;
       else if (single_lzma_coder(method)) has_compressed = true;
       else if (item.value.size || !method.empty()) {
@@ -785,7 +789,7 @@ static HRESULT extract_selected_impl(const QzSelectedRequest *request, QzSelecte
     Ref<IInStream> joined;
     UInt64 start = 0;
     if (request->reserved) {
-      if (units && !verification && !rar) throw UnsupportedLayout{"password on single archive"};
+      if (units && !verification && !direct) throw UnsupportedLayout{"password on single archive"};
       runtime.handler(rar ? (rar5 ? L"Rar5" : L"Rar") : request->reserved == 1 ? L"7z" : L"zip",
                       rar ? (rar5 ? "Rar5" : "Rar") : request->reserved == 1 ? "7z" : "zip", inner.put());
       if (thread_limit || cp_present) {
