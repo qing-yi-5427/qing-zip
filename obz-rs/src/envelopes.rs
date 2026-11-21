@@ -50,16 +50,28 @@ impl<T: Write> Write for Checked<T> {
     }
 }
 fn kind(path: &str) -> Result<&'static str, String> {
-    let f = File::open(path).map_err(|e| e.to_string())?;
-    let mut b = Vec::new();
-    f.take(65536)
-        .read_to_end(&mut b)
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut head = Vec::with_capacity(8);
+    (&mut file).take(8).read_to_end(&mut head).map_err(|e| e.to_string())?;
+    if head.starts_with(b"AES") && head.get(3).is_some_and(|v| *v <= 3) {
+        return Ok("AES Crypt");
+    }
+    if head.starts_with(b"LZIP") {
+        return Ok("lzip");
+    }
+    // Strong binary signatures take priority over bytes spelling 'begin '
+    // in a name, comment or payload. Unknown signatures still get the
+    // historical preamble scan even when the filename was changed.
+    if [b"PK\x03\x04".as_slice(), b"PK\x05\x06", b"PK\x07\x08",
+        b"7z\xbc\xaf\x27\x1c", b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00"]
+        .iter().any(|signature| head.starts_with(signature))
+    {
+        return Err("unsupported envelope format".into());
+    }
+    let mut contents = head;
+    (&mut file).take(65536 - contents.len() as u64).read_to_end(&mut contents)
         .map_err(|e| e.to_string())?;
-    if b.starts_with(b"AES") && b.get(3).is_some_and(|v| *v <= 3) {
-        Ok("AES Crypt")
-    } else if b.starts_with(b"LZIP") {
-        Ok("lzip")
-    } else if b.split(|c| *c == b'\n').any(|l| l.starts_with(b"begin ")) {
+    if contents.split(|c| *c == b'\n').any(|l| l.starts_with(b"begin ")) {
         Ok("UU/XXencode")
     } else {
         Err("unsupported envelope format".into())

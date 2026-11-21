@@ -125,6 +125,15 @@ pub fn apply_to_file(file: &File, zone: Option<&ZoneIdentifier>) -> Result<(), S
     }
 }
 
+/// Reused preview files must still carry the exact current archive mark.
+#[cfg(windows)]
+pub fn preview_export_matches(file: &File, zone: &ZoneIdentifier) -> Result<bool, String> {
+    if !windows::named_streams(file)? {
+        return Ok(true);
+    }
+    Ok(output_marker(file)?.as_deref().unwrap_or_default() == zone.bytes.as_slice())
+}
+
 #[cfg(windows)]
 pub(crate) fn output_marker(file: &File) -> Result<Option<Vec<u8>>, String> {
     windows::read_zone(file).map(|value| value.map(|marker| marker.bytes))

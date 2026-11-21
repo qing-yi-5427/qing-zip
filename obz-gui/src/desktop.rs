@@ -15,7 +15,7 @@ use windows::{
         UI::Shell::*,
     },
 };
-const MAX_PATHS: usize = 512;
+const MAX_RECYCLE_PATHS: usize = 512;
 const MAX_CLIPBOARD: usize = 2 * 1024 * 1024;
 fn wide(s: &str) -> Result<Vec<u16>, String> {
     if s.contains('\0') {
@@ -215,9 +215,7 @@ pub fn publish_clipboard_export(
     publish_paths(HWND(owner.0), &paths, Some(&export))
 }
 pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
-    if paths.is_empty() || paths.len() > MAX_PATHS {
-        return Err("请选择1至512个文件或文件夹".into());
-    }
+    check_file_drop_capacity(&paths)?;
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for p in paths {
@@ -232,8 +230,22 @@ pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     }
     Ok(out)
 }
+pub(crate) fn check_file_drop_capacity(paths: &[String]) -> Result<usize, String> {
+    if paths.is_empty() { return Err("请选择至少一个文件或文件夹".into()); }
+    let mut bytes = 22;
+    for path in paths {
+        let units = path.encode_utf16().count() + 1;
+        if units > 32768 || path.contains('\0') {
+            return Err("文件列表包含无效或过长的路径".into());
+        }
+        bytes += units * 2;
+        if bytes > MAX_CLIPBOARD { return Err("系统文件列表超过 2 MiB，请分批选择".into()); }
+    }
+    Ok(bytes)
+}
 fn drop_payload(paths: &[String]) -> Result<Vec<u8>, String> {
-    let mut out = vec![0u8; 20];
+    let mut out = Vec::with_capacity(check_file_drop_capacity(paths)?);
+    out.resize(20, 0);
     out[..4].copy_from_slice(&20u32.to_le_bytes());
     out[16..20].copy_from_slice(&1u32.to_le_bytes());
     for p in paths {
@@ -242,9 +254,6 @@ fn drop_payload(paths: &[String]) -> Result<Vec<u8>, String> {
         }
     }
     out.extend_from_slice(&[0, 0]);
-    if out.len() > MAX_CLIPBOARD {
-        return Err("剪贴板文件列表过大".into());
-    }
     Ok(out)
 }
 fn validate_drop_payload(bytes: &[u8]) -> Result<(), String> {
@@ -376,9 +385,6 @@ fn clipboard_inner(owner: HWND, paths: Option<Vec<String>>) -> Result<Vec<String
         valid?;
         let drop = HDROP(h.0);
         let count = DragQueryFileW(drop, u32::MAX, None) as usize;
-        if count > MAX_PATHS {
-            return Err("剪贴板文件数量超过512".into());
-        }
         let mut out = Vec::new();
         for i in 0..count {
             let len = DragQueryFileW(drop, i as u32, None) as usize;
@@ -399,6 +405,9 @@ fn clipboard_inner(owner: HWND, paths: Option<Vec<String>>) -> Result<Vec<String
     }
 }
 fn recycle_candidates(paths: Vec<String>) -> Result<Vec<String>, String> {
+    if paths.len() > MAX_RECYCLE_PATHS {
+        return Err("一次最多将 512 个项目移到回收站".into());
+    }
     let paths = checked_paths(paths)?;
     for path in &paths {
         let p = Path::new(path);

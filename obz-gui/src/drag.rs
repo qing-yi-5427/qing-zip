@@ -159,7 +159,6 @@ fn start_with_input(
         || !token.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
         || request.operation != "extract"
         || request.options.selected.is_empty()
-        || request.options.selected.len() > 512
     {
         return Err("拖出文件选择无效".into());
     }
@@ -180,10 +179,11 @@ fn start_with_input(
         .to_owned();
     request.smart = false;
     request.options.overwrite = "error".into();
-    let paths = relative
+    let paths: Vec<_> = relative
         .iter()
         .map(|name| directory.path().join(name).to_string_lossy().into_owned())
         .collect();
+    crate::desktop::check_file_drop_capacity(&paths)?;
     let p = Arc::new(Preparation {
         token,
         control: JobControl::new(),

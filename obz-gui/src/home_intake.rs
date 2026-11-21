@@ -5,6 +5,7 @@ use obz_core::{
 use serde::Serialize;
 use std::path::Path;
 
+#[derive(Debug)]
 pub enum Intake {
     Browse { path: String, entries: Vec<Entry> },
     Deep { path: String },
@@ -172,9 +173,8 @@ mod tests {
                 (0 | 5 | 6, Intake::Browse { entries, .. }) => assert_eq!(entries.len(), 1),
                 (1..=4, Intake::Deep { .. }) | (7 | 8, Intake::Review { .. }) => {}
                 (_, unexpected) => panic!(
-                    "{}: {}",
-                    file.display(),
-                    serde_json::to_string(&unexpected).unwrap()
+                    "{}: {unexpected:?}",
+                    file.display()
                 ),
             }
         }

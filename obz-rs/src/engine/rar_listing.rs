@@ -208,7 +208,7 @@ fn rar_leaf(name: &str) -> bool {
 }
 
 type Pins = Vec<crate::engine_stream::PinnedSource>;
-pub(super) fn direct_volumes(
+pub(in crate::engine) fn direct_volumes(
     path: &Path, source: &mut File, ctl: &JobControl,
 ) -> Result<Option<(u32, NamedPins)>, String> {
     let Some((format, may_have_volumes)) = rar_format(source)? else { return Ok(None) };
@@ -225,7 +225,7 @@ pub(super) fn direct_volumes(
         Ok(Some((format, Vec::new())))
     }
 }
-pub(super) type NamedPins = Vec<(String, crate::engine_stream::PinnedSource)>;
+pub(in crate::engine) type NamedPins = Vec<(String, crate::engine_stream::PinnedSource)>;
 fn capture_siblings(
     path: &Path,
     leaf: &str,

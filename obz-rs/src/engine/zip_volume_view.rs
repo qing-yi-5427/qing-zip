@@ -43,7 +43,7 @@ pub(super) fn apply_read_hint(args: &mut Vec<String>) {
         }
     });
 }
-fn with_hint<T>(input: PathBuf, hint: String, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+pub(super) fn with_hint<T>(input: PathBuf, hint: String, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     with_count_hint(input, hint, None, action)
 }
 fn with_count_hint<T>(input: PathBuf, hint: String, count: Option<u64>, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {

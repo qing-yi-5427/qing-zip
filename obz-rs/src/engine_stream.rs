@@ -45,6 +45,19 @@ pub(super) fn bounded_member_preview(
     path: &Path, format: Option<&str>, member: Option<&str>, opts: &EngineOptions, limit: u64,
     allow_zealfs: bool,
 ) -> Result<Vec<u8>, String> {
+    capture_member_preview(path, format, member, opts, limit, allow_zealfs, false)
+}
+
+pub(super) fn member_text_prefix(
+    path: &Path, format: Option<&str>, member: &str, opts: &EngineOptions, limit: u64,
+) -> Result<Vec<u8>, String> {
+    capture_member_preview(path, format, Some(member), opts, limit, false, true)
+}
+
+fn capture_member_preview(
+    path: &Path, format: Option<&str>, member: Option<&str>, opts: &EngineOptions, limit: u64,
+    allow_zealfs: bool, prefix: bool,
+) -> Result<Vec<u8>, String> {
     let policy = crate::machine_policy::scope();
     let control = opts.control.clone().unwrap_or_default();
     control.check()?;
@@ -99,15 +112,19 @@ pub(super) fn bounded_member_preview(
                         .read(&mut buffer[..request])
                         .map_err(|error| error.to_string())?;
                     if count == 0 {
-                        return Ok(bytes);
+                        return Ok((bytes, false));
                     }
                     if bytes.len() as u64 + count as u64 > limit {
+                        if prefix {
+                            bytes.extend_from_slice(&buffer[..(limit as usize - bytes.len())]);
+                            return Ok((bytes, true));
+                        }
                         return Err(format!("preview exceeds {} byte limit", limit));
                     }
                     bytes.extend_from_slice(&buffer[..count]);
                 }
             })();
-            let _ = sender.send(result.is_err());
+            let _ = sender.send(!matches!(&result, Ok((_, false))));
             result
         });
     let reader = match reader {
@@ -145,7 +162,12 @@ pub(super) fn bounded_member_preview(
         .join()
         .map_err(|_| "stream preview reader failed".to_owned());
     let status = status?;
-    let bytes = decoded??;
+    let (bytes, truncated) = decoded??;
+    if truncated {
+        control.check()?;
+        policy.unchanged()?;
+        return Ok(bytes);
+    }
     let status = status.ok_or("stream preview interrupted")?;
     if !status.success() {
         let mut errors = errors;
@@ -161,6 +183,9 @@ pub(super) fn bounded_member_preview(
         ), opts));
     }
     password_result?;
+    if prefix {
+        return Err("decoded output ended before the declared preview boundary".into());
+    }
     control.check()?;
     policy.unchanged()?;
     Ok(bytes)

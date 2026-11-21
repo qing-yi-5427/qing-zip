@@ -5687,35 +5687,134 @@ fn preview_raw(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Resu
     let e = list.into_iter()
         .find(|entry| !entry.is_dir && validate_name(&entry.name).is_ok_and(|path| path == requested))
         .ok_or("preview entry not found")?;
-    if e.size_known && e.size > limit {
+    read_preview_entry(&path_abs, &e, &payload_source, opts, limit, false, false).map(|(bytes, _)| bytes)
+}
+
+fn read_preview_entry(
+    path: &Path, entry: &Entry, payload_source: &PayloadSource, opts: &EngineOptions,
+    limit: u64, text_prefix: bool, zip_crc: bool,
+) -> Result<(Vec<u8>, bool), String> {
+    let policy = crate::machine_policy::scope();
+    let ctl = control(opts);
+    ctl.check()?;
+    let truncated = entry.size_known && entry.size > limit;
+    if truncated && (!text_prefix || entry.encrypted) {
         return Err(format!("preview exceeds {} MiB limit", limit / 1024 / 1024));
     }
-    #[cfg(nana_selected_worker)]
-    let crc32 = matches!(payload_source, PayloadSource::Rar { .. });
-    #[cfg(not(nana_selected_worker))]
-    let crc32 = false;
-    let output_limit = if e.size_known { e.size } else { limit };
-    let bytes = if let PayloadSource::VerifiedZeal(mut files) = payload_source {
-        match files.remove(&path_key(Path::new(&e.name))) {
-            Some(MemoryChunk::Owned(bytes)) => bytes,
+    let format = matches!(payload_source, PayloadSource::OfficialZeal).then_some("ZealFS");
+    let bytes = if let PayloadSource::VerifiedZeal(files) = payload_source {
+        match files.get(&path_key(Path::new(&entry.name))) {
+            Some(MemoryChunk::Owned(bytes)) => bytes[..bytes.len().min(limit as usize)].to_vec(),
             _ => return Err("missing ZealFS preview entry".into()),
         }
+    } else if truncated {
+        if format.is_some() {
+            return Err("preview exceeds size limit".into());
+        }
+        crate::engine_stream::member_text_prefix(path, format, &entry.name, opts, limit)?
     } else {
-        let format = matches!(payload_source, PayloadSource::OfficialZeal).then_some("ZealFS");
-        crate::engine_stream::bounded_member_preview(&path_abs, format, Some(&e.name), opts, output_limit, format.is_some())?
+        let output_limit = if entry.size_known { entry.size } else { limit };
+        crate::engine_stream::bounded_member_preview(path, format, Some(&entry.name), opts, output_limit, format.is_some())?
     };
-    if (e.size_known && bytes.len() as u64 != e.size) || bytes.len() as u64 > limit {
+    let expected = entry.size.min(limit);
+    if (entry.size_known && bytes.len() as u64 != expected) || bytes.len() as u64 > limit {
         return Err("preview size mismatch".into());
     }
-    if crc32 && !e.crc.is_empty() {
-        let expected = u32::from_str_radix(&e.crc, 16).map_err(|_| "invalid preview CRC")?;
+    #[cfg(nana_selected_worker)]
+    let crc = zip_crc || matches!(payload_source, PayloadSource::Rar { .. });
+    #[cfg(not(nana_selected_worker))]
+    let crc = zip_crc;
+    if !truncated && crc && !entry.crc.is_empty() {
+        let expected = u32::from_str_radix(&entry.crc, 16).map_err(|_| "invalid preview CRC")?;
         if crc32fast::hash(&bytes) != expected {
             return Err("preview checksum mismatch".into());
         }
     }
-    // Keep the RAR volume pins alive through the console read and verification.
     ctl.check()?;
-    Ok(bytes)
+    policy.validate_output()?;
+    Ok((bytes, truncated))
+}
+
+/// Cache eligibility concerns the pinned bytes, not the input suffix alone.
+pub fn direct_preview_zip(source: &mut File) -> Result<bool, String> {
+    source.rewind().map_err(|e| e.to_string())?;
+    let mut magic = [0; 4];
+    if source.read(&mut magic).map_err(|e| e.to_string())? != magic.len()
+        || &magic != b"PK\x03\x04"
+    {
+        return Ok(false);
+    }
+    Ok(zip_volume_view::single_disk_record(source)?.is_some_and(|end| {
+        !end.zip64 && u64::from(end.directory) + u64::from(end.directory_size) == end.end_record
+    }))
+}
+
+/// Use one validated directory for several preview reads. The source, its
+/// ancestors and its participating volumes stay pinned through the callback.
+pub fn with_preview_batch<T>(
+    path: &str, names: &[&str], opts: &EngineOptions,
+    read: impl FnOnce(&mut dyn FnMut(&str, u64, bool) -> Result<(Vec<u8>, bool), String>) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let policy = crate::machine_policy::scope();
+    let path_abs = absolute(path)?;
+    let extension = path_abs.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !["zip", "rar", "7z"].iter().any(|ext| extension.eq_ignore_ascii_case(ext)) {
+        return Ok(None);
+    }
+    with_zip_source(path, opts, |source_path| {
+        let path = absolute(source_path)?;
+        let mut source = crate::engine_stream::pin(&path)?;
+        // Only direct ZIP/RAR/7z use this route. A misleading suffix still goes
+        // through the normal format dispatcher.
+        let mut magic = [0; 8];
+        let size = source.read(&mut magic).map_err(|error| error.to_string())?;
+        let magic = &magic[..size];
+        let zip = magic.starts_with(b"PK\x03\x04") || magic.starts_with(b"PK\x05\x06");
+        let rar = magic.starts_with(b"Rar!\x1a\x07");
+        let seven_zip = magic.starts_with(crate::sevenz::MAGIC)
+            && zip_input_probe::signature(&mut source)? == Some("7z");
+        if !zip && !rar && !seven_zip {
+            return Ok(None);
+        }
+        #[cfg(not(nana_selected_worker))]
+        if rar { return Ok(None); }
+        #[cfg(nana_selected_worker)]
+        let _rar_volumes = if rar {
+            let Some((_format, pins)) = selected_worker::rar_listing::direct_volumes(&path, &mut source, &control(opts))? else {
+                return Ok(None);
+            };
+            pins
+        } else {
+            Vec::new()
+        };
+        let typed_zip = zip && extension.eq_ignore_ascii_case("zip") && direct_preview_zip(&mut source)?;
+        let perform = || {
+            let (entries, payload_source) = list_raw_with_source(source_path, opts, &mut source)?;
+            expected_tree(&entries)?;
+            let requested: HashSet<_> = names.iter().filter_map(|name| validate_name(name).ok()).collect();
+            let members: HashMap<_, _> = entries.iter().filter(|entry| !entry.is_dir)
+                .filter_map(|entry| {
+                    let name = validate_name(&entry.name).ok()?;
+                    requested.contains(&name).then_some((name, entry))
+                })
+                .collect();
+            read(&mut |name, limit, prefix| {
+                if limit == 0 || limit > 32 * 1024 * 1024 {
+                    return Err("invalid archive preview limit".into());
+                }
+                let requested = validate_name(name)?;
+                let entry = members.get(&requested).ok_or("preview entry not found")?;
+                read_preview_entry(&path, entry, &payload_source, opts, limit, prefix, typed_zip)
+            })
+        };
+        let result = if typed_zip {
+            zip_volume_view::with_hint(path.clone(), "-tzip".into(), perform)?
+        } else {
+            perform()?
+        };
+        policy.validate_output()?;
+        Ok(Some(result))
+    })
 }
 
 #[cfg(all(test, windows))]
@@ -5746,6 +5845,52 @@ mod bounded_preview_tests {
         assert_eq!(preview_limited(path, "empty.txt", opts, 1).unwrap(), b"");
         assert!(preview_limited(path, "nested/not-present.txt", opts, 5).unwrap_err().contains("not found"));
     }
+
+    #[test]
+    fn shared_zip64_preview_reads_selected_members_and_holds_source() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("big.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let config = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for i in 0..100_001 {
+            zip.start_file(format!("items/{i}"), config).unwrap();
+        }
+        for (name, bytes) in [("first.txt", b"first".as_slice()), ("last.txt", b"last")] {
+            zip.start_file(name, config).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let options = EngineOptions::default();
+        let outcome = with_preview_batch(path.to_str().unwrap(), &["first.txt", "last.txt", "absent.txt"], &options, |read| {
+            assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+            assert_eq!(read("first.txt", 32, false)?, (b"first".to_vec(), false));
+            assert_eq!(read("last.txt", 32, false)?, (b"last".to_vec(), false));
+            assert!(read("absent.txt", 32, false).is_err());
+            Ok(())
+        });
+        assert!(matches!(outcome, Ok(Some(()))), "{outcome:?}");
+    }
+
+    #[cfg(nana_selected_worker)]
+    #[test]
+    fn shared_rar_preview_reads_selected_member_under_a_live_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sample.rar");
+        fs::write(&path, include_bytes!("../tests/fixtures/deep/rar5-m3.rar")).unwrap();
+        let before = fs::read(&path).unwrap();
+        let result = with_preview_batch(path.to_str().unwrap(), &["bigtext_64k.bin", "missing.bin"], &EngineOptions::default(), |read| {
+            assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+            let (data, clipped) = read("bigtext_64k.bin", 65_536, false)?;
+            assert_eq!(data.len(), 65_536);
+            assert!(!clipped);
+            assert!(read("missing.bin", 128, false).is_err());
+            Ok(())
+        });
+        assert!(matches!(result, Ok(Some(()))), "{result:?}");
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
 }
 
 fn compound_tar(path: &str) -> bool {

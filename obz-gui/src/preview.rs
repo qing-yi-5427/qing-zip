@@ -1,7 +1,7 @@
 //! Bounded archive previews. Text is returned as data, never rendered/executed here.
 //! Original images are decoded for validation and exported with their original bytes.
 use obz_core::{
-    engine::{EngineOptions, Entry},
+    engine::EngineOptions,
     operations,
 };
 use serde::Serialize;
@@ -13,13 +13,13 @@ use std::{
     collections::{hash_map::RandomState, VecDeque},
     fs::{self, File, OpenOptions},
     hash::BuildHasher,
-    io::{Cursor, Read, Write},
+    io::{Cursor, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, OnceLock,
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use windows::{
     core::PCWSTR,
@@ -33,8 +33,6 @@ use windows::{
 const TEXT_LIMIT: u64 = 2 * 1024 * 1024;
 const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
 const CACHE_LIMIT: usize = 64 * 1024 * 1024;
-const CACHE_ENTRY_LIMIT: usize = 100_000;
-const STAGE_LIMIT: u64 = 256 * 1024 * 1024;
 const EXPORT_LIMIT: u64 = 512 * 1024 * 1024;
 const MARKER: &[u8] = b"OpenArchive original image preview v1\n";
 static CACHE: Mutex<Option<ArchiveCache>> = Mutex::new(None);
@@ -42,7 +40,15 @@ static PASSWORD_HASH: OnceLock<RandomState> = OnceLock::new();
 static VOLATILE: AtomicU64 = AtomicU64::new(1);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static ACTIVE: Mutex<Option<obz_core::engine::JobControl>> = Mutex::new(None);
-static EXPORT_LOCK: Mutex<()> = Mutex::new(());
+static EXPORTS: Mutex<ExportState> = Mutex::new(ExportState {
+    bytes: 0, last_scan: None, recent: VecDeque::new(),
+});
+
+struct ExportState {
+    bytes: u64,
+    last_scan: Option<Instant>,
+    recent: VecDeque<(String, PathBuf)>,
+}
 
 #[derive(PartialEq, Eq)]
 struct Identity {
@@ -54,40 +60,13 @@ struct Identity {
     index: u64,
     password: u64,
     codepage: Option<u32>,
-    split: bool,
     revision: Option<obz_core::engine::PreviewRevision>,
     volatile: u64,
 }
 struct ArchiveCache {
     identity: Identity,
-    entries: Vec<Entry>,
-    stage: Option<tempfile::TempDir>,
     raw: VecDeque<(String, Vec<u8>)>,
     raw_bytes: usize,
-}
-impl Drop for ArchiveCache {
-    fn drop(&mut self) {
-        // Clear readonly only on files in this cache's checked manifest, allowing
-        // TempDir to remove its own stage without leaving decrypted files behind.
-        if let Some(stage) = &self.stage {
-            for entry in self.entries.iter().filter(|entry| !entry.is_dir) {
-                let Ok(relative) = safe_name(&entry.name) else {
-                    continue;
-                };
-                let file = stage.path().join(relative);
-                if no_links(&file).is_err() {
-                    continue;
-                }
-                if let Ok(meta) = fs::metadata(&file) {
-                    if meta.is_file() && meta.permissions().readonly() {
-                        let mut permissions = meta.permissions();
-                        permissions.set_readonly(false);
-                        let _ = fs::set_permissions(file, permissions);
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn no_links(path: &Path) -> Result<(), String> {
@@ -114,7 +93,7 @@ fn source(path: &str, options: &EngineOptions) -> Result<(File, Identity), Strin
     let path = std::path::absolute(path).map_err(|e| e.to_string())?;
     no_links(&path)?;
     // Deny concurrent write/delete while listing, decoding and validating this request.
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .share_mode(1)
         .open(&path)
@@ -131,17 +110,11 @@ fn source(path: &str, options: &EngineOptions) -> Result<(File, Identity), Strin
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let split = ext == "rar"
-        || ext == "exe"
-        || ext.bytes().all(|c| c.is_ascii_digit())
-        || (ext.len() == 3
-            && matches!(ext.as_bytes()[0], b'r' | b'z')
-            && ext.as_bytes()[1..].iter().all(u8::is_ascii_digit))
-        || path.with_extension("z01").exists()
-        || PathBuf::from(format!("{}.001", path.display())).exists()
-        || PathBuf::from(format!("{}.002", path.display())).exists();
+    let reusable = ext == "zip"
+        && !path.with_extension("z01").exists()
+        && obz_core::engine::direct_preview_zip(&mut file)?;
     let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-    let revision = if split { None } else { obz_core::engine::PreviewRevision::read(&file, index) };
+    let revision = if reusable { obz_core::engine::PreviewRevision::read(&file, index) } else { None };
     let volatile = revision.is_none();
     let identity = Identity {
         format_policy: obz_core::machine_policy::scope().cache_token().to_owned(),
@@ -150,7 +123,6 @@ fn source(path: &str, options: &EngineOptions) -> Result<(File, Identity), Strin
         modified: meta.last_write_time(),
         volume: info.dwVolumeSerialNumber,
         index,
-        split,
         revision,
         password: PASSWORD_HASH
             .get_or_init(RandomState::new)
@@ -257,178 +229,141 @@ fn image_format(name: &str) -> Result<image::ImageFormat, String> {
         _=>Err("缩略图和外部原图支持 PNG、JPEG、GIF、WebP、BMP、TIFF、ICO；其他格式可尝试工具箱图片预览".into())
     }
 }
-fn bytes_for(
-    path: &str,
-    name: &str,
-    options: &EngineOptions,
-    limit: u64,
-    epoch: u64,
-) -> Result<Vec<u8>, String> {
+type MemberReader<'a> = dyn FnMut(&str, u64, bool) -> Result<(Vec<u8>, bool), String> + 'a;
+
+fn with_member_reader<T>(
+    path: &str, options: &EngineOptions, epoch: u64, names: &[&str],
+    read: impl FnOnce(&mut MemberReader<'_>) -> Result<T, String>,
+) -> Result<T, String> {
     let policy = obz_core::machine_policy::scope();
-    if EPOCH.load(Ordering::SeqCst) != epoch {
-        return Err("预览已取消".into());
-    }
-    let relative = safe_name(name)?;
+    let check = || {
+        if EPOCH.load(Ordering::SeqCst) == epoch { Ok(()) } else { Err("预览已取消".to_owned()) }
+    };
+    check()?;
     let (_source, identity) = source(path, options)?;
     let mut guard = CACHE.lock().map_err(|_| "预览缓存不可用")?;
-    if EPOCH.load(Ordering::SeqCst) != epoch {
-        return Err("预览已取消".into());
-    }
+    check()?;
     let control = obz_core::engine::JobControl::new();
     *ACTIVE.lock().map_err(|_| "预览不可用")? = Some(control.clone());
-    if EPOCH.load(Ordering::SeqCst) != epoch {
-        return Err("预览已取消".into());
-    }
-    let options = &EngineOptions {
-        control: Some(control),
-        ..options.clone()
-    };
-    if guard
-        .as_ref()
-        .is_none_or(|cache| cache.identity != identity)
-    {
-        // Release the old plaintext even when listing under the new policy fails.
-        guard.take();
-        // Multipart RAR identity cannot prove that every volume is unchanged
-        // across requests. Read the selected member under fresh core-owned pins.
-        if identity.path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("rar")) {
-            return preview_uncached(path, name, options, limit, epoch);
-        }
-        let entries = operations::list_archive(path, options)?;
-        if entries.len() > CACHE_ENTRY_LIMIT {
-            drop(entries);
-            return preview_uncached(path, name, options, limit, epoch);
-        }
-        *guard = Some(ArchiveCache {
-            identity,
-            entries,
-            stage: None,
-            raw: VecDeque::new(),
-            raw_bytes: 0,
-        });
+    check()?;
+    let options = &EngineOptions { control: Some(control), ..options.clone() };
+    if guard.as_ref().is_none_or(|cache| cache.identity != identity) {
+        *guard = Some(ArchiveCache { identity, raw: VecDeque::new(), raw_bytes: 0 });
     }
     let cache = guard.as_mut().unwrap();
-    let entry = cache
-        .entries
-        .iter()
-        .find(|entry| !entry.is_dir && safe_name(&entry.name).is_ok_and(|path| path == relative))
-        .ok_or("找不到要预览的文件")?;
-    let size = entry.size;
-    let size_known = entry.size_known;
-    // Keep the engine spelling for exact-name backends; the UI uses slash paths.
-    let engine_name = entry.name.clone();
-    if size_known && size > limit {
-        return Err(format!(
-            "此文件超过 {} MiB 预览限制，请解压后查看",
-            limit / 1024 / 1024
-        ));
-    }
-    if let Some(index) = cache.raw.iter().position(|(key, _)| key == name) {
-        let item = cache.raw.remove(index).unwrap();
-        let bytes = item.1.clone();
-        cache.raw.push_back(item);
-        if bytes.len() as u64 > limit { return Err("此文件超过预览限制，请解压后查看".into()); }
+    // Cache hits still prove the live revision before using plaintext.
+    if names.iter().all(|name| cache.raw.iter().any(|(key, _)| key == name)) {
+        let result = read(&mut |name, limit, prefix| {
+            check()?;
+            cached_bytes(cache, name, limit, prefix).ok_or("此文件超过预览限制，请解压后查看".into())
+        })?;
+        check()?;
         policy.validate_output()?;
-        return Ok(bytes);
+        return Ok(result);
     }
-    let total = cache
-        .entries
-        .iter()
-        .try_fold(0u64, |sum, e| e.size_known.then(|| sum.checked_add(e.size)).flatten());
-    if cache.stage.is_none()
-        && cache.identity.volatile == 0
-        && cache.entries.len() <= 4096
-        && total.is_some_and(|size| size <= STAGE_LIMIT)
-    {
-        let stage = tempfile::Builder::new()
-            .prefix("open-archive-preview-cache-")
-            .tempdir()
-            .map_err(|e| e.to_string())?;
-        let mut extract_options = options.clone();
-        extract_options.selected.clear();
-        extract_options.overwrite = "error".into();
-        operations::extract_archive(
-            path,
-            stage.path().to_str().ok_or("临时目录编码无效")?,
-            &extract_options,
-        )?;
-        if EPOCH.load(Ordering::SeqCst) != epoch {
-            return Err("预览已取消".into());
+    let mut callback = Some(read);
+    let result = match obz_core::engine::with_preview_batch(path, names, options, |reader| {
+        callback.take().unwrap()(&mut |name, limit, prefix| {
+            check()?;
+            safe_name(name)?;
+            if let Some(bytes) = cached_bytes(cache, name, limit, prefix) {
+                return Ok(bytes);
+            }
+            let (bytes, truncated) = reader(name, limit, prefix)?;
+            check()?;
+            if !truncated { cache_bytes(cache, name, &bytes); }
+            Ok((bytes, truncated))
+        })
+    })? {
+        Some(result) => result,
+        None => {
+            let mut entries = None;
+            callback.take().unwrap()(&mut |name, limit, prefix| {
+                check()?;
+                let relative = safe_name(name)?;
+                if let Some(bytes) = cached_bytes(cache, name, limit, prefix) {
+                    return Ok(bytes);
+                }
+                if entries.is_none() { entries = Some(operations::list_archive(path, options)?); }
+                let entry = entries.as_ref().unwrap().iter()
+                    .find(|e| !e.is_dir && safe_name(&e.name).is_ok_and(|candidate| candidate == relative))
+                    .ok_or("找不到要预览的文件")?;
+                if entry.size_known && entry.size > limit {
+                    return Err(format!("preview exceeds {} MiB limit", limit / 1024 / 1024));
+                }
+                let bytes = if !entry.size_known {
+                    obz_core::engine::preview_raw_stream(path, &entry.name, options, limit)?
+                } else {
+                    operations::preview_archive_limited(path, &entry.name, options, limit)?
+                };
+                check()?;
+                if bytes.len() as u64 > limit || (entry.size_known && bytes.len() as u64 != entry.size) {
+                    return Err("预览大小与清单不一致".into());
+                }
+                cache_bytes(cache, name, &bytes);
+                Ok((bytes, false))
+            })?
         }
-        cache.stage = Some(stage);
-    }
-    let bytes = if let Some(stage) = &cache.stage {
-        let target = stage.path().join(relative);
-        no_links(&target)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(target)
-            .map_err(|e| e.to_string())?;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
-        if !meta.is_file() || (size_known && meta.len() != size) || meta.file_attributes() & 0x400 != 0 {
-            return Err("暂存预览文件与清单不一致".into());
-        }
-        let mut bytes = Vec::new();
-        file.take(limit + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        bytes
-    } else if !size_known {
-        obz_core::engine::preview_raw_stream(path, &engine_name, options, limit)?
-    } else {
-        operations::preview_archive_limited(path, &engine_name, options, limit)?
     };
-    if EPOCH.load(Ordering::SeqCst) != epoch {
-        return Err("预览已取消".into());
-    }
-    if (size_known && bytes.len() as u64 != size) || bytes.len() as u64 > limit {
-        return Err("预览大小与清单不一致".into());
-    }
-    while cache.raw_bytes + bytes.len() > CACHE_LIMIT || cache.raw.len() >= 64 {
-        if let Some((_, old)) = cache.raw.pop_front() {
-            cache.raw_bytes -= old.len();
-        } else {
-            break;
-        }
-    }
+    check()?;
     policy.validate_output()?;
-    cache.raw_bytes += bytes.len();
-    cache.raw.push_back((name.into(), bytes.clone()));
-    Ok(bytes)
+    Ok(result)
 }
-fn preview_uncached(
+
+fn cached_bytes(cache: &mut ArchiveCache, name: &str, limit: u64, prefix: bool) -> Option<(Vec<u8>, bool)> {
+    let index = cache.raw.iter().position(|(key, bytes)| key == name && (prefix || bytes.len() as u64 <= limit))?;
+    let item = cache.raw.remove(index)?;
+    let length = item.1.len().min(limit as usize);
+    let result = (item.1[..length].to_vec(), length < item.1.len());
+    cache.raw.push_back(item);
+    Some(result)
+}
+
+fn cache_bytes(cache: &mut ArchiveCache, name: &str, bytes: &[u8]) {
+    if cache.identity.volatile != 0 { return; }
+    while cache.raw_bytes + bytes.len() > CACHE_LIMIT || cache.raw.len() >= 64 {
+        let Some((_, old)) = cache.raw.pop_front() else { break };
+        cache.raw_bytes -= old.len();
+    }
+    cache.raw_bytes += bytes.len();
+    cache.raw.push_back((name.into(), bytes.to_vec()));
+}
+
+fn bytes_for(
     path: &str, name: &str, options: &EngineOptions, limit: u64, epoch: u64,
 ) -> Result<Vec<u8>, String> {
-    let bytes = operations::preview_archive_limited(path, name, options, limit)?;
-    if EPOCH.load(Ordering::SeqCst) != epoch {
-        return Err("预览已取消".into());
-    }
-    Ok(bytes)
+    with_member_reader(path, options, epoch, &[name], |reader| reader(name, limit, false).map(|(bytes, _)| bytes))
 }
+#[cfg(test)]
 fn decode_text(bytes: &[u8], encoding: Option<&str>) -> Result<(String, String), String> {
-    use encoding_rs::{GBK, UTF_16BE, UTF_16LE, WINDOWS_1252};
+    decode_text_prefix(bytes, encoding, false)
+}
+fn decode_text_prefix(bytes: &[u8], encoding: Option<&str>, truncated: bool) -> Result<(String, String), String> {
+    use encoding_rs::{DecoderResult, Encoding};
+    let decode = |codec: &'static Encoding, source: &[u8]| {
+        let mut decoder = codec.new_decoder_without_bom_handling();
+        let size = decoder.max_utf8_buffer_length_without_replacement(source.len()).ok_or("预览文本大小无效")?;
+        let mut text = String::with_capacity(size);
+        let (result, _) = decoder.decode_to_string_without_replacement(source, &mut text, !truncated);
+        if result != DecoderResult::InputEmpty {
+            return Err("文本编码无法可靠识别，请选择其他编码");
+        }
+        Ok(text)
+    };
+    use encoding_rs::{GBK, UTF_16BE, UTF_16LE, UTF_8, WINDOWS_1252};
     let choice = encoding.unwrap_or("auto");
     let (text, label) = if choice == "auto" && bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
         (
-            String::from_utf8(bytes[3..].to_vec()).map_err(|_| "UTF-8 文本编码损坏")?,
+            decode(UTF_8, &bytes[3..])?,
             "UTF-8 BOM".to_string(),
         )
     } else if choice == "auto" && bytes.starts_with(&[0xff, 0xfe]) {
-        let (s, bad) = UTF_16LE.decode_without_bom_handling(&bytes[2..]);
-        if bad {
-            return Err("UTF-16LE 文本编码损坏".into());
-        }
-        (s.into_owned(), "UTF-16LE BOM".into())
+        (decode(UTF_16LE, &bytes[2..])?, "UTF-16LE BOM".into())
     } else if choice == "auto" && bytes.starts_with(&[0xfe, 0xff]) {
-        let (s, bad) = UTF_16BE.decode_without_bom_handling(&bytes[2..]);
-        if bad {
-            return Err("UTF-16BE 文本编码损坏".into());
-        }
-        (s.into_owned(), "UTF-16BE BOM".into())
-    } else if choice == "utf-8" || choice == "auto" && std::str::from_utf8(bytes).is_ok() {
+        (decode(UTF_16BE, &bytes[2..])?, "UTF-16BE BOM".into())
+    } else if choice == "utf-8" || choice == "auto" && std::str::from_utf8(bytes).map_or_else(|err| truncated && err.error_len().is_none(), |_| true) {
         (
-            String::from_utf8(bytes.to_vec()).map_err(|_| "不是有效 UTF-8；请尝试其他编码")?,
+            decode(UTF_8, bytes)?,
             "UTF-8".into(),
         )
     } else {
@@ -440,11 +375,7 @@ fn decode_text(bytes: &[u8], encoding: Option<&str>) -> Result<(String, String),
             "windows-1252" => (WINDOWS_1252, "Windows-1252"),
             _ => return Err("不支持此文本编码".into()),
         };
-        let (s, bad) = codec.decode_without_bom_handling(bytes);
-        if bad {
-            return Err("文本编码无法可靠识别，请选择其他编码".into());
-        }
-        (s.trim_start_matches('\u{feff}').to_string(), label.into())
+        (decode(codec, bytes)?.trim_start_matches('\u{feff}').to_string(), label.into())
     };
     if text
         .chars()
@@ -469,22 +400,24 @@ fn decoded_portable_image(
     bytes: &[u8],
     actual: image::ImageFormat,
 ) -> Result<image::DynamicImage, String> {
-    let reader = image::ImageReader::with_format(Cursor::new(bytes), actual);
-    let (width, height) = reader
-        .into_dimensions()
-        .map_err(|e| format!("图像损坏：{e}"))?;
+    use image::ImageDecoder;
+    const PIXEL_MEMORY_LIMIT: u64 = 192 * 1024 * 1024;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(PIXEL_MEMORY_LIMIT);
+    limits.max_image_width = Some(40_000);
+    limits.max_image_height = Some(40_000);
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), actual);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| format!("图像无法安全解码：{e}"))?;
+    let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 40_000_000 {
         return Err("图像尺寸超过 4000 万像素预览限制".into());
     }
-    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), actual);
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(192 * 1024 * 1024);
-    limits.max_image_width = Some(40_000);
-    limits.max_image_height = Some(40_000);
-    reader.limits(limits);
-    reader
-        .decode()
-        .map_err(|e| format!("图像无法安全解码：{e}"))
+    if decoder.total_bytes() > PIXEL_MEMORY_LIMIT {
+        return Err("图像解码像素超过 192 MiB 预览限制".into());
+    }
+    image::DynamicImage::from_decoder(decoder).map_err(|e| format!("图像无法安全解码：{e}"))
+
 }
 fn decoded_wic(bytes: &[u8], label: &str) -> Result<image::DynamicImage, String> {
     use windows::Win32::{Graphics::Imaging::*, System::Com::*, UI::Shell::SHCreateMemStream};
@@ -584,34 +517,6 @@ pub struct Preview {
     #[serde(skip_serializing_if = "Option::is_none")]
     height: Option<u32>,
 }
-fn try_pinned_batch<T>(
-    path: &str, names: &[String], options: &EngineOptions, epoch: u64,
-    read: impl FnOnce(&obz_core::engine::ZipPreviewBatch) -> Result<T, String>,
-) -> Result<Option<T>, String> {
-    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
-    if options.password.is_some() || options.codepage.is_some()
-        || !Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-        || obz_core::machine_policy::scope().restricted()
-    {
-        return Ok(None);
-    }
-    let (_source, identity) = source(path, options)?;
-    if identity.split { return Ok(None); }
-    // Serialize with the existing preview worker. clear_preview_cache can
-    // cancel ACTIVE before waiting for this lock; newer jobs cannot replace it.
-    let mut cache = CACHE.lock().map_err(|_| "预览缓存不可用")?;
-    if cache.as_ref().is_some_and(|c| c.identity != identity) { cache.take(); }
-    if cache.as_ref().is_some_and(|c| c.entries.len() <= 4096) { return Ok(None); }
-    let control = obz_core::engine::JobControl::new();
-    *ACTIVE.lock().map_err(|_| "预览不可用")? = Some(control.clone());
-    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
-    let options = EngineOptions { control: Some(control), ..options.clone() };
-    let Some(batch) = obz_core::engine::ZipPreviewBatch::open(path, names, &options)? else { return Ok(None); };
-    let result = read(&batch)?;
-    if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
-    Ok(Some(result))
-}
-
 fn preview_inner(
     path: &str, name: &str, options: &EngineOptions, kind: &str,
     text_encoding: Option<&str>, epoch: u64,
@@ -623,14 +528,15 @@ fn preview_inner(
         "thumbnail" => { image_format(name)?; IMAGE_LIMIT },
         _ => return Err("不支持的预览方式".into()),
     };
-    let bytes = bytes_for(path, name, options, limit, epoch)?;
-    render_preview(name, kind, text_encoding, bytes)
+    let (bytes, truncated) = with_member_reader(path, options, epoch, &[name], |reader| reader(name, limit, kind == "text"))?;
+    render_preview(name, kind, text_encoding, bytes, truncated)
 }
 fn render_preview(
     name: &str,
     kind: &str,
     text_encoding: Option<&str>,
     bytes: Vec<u8>,
+    truncated: bool,
 ) -> Result<Preview, String> {
     let policy = obz_core::machine_policy::scope();
     let mut result = Preview {
@@ -639,14 +545,14 @@ fn render_preview(
         name: name.into(),
         text: None,
         encoding: None,
-        truncated: false,
+        truncated,
         data_url: None,
         width: None,
         height: None,
     };
     match kind {
         "text" => {
-            let (text, encoding) = decode_text(&bytes, text_encoding)?;
+            let (text, encoding) = decode_text_prefix(&bytes, text_encoding, truncated)?;
             result.text = Some(text);
             result.encoding = Some(encoding);
         }
@@ -719,7 +625,7 @@ pub async fn preview_thumbnails(
             for name in &names {
                 if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
                 let result = image_format(name).and_then(|_| read(name))
-                    .and_then(|bytes| render_preview(name, "thumbnail", None, bytes));
+                    .and_then(|bytes| render_preview(name, "thumbnail", None, bytes, false));
                 results.push(match result {
                     Ok(preview) => ThumbnailResult::Ready(preview),
                     Err(error) => ThumbnailResult::Failed { name: name.clone(), error },
@@ -729,10 +635,10 @@ pub async fn preview_thumbnails(
             policy.validate_output()?;
             Ok(results)
         };
-        if let Some(results) = try_pinned_batch(&path, &names, &options, epoch, |batch| {
-            render(&mut |name| batch.read(name, IMAGE_LIMIT))
-        })? { return Ok(results); }
-        render(&mut |name| bytes_for(&path, name, &options, IMAGE_LIMIT, epoch))
+        let requested: Vec<_> = names.iter().map(String::as_str).collect();
+        with_member_reader(&path, &options, epoch, &requested, |reader| {
+            render(&mut |name| reader(name, IMAGE_LIMIT, false).map(|(bytes, _)| bytes))
+        })
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -793,28 +699,18 @@ fn owned_exports(root: &Path) -> Result<Vec<(PathBuf, Vec<PathBuf>, u64, SystemT
                 path,
                 files,
                 bytes,
-                item.metadata()
-                    .map_err(|e| e.to_string())?
-                    .modified()
-                    .unwrap_or(SystemTime::now()),
+                fs::metadata(marker).and_then(|m| m.modified()).unwrap_or(SystemTime::now()),
             ));
         }
     }
     Ok(result)
 }
-fn export_original(root: &Path, name: &str, bytes: &[u8], zone: Option<&obz_core::motw::ZoneIdentifier>) -> Result<PathBuf, String> {
-    no_links(root)?;
-    fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    no_links(root)?;
+fn refresh_exports(root: &Path, exports: &mut ExportState) -> Result<(), String> {
     let mut used = 0u64;
-    let mut retained_directories = 0usize;
     for (directory, files, size, modified) in owned_exports(root)? {
-        if SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or_default()
-            > Duration::from_secs(7 * 86400)
-        {
-            // A viewer may still hold a file. Failed deletion is left for a later pass.
+        if SystemTime::now().duration_since(modified).unwrap_or_default() > Duration::from_secs(7 * 86400) {
+            // A viewer that denies deletion keeps its file and the next sweep
+            // retries it. The flat owned marker is required on every pass.
             let marker = directory.join(".open-archive-preview");
             let mut removed = true;
             for file in files.iter().filter(|p| **p != marker) {
@@ -823,21 +719,20 @@ fn export_original(root: &Path, name: &str, bytes: &[u8], zone: Option<&obz_core
             if removed {
                 let _ = fs::remove_file(marker);
                 let _ = fs::remove_dir(directory);
-            } else {
-                used = used.saturating_add(size);
-                retained_directories += 1;
+                continue;
             }
-        } else {
-            used = used.saturating_add(size);
-            retained_directories += 1;
         }
+        used = used.saturating_add(size.max(4096));
     }
-    if used.saturating_add(bytes.len() as u64) > EXPORT_LIMIT || retained_directories >= 256 {
-        return Err(
-            "原图预览临时文件已达 512 MiB 或 256 项，请清理本机 OpenArchive/PreviewFiles 后重试"
-                .into(),
-        );
-    }
+    exports.bytes = used;
+    exports.last_scan = Some(Instant::now());
+    Ok(())
+}
+
+fn export_original(root: &Path, name: &str, bytes: &[u8], zone: Option<&obz_core::motw::ZoneIdentifier>) -> Result<PathBuf, String> {
+    no_links(root)?;
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    no_links(root)?;
     let directory = tempfile::Builder::new()
         .prefix("image-")
         .tempdir_in(root)
@@ -861,6 +756,23 @@ fn export_original(root: &Path, name: &str, bytes: &[u8], zone: Option<&obz_core
     let _ = directory.keep();
     Ok(path)
 }
+fn reuse_export(path: &Path, bytes: &[u8], zone: &obz_core::motw::ZoneIdentifier) -> Option<File> {
+    no_links(path).ok()?;
+    let mut file = OpenOptions::new().read(true).share_mode(1).custom_flags(0x0020_0000).open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() != bytes.len() as u64 || metadata.file_attributes() & 0x400 != 0 {
+        return None;
+    }
+    if !obz_core::motw::preview_export_matches(&file, zone).ok()? { return None; }
+    file.rewind().ok()?;
+    let mut buffer = [0; 65536];
+    for chunk in bytes.chunks(buffer.len()) {
+        file.read_exact(&mut buffer[..chunk.len()]).ok()?;
+        if &buffer[..chunk.len()] != chunk { return None; }
+    }
+    Some(file)
+}
+
 #[derive(Serialize)]
 pub struct OpenedImage {
     path: String,
@@ -888,15 +800,63 @@ pub async fn open_archive_image(
             IMAGE_LIMIT,
             epoch,
         )?;
-        decoded_image(&name, &bytes)?;
         if EPOCH.load(Ordering::SeqCst) != epoch {
             return Err("预览已取消".into());
         }
-        let _lock = EXPORT_LOCK.lock().map_err(|_| "原图预览不可用")?;
+        let policy = obz_core::machine_policy::scope();
+        let mut exports = EXPORTS.lock().map_err(|_| "原图预览不可用")?;
         let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?)
             .join("OpenArchive")
             .join("PreviewFiles");
-        let exported = export_original(&root, &name, &bytes, Some(&zone))?;
+        let candidate = exports.recent.iter().rev().find_map(|(previous, path)| {
+            (previous == &name && path.starts_with(&root))
+                .then(|| reuse_export(path, &bytes, &zone))
+                .flatten().map(|pin| (path.clone(), Some(pin)))
+        });
+        let (exported, _viewer_pin) = if let Some(candidate) = candidate {
+            // Refresh the last handoff time after exact content and MOTW
+            // verification, so a just-opened viewer keeps its file.
+            if let Some(parent) = candidate.0.parent() {
+                let marker = parent.join(".open-archive-preview");
+                if no_links(&marker).is_ok() {
+                    if let Ok(mut marker) = OpenOptions::new().read(true).write(true).share_mode(1)
+                        .custom_flags(0x0020_0000).open(marker)
+                    {
+                        let mut contents = [0; MARKER.len()];
+                        if marker.metadata().is_ok_and(|m| m.is_file() && m.len() == MARKER.len() as u64
+                            && m.file_attributes() & 0x400 == 0)
+                            && marker.read_exact(&mut contents).is_ok() && contents == MARKER
+                        {
+                            let _ = marker.set_modified(SystemTime::now());
+                        }
+                    }
+                }
+            }
+            candidate
+        } else {
+            decoded_image(&name, &bytes)?;
+            if exports.last_scan.is_none_or(|time| time.elapsed() >= Duration::from_secs(15 * 60)) {
+                no_links(&root)?;
+                fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+                refresh_exports(&root, &mut exports)?;
+            }
+            let cost = (bytes.len() as u64 + MARKER.len() as u64).max(4096);
+            if exports.bytes.saturating_add(cost) > EXPORT_LIMIT {
+                // A viewer may have released a previously in-use file.
+                refresh_exports(&root, &mut exports)?;
+                if exports.bytes.saturating_add(cost) > EXPORT_LIMIT {
+                    return Err("原图预览临时文件已达 512 MiB，请清理本机 OpenArchive/PreviewFiles 后重试".into());
+                }
+            }
+            let exported = export_original(&root, &name, &bytes, Some(&zone))?;
+            exports.bytes += cost;
+            (exported, None)
+        };
+        exports.recent.retain(|(_, path)| path != &exported);
+        if exports.recent.len() >= 256 { exports.recent.pop_front(); }
+        exports.recent.push_back((name, exported.clone()));
+        if EPOCH.load(Ordering::SeqCst) != epoch { return Err("预览已取消".into()); }
+        policy.validate_output()?;
         let wide: Vec<u16> = exported
             .as_os_str()
             .to_string_lossy()
@@ -1136,7 +1096,7 @@ mod tests {
         assert!(before != after);
     }
     #[test]
-    fn archive_cache_reuses_safe_stage_and_invalidates_after_replacement() {
+    fn archive_cache_only_keeps_requested_members_and_invalidates_after_replacement() {
         let _scenario = CACHE_SCENARIO.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let input = root.path().join("input");
@@ -1169,36 +1129,15 @@ mod tests {
             bytes_for(path, &one.replace('\\', "/"), &options, TEXT_LIMIT, epoch).unwrap(),
             b"first"
         );
-        let first_stage = CACHE
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .stage
-            .as_ref()
-            .unwrap()
-            .path()
-            .to_path_buf();
+        {
+            let guard = CACHE.lock().unwrap();
+            let cache = guard.as_ref().unwrap();
+            assert!(cache.raw.iter().all(|(name, _)| name == &one.replace('\\', "/")));
+        }
         assert_eq!(
             bytes_for(path, &two.replace('\\', "/"), &options, TEXT_LIMIT, epoch).unwrap(),
             b"second"
         );
-        assert_eq!(
-            CACHE
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .stage
-                .as_ref()
-                .unwrap()
-                .path(),
-            first_stage
-        );
-        let cached_file = first_stage.join(safe_name(one).unwrap());
-        let mut permissions = fs::metadata(&cached_file).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&cached_file, permissions).unwrap();
         fs::remove_file(&archive).unwrap();
         fs::write(input.join("one.txt"), b"changed content").unwrap();
         obz_core::engine::create(
@@ -1212,10 +1151,44 @@ mod tests {
             bytes_for(path, one, &options, TEXT_LIMIT, epoch).unwrap(),
             b"changed content"
         );
-        assert!(!first_stage.exists());
         EPOCH.fetch_add(1, Ordering::SeqCst);
         assert!(bytes_for(path, one, &options, TEXT_LIMIT, epoch).is_err());
         *CACHE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn large_text_preview_reports_a_prefix_without_splitting_utf8() {
+        let _scenario = CACHE_SCENARIO.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.zip");
+        let input = dir.path().join("note.txt");
+        let mut bytes = vec![b'a'; TEXT_LIMIT as usize - 1];
+        bytes.extend_from_slice("中文 and remaining text".as_bytes());
+        fs::write(&input, bytes).unwrap();
+        let path = path.to_str().unwrap();
+        let options = EngineOptions::default();
+        obz_core::engine::create(path, &[input.display().to_string()], "zip", &options).unwrap();
+        let before = fs::read(path).unwrap();
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        let result = preview_inner(path, "note.txt", &options, "text", None, epoch).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.encoding.as_deref(), Some("UTF-8"));
+        assert_eq!(result.text.unwrap(), "a".repeat(TEXT_LIMIT as usize - 1));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn original_export_reuse_requires_exact_unchanged_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.zip");
+        fs::write(&source, b"source").unwrap();
+        let zone = obz_core::motw::archive_context(&source).unwrap();
+        let path = export_original(dir.path(), "picture.png", b"valid bytes", Some(&zone)).unwrap();
+        let pin = reuse_export(&path, b"valid bytes", &zone).unwrap();
+        assert!(OpenOptions::new().write(true).open(&path).is_err());
+        drop(pin);
+        fs::write(&path, b"other bytes").unwrap();
+        assert!(reuse_export(&path, b"valid bytes", &zone).is_none());
     }
 
     #[test]
@@ -1235,9 +1208,7 @@ mod tests {
             obz_core::engine::create(path, &[input.to_string_lossy().into_owned()], format, &options).unwrap();
             let epoch = EPOCH.load(Ordering::SeqCst);
             assert!(bytes_for(path, "sample.txt", &options, TEXT_LIMIT, epoch).unwrap_err().contains("limit"));
-            assert!(CACHE.lock().unwrap().as_ref().unwrap().stage.is_none());
             assert_eq!(bytes_for(path, "sample.txt", &options, IMAGE_LIMIT, epoch).unwrap(), data);
-            assert!(CACHE.lock().unwrap().as_ref().unwrap().stage.is_none());
             // A larger successful image-style preview must not bypass a later text limit.
             assert!(bytes_for(path, "sample.txt", &options, TEXT_LIMIT, epoch).is_err());
         }

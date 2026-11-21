@@ -8,7 +8,7 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{Read, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 const INPUT_LIMIT: u64 = 128 * 1024 * 1024;
@@ -16,28 +16,75 @@ fn package(data: &[u8]) -> Result<setup::SetupPackage<'_>, String> {
     std::panic::catch_unwind(|| setup::open(data))
         .map_err(|_| "malformed installer package".to_string())?
 }
+// Locate the end of the PE section data using only the structures the
+// package parser already relies on. A plain executable usually ends here.
+fn overlay_start(file: &mut File, length: u64) -> Option<u64> {
+    let mut dos = [0; 64];
+    file.read_exact(&mut dos).ok()?;
+    if !dos.starts_with(b"MZ") { return None; }
+    let pe = u32::from_le_bytes(dos[60..64].try_into().ok()?) as u64;
+    if pe + 24 > length { return None; }
+    let mut header = [0; 24];
+    file.seek(SeekFrom::Start(pe)).ok()?;
+    file.read_exact(&mut header).ok()?;
+    if !header.starts_with(b"PE\0\0") { return None; }
+    let count = u16::from_le_bytes(header[6..8].try_into().ok()?);
+    let options = u16::from_le_bytes(header[20..22].try_into().ok()?);
+    let table = pe + 24 + u64::from(options);
+    if table + u64::from(count) * 40 > length { return None; }
+    file.seek(SeekFrom::Start(table)).ok()?;
+    let mut sections = BufReader::new(file);
+    let mut end = 0;
+    for _ in 0..count {
+        let mut section = [0; 40];
+        sections.read_exact(&mut section).ok()?;
+        let raw_size = u32::from_le_bytes(section[16..20].try_into().ok()?);
+        let raw_offset = u32::from_le_bytes(section[20..24].try_into().ok()?);
+        end = end.max(u64::from(raw_offset) + u64::from(raw_size));
+    }
+    Some(end.min(length).saturating_sub(64))
+}
+
+fn contains_signature(file: &mut File, start: u64, end: u64, signature: &[u8], reverse: bool) -> Result<bool, String> {
+    let mut buffer = [0; 65536];
+    let overlap = signature.len() as u64 - 1;
+    let mut start = start;
+    let mut end = end;
+    while end.saturating_sub(start) > overlap {
+        let (from, to) = if reverse {
+            (end.saturating_sub(buffer.len() as u64).max(start), end)
+        } else {
+            (start, end.min(start + buffer.len() as u64))
+        };
+        let buffer = &mut buffer[..(to - from) as usize];
+        file.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        file.read_exact(buffer).map_err(|e| e.to_string())?;
+        if buffer.windows(signature.len()).any(|part| part == signature) {
+            return Ok(true);
+        }
+        if reverse { end = from + overlap; } else { start = to - overlap; }
+    }
+    Ok(false)
+}
+
 pub fn recognize(path: &str) -> Result<Option<Vec<u8>>, String> {
     let _policy = crate::machine_policy::native("setup package adapter")?;
-    let mut f = File::open(path).map_err(|e| e.to_string())?;
-    if f.metadata().map_err(|e| e.to_string())?.len() > INPUT_LIMIT {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    if length > INPUT_LIMIT { return Ok(None); }
+    let Some(start) = overlay_start(&mut file, length) else { return Ok(None); };
+    // Real installers have both signatures in their overlay. Search toward
+    // the likely end first for the UI ZIP, including signed executables with
+    // certificates or other permitted trailers after the end record.
+    if !contains_signature(&mut file, start, length, b"PK\x05\x06", true)?
+        || !contains_signature(&mut file, start, length, crate::sevenz::MAGIC, false)?
+    {
         return Ok(None);
     }
-    let mut magic = [0; 2];
-    if f.read_exact(&mut magic).is_err() || magic != *b"MZ" {
-        return Ok(None);
-    }
-    let mut data = magic.to_vec();
-    f.take(INPUT_LIMIT - 1)
-        .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
-    if data.len() as u64 > INPUT_LIMIT {
-        return Ok(None);
-    }
-    if package(&data).is_ok() {
-        Ok(Some(data))
-    } else {
-        Ok(None)
-    }
+    file.rewind().map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    file.take(INPUT_LIMIT + 1).read_to_end(&mut data).map_err(|e| e.to_string())?;
+    if data.len() as u64 <= INPUT_LIMIT && package(&data).is_ok() { Ok(Some(data)) } else { Ok(None) }
 }
 fn inventory(pkg: &setup::SetupPackage<'_>) -> Result<Vec<Entry>, String> {
     let mut es = Vec::new();

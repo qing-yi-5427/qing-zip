@@ -147,6 +147,9 @@ pub fn read(path: &str, opts: &EngineOptions) -> Result<Properties, String> {
         args.extend([
             "-slt".into(),
             "-slmu".into(),
+            // Technical headers still print with an exact, unmatchable member
+            // selector. This avoids formatting and transferring every entry.
+            "-i!:ArchiveHeaderOnly:".into(),
             "--".into(),
             source.display().to_string(),
         ]);
