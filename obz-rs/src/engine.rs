@@ -467,7 +467,7 @@ fn base(command: &str, opts: &EngineOptions) -> Result<Vec<String>, String> {
     }
     Ok(a)
 }
-fn scrub(text: &str, opts: &EngineOptions) -> String {
+pub(crate) fn scrub(text: &str, opts: &EngineOptions) -> String {
     let mut s = text.to_owned();
     if let Some(p) = &opts.password {
         s = s.replace(p, "[redacted]");
