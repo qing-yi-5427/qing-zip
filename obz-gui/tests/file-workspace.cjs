@@ -34,6 +34,35 @@ test('the next local page uses the revision cursor and retains loaded selections
  click({preventDefault(){},target:{closest:()=>({dataset:{fm:'next',pane:'0'}})}});await new Promise(setImmediate);
  assert.deepEqual(calls,[['browse_local',{path:'C:/source',cursor}]]);assert.deepEqual([...p.selected],['C:/source/2']);assert.equal(p.offset,200);assert.equal(p.entries.length,201);assert.equal(p.next,null);
 });
+test('refresh follows the previously loaded directory pages and keeps existing selected paths',async()=>{
+ let click;const calls=[];const cursor={revision:'updated',directory:false,name:[102]};
+ const make=(i)=>({name:'f'+i,path:'C:/source/'+i,size:i,is_dir:false});
+ const first=()=>({path:'C:/source',revision:'updated',entries:Array.from({length:200},(_,i)=>make(i)),total:201,next:cursor});
+ const workspace=create({esc:String,icon:()=>'',render(){},error:e=>{throw e},invoke:async(name,args)=>{
+  calls.push([name,args]);return args.cursor?{path:'C:/source',entries:[make(200)],total:201,next:null}:first();
+ }});
+ for(const p of workspace.state.panes)p.loaded=true;
+ const p=workspace.state.panes[0];Object.assign(p,{path:'C:/source',offset:200,total:201,entries:[...first().entries,make(200)]});
+ p.selected.add('C:/source/200');p.selected.add('C:/source/removed');
+ workspace.mount({querySelector:()=>({addEventListener:(kind,fn)=>{if(kind==='click')click=fn;}})});
+ click({preventDefault(){},target:{closest:()=>({dataset:{fm:'refresh',pane:'0'}})}});await new Promise(setImmediate);
+ assert.deepEqual(calls,[['browse_local',{path:'C:/source'}],['browse_local',{path:'C:/source',cursor}]]);
+ assert.deepEqual([...p.selected],['C:/source/200']);assert.equal(p.offset,200);assert.match(p.selectionNotice,/1 个项目/);
+});
+test('a paged directory tree exposes later folders and keeps the loaded branch',async()=>{
+ let click;const calls=[];const path='C:/source',cursor={revision:'r',directory:true,name:[102]};
+ const dir=(name)=>({name,path:path+'/'+name,is_dir:true});
+ const workspace=create({esc:String,icon:()=>'',render(){},error:e=>{throw e},invoke:async(name,args)=>{
+  calls.push([name,args]);return {path,revision:'r',entries:[dir('later-folder')],total:2,next:null};
+ }});
+ for(const p of workspace.state.panes)p.loaded=true;
+ const p=workspace.state.panes[0];p.path=path;p.tree.set(path,[dir('first-folder')]);p.treePages.set(path,{revision:'r',next:cursor});p.treeExpanded.add(path);
+ assert.match(workspace.page(),/data-fm="tree-more"/);
+ workspace.mount({querySelector:()=>({addEventListener:(kind,fn)=>{if(kind==='click')click=fn;}})});
+ click({preventDefault(){},target:{closest:()=>({dataset:{fm:'tree-more',pane:'0',path}})}});await new Promise(setImmediate);
+ assert.deepEqual(calls,[['browse_local',{path,cursor}]]);
+ assert.deepEqual(p.tree.get(path).map(e=>e.name),['first-folder','later-folder']);assert.doesNotMatch(workspace.page(),/data-fm="tree-more"/);
+});
 test('an old archive refresh cannot overwrite a newer local navigation',async()=>{
  let finish,click;const updates=[];const ui={esc:String,icon:()=>'',render:()=>{},error:e=>{throw e},updated:(...a)=>updates.push(a),run:()=>new Promise(r=>finish=r),invoke:async()=>({path:'D:/target',parent:'D:/',entries:[{name:'local.txt',path:'D:/target/local.txt',size:1,is_dir:false}]})};
  const workspace=create(ui);for(const p of workspace.state.panes)p.loaded=true;

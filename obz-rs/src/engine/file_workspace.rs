@@ -61,13 +61,18 @@ fn local_path(text: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 pub fn browse(path: &str) -> Result<Directory, String> {
-    browse_page(path, None)
+    browse_impl(path, None, false)
 }
 
 pub fn browse_page(path: &str, cursor: Option<BrowseCursor>) -> Result<Directory, String> {
+    browse_impl(path, cursor, true)
+}
+
+fn browse_impl(path: &str, cursor: Option<BrowseCursor>, paged: bool) -> Result<Directory, String> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     const PAGE_LIMIT: usize = 1000;
     const MAX_PAGE_WIRE_BYTES: usize = 2 * 1024 * 1024;
+    const LEGACY_LIST_LIMIT: usize = 100_000;
     let sort_key = |directory: bool, name: &std::ffi::OsStr| {
         (!directory, name.to_string_lossy().to_lowercase(), name.encode_wide().collect::<Vec<_>>())
     };
@@ -122,13 +127,16 @@ pub fn browse_page(path: &str, cursor: Option<BrowseCursor>) -> Result<Directory
     for child in fs::read_dir(&root).map_err(|e| e.to_string())? {
         let child = child.map_err(|e| e.to_string())?;
         total += 1;
+        if !paged && total > LEGACY_LIST_LIMIT {
+            return Err("目录项目过多，请选择更具体的位置".into());
+        }
         let metadata = child.metadata().map_err(|e| e.to_string())?;
         let key = sort_key(metadata.is_dir(), &child.file_name());
         if after.as_ref().is_some_and(|after| &key <= after) {
             continue;
         }
         remaining += 1;
-        if candidates.len() == PAGE_LIMIT {
+        if paged && candidates.len() == PAGE_LIMIT {
             if candidates.last_key_value().is_some_and(|(last, _)| &key >= last) {
                 continue;
             }
@@ -138,7 +146,7 @@ pub fn browse_page(path: &str, cursor: Option<BrowseCursor>) -> Result<Directory
     }
     let mut entries = Vec::new();
     let mut last = None;
-    let mut bytes_left = MAX_PAGE_WIRE_BYTES;
+    let mut bytes_left = if paged { MAX_PAGE_WIRE_BYTES } else { usize::MAX };
     let root_units = root.as_os_str().encode_wide().count();
     for ((file, _, name), (child, metadata)) in candidates {
         // Worst-case JSON-escaped UTF-16 code units in the name and full path.
@@ -1417,7 +1425,10 @@ mod tests {
             fs::write(root.path().join(format!("file-{i:04}")), b"ordinary").unwrap();
         }
         let path = root.path().to_str().unwrap();
-        let first = browse(path).unwrap();
+        let raw_list = browse(path).unwrap();
+        assert_eq!(raw_list.entries.len(), 1003);
+        assert!(raw_list.next.is_none());
+        let first = browse_page(path, None).unwrap();
         assert_eq!(first.total, 1003);
         assert_eq!(first.entries.len(), 1000);
         assert!(first.entries[0].is_dir);

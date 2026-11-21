@@ -78,7 +78,7 @@ function localTreeRows(p){
 // into drive-relative C:. Backend path validation remains authoritative.
 function localDirectoryKey(path){const value=String(path||'').replace(/\\/g,'/').toLowerCase();return /^[a-z]:\/+$/.test(value)?value.slice(0,2)+'/':value.replace(/\/+$/,'');}
 function create(ui){
- const pane=()=>({kind:'local',path:'',parent:null,entries:[],total:0,next:null,selected:new Set(),cursor:null,anchor:null,loaded:false,pending:false,tree:new Map(),treeExpanded:new Set(['']),treeCursor:'',treePending:new Map(),treeSequence:0,archive:'',all:[],offset:0,requestId:0,credentialsOpen:false,creating:null,newName:'',createError:'',history:[],historyIndex:-1,revision:'',error:'',refreshError:'',probePath:null,probeGeneration:0,probeFailed:false,probing:false,dirty:false,refreshing:false,timer:null,autoRefresh:true});
+ const pane=()=>({kind:'local',path:'',parent:null,entries:[],total:0,next:null,selected:new Set(),cursor:null,anchor:null,loaded:false,pending:false,tree:new Map(),treePages:new Map(),selectionNotice:'',treeExpanded:new Set(['']),treeCursor:'',treePending:new Map(),treeSequence:0,archive:'',all:[],offset:0,requestId:0,credentialsOpen:false,creating:null,newName:'',createError:'',history:[],historyIndex:-1,revision:'',error:'',refreshError:'',probePath:null,probeGeneration:0,probeFailed:false,probing:false,dirty:false,refreshing:false,timer:null,autoRefresh:true});
  const state={panes:[pane(),pane()],active:0,overwrite:'error',busy:false,focus:null,visible:false,streams:null,streamRequest:0,link:null,linkEditor:null,linkDrafts:new Map()};
  function render(){
   let restore=null;
@@ -110,19 +110,27 @@ function create(ui){
  const button=(label,action,index,disabled=false)=>`<button type="button" class="qa-button" data-fm="${action}" data-pane="${index}" ${disabled?'disabled':''}>${label}</button>`;
  function treePanel(p,index){
   const rows=localTreeRows(p);if(!rows.some(r=>r.path===p.treeCursor))p.treeCursor=rows.find(r=>r.path===p.path)?.path??'';
-  return `<nav class="fm-tree" role="tree" aria-label="${index?'右':'左'}侧目录树" data-fm-tree="${index}">${rows.map(r=>`<button role="treeitem" data-fm="tree" data-pane="${index}" data-path="${ui.esc(r.path)}" data-fm-tree-item tabindex="${r.path===p.treeCursor?0:-1}" aria-level="${r.level}" aria-posinset="${r.pos}" aria-setsize="${r.size}" aria-selected="${p.path===r.path}" ${r.expandable?`aria-expanded="${r.expanded}"`:''} ${p.treePending.has(r.path)?'aria-busy="true"':''} title="${ui.esc(r.path||'此电脑')}" style="padding-left:${8+(r.level-1)*12}px"><span aria-hidden="true" data-fm-tree-toggle>${r.expandable?(r.expanded?'▾':'▸'):'·'}</span>${ui.icon('folder')}<span>${ui.esc(r.name)}</span></button>`).join('')}</nav>`;
+  const more=rows.filter(r=>r.expanded&&p.treePages.get(r.path)?.next).map(r=>`<button type="button" data-fm="tree-more" data-pane="${index}" data-path="${ui.esc(r.path)}" aria-label="加载更多子目录：${ui.esc(r.name)}" title="${ui.esc(r.path)}" ${p.treePending.has(r.path)?'disabled':''}><span>继续加载 · ${ui.esc(r.name)}</span></button>`).join('');
+  return `<div class="fm-tree"><nav role="tree" aria-label="${index?'右':'左'}侧目录树" data-fm-tree="${index}">${rows.map(r=>`<button role="treeitem" data-fm="tree" data-pane="${index}" data-path="${ui.esc(r.path)}" data-fm-tree-item tabindex="${r.path===p.treeCursor?0:-1}" aria-level="${r.level}" aria-posinset="${r.pos}" aria-setsize="${r.size}" aria-selected="${p.path===r.path}" ${r.expandable?`aria-expanded="${r.expanded}"`:''} ${p.treePending.has(r.path)?'aria-busy="true"':''} title="${ui.esc(r.path||'此电脑')}" style="padding-left:${8+(r.level-1)*12}px"><span aria-hidden="true" data-fm-tree-toggle>${r.expandable?(r.expanded?'▾':'▸'):'·'}</span>${ui.icon('folder')}<span>${ui.esc(r.name)}</span></button>`).join('')}</nav>${more?`<div role="group" aria-label="目录树分页">${more}</div>`:''}</div>`;
  }
  function treeFocus(index,path){const p=state.panes[index];p.treeCursor=path;state.active=index;state.focus={index,tree:true,path};render();}
  function focusedTree(index){return typeof document!=='undefined'&&document.activeElement?.closest?.('[data-fm-tree]')?.dataset.fmTree===String(index);}
- async function expandTree(index,path){
+ function recordTreePage(p,path,data,append=false){
+  const before=p.treePages.get(path),directories=data.entries.filter(e=>e.is_dir&&!e.linked);
+  if(!append&&before?.revision&&before.revision===data.revision&&(p.tree.get(path)?.length||0)>directories.length)return;
+  p.tree.set(path,append?[...(p.tree.get(path)||[]),...directories]:directories);
+  p.treePages.set(path,{next:data.next?.directory?data.next:null,revision:data.revision});
+ }
+ async function expandTree(index,path,more=false){
   const p=state.panes[index];if(p.pending||state.busy||p.treePending.has(path))return;
-  if(p.tree.has(path)){p.treeExpanded.add(path);treeFocus(index,path);return;}
+  if(!more&&p.tree.has(path)){p.treeExpanded.add(path);treeFocus(index,path);return;}
+  const cursor=more?p.treePages.get(path)?.next:null;if(more&&!cursor)return;
   const token=++p.treeSequence,location=p.requestId;p.treePending.set(path,token);treeFocus(index,path);
-  try{const data=await ui.invoke('browse_local',{path});
+  try{const data=await ui.invoke('browse_local',cursor?{path,cursor}:{path});
    if(p.kind!=='local'||p.requestId!==location||p.treePending.get(path)!==token)return;
    // A canonical path can differ in spelling from the row. Keep the row key:
    // its identity in this visible tree must not jump on async completion.
-   p.tree.set(path,data.entries);p.treeExpanded.add(path);
+   recordTreePage(p,path,data,more);p.treeExpanded.add(path);
   }finally{if(p.treePending.get(path)===token){p.treePending.delete(path);if(p.kind==='local'&&p.requestId===location){if(focusedTree(index))state.focus={index,tree:true,path:p.treeCursor};render();}}}
  }
  function treeKeyboard(event,control){
@@ -157,7 +165,7 @@ function create(ui){
    ${local?button('新建文件夹','new-directory',index,p.pending||!p.path)+button('新建文件','new-file',index,p.pending||!p.path)+button('附加数据流…','streams',index,p.pending||p.selected.size!==1)+button('创建链接…','link',index,p.pending||p.selected.size!==1):''}
    ${location}</div>`;
  }
- function panel(p,index){const local=p.kind==='local',rows=p.entries,total=local?(p.total||rows.length):rows.length,visible=rows.slice(p.offset,p.offset+200),active=state.active===index;return `<section class="fm-pane ${active?'active':''}" data-fm-pane="${index}" aria-label="${index?'右':'左'}侧位置"><header><strong>${index?'右':'左'}侧位置 · ${local?'本地文件夹':'压缩包'}</strong><div>${button('本地','local',index)}${button('当前压缩包','archive',index)}</div></header><form data-fm-path="${index}"><input aria-label="${index?'右':'左'}侧路径" value="${ui.esc(local?p.path:(p.displayArchive||p.archive))}" placeholder="输入文件夹路径" ${local?'':'readonly'} ${p.pending?'disabled':''}>${button('转到','go',index,!local||p.pending)}</form>${local?'':`<div class="fm-archive-location" aria-label="${index?'右':'左'}侧压缩包内部位置"><strong>${ui.esc(p.archive.split(/[\\/]/).pop())}</strong><span> / ${ui.esc(p.path||'根目录')}</span></div><details class="fm-credentials" data-fm-credentials="${index}" ${p.credentialsOpen?'open':''}><summary>密码与文件名编码</summary><label>此压缩包密码<input type="password" data-fm-password="${index}" aria-label="${index?'右':'左'}侧压缩包密码" autocomplete="off" ${state.busy?'disabled':''}></label><label>文件名编码<select data-fm-codepage="${index}" aria-label="${index?'右':'左'}侧文件名编码" ${state.busy||p.pending?'disabled':''}>${[['','自动'],[65001,'UTF-8'],[936,'简体中文 (GBK)'],[950,'繁体中文 (Big5)'],[932,'日文 (Shift-JIS)'],[949,'韩文'],[1252,'西欧'],...(p.codepage&&![65001,936,950,932,949,1252].includes(p.codepage)?[[p.codepage,String(p.codepage)]]:[])].map(([value,label])=>`<option value="${value}" ${String(p.codepage||'')===String(value)?'selected':''}>${label}</option>`).join('')}</select></label></details>`}<div class="fm-pane-actions">${local?button('后退','back',index,p.pending||p.historyIndex<=0):''}${button('上级','up',index,p.pending||(!p.path&&!local))}${paneMenu(p,index)}</div><div class="fm-pane-status"><span>${p.kind==='local'&&p.next?`已加载 ${rows.length} / ${total} 项`:`${total} 项`} · 已选 ${p.selected.size} 项</span>${total>200||local&&p.next?button('上一页','prev',index,p.pending||p.offset===0)+button(local&&p.next&&p.offset+200>rows.length?'继续加载':'下一页','next',index,p.pending||(!p.next&&p.offset+200>=rows.length)):''}</div>${local&&p.creating?`<form data-fm-create="${index}"><input data-fm-new-name="${index}" aria-label="${index?'右':'左'}侧新${p.creating==='directory'?'文件夹':'文件'}名称" value="${ui.esc(p.newName)}" placeholder="${p.creating==='directory'?'文件夹名称':'文件名称'}" required maxlength="255" ${state.busy?'disabled':''}><button class="qa-button" type="submit" ${state.busy?'disabled':''}>创建</button>${button('取消','cancel-create',index,state.busy)}</form>${p.createError?`<p class="qa-error fm-create-error" role="alert">${ui.esc(p.createError)}</p>`:''}`:''}${local&&p.refreshError?`<p class="fm-refresh-status" role="status">${ui.esc(p.refreshError)}</p>`:''}${p.error?`<p class="qa-error" role="alert">${ui.esc(p.error)}</p>`:''}<div class="fm-browser">${local?treePanel(p,index):''}<div class="fm-list" role="list" aria-label="${index?'右':'左'}侧文件列表">${p.pending?'<p>正在读取…</p>':visible.map((e,j)=>{const n=j+p.offset;return `<div class="fm-row ${p.selected.has(e.path)?'selected':''}" role="listitem"><input type="checkbox" data-fm-check="${index}" data-index="${n}" tabindex="-1" aria-label="选择 ${ui.esc(e.name)}" ${p.selected.has(e.path)?'checked':''} ${e.linked?'disabled':''}><button data-fm="entry" data-pane="${index}" data-index="${n}" data-entry-path="${ui.esc(e.path)}" tabindex="${e.path===(p.cursor||rows.find(v=>!v.linked)?.path)?0:-1}" ${e.linked?'disabled':''}>${ui.icon(e.is_dir?'folder':'file')}<span>${ui.esc(e.name)}</span></button><small>${e.linked?'链接 · 不跟随':e.is_dir?'文件夹':e.size_known===false?'未知':e.size.toLocaleString()+' 字节'}</small>${local&&e.linked?`<button class="qa-button fm-link-inspect" data-fm="link-inspect" data-pane="${index}" data-path="${ui.esc(e.path)}" ${state.busy?'disabled':''}>查看/编辑链接</button>`:''}</div>`;}).join('')||'<p>此位置为空</p>'}</div></div></section>`;}
+ function panel(p,index){const local=p.kind==='local',rows=p.entries,total=local?(p.total||rows.length):rows.length,visible=rows.slice(p.offset,p.offset+200),active=state.active===index;return `<section class="fm-pane ${active?'active':''}" data-fm-pane="${index}" aria-label="${index?'右':'左'}侧位置"><header><strong>${index?'右':'左'}侧位置 · ${local?'本地文件夹':'压缩包'}</strong><div>${button('本地','local',index)}${button('当前压缩包','archive',index)}</div></header><form data-fm-path="${index}"><input aria-label="${index?'右':'左'}侧路径" value="${ui.esc(local?p.path:(p.displayArchive||p.archive))}" placeholder="输入文件夹路径" ${local?'':'readonly'} ${p.pending?'disabled':''}>${button('转到','go',index,!local||p.pending)}</form>${local?'':`<div class="fm-archive-location" aria-label="${index?'右':'左'}侧压缩包内部位置"><strong>${ui.esc(p.archive.split(/[\\/]/).pop())}</strong><span> / ${ui.esc(p.path||'根目录')}</span></div><details class="fm-credentials" data-fm-credentials="${index}" ${p.credentialsOpen?'open':''}><summary>密码与文件名编码</summary><label>此压缩包密码<input type="password" data-fm-password="${index}" aria-label="${index?'右':'左'}侧压缩包密码" autocomplete="off" ${state.busy?'disabled':''}></label><label>文件名编码<select data-fm-codepage="${index}" aria-label="${index?'右':'左'}侧文件名编码" ${state.busy||p.pending?'disabled':''}>${[['','自动'],[65001,'UTF-8'],[936,'简体中文 (GBK)'],[950,'繁体中文 (Big5)'],[932,'日文 (Shift-JIS)'],[949,'韩文'],[1252,'西欧'],...(p.codepage&&![65001,936,950,932,949,1252].includes(p.codepage)?[[p.codepage,String(p.codepage)]]:[])].map(([value,label])=>`<option value="${value}" ${String(p.codepage||'')===String(value)?'selected':''}>${label}</option>`).join('')}</select></label></details>`}<div class="fm-pane-actions">${local?button('后退','back',index,p.pending||p.historyIndex<=0):''}${button('上级','up',index,p.pending||(!p.path&&!local))}${paneMenu(p,index)}</div><div class="fm-pane-status"><span>${p.kind==='local'&&p.next?`已加载 ${rows.length} / ${total} 项`:`${total} 项`} · 已选 ${p.selected.size} 项</span>${total>200||local&&p.next?button('上一页','prev',index,p.pending||p.offset===0)+button(local&&p.next&&p.offset+200>rows.length?'继续加载':'下一页','next',index,p.pending||(!p.next&&p.offset+200>=rows.length)):''}</div>${local&&p.creating?`<form data-fm-create="${index}"><input data-fm-new-name="${index}" aria-label="${index?'右':'左'}侧新${p.creating==='directory'?'文件夹':'文件'}名称" value="${ui.esc(p.newName)}" placeholder="${p.creating==='directory'?'文件夹名称':'文件名称'}" required maxlength="255" ${state.busy?'disabled':''}><button class="qa-button" type="submit" ${state.busy?'disabled':''}>创建</button>${button('取消','cancel-create',index,state.busy)}</form>${p.createError?`<p class="qa-error fm-create-error" role="alert">${ui.esc(p.createError)}</p>`:''}`:''}${local&&p.refreshError?`<p class="fm-refresh-status" role="status">${ui.esc(p.refreshError)}</p>`:''}${p.error?`<p class="qa-error" role="alert">${ui.esc(p.error)}</p>`:''}${local&&p.selectionNotice?`<p class="fm-refresh-status" role="status">${ui.esc(p.selectionNotice)}</p>`:''}<div class="fm-browser">${local?treePanel(p,index):''}<div class="fm-list" role="list" aria-label="${index?'右':'左'}侧文件列表">${p.pending?'<p>正在读取…</p>':visible.map((e,j)=>{const n=j+p.offset;return `<div class="fm-row ${p.selected.has(e.path)?'selected':''}" role="listitem"><input type="checkbox" data-fm-check="${index}" data-index="${n}" tabindex="-1" aria-label="选择 ${ui.esc(e.name)}" ${p.selected.has(e.path)?'checked':''} ${e.linked?'disabled':''}><button data-fm="entry" data-pane="${index}" data-index="${n}" data-entry-path="${ui.esc(e.path)}" tabindex="${e.path===(p.cursor||rows.find(v=>!v.linked)?.path)?0:-1}" ${e.linked?'disabled':''}>${ui.icon(e.is_dir?'folder':'file')}<span>${ui.esc(e.name)}</span></button><small>${e.linked?'链接 · 不跟随':e.is_dir?'文件夹':e.size_known===false?'未知':e.size.toLocaleString()+' 字节'}</small>${local&&e.linked?`<button class="qa-button fm-link-inspect" data-fm="link-inspect" data-pane="${index}" data-path="${ui.esc(e.path)}" ${state.busy?'disabled':''}>查看/编辑链接</button>`:''}</div>`;}).join('')||'<p>此位置为空</p>'}</div></div></section>`;}
  function linkForm(){
   const v=state.link;if(!v)return '';
   const types=v.directory?[['symbolic-directory','目录符号链接'],['junction','目录联接点'],['wsl','WSL 链接']]:[['hard','硬链接'],['symbolic-file','文件符号链接'],['wsl','WSL 链接']];
@@ -231,6 +239,7 @@ function create(ui){
   const p=state.panes[index],entry=p.entries[n];if(!entry||entry.linked)return;
   state.active=index;
   if(!focusOnly){
+   p.selectionNotice='';
    const anchor=p.entries.findIndex(e=>e.path===p.anchor);
    if(shift&&anchor>=0){if(!ctrl)p.selected.clear();for(let j=Math.min(anchor,n);j<=Math.max(anchor,n);j++)if(!p.entries[j].linked)p.selected.add(p.entries[j].path);}
    else {if(!ctrl&&!toggle&&checked===undefined)p.selected.clear();const on=checked===undefined?!(toggle&&p.selected.has(entry.path)):checked;on?p.selected.add(entry.path):p.selected.delete(entry.path);p.anchor=entry.path;}
@@ -285,20 +294,37 @@ function create(ui){
  if(typeof document!=='undefined')document.addEventListener('visibilitychange',()=>{if(!foreground())suspend();else if(ui.isActive?.())activate();});
  if(typeof window!=='undefined'){window.addEventListener('blur',suspend);window.addEventListener('focus',()=>{if(ui.isActive?.()&&foreground())activate();});}
  async function load(index,path,focus=false,historyIndex=null){
-  const p=state.panes[index],token=++p.requestId;p.treePending.clear();p.pending=true;p.error='';resetProbe(index,null);if(focus==='tree'){p.treeCursor=path;state.focus={index,tree:true,path};}render();
+  const p=state.panes[index],token=++p.requestId;p.treePending.clear();p.pending=true;p.error='';p.selectionNotice='';resetProbe(index,null);if(focus==='tree'){p.treeCursor=path;state.focus={index,tree:true,path};}render();
   try{const data=await ui.invoke('browse_local',{path});if(token!==p.requestId)return;
-   p.offset=0;p.creating=null;p.newName='';p.createError='';p.kind='local';p.path=data.path;p.parent=data.parent;p.entries=data.entries;p.total=data.total??data.entries.length;p.next=data.next??null;p.revision=data.revision||'';p.tree.set(data.path,data.entries);p.treeExpanded.add(data.path);if(focus==='tree')p.treeCursor=data.path;p.selected.clear();p.cursor=null;p.anchor=null;p.loaded=true;p.dirty=false;remember(p,data.path,historyIndex);resetProbe(index,data.path);
+   p.offset=0;p.creating=null;p.newName='';p.createError='';p.kind='local';p.path=data.path;p.parent=data.parent;p.entries=data.entries;p.total=data.total??data.entries.length;p.next=data.next??null;p.revision=data.revision||'';recordTreePage(p,data.path,data);p.treeExpanded.add(data.path);if(focus==='tree')p.treeCursor=data.path;p.selected.clear();p.cursor=null;p.anchor=null;p.loaded=true;p.dirty=false;remember(p,data.path,historyIndex);resetProbe(index,data.path);
   }catch(error){if(token===p.requestId){p.error=String(error).replace(/^Error:\s*/,'');p.loaded=true;}throw error;
   }finally{if(token===p.requestId){p.pending=false;if(focus==='tree'){if(focusedTree(index))state.focus={index,tree:true,path:p.treeCursor};render();}else if(focus){const first=p.entries.findIndex(e=>!e.linked);if(first>=0)repaintFocus(index,first);else render();}else render();}}
  }
  async function refreshLocal(index,automatic=false){
   const p=state.panes[index];if(p.kind!=='local'||p.pending||p.refreshing||(automatic&&(state.busy||p.creating))){if(automatic)p.dirty=true;return;}
-  const path=p.path,token=p.requestId;p.refreshing=true;p.dirty=false;
-  try{const data=await ui.invoke('browse_local',{path});if(p.kind!=='local'||p.path!==path||p.requestId!==token)return;
-   const changed=JSON.stringify(data.entries)!==JSON.stringify(p.entries)||(data.total??data.entries.length)!==p.total||!!p.error;p.error='';p.entries=data.entries;p.total=data.total??data.entries.length;p.next=data.next??null;p.revision=data.revision||'';p.parent=data.parent;p.tree.set(path,data.entries);
-   const present=new Set(data.entries.map(e=>e.path));p.selected=new Set([...p.selected].filter(v=>present.has(v)));if(!present.has(p.cursor))p.cursor=null;if(!present.has(p.anchor))p.anchor=null;p.offset=Math.min(p.offset,Math.max(0,Math.floor((data.entries.length-1)/200)*200));
-   if(!automatic)resetProbe(index,path,true);if(changed)render();
-  }catch(error){if(p.path===path&&p.requestId===token){p.error='无法读取此文件夹：'+String(error).replace(/^Error:\s*/,'');p.entries=[];p.total=0;p.next=null;p.selected.clear();p.cursor=p.anchor=null;p.tree.delete(path);resetProbe(index,null);render();}}
+  const path=p.path,token=p.requestId,loaded=p.entries.length;p.refreshing=true;p.dirty=false;
+  const current=()=>p.kind==='local'&&p.path===path&&p.requestId===token;
+  try{
+   const data=await ui.invoke('browse_local',{path});if(!current())return;
+   while(data.next&&data.entries.length<loaded){
+    const page=await ui.invoke('browse_local',{path,cursor:data.next});if(!current())return;
+    data.entries.push(...page.entries);data.next=page.next;data.total=page.total;
+   }
+   const changed=JSON.stringify(data.entries)!==JSON.stringify(p.entries)||(data.total??data.entries.length)!==p.total||!!p.error;
+   p.error='';p.entries=data.entries;p.total=data.total??data.entries.length;p.next=data.next??null;p.revision=data.revision||'';p.parent=data.parent;
+   recordTreePage(p,path,data);
+   const present=new Set(data.entries.filter(e=>!e.linked).map(e=>e.path)),previous=p.selected.size;
+   p.selected=new Set([...p.selected].filter(v=>present.has(v)));
+   if(previous>p.selected.size)p.selectionNotice=`刷新后有 ${previous-p.selected.size} 个项目已不在已载入的可选列表中，选择已取消。`;
+   if(!present.has(p.cursor))p.cursor=null;if(!present.has(p.anchor))p.anchor=null;
+   const cursorIndex=p.entries.findIndex(e=>e.path===p.cursor);
+   p.offset=cursorIndex>=0?Math.floor(cursorIndex/200)*200:Math.min(p.offset,Math.max(0,Math.floor((data.entries.length-1)/200)*200));
+   if(!automatic)resetProbe(index,path,true);if(changed||previous!==p.selected.size)render();
+  }catch(error){if(current()){
+   p.error='无法读取此文件夹：'+String(error).replace(/^Error:\s*/,'');
+   if(p.selected.size)p.selectionNotice='刷新失败，无法确认先前选中的项目，选择已取消。';
+   p.entries=[];p.total=0;p.next=null;p.selected.clear();p.cursor=p.anchor=null;p.tree.delete(path);p.treePages.delete(path);resetProbe(index,null);render();
+  }}
   finally{p.refreshing=false;queueRefresh(index);}
  }
 
@@ -356,13 +382,15 @@ function create(ui){
   if(action==='root'||action==='local')return load(index,'');
   if(action==='go')return load(index,element.closest('section').querySelector('input[aria-label$="侧路径"]').value.trim());
   if(action==='tree')return load(index,element.dataset.path,'tree');
+  if(action==='tree-more')return expandTree(index,element.dataset.path,true);
   if(action==='pick'){const path=await ui.invoke('pick_folder');if(path)return load(index,path);return;}
+  if((action==='prev'||action==='next')&&p.refreshing)return;
   if(action==='next'&&p.kind==='local'&&p.next&&p.offset+200>=p.entries.length){
    const path=p.path,token=p.requestId,cursor=p.next,partial=p.offset+200>p.entries.length;p.pending=true;p.error='';render();
    try{
     const data=await ui.invoke('browse_local',{path,cursor});
     if(p.kind!=='local'||p.path!==path||p.requestId!==token)return;
-    p.entries.push(...data.entries);p.total=data.total;p.next=data.next??null;if(partial)return;
+    p.entries.push(...data.entries);p.total=data.total;p.next=data.next??null;recordTreePage(p,path,{...data,entries:p.entries});if(partial)return;
    }catch(error){
     if(p.requestId===token)p.error=String(error).replace(/^Error:\s*/,'');
     return;
