@@ -38,6 +38,7 @@ pub struct View {
 }
 static SESSIONS: OnceLock<Mutex<BTreeMap<u64, Session>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 static DIRTY: AtomicBool = AtomicBool::new(false);
 fn registry() -> &'static Mutex<BTreeMap<u64, Session>> {
     SESSIONS.get_or_init(Default::default)
@@ -71,7 +72,9 @@ pub fn dirty() -> bool {
     DIRTY.load(Ordering::SeqCst)
 }
 pub fn cleanup() {
-    registry().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let mut sessions = registry().lock().unwrap_or_else(|e| e.into_inner());
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    sessions.clear();
     DIRTY.store(false, Ordering::SeqCst);
 }
 
@@ -99,39 +102,49 @@ fn open_impl(
     let parent = crate::instance::canonical_archive_path(parent)?;
     options.selected.clear();
     options.edit_receipt = None;
-    let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
-    if editor.is_some() && sessions.values().any(|s| s.editor.is_some()) {
-        return Err("请先完成现有的外部编辑会话（编辑菜单 → 外部编辑会话）".into());
-    }
-    if let Some((&id, s)) = sessions
-        .iter()
-        .find(|(_, s)| key(&s.parent) == key(&parent) && s.member == member)
-    {
-        if editor.is_some() || s.editor.is_some() {
-            return Err("该成员已在另一会话中打开，请先完成并关闭它".into());
+    const MAX_OPEN_WORKSPACES: usize = 256;
+    let editing = editor.is_some();
+    let member_key = key(&member).to_lowercase();
+    let existing = |sessions: &BTreeMap<u64, Session>| -> Result<Option<OperationResponse>, String> {
+        if let Some((&id, session)) = sessions.iter().find(|(_, session)| {
+            key(&session.parent) == key(&parent) && key(&session.member).to_lowercase() == member_key
+        }) {
+            if editing || session.editor.is_some() {
+                return Err("该成员已在另一会话中打开，请先完成并关闭它".into());
+            }
+            return Ok(Some(OperationResponse::Json(
+                serde_json::to_value(view(id, session)).map_err(|e| e.to_string())?,
+            )));
         }
-        return Ok(OperationResponse::Json(
-            serde_json::to_value(view(id, s)).map_err(|e| e.to_string())?,
-        ));
-    }
-    let mut ancestor = parent.clone();
-    let mut depth = 0;
-    while let Some(s) = sessions
-        .values()
-        .find(|s| s.path_key == key(&ancestor))
-    {
-        depth += 1;
-        if depth >= 32 {
-            return Err("嵌套层数过深，请先解压后打开".into());
+        if sessions.len() >= MAX_OPEN_WORKSPACES {
+            return Err("打开的内层归档和编辑工作区过多，请关闭暂不用的会话".into());
         }
-        ancestor = s.parent.clone();
-    }
+        Ok(None)
+    };
+    let generation = {
+        let sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
+        if let Some(response) = existing(&sessions)? {
+            return Ok(response);
+        }
+        GENERATION.load(Ordering::Relaxed)
+    };
+    // Extract outside the shared registry lock. The engine pins the outer
+    // archive during extraction, and each work copy owns a private directory.
     let archive = if editor.is_some() {
         NestedArchive::open_external(&parent, &member, &options, &crate::edit_copies::root()?)?
     } else {
         NestedArchive::open(&parent, &member, &options)?
     };
     let path_key = key(&crate::desktop::canonical_spelling(archive.path(), false)?);
+    let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
+    if GENERATION.load(Ordering::Relaxed) != generation {
+        return Err("内层归档会话已关闭".into());
+    }
+    if let Some(response) = existing(&sessions)? {
+        return Ok(response);
+    }
+    archive.check_parent_current()?;
+
     let process = match editor {
         Some(editor) => {
             if options

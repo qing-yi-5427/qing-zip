@@ -2262,7 +2262,7 @@ async function showProperties(wholeArchive){
 }
 
 // Explicit editing leaves image/text double-click previews unchanged.
-let externalContext=null,externalCurrent=null;
+let externalContext=null,externalCurrent=null,externalSessions=[];
 async function beginExternalEdit(){
  if((await invoke('external_edits')).length){await showExternalEdits();return;}
  const member=selectedNestedMember();if(!member)throw Error('请选中一个文件。');
@@ -2272,15 +2272,20 @@ async function beginExternalEdit(){
 async function launchExternalEdit(){
  const context=externalContext;if(!context)return;const editor=$('oa-editor-path').value;
  context.options.password=$('oa-editor-password').value||context.options.password;localStorage.setItem('qing-editor-path',editor);
- await run({operation:'external-edit',path:context.parent,name:context.member,label:editor,options:context.options},'准备外部编辑');
+ const opened=await run({operation:'external-edit',path:context.parent,name:context.member,label:editor,options:context.options},'准备外部编辑');
  const tab=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(context.parent));if(tab&&context.options.password){tab.password=context.options.password;if(tab.id===currentTabId)s.password=tab.password;}
- externalContext=null;await showExternalEdits();
+ externalContext=null;await showExternalEdits(opened?.id);
 }
-async function showExternalEdits(){
- const edits=await invoke('external_edits');externalCurrent=edits[0]||null;
+async function showExternalEdits(id=externalCurrent?.id){
+ externalSessions=await invoke('external_edits');
+ showExternalSession(id);
+}
+function showExternalSession(id){
+ externalCurrent=externalSessions.find(edit=>edit.id===id)||externalSessions[0]||null;
  if(!externalCurrent){dialog('外部编辑','<p>没有待处理的编辑会话。</p>',btn('保留的编辑副本…','external-copies')+btn('关闭','close'));return;}
  const e=externalCurrent;const state={running:'编辑器仍在运行',handoff:'编辑器可能在其他窗口中继续编辑',finished:'启动进程已退出'}[e.state];
- dialog('外部编辑会话',`<p>${esc(e.member)}</p><p>${state} · ${e.changed===true?'已保存的文件有更改':e.changed===false?'已保存的文件未改变':'文件正在使用中'}</p><p class="qa-sub">请先在编辑器中保存。写回仅包含已保存的内容，并结束本次编辑；之后的修改不会自动写回。</p><p class="qa-sub">编辑器可能把文件交给其他窗口，结束会话后工作副本会保留，可从“保留的编辑副本”找回。</p>${e.error?`<p class="qa-sub">${esc(e.error)}</p>`:''}`,btn('返回','close')+btn('检查更改','external-sessions')+btn('另存为…','external-copy')+btn('结束，不写回','external-discard-confirm')+btn('确认写回…','external-save-confirm','primary'));
+ const chooser=externalSessions.length>1?`<label class="qa-field">编辑会话<select id="oa-external-session">${externalSessions.map(edit=>`<option value="${edit.id}" ${edit.id===e.id?'selected':''}>${esc(filename(edit.parent))} / ${esc(edit.member)}</option>`).join('')}</select></label>`:`<p>${esc(e.member)}</p>`;
+ dialog('外部编辑会话',`${chooser}<p>${state} · ${e.changed===true?'已保存的文件有更改':e.changed===false?'已保存的文件未改变':'文件正在使用中'}</p><p class="qa-sub">请先在编辑器中保存。写回仅包含已保存的内容，并结束本次编辑；之后的修改不会自动写回。</p><p class="qa-sub">编辑器可能把文件交给其他窗口，结束会话后工作副本会保留，可从“保留的编辑副本”找回。</p>${e.error?`<p class="qa-sub">${esc(e.error)}</p>`:''}`,btn('返回','close')+btn('检查更改','external-sessions')+btn('另存为…','external-copy')+btn('结束，不写回','external-discard-confirm')+btn('确认写回…','external-save-confirm','primary'));
 }
 function confirmExternalFinish(save){
  if(!externalCurrent)return;
@@ -2304,6 +2309,7 @@ async function showRetainedEdits(){
 }
 
 root.addEventListener('change',e=>{
+ if(e.target.id==='oa-external-session')showExternalSession(Number(e.target.value));
  if(e.target.id==='qa-update-mode')syncAddMode();
  if(e.target.id==='oa-add-password-mode')syncAddPassword();
 });

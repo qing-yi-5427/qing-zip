@@ -67,7 +67,7 @@ fn utf8(path: &Path) -> Result<&str, String> {
         .ok_or_else(|| "invalid archive path".to_string())
 }
 
-fn digest(file: &mut File, control: &JobControl) -> Result<[u8; 32], String> {
+fn digest(file: &mut impl Read, control: &JobControl) -> Result<[u8; 32], String> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0; 256 * 1024];
     loop {
@@ -78,6 +78,76 @@ fn digest(file: &mut File, control: &JobControl) -> Result<[u8; 32], String> {
         }
         hash.update(&buffer[..size]);
     }
+}
+
+// Use the same archive layout, namespace, integrity and member checks as
+// selected extraction for ordinary ZIPs, sending the chosen member to SHA-256.
+// Other decoders retain the private extraction path and its verification.
+fn zip_member_digest(
+    path: &Path,
+    member: &str,
+    options: &EngineOptions,
+    source: &mut engine_stream::PinnedSource,
+) -> Result<Option<[u8; 32]>, String> {
+    use std::io::{Seek, SeekFrom};
+
+    let policy = crate::machine_policy::scope();
+    if policy.restricted()
+        || options.password.is_some()
+        || options.codepage.is_some()
+        || !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        || path.with_extension("z01").exists()
+    {
+        return Ok(None);
+    }
+    let job = control(options);
+    let Some(record) = super::zip_volume_view::single_disk_record(source)? else { return Ok(None); };
+    if record.zip64 || !super::ordinary_zip_file_layout_count(source, usize::from(record.entries), &job)? {
+        return Ok(None);
+    }
+    let mut list_options = options.clone();
+    list_options.selected.clear();
+    let (entries, _) = super::list_raw_with_source(utf8(path)?, &list_options, source)?;
+    super::expected_tree(&entries)?;
+    source.seek(SeekFrom::Start(0)).map_err(|error| error.to_string())?;
+    let mut archive = match zip::ZipArchive::new(std::io::BufReader::with_capacity(256 * 1024, &mut **source)) {
+        Ok(archive) => archive,
+        Err(_) => return Ok(None),
+    };
+    let Some(order) = super::verified_zip_order(&mut archive, &entries, &job)? else {
+        return Ok(None);
+    };
+    let wanted = super::path_key(&super::validate_name(member)?);
+    let mut buffer = vec![0; 256 * 1024];
+    let mut matching_hash = None;
+    for (index, entry) in order.into_iter().map(|index| &entries[index]).enumerate() {
+        job.check()?;
+        let selected = !entry.is_dir && super::path_key(&super::validate_name(&entry.name)?) == wanted;
+        let mut file = archive.by_index(index).map_err(|error| error.to_string())?;
+        let mut whole = crc32fast::Hasher::new();
+        let mut selected_hash = selected.then(Sha256::new);
+        let mut size = 0u64;
+        loop {
+            job.check()?;
+            let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            if count == 0 { break; }
+            size = size.checked_add(count as u64).ok_or("ZIP decoded size overflow")?;
+            if size > entry.size { return Err("ZIP decoded length mismatch".into()); }
+            whole.update(&buffer[..count]);
+            if let Some(hash) = &mut selected_hash {
+                hash.update(&buffer[..count]);
+            }
+        }
+        if size != entry.size || whole.finalize() != file.crc32() {
+            return Err("ZIP size or CRC mismatch".into());
+        }
+        if let Some(hash) = selected_hash {
+            matching_hash = Some(hash.finalize().into());
+        }
+    }
+    job.check()?;
+    policy.validate_output()?;
+    matching_hash.map(Some).ok_or_else(|| "expected exactly one nested archive member".into())
 }
 
 impl NestedArchive {
@@ -125,7 +195,7 @@ impl NestedArchive {
             return Err("expected exactly one nested archive member".into());
         }
         let mut content = engine_stream::pin(&path)?;
-        let original_hash = digest(&mut content, &control(options))?;
+        let original_hash = digest(&mut *content, &control(options))?;
         drop(content);
         Ok(Self {
             directory,
@@ -135,6 +205,19 @@ impl NestedArchive {
             member: member.to_owned(),
             original_hash,
         })
+    }
+
+    fn member_proof(
+        parent: &Path,
+        member: &str,
+        options: &EngineOptions,
+        source: &mut engine_stream::PinnedSource,
+    ) -> Result<[u8; 32], String> {
+        if let Some(hash) = zip_member_digest(parent, member, options, source)? {
+            Ok(hash)
+        } else {
+            Ok(Self::open(utf8(parent)?, member, options)?.original_hash)
+        }
     }
 
     /// External editors may hand the document to an already-running process.
@@ -148,10 +231,18 @@ impl NestedArchive {
     }
     pub fn has_changes(&self, options: &EngineOptions) -> Result<bool, String> {
         let mut working = engine_stream::pin(&self.path)?;
-        Ok(digest(&mut working, &control(options))? != self.original_hash)
+        Ok(digest(&mut *working, &control(options))? != self.original_hash)
     }
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn check_parent_current(&self) -> Result<(), String> {
+        let current = engine_stream::pin(&self.parent)?;
+        if super::directory_identity(&current)? != super::directory_identity(&self.parent_identity)? {
+            return Err("parent archive changed while opening member".into());
+        }
+        Ok(())
     }
 
     /// Follow a known successful edit by this process only if this same member
@@ -166,15 +257,14 @@ impl NestedArchive {
         {
             return Ok(false);
         }
-        let current = engine_stream::pin(&self.parent)?;
+        let mut current = engine_stream::pin(&self.parent)?;
         if super::directory_identity(&current)? != super::directory_identity(&revision.after)? {
             return Ok(false);
         }
-        let now = Self::open(utf8(&self.parent)?, &self.member, options)?;
-        if now.original_hash != self.original_hash {
+        if Self::member_proof(&self.parent, &self.member, options, &mut current)? != self.original_hash {
             return Ok(false);
         }
-        self.parent_identity = now.parent_identity;
+        self.parent_identity = revision.after.try_clone().map_err(|error| error.to_string())?;
         Ok(true)
     }
 
@@ -183,7 +273,7 @@ impl NestedArchive {
     pub fn save(&mut self, options: &EngineOptions) -> Result<(), String> {
         let job = control(options);
         let mut working = engine_stream::pin(&self.path)?;
-        let next_hash = digest(&mut working, &job)?;
+        let next_hash = digest(&mut *working, &job)?;
         if next_hash == self.original_hash {
             return Ok(());
         }
@@ -191,14 +281,14 @@ impl NestedArchive {
         let _lock = super::update_lock(&self.parent, &job)?;
         super::zip_volume_view::require_editable(&self.parent)?;
         let edit = EditSource::open_controlled(&self.parent, &job)?;
-        let verify = Self::open(utf8(&self.parent)?, &self.member, options)?;
-        if super::directory_identity(&verify.parent_identity)?
-            != super::directory_identity(&self.parent_identity)?
-            || verify.original_hash != self.original_hash
         {
-            return Err("parent archive or its member changed since opening".into());
+            let mut current = engine_stream::pin(&self.parent)?;
+            if super::directory_identity(&current)? != super::directory_identity(&self.parent_identity)?
+                || Self::member_proof(&self.parent, &self.member, options, &mut current)? != self.original_hash
+            {
+                return Err("parent archive or its member changed since opening".into());
+            }
         }
-        drop(verify);
         let output = edit.output()?;
         let staged = output.path();
         let mut args = super::base("a", options)?;
@@ -217,11 +307,12 @@ impl NestedArchive {
             self.member.replace('\\', "/"),
         ]);
         super::run(&args, Some(self.directory.path()), options, None)?;
-        let verified = Self::open(utf8(staged)?, &self.member, options)?;
-        if verified.original_hash != next_hash {
-            return Err("nested archive write-back verification failed".into());
+        {
+            let mut proposed = engine_stream::pin(staged)?;
+            if Self::member_proof(staged, &self.member, options, &mut proposed)? != next_hash {
+                return Err("nested archive write-back verification failed".into());
+            }
         }
-        drop(verified);
         let next_identity = metadata_reference(staged)?;
         job.check()?;
         edit.commit_tracked(output, options)?;
@@ -250,6 +341,20 @@ mod tests {
         let mut bytes = Vec::new();
         zip.by_name(name).unwrap().read_to_end(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn ordinary_zip_member_digest_reads_the_member_without_materializing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("normal.zip");
+        fs::write(&parent, zip(&[("entry.bin", b"working bytes"), ("sibling", b"sibling")])).unwrap();
+        let mut pinned = engine_stream::pin(&parent).unwrap();
+        let expected: [u8; 32] = Sha256::digest(b"working bytes").into();
+        assert_eq!(
+            zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned).unwrap(),
+            Some(expected)
+        );
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[test]
