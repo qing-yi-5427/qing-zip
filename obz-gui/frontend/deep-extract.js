@@ -1,9 +1,30 @@
 (()=>{'use strict';
 const defaults={depth:8,archives:256,files:100000,bytes:20*1073741824,reserve_bytes:1073741824,recovery_directory:null};
-window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,extractionSummary,sourceDisposition,onRecycled,onBrowse})=>{
+window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,extractionSummary,sourceDisposition,onRecycled,onBrowse,passwordRequiredForSource})=>{
  s.deepExtract=!!pref.deepExtract;s.deepRecycleAfter=!!pref.deepRecycleAfter;s.deepLimits={...defaults,...pref.deepLimits};
  const completionOptions=new Map();
  const button=(label,action,extra='')=>`<button type="button" class="qa-button${action==='start-batch'?' primary':''}" data-deep-action="${action}" ${extra}>${label}</button>`;
+ function passwordMarkup(id,text){
+  return `<div id="${id}-reveal" class="qa-actions" hidden>${button(text,'enter-password',`data-password-input="${id}" aria-controls="${id}"`)}</div><label class="qa-field" hidden>密码<input id="${id}" type="password" autocomplete="off" disabled></label>`;
+ }
+ function showPasswordField(input){
+  input.disabled=false;
+  input.closest('label').hidden=false;
+  $(input.id+'-reveal').hidden=true;
+ }
+ function syncPasswordField(id,{required=false,optional=false,cached=''}={}){
+  const input=$(id),reveal=$(id+'-reveal');
+  if(!optional)delete reveal.dataset.expanded;
+  if(required||(optional&&reveal.dataset.expanded==='true')){
+   if(required&&input.disabled)input.value=cached;
+   showPasswordField(input);
+  }else{
+   input.value='';
+   input.disabled=true;
+   input.closest('label').hidden=true;
+   reveal.hidden=!optional;
+  }
+ }
  function limitsMarkup(){const v=s.deepLimits;return `<details id="oa-deep-limits" class="oa-extract-advanced"><summary>深度解压限制与恢复位置</summary><p class="qa-sub">层数从原包计为第 1 层。累计解码量包含中间文件和重试；大文件可提高限制。已知大小先按选定内容估算，解压后核对；GZip、BZip2、XZ 解码另有限量写入。</p><div class="qa-fieldrow"><label class="qa-field">最大层数<input id="oa-deep-depth" type="number" min="1" max="64" value="${esc(v.depth)}"></label><label class="qa-field">最多压缩包<input id="oa-deep-archives" type="number" min="1" max="10000" value="${esc(v.archives)}"></label></div><div class="qa-fieldrow"><label class="qa-field">累计文件数量<input id="oa-deep-files" type="number" min="1" value="${esc(v.files)}"></label><label class="qa-field">累计解码量（GiB）<input id="oa-deep-bytes" type="number" min="0.001" step="0.1" value="${esc(v.bytes/1073741824)}"></label></div><div class="qa-fieldrow"><label class="qa-field">保留磁盘空间（GiB）<input id="oa-deep-reserve" type="number" min="0" step="0.1" value="${esc(v.reserve_bytes/1073741824)}"></label></div><label class="qa-field">恢复位置（留空使用本机应用数据文件夹）<div class="qa-inlinefield"><input id="oa-deep-recovery" value="${esc(v.recovery_directory||'')}">${button('选择…','pick-recovery')}</div></label><p class="qa-sub">密码只保留在当前会话内。中断后，已校验结果保留在恢复目录；部分保存后取消会保留已保存文件。</p></details>`;}
  function switchMarkup(enabled=s.deepExtract){return `<label class="oa-switch-row"><span>深度解压<span class="qa-sub"> · 自动展开内层压缩包</span></span><input id="oa-deep-extract" class="oa-switch" role="switch" type="checkbox" ${enabled?'checked':''}></label><p id="oa-deep-note" class="qa-sub" ${enabled?'':'hidden'}>按内容识别无后缀、改名和带前缀的压缩包。文档与应用容器保持完整。</p>`;}
  function settings(remember=false){
@@ -21,7 +42,7 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
    <div id="oa-deep-list" class="oa-deep-list"></div>
    <label class="qa-field">保存到<div class="qa-inlinefield"><input id="oa-deep-destination" placeholder="各原包所在的文件夹">${button('浏览…','pick-dest')}</div></label>
    <details class="oa-extract-advanced"><summary>粘贴或输入多行路径</summary><textarea id="oa-deep-inputs" rows="3" aria-label="压缩包路径（每行一个）"></textarea></details>
-   <label class="qa-field">密码（可选）<input id="oa-deep-password" type="password" autocomplete="off" placeholder="用于原包及内层压缩包"></label>
+   ${passwordMarkup('oa-deep-password','填写解压密码')}
    <details class="oa-extract-advanced"><summary>更多解压选项</summary>
     <label class="oa-switch-row"><span>智能解压</span><input id="oa-deep-smart" class="oa-switch" role="switch" type="checkbox" ${s.sameFolder?'checked':''}></label>
     <label class="qa-field">遇到同名文件<select id="oa-deep-conflict">${conflictChoices(s.overwrite)}</select></label>
@@ -33,12 +54,14 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
    <label class="qa-check"><input id="oa-deep-remember" type="checkbox" checked>记住解压选项</label>
   `,extractionSummary({pathsId:'oa-deep-preview',statusId:'oa-deep-source-status',recycleId:'oa-deep-recycle',recycle:s.deepRecycleAfter,batch:true,numbered:true})+
    btn('取消','close')+(allowBrowse?button('改为打开压缩包','browse-archives'):'')+button('开始深度解压','start-batch'),'oa-extraction-dialog');
-  if(password)$('oa-deep-password').value=password;
+  if(password)$('oa-deep-password-reveal').dataset.expanded='true';
   acceptDrop(paths);
+  if(password)$('oa-deep-password').value=password;
  }
  const inputPaths=()=>[...new Set($('oa-deep-inputs').value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean))];
  function batchPreview(){
   const dest=$('oa-deep-destination').value.trim(), paths=inputPaths();
+  syncPasswordField('oa-deep-password',{required:paths.some(passwordRequiredForSource),optional:true});
   const output=$('oa-deep-preview');
   const smart=$('oa-deep-smart').checked;
   output.value=paths.map(source=>{
@@ -104,6 +127,13 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
  });
  root.addEventListener('click',async e=>{const target=e.target.closest('[data-deep-action]');if(!target)return;e.preventDefault();try{switch(target.dataset.deepAction){
   case'browse-archives':onBrowse(inputPaths());break;
+  case'enter-password':{
+   const input=$(target.dataset.passwordInput);
+   $(input.id+'-reveal').dataset.expanded='true';
+   showPasswordField(input);
+   input.focus();
+   break;
+  }
   case'pick-inputs':acceptDrop(await invoke('pick_files'));break;
   case'pick-dest':{const path=await invoke('pick_folder');if(path&&$('oa-deep-destination')){$('oa-deep-destination').value=path;batchPreview();}break;}
   case'remove-input':updateInput(Number(target.dataset.index),null);break;
@@ -113,7 +143,7 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
   case'start-batch':{const inputs=inputPaths(),dest=$('oa-deep-destination').value.trim(),overwrite=$('oa-deep-conflict').value;if(!inputs.length)throw Error('请选择至少一个压缩包。');
     const recycleAfter=$('oa-deep-recycle').checked;
     if(recycleAfter&&overwrite==='skip')throw Error('自动回收需要完整解压，请选择另一种同名文件处理方式。');
-    const limits=settings(),deep={...limits,dedicated_output:true},smart=$('oa-deep-smart').checked,password=$('oa-deep-password').value||null;
+    const limits=settings(),deep={...limits,dedicated_output:true},smart=$('oa-deep-smart').checked,input=$('oa-deep-password'),password=input.disabled?null:input.value||null;
     const openAfter=$('oa-deep-open-after').checked,closeAfter=$('oa-deep-close-after').checked;
     if($('oa-deep-remember').checked){
      Object.assign(s,{deepLimits:limits,deepRecycleAfter:recycleAfter,sameFolder:smart,overwrite,openAfter,closeAfter});
@@ -124,6 +154,6 @@ window.QingDeepExtract=({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toas
   case'discard':{const id=Number($('oa-deep-session').value);if($('oa-deep-password'))$('oa-deep-password').value='';await finish(await run({operation:'deep-discard',deep_session:id,options:{}},'结束深度解压会话'));break;}
   case'resume':case'skip':{const id=Number($('oa-deep-session').value),node=$('oa-deep-node')?Number($('oa-deep-node').value):null,password=$('oa-deep-password')?.value||null,overwrite=$('oa-deep-conflict').value,deep=settings();if($('oa-deep-password'))$('oa-deep-password').value='';const result=await run({operation:'deep-resume',deep_session:id,deep_node:node,deep_skip:target.dataset.deepAction==='skip',deep,options:{password,overwrite}},'继续深度解压');await finish(result);break;}
  }}catch(error){toast(String(error));}});
- return {switchMarkup,limitsMarkup,settings,sync,batch,acceptDrop,jobActions,finish};
+ return {switchMarkup,limitsMarkup,settings,sync,passwordMarkup,syncPasswordField,batch,acceptDrop,jobActions,finish};
 };
 })();

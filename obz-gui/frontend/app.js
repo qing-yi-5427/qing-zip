@@ -11,6 +11,10 @@ let appVersion='',folderMenuEnabled=false,fileMenuEnabled=false;const pendingFol
 const pref=load('qing-preferences',{}),s={page:'files',view:'home',collapsed:new Set(),theme:QingAppearance.preferredMode(pref.theme),material:pref.material||'acrylic',density:pref.density||'relaxed',overwrite:pref.overwrite||'error',sameFolder:pref.sameFolder!==false,recycleAfter:!!pref.recycleAfter,openAfter:!!pref.openAfter,closeAfter:!!pref.closeAfter,archive:'',entries:[],folder:'',flatView:false,search:'',sort:'name',reverse:false,selected:new Set(),jobs:[],active:null,password:'',advancedTab:'archive-tools',recent:load('qing-recent',[]),profiles:load('qing-profiles',[]),batchStop:false};
 const deepExtract=window.QingDeepExtract({root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,archiveParent,archiveStem,estimatedArchiveFolder,
  extractionSummary:options=>extractionSummary(options),sourceDisposition:(recycle,options)=>sourceDisposition(recycle,options),
+ passwordRequiredForSource:path=>{
+  const tab=archiveTabs.find(tab=>archiveKey(tab.archive)===archiveKey(path));
+  return !!tab&&extractPasswordRequired(tab.entries,[],tab.headerEncrypted);
+ },
  onRecycled:paths=>forgetRecycledArchives(paths),onBrowse:paths=>{close();enqueueArchives(paths);}});
 let columns=ArchiveColumns.normalize(load('qing-columns',null)),columnDraft=null;
 let toastTimer,returnFocus,menuReturnFocus,menuAnchorRect;
@@ -1082,12 +1086,8 @@ function extractPasswordRequired(entries,selected,headerEncrypted){
  });
 }
 function syncExtractPassword(selected,deep){
- const input=$('qa-extract-password');
- const visible=deep||extractPasswordRequired(s.entries,selected,s.headerEncrypted);
- if(visible&&input.disabled)input.value=s.password||'';
- if(!visible)input.value='';
- input.disabled=!visible;
- input.closest('label').hidden=!visible;
+ const required=extractPasswordRequired(s.entries,selected,s.headerEncrypted);
+ deepExtract.syncPasswordField('qa-extract-password',{required,optional:deep,cached:s.password});
 }
 function archiveParent(path){
  const i=Math.max(path.lastIndexOf('\\'),path.lastIndexOf('/'));
@@ -1157,7 +1157,7 @@ function extract({recycleOnce=false,forceDeep=false,forceStandard=false}={}){
   <p class="qa-sub">${esc(filename(s.archive))}</p>
   <div class="qa-actions" role="group" aria-label="解压范围">${radio('all','整个压缩包')}${radio('folder','当前文件夹',!!s.folder)}${radio('selected',`选中项目（${s.selected.size}）`,!!s.selected.size)}</div>
   <label class="qa-field">保存到<div class="qa-inlinefield"><input id="qa-destination" value="${esc(defaultPath)}">${btn('浏览…','extract-dest','','folder-open')}</div></label>
-  <label class="qa-field" hidden>密码<input id="qa-extract-password" type="password" autocomplete="off" disabled></label>
+  ${deepExtract.passwordMarkup('qa-extract-password','填写内层密码')}
   <details class="oa-extract-advanced"><summary>更多解压选项</summary>
    <label class="oa-switch-row"><span>智能解压</span><input id="qa-smart" class="oa-switch" role="switch" type="checkbox" ${s.sameFolder?'checked':''}></label>
    ${deepExtract.switchMarkup(deep)}
@@ -1184,7 +1184,7 @@ async function submitExtraction(){
  if(recycle&&(selected.length||overwrite==='skip'))throw Error('仅全部解压且不跳过已有文件时，才能自动移入回收站。');
  const limits=deep?deepExtract.settings():null;
  const requiresPassword=extractPasswordRequired(s.entries,selected,s.headerEncrypted),input=$('qa-extract-password');
- const password=deep||requiresPassword?input.value||null:null;
+ const password=input.disabled?null:input.value||null;
  if(requiresPassword&&!password){input.focus();throw Error('请输入密码。');}
  if($('oa-remember-extract')?.checked){
   Object.assign(s,{lastDest:dest,sameFolder,overwrite,deepExtract:deep,openAfter,closeAfter});
@@ -1250,7 +1250,7 @@ async function quickExtract(){
  const requiresPassword=extractPasswordRequired(s.entries,selected,s.headerEncrypted);
  if(requiresPassword&&!s.password){extract();return;}
  await runExtraction({source,dest,selected,sameFolder:s.sameFolder,overwrite:s.overwrite,recycle:false,deep:s.deepExtract,
-  openAfter:s.openAfter,closeAfter:s.closeAfter,limits:s.deepLimits,password:s.deepExtract||requiresPassword?s.password||null:null,requiresPassword,codepage:s.codepage||null});
+  openAfter:s.openAfter,closeAfter:s.closeAfter,limits:s.deepLimits,password:requiresPassword?s.password||null:null,requiresPassword,codepage:s.codepage||null});
 }
 async function entry(name,{preview=false}={}){const e=visibleEntries().find(e=>e.name===name);if(!e)throw Error('此条目不在当前列表中，请重新选择。');if(e.is_dir){s.folder=name;s.selected.clear();s.search='';render();focusEntry(visibleEntries()[0]?.name);return;}if(s.active)throw Error('请先等待或取消当前任务。');if(isNestedArchive(name)&&!preview){await openNestedEntry(name);return;}if(isImage(name)&&!preview){if(openingImage)return;openingImage=true;const generation=previewGeneration;toast('正在准备原始图片…');try{await invoke('open_archive_image',previewArgs(name));if(generation===previewGeneration)toast('已用系统默认看图程序打开原始图片。');}finally{openingImage=false;}return;}dialog(e.leaf,`<p class="qa-sub">${esc(e.name)} · ${entrySize(e)}</p><div id="qa-file-preview" role="status">${isText(name)?'正在读取文本…':''}</div>`,btn('返回','close')+btn('解压此文件','extractfile','primary'));s.focusFile=e.name;const target=$('qa-file-preview'),generation=previewGeneration;if(isText(name)){overlay.querySelector('.qa-dialog').classList.add('oa-text-dialog');target.innerHTML=`<div class="oa-text-toolbar"><label>文本编码<select id="oa-text-encoding">${opts([['auto','自动检测'],['utf-8','UTF-8'],['gbk','简体中文 GBK'],['utf-16le','UTF-16 LE'],['utf-16be','UTF-16 BE'],['windows-1252','西欧 Windows-1252']],'auto')}</select></label><span id="oa-text-meta" class="oa-preview-meta" role="status"></span></div><pre id="oa-text-preview" class="oa-text-preview" tabindex="0"></pre>`;target.oaTextContext={name,generation,args:previewArgs(name)};await loadTextPreview(target,'auto');}else if(isImage(name)||/\.avif$/i.test(name)){try{const r=await run({operation:'preview',path:s.archive,name,options:archiveOptions()},'图片预览',{silent:true});if(target===$('qa-file-preview')&&generation===previewGeneration){const img=document.createElement('img');img.src=r.data_url;img.alt=e.leaf;img.className='qa-preview';target.append(img);}}catch(e){if(target===$('qa-file-preview'))error(e);}}else{target.textContent='此文件暂不支持内嵌预览，可解压后打开。';}}
 const archiveOptions=()=>({password:s.password||null,codepage:s.codepage||null});

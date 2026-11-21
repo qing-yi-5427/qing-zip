@@ -5,21 +5,33 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../obz-gui/frontend/app.js'), 'utf8');
+const deepSource = fs.readFileSync(path.join(__dirname, '../obz-gui/frontend/deep-extract.js'), 'utf8');
 const passwordLogic = source.slice(
   source.indexOf('function extractPasswordRequired('),
   source.indexOf('function archiveParent('),
 );
 const label = { hidden: true };
-const input = { disabled: true, value: '', closest: () => label };
+const reveal = { hidden: true, dataset: {} };
+const input = { id: 'qa-extract-password', disabled: true, value: '', closest: () => label, focus() {} };
 const entries = [
   { name: 'public/readme.txt', encrypted: false },
   { name: 'private\\nested\\secret.txt', encrypted: true },
   { name: 'separately-encrypted/', encrypted: true },
 ];
 const state = { entries, password: 'fixture-pass', headerEncrypted: false };
+const events = {};
+const $ = id => id === input.id ? input : reveal;
+const window = {};
+vm.runInNewContext(deepSource, { window });
+const deepExtract = window.QingDeepExtract({
+  root: { addEventListener: (name, listener) => { events[name] = listener; } },
+  pref: {},
+  s: state,
+  $,
+});
 const { extractPasswordRequired, syncExtractPassword } = vm.runInNewContext(
   passwordLogic + '\n({ extractPasswordRequired, syncExtractPassword })',
-  { s: state, $: () => input },
+  { s: state, deepExtract },
 );
 
 test('matches all entries, exact selections, and descendant boundaries', () => {
@@ -53,10 +65,21 @@ test('scope changes remove the plaintext field and clear its value', () => {
   assert.equal(input.value, '');
 });
 
-test('deep extraction keeps password pre-entry for inner archives', () => {
+test('deep extraction reveals optional password only on request', async () => {
   syncExtractPassword(['public/'], true);
+  assert.equal(label.hidden, true);
+  assert.equal(reveal.hidden, false);
+  const control = { dataset: { deepAction: 'enter-password', passwordInput: input.id } };
+  await events.click({ target: { closest: () => control }, preventDefault() {} });
   assert.equal(label.hidden, false);
+  assert.equal(reveal.hidden, true);
   assert.equal(input.disabled, false);
+  assert.equal(input.value, '');
+  input.value = 'inner-fixture-pass';
+  syncExtractPassword(['public/'], true);
+  assert.equal(input.value, 'inner-fixture-pass');
   syncExtractPassword(['public/'], false);
   assert.equal(label.hidden, true);
+  assert.equal(reveal.hidden, true);
+  assert.equal(input.value, '');
 });
