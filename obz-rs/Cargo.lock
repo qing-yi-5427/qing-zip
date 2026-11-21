@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "obz-rs"
-version = "0.12.12"
+version = "0.12.13"
 dependencies = [
  "aescrypt-rs",
  "brotli",
@@ -870,6 +870,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
+ "tar",
  "tempfile",
  "unalz",
  "unarc-rs",
