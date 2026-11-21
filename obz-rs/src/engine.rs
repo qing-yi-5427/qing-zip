@@ -5511,56 +5511,96 @@ pub fn preview_raw_stream(path: &str, name: &str, opts: &EngineOptions, limit: u
     if entry.size_known && bytes.len() as u64!=entry.size {return Err("preview size mismatch".into());}
     Ok(bytes)
 }
-fn preview_raw(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
-    control(opts).check()?;
+pub(crate) fn bounded_preview_command(
+    path: &Path, format: Option<&str>, member: Option<&str>, opts: &EngineOptions, allow_zealfs: bool,
+) -> Result<(PathBuf, Vec<String>), String> {
+    let policy = crate::machine_policy::scope();
+    let program = executable()?;
+    let mut args = base("x", opts)?;
+    args.retain(|value| value != "-bsp2");
+    args.extend(["-so".into(), "-bso0".into(), "-bsp0".into()]);
+    if let Some(format) = format { args.push(format!("-t{format}")); }
+    if !allow_zealfs && has_zealfs_handler(&program) && policy.handler_may_be_enabled("ZealFS") {
+        args.push("-stxZealFS".into());
+    }
+    if let Some(name) = member { args.push(format!("-i!{name}")); }
+    args.extend(["--".into(), path.display().to_string()]);
+    zip_volume_view::apply_read_hint(&mut args);
+    Ok((program, args))
+}
+
+fn preview_raw(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
+    let ctl = control(opts);
+    ctl.check()?;
     if crate::stream_formats::raw_format(path).is_some() {
-        return preview_raw_stream(path,name,opts,32*1024*1024);
+        return preview_raw_stream(path, name, opts, limit);
     }
-    validate_name(name)?;
-    let mut source = crate::engine_stream::pin(&absolute(path)?)?;
+    let requested = validate_name(name)?;
+    let path_abs = absolute(path)?;
+    let mut source = crate::engine_stream::pin(&path_abs)?;
     let (list, payload_source) = list_raw_with_source(path, opts, &mut source)?;
-    let e = list
-        .iter()
-        .find(|e| e.name.replace('\\', "/") == name.replace('\\', "/") && !e.is_dir)
+    let e = list.into_iter()
+        .find(|entry| !entry.is_dir && validate_name(&entry.name).is_ok_and(|path| path == requested))
         .ok_or("preview entry not found")?;
-    if e.size > 32 * 1024 * 1024 {
-        return Err("preview exceeds 32 MiB limit".into());
+    if e.size_known && e.size > limit {
+        return Err(format!("preview exceeds {} MiB limit", limit / 1024 / 1024));
     }
-    if let PayloadSource::VerifiedZeal(mut files) = payload_source {
-        return match files.remove(&path_key(Path::new(&e.name))) {
-            Some(MemoryChunk::Owned(bytes)) => Ok(bytes),
-            _ => Err("missing ZealFS preview entry".into()),
-        };
-    }
-    let tmp = tempfile::tempfile().map_err(|e| e.to_string())?;
-    let mut a = base("x", opts)?;
-    let execute = if matches!(payload_source, PayloadSource::OfficialZeal) {
-        a.push("-tZealFS".into());
-        run_with_zealfs
-    } else { run };
-    a.extend([
-        "-so".into(),
-        "--".into(),
-        absolute(path)?.display().to_string(),
-        e.name.clone(),
-    ]);
-    execute(
-        &a,
-        None,
-        opts,
-        Some(tmp.try_clone().map_err(|e| e.to_string())?),
-    )?;
-    use std::io::{Seek, SeekFrom};
-    let mut tmp = tmp;
-    tmp.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    tmp.take(32 * 1024 * 1024 + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| e.to_string())?;
-    if out.len() > 32 * 1024 * 1024 || out.len() as u64 != e.size {
+    #[cfg(nana_selected_worker)]
+    let crc32 = matches!(payload_source, PayloadSource::Rar { .. });
+    #[cfg(not(nana_selected_worker))]
+    let crc32 = false;
+    let output_limit = if e.size_known { e.size } else { limit };
+    let bytes = if let PayloadSource::VerifiedZeal(mut files) = payload_source {
+        match files.remove(&path_key(Path::new(&e.name))) {
+            Some(MemoryChunk::Owned(bytes)) => bytes,
+            _ => return Err("missing ZealFS preview entry".into()),
+        }
+    } else {
+        let format = matches!(payload_source, PayloadSource::OfficialZeal).then_some("ZealFS");
+        crate::engine_stream::bounded_member_preview(&path_abs, format, Some(&e.name), opts, output_limit, format.is_some())?
+    };
+    if (e.size_known && bytes.len() as u64 != e.size) || bytes.len() as u64 > limit {
         return Err("preview size mismatch".into());
     }
-    Ok(out)
+    if crc32 && !e.crc.is_empty() {
+        let expected = u32::from_str_radix(&e.crc, 16).map_err(|_| "invalid preview CRC")?;
+        if crc32fast::hash(&bytes) != expected {
+            return Err("preview checksum mismatch".into());
+        }
+    }
+    // Keep the RAR volume pins alive through the console read and verification.
+    ctl.check()?;
+    Ok(bytes)
+}
+
+#[cfg(all(test, windows))]
+mod bounded_preview_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn previews_exact_zip_members_and_enforces_selected_size_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("preview.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in [
+            ("nested/@notes [1].txt", b"hello".as_slice()),
+            ("nested/@notes 1.txt", b"another"),
+            ("empty.txt", b""),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content).unwrap();
+        }
+        zip.finish().unwrap();
+        let path = file.to_str().unwrap();
+        let opts = &EngineOptions::default();
+        assert_eq!(preview_limited(path, "nested/@notes [1].txt", opts, 5).unwrap(), b"hello");
+        assert!(preview_limited(path, "nested/@notes [1].txt", opts, 4).unwrap_err().contains("limit"));
+        assert_eq!(preview_limited(path, "empty.txt", opts, 1).unwrap(), b"");
+        assert!(preview_limited(path, "nested/not-present.txt", opts, 5).unwrap_err().contains("not found"));
+    }
 }
 
 fn compound_tar(path: &str) -> bool {
@@ -5666,15 +5706,22 @@ pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     })
 }
 pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, String> {
-    let _policy = crate::machine_policy::scope();
-    with_zip_source(path, opts, |path| {
+    preview_limited(path, name, opts, 32 * 1024 * 1024)
+}
+
+pub fn preview_limited(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
+    let policy = crate::machine_policy::scope();
+    if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid archive preview limit".into()); }
+    let bytes = with_zip_source(path, opts, |path| {
         if compound_tar(path) {
             let (_temp, inner) = unpack_tar(path, opts)?;
-            preview_raw(&inner, name, opts)
+            preview_raw(&inner, name, opts, limit)
         } else {
-            preview_raw(path, name, opts)
+            preview_raw(path, name, opts, limit)
         }
-    })
+    })?;
+    policy.validate_output()?;
+    Ok(bytes)
 }
 // Keep the already-open output handle for metadata, avoiding both a second
 // path lookup and a path-substitution window between publication and timestamp.

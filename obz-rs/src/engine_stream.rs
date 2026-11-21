@@ -38,21 +38,22 @@ pub(crate) fn preview(
 pub(super) fn bounded_engine_preview(
     path: &Path, format: &str, member: Option<&str>, opts: &EngineOptions, limit: u64,
 ) -> Result<Vec<u8>, String> {
+    bounded_member_preview(path, Some(format), member, opts, limit, false)
+}
+
+pub(super) fn bounded_member_preview(
+    path: &Path, format: Option<&str>, member: Option<&str>, opts: &EngineOptions, limit: u64,
+    allow_zealfs: bool,
+) -> Result<Vec<u8>, String> {
     let policy = crate::machine_policy::scope();
     let control = opts.control.clone().unwrap_or_default();
     control.check()?;
     let errors = tempfile::tempfile().map_err(|error| error.to_string())?;
-    let mut command = Command::new(engine::executable()?);
+    let (program, args) = engine::bounded_preview_command(path, format, member, opts, allow_zealfs)?;
+    let mut command = Command::new(program);
     command
-        .args(["x", "-so", "-y", "-sccUTF-8", "-spd", "-bso0", "-bsp0"])
-        .arg(format!("-t{format}"));
-    if let Some(threads) = opts.threads {
-        command.arg(format!("-mmt={threads}"));
-    }
-    command.arg("--").arg(path);
-    if let Some(name) = member { command.arg(name); }
-    command
-        .stdin(Stdio::null())
+        .args(args)
+        .stdin(if opts.password.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(errors.try_clone().map_err(|error| error.to_string())?);
     #[cfg(windows)]
@@ -63,10 +64,23 @@ pub(super) fn bounded_engine_preview(
     let mut child = command
         .spawn()
         .map_err(|error| format!("cannot launch stream decoder: {error}"))?;
+    #[cfg(test)]
+    crate::machine_policy::child_started(command.get_program(), "x");
     let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
         return Err("stream decoder output unavailable".into());
+    };
+    let password_input = match opts.password.as_deref() {
+        Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
+            Ok(input) => Some(input),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        },
+        None => None,
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::Builder::new()
@@ -101,6 +115,7 @@ pub(super) fn bounded_engine_preview(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(input) = password_input { let _ = input.finish(); }
             return Err(error.to_string());
         }
     };
@@ -125,6 +140,7 @@ pub(super) fn bounded_engine_preview(
         let _ = child.kill();
         let _ = child.wait();
     }
+    let password_result = password_input.map(|input| input.finish()).unwrap_or(Ok(()));
     let decoded = reader
         .join()
         .map_err(|_| "stream preview reader failed".to_owned());
@@ -138,12 +154,13 @@ pub(super) fn bounded_engine_preview(
             .map_err(|error| error.to_string())?;
         let mut text = String::new();
         errors.take(8192).read_to_string(&mut text).ok();
-        return Err(format!(
+        return Err(engine::scrub(&format!(
             "stream decode/checksum failed ({}): {}",
             status.code().unwrap_or(-1),
             text.trim()
-        ));
+        ), opts));
     }
+    password_result?;
     control.check()?;
     policy.unchanged()?;
     Ok(bytes)

@@ -97,13 +97,32 @@ fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool)->R
     if crate::korean::is_supported(path){crate::korean::extract(path,dest,adapter_opts)}else if crate::legacy::is_supported(path){crate::legacy::extract(path,dest,adapter_opts)}else{engine::extract(path,dest,opts)}
 }
 pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,String>{
+    preview_archive_limited(path, name, opts, 32 * 1024 * 1024)
+}
+
+pub fn preview_archive_limited(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
+    if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid archive preview limit".into()); }
     let policy = crate::machine_policy::scope();
-    if policy.restricted() { return engine::preview(path, name, opts); }
-    if crate::rare::supports(path){return crate::rare::preview(path,name,opts);}
-    if crate::envelopes::is_supported(path){return crate::envelopes::preview(path,name,opts);}
-    if crate::stream_formats::is_supported(path){return crate::stream_formats::preview(path,name,opts);}
-    if let Some(data)=crate::installer::recognize(path)? {return crate::installer::preview(&data,name,opts);}
-    if crate::korean::is_supported(path){crate::korean::preview(path,name,opts)}else if crate::legacy::is_supported(path){crate::legacy::preview(path,name,opts)}else{engine::preview(path,name,opts)}
+    let bytes = if policy.restricted() {
+        engine::preview_limited(path, name, opts, limit)
+    } else if crate::rare::supports(path) {
+        crate::rare::preview(path, name, opts)
+    } else if crate::envelopes::is_supported(path) {
+        crate::envelopes::preview(path, name, opts)
+    } else if crate::stream_formats::is_supported(path) {
+        crate::stream_formats::preview(path, name, opts)
+    } else if let Some(data) = crate::installer::recognize(path)? {
+        crate::installer::preview(&data, name, opts)
+    } else if crate::korean::is_supported(path) {
+        crate::korean::preview(path, name, opts)
+    } else if crate::legacy::is_supported(path) {
+        crate::legacy::preview(path, name, opts)
+    } else {
+        engine::preview_limited(path, name, opts, limit)
+    }?;
+    if bytes.len() as u64 > limit { return Err("preview exceeds size limit".into()); }
+    policy.validate_output()?;
+    Ok(bytes)
 }
 
 #[derive(Debug, Serialize)]

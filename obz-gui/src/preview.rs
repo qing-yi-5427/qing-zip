@@ -33,6 +33,7 @@ use windows::{
 const TEXT_LIMIT: u64 = 2 * 1024 * 1024;
 const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
 const CACHE_LIMIT: usize = 64 * 1024 * 1024;
+const CACHE_ENTRY_LIMIT: usize = 100_000;
 const STAGE_LIMIT: u64 = 256 * 1024 * 1024;
 const EXPORT_LIMIT: u64 = 512 * 1024 * 1024;
 const MARKER: &[u8] = b"OpenArchive original image preview v1\n";
@@ -288,9 +289,15 @@ fn bytes_for(
     {
         // Release the old plaintext even when listing under the new policy fails.
         guard.take();
+        // Multipart RAR identity cannot prove that every volume is unchanged
+        // across requests. Read the selected member under fresh core-owned pins.
+        if identity.path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("rar")) {
+            return preview_uncached(path, name, options, limit, epoch);
+        }
         let entries = operations::list_archive(path, options)?;
-        if entries.len() > 100_000 {
-            return Err("归档条目过多，不能进行预览".into());
+        if entries.len() > CACHE_ENTRY_LIMIT {
+            drop(entries);
+            return preview_uncached(path, name, options, limit, epoch);
         }
         *guard = Some(ArchiveCache {
             identity,
@@ -370,7 +377,7 @@ fn bytes_for(
     } else if !size_known {
         obz_core::engine::preview_raw_stream(path, &engine_name, options, limit)?
     } else {
-        operations::preview_archive(path, &engine_name, options)?
+        operations::preview_archive_limited(path, &engine_name, options, limit)?
     };
     if EPOCH.load(Ordering::SeqCst) != epoch {
         return Err("预览已取消".into());
@@ -388,6 +395,15 @@ fn bytes_for(
     policy.validate_output()?;
     cache.raw_bytes += bytes.len();
     cache.raw.push_back((name.into(), bytes.clone()));
+    Ok(bytes)
+}
+fn preview_uncached(
+    path: &str, name: &str, options: &EngineOptions, limit: u64, epoch: u64,
+) -> Result<Vec<u8>, String> {
+    let bytes = operations::preview_archive_limited(path, name, options, limit)?;
+    if EPOCH.load(Ordering::SeqCst) != epoch {
+        return Err("预览已取消".into());
+    }
     Ok(bytes)
 }
 fn decode_text(bytes: &[u8], encoding: Option<&str>) -> Result<(String, String), String> {
