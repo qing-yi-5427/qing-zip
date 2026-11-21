@@ -318,3 +318,40 @@ pub fn preview(data: &[u8], name: &str, opts: &EngineOptions) -> Result<Vec<u8>,
     decoded(&pkg, &[e], stage.path(), opts)?;
     fs::read(path).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod recognition_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_a_package_with_both_overlays_and_a_signed_style_tail() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.exe");
+        let mut executable = vec![0; 1024];
+        executable[..2].copy_from_slice(b"MZ");
+        executable[60..64].copy_from_slice(&128u32.to_le_bytes());
+        executable[128..132].copy_from_slice(b"PE\0\0");
+        executable[132..134].copy_from_slice(&0x014cu16.to_le_bytes());
+        executable[134..136].copy_from_slice(&1u16.to_le_bytes());
+        executable[148..150].copy_from_slice(&224u16.to_le_bytes());
+        executable[152..154].copy_from_slice(&0x010bu16.to_le_bytes());
+        let section = 152 + 224;
+        executable[section + 16..section + 20].copy_from_slice(&512u32.to_le_bytes());
+        executable[section + 20..section + 24].copy_from_slice(&512u32.to_le_bytes());
+        fs::write(&path, &executable).unwrap();
+        assert!(recognize(path.to_str().unwrap()).unwrap().is_none());
+
+        // Include real archive structures without depending on the optional
+        // proprietary installer fixture or ever executing an image.
+        executable.extend_from_slice(include_bytes!("../tests/fixtures/emptyfile.7z"));
+        let mut ui = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        ui.start_file("notice.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        ui.write_all(b"synthetic installer UI").unwrap();
+        executable.extend(ui.finish().unwrap().into_inner());
+        executable.resize(executable.len() + 90_000, 0);
+        fs::write(&path, &executable).unwrap();
+        let recognized = recognize(path.to_str().unwrap()).unwrap().expect("valid synthetic package");
+        assert_eq!(recognized, executable);
+        assert!(list(&recognized).unwrap().iter().any(|entry| entry.name == "ui/notice.txt"));
+    }
+}

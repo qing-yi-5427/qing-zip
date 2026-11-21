@@ -216,6 +216,9 @@ pub fn publish_clipboard_export(
 }
 pub(crate) fn checked_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     check_file_drop_capacity(&paths)?;
+    canonical_paths(paths)
+}
+fn canonical_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for p in paths {
@@ -405,10 +408,10 @@ fn clipboard_inner(owner: HWND, paths: Option<Vec<String>>) -> Result<Vec<String
     }
 }
 fn recycle_candidates(paths: Vec<String>) -> Result<Vec<String>, String> {
-    if paths.len() > MAX_RECYCLE_PATHS {
-        return Err("一次最多将 512 个项目移到回收站".into());
+    if paths.is_empty() || paths.len() > MAX_RECYCLE_PATHS {
+        return Err("请选择 1 至 512 个要移到回收站的文件或文件夹".into());
     }
-    let paths = checked_paths(paths)?;
+    let paths = canonical_paths(paths)?;
     for path in &paths {
         let p = Path::new(path);
         if p.parent().is_none() || p.file_name().is_none() || path.starts_with("\\\\") {
@@ -589,6 +592,19 @@ impl ArchiveRecycleGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_drop_capacity_counts_utf16_bytes_instead_of_selected_roots() {
+        let paths: Vec<_> = (0..600).map(|i| format!("C:\\temp\\𠀀-{i:04}.png")).collect();
+        let bytes = drop_payload(&paths).unwrap();
+        assert_eq!(bytes.len(), 22 + paths.iter().map(|p| (1 + p.encode_utf16().count()) * 2).sum::<usize>());
+        assert_eq!(check_file_drop_capacity(&paths).unwrap(), bytes.len());
+        validate_drop_payload(&bytes).unwrap();
+        let too_large = vec![format!("C:\\{}", "𠀀".repeat(300)); 2000];
+        assert!(check_file_drop_capacity(&too_large).is_err());
+        assert!(check_file_drop_capacity(&[]).is_err());
+    }
+
     use std::sync::atomic::{AtomicU64, Ordering};
     struct Temp(PathBuf);
     impl Temp {

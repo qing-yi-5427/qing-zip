@@ -947,6 +947,9 @@ fn verified_empty_zip(path: &str, opts: &EngineOptions, source: &mut File, ctl: 
     Ok(empty)
 }
 
+// A technical header still prints when its member selection matches nothing.
+const TECHNICAL_HEADER_ONLY: &str = "-i!:ArchiveHeaderOnly:";
+
 fn read_directory(
     path: &str, opts: &EngineOptions, source: &mut File,
 ) -> Result<(Vec<Entry>, PayloadSource), String> {
@@ -991,7 +994,14 @@ fn read_directory(
     // Password prompts and format-discovery headers require the legacy
     // whole-output parser. Bare directories can be checked record by record.
     let stream_directory = !candidate && raw_format.is_none() && opts.password.is_none() && cfg!(windows);
+    let header_only = candidate && !crate::machine_policy::scope().restricted();
+    if header_only {
+        args.insert(args.len() - 2, TECHNICAL_HEADER_ONLY.into());
+    }
     let (mut log, live_entries) = run_technical_listing_with_directory(&mut args, opts, candidate, stream_directory)?;
+    if header_only {
+        args.retain(|argument| argument != TECHNICAL_HEADER_ONLY);
+    }
     if let Some(entries) = live_entries {
         ctl.set("complete", Some(100), "Archive directory ready");
         return Ok((entries, PayloadSource::Engine));
