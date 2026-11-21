@@ -17,7 +17,8 @@ function fixture(count=8,columns=1){
   window:{getSelection:()=>({removeAllRanges(){}})},visibleEntries:()=>buttons.map(b=>({name:b.dataset.entry})),refreshSelection(){},
   entry:async name=>calls.push(['open',name]),error:message=>calls.push(['error',message]),showMenu:(group,row)=>calls.push(['menu',group,row.dataset.row]),showMore:()=>calls.push(['more']),
   $:()=>menu,menuReturnFocus:null};
- vm.createContext(context);vm.runInContext([keyboard,select,compositionGuard].join('\n'),context);
+ context.root.querySelector=()=>null;
+ vm.createContext(context);vm.runInContext([keyboard,select,compositionGuard,source.slice(source.indexOf('function hideMenu('),source.indexOf('function rememberMenuFocus('))].join('\n'),context);
  const press=(index,key,modifiers={})=>{let prevented=false,stopped=false;const e={target:buttons[index],key,preventDefault(){prevented=true;},stopPropagation(){stopped=true;},...modifiers};context.handleFileKeydown(e);return {prevented,stopped};};
  return {context,state,buttons,calls,menu,document,press};
 }
@@ -129,4 +130,21 @@ test('name mask selection treats punctuation literally and matches the entire le
   ['*ab?c*xy','00ab00ab1c2xy',true],['**a**?','a',false],['a[1].*','a[1].md',true],
   ['a[1].*','a1.md',false],['*.zip','archive.ZIP',true],['*ss','x\u00df',false]
  ])assert.equal(context.nameMask(mask)(name),want,JSON.stringify([mask,name]));
+});
+
+test('extract flyout is anchored to its split group and resets expanded state when dismissed',()=>{
+ const f=fixture();
+ const parentElement={};
+ const frames=[];
+ const arrow={parentElement,setAttribute(name,value){frames.push([name,value]);}};
+ f.context.root.querySelector=()=>arrow;
+ f.context.rememberMenuFocus=()=>{};
+ f.context.positionMenu=(menu,anchor,alignEnd)=>{assert.equal(menu,f.menu);assert.equal(anchor,parentElement);assert.equal(alignEnd,true);menu.hidden=false;};
+ vm.runInContext(source.slice(source.indexOf('function showExtractMenu('),source.indexOf('function renderChrome(')),f.context);
+ f.context.showExtractMenu();
+ assert.match(f.menu.innerHTML,/extract-standard.*[\s\S]*extract-deep.*[\s\S]*extract-recycle/);
+ assert.equal(f.menu.hidden,false);
+ f.context.hideMenu();
+ assert.deepEqual(frames,[['aria-expanded','true'],['aria-expanded','false']]);
+ assert.equal(f.menu.hidden,true);
 });

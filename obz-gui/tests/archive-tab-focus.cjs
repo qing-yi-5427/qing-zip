@@ -20,6 +20,7 @@ function fixture(){
  context.renderArchiveTabs=paintTabs;
  context.render=()=>{context.renderedPage=context.s.archive?'archive:'+context.currentTabId:'home';for(const n of rows)n.isConnected=false;if(!document.activeElement?.isConnected)document.activeElement=document.body;rows=context.s.archive?[node(context.s.cursor,{entry:context.s.cursor})]:[];paintTabs();calls.push(['render']);};
  vm.createContext(context);
+ vm.runInContext(source.slice(source.indexOf('function hideMenu('),source.indexOf('function rememberMenuFocus(')),context);
  for(const name of ['saveCurrentTab','applyTab','emptyArchiveState','showNestedClose'])vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'(')),context);
  vm.runInContext(source.slice(source.indexOf('let archiveTabFocusGeneration='),source.indexOf('function discardArchiveTab(')),context);
  context.render();document.activeElement=rows[0];calls.length=0;
@@ -74,7 +75,8 @@ test('async background close after a user switch does not restore the old focus 
  c.currentTabId='b';c.s.cursor='b-row';const search=f.node('new-tab-search');f.document.activeElement=search;resume();await pending;f.flush();assert.equal(f.document.activeElement,search);assert.equal(c.currentTabId,'b');
 });
 test('background Escape has no close side effects; modal and menu Escape preserve their owners',()=>{
- const c={document:{activeElement:null},overlay:{hidden:true},root:{addEventListener(type,handler){c.handler=handler;}},menu:{hidden:true},menuReturnFocus:{isConnected:true,focus(){c.focused=true;}},close(){c.closed++;},closed:0,focused:false,$:()=>c.menu};vm.createContext(c);
+ const c={document:{activeElement:null},overlay:{hidden:true},root:{querySelector:()=>null,addEventListener(type,handler){c.handler=handler;}},menu:{hidden:true},menuReturnFocus:{isConnected:true,focus(){c.focused=true;}},close(){c.closed++;},closed:0,focused:false,$:()=>c.menu};vm.createContext(c);
+ vm.runInContext(source.slice(source.indexOf('function hideMenu('),source.indexOf('function rememberMenuFocus(')),c);
  vm.runInContext(source.slice(source.indexOf('function isCompositionKey('),source.indexOf("root.addEventListener('keydown',handleDialogKeydown)")),c);
  const press=(extra={})=>c.handleDialogKeydown({key:'Escape',preventDefault(){c.prevented=true;},...extra});
  press();assert.equal(c.closed,0);c.menu.hidden=false;press();assert.equal(c.closed,0);assert.equal(c.menu.hidden,true);assert.equal(c.focused,true);c.overlay.hidden=false;
