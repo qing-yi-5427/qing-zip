@@ -7,6 +7,29 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
 const logic = source.slice(source.indexOf('let homeIntake='), source.indexOf('const compressionExtensions='));
 
+test('ZIP repair moves from home to a labeled toolbox group while recent files remain on home',()=>{
+ const context={
+  btn:(_label,action)=>action, esc:String, filename:path.win32.basename,
+  s:{recent:['C:/fixture/recent.zip']}
+ };
+ vm.runInNewContext(
+  source.slice(source.indexOf('const toolIcons='),source.indexOf('const btn='))+
+  source.slice(source.indexOf('function home()'),source.indexOf('// Refreshing an archive'))+
+  source.slice(source.indexOf('const toolCatalog='),source.indexOf('function toolPage()')),
+  context
+ );
+ const home=context.home(),toolbox=context.toolbox();
+ assert.match(home,/data-action="home-smart"/);
+ assert.match(home,/recent\.zip/);
+ assert.doesNotMatch(home,/repair-tool|修复/);
+ assert.equal(toolbox.match(/class="oa-toolgrid"/g).length,3);
+ const cards=[...toolbox.matchAll(/class="oa-toolcard"[^>]+>[\s\S]*?<svg[^>]*>(.*?)<\/svg>[\s\S]*?<\/button>/g)];
+ assert.equal(cards.length,12);
+ assert.equal(new Set(cards.map(card=>card[1])).size,12);
+ assert.match(toolbox,/data-action="repair-tool"[\s\S]*?修复 ZIP 压缩包/);
+ assert.match(toolbox,/data-launch-tool="file-split"/);
+});
+
 function fixture(responses, chosen = []) {
  const calls = [], fields = {}, timers = new Map();
  const context = {
