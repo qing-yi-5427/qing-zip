@@ -666,7 +666,15 @@ fn run_program_log_with_directory(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        // An ordinary NanaZip listing uses explicit UTF-8 and redirected
+        // streams. It can run without allocating a hidden console host.
+        let detached_listing = collect_directory
+            && opts.password.is_none()
+            && has_zealfs_handler(Path::new(cmd.get_program()))
+            && policy.as_ref().is_some_and(|policy| !policy.restricted());
+        cmd.creation_flags(if detached_listing { DETACHED_PROCESS } else { CREATE_NO_WINDOW });
     }
     let mut child = cmd
         .spawn()
@@ -4350,6 +4358,22 @@ fn new_directory_stage(
             // preserves the ordinary per-file publication route.
             if !crate::private_stage::qualifies_legacy_parent(parent, &parent_handle)? { return Ok(None); }
         }
+        // An inherited-private TempDir can hold the verified data, but only an
+        // explicitly protected stage is eligible for same-volume file moves.
+        // Prefer that stage even in an already-private destination parent.
+        if let Ok(temp) = crate::private_stage::create(parent, &parent_handle) {
+            let root = temp.root().try_clone().map_err(|e| e.to_string())?;
+            validate_transaction_root(&root, temp.path())?;
+            if !private_stage_acl_handle(&root)?
+                || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
+                return Ok(None);
+            }
+            return Ok(Some(DirectoryTransaction {
+                stage: Some(StagingDir::Private(temp)),
+                root,
+                parent: parent_handle,
+            }));
+        }
         if private_parent {
             let temp = match tempfile::Builder::new()
                 .prefix(".open-archive-stage-")
@@ -4378,21 +4402,7 @@ fn new_directory_stage(
                 parent: parent_handle,
             }));
         }
-        let temp = match crate::private_stage::create(parent, &parent_handle) {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
-        };
-        let root = temp.root().try_clone().map_err(|e| e.to_string())?;
-        validate_transaction_root(&root, temp.path())?;
-        if !private_stage_acl_handle(&root)?
-            || (reserve && !crate::private_stage::supports_file_publication(&root)?) {
-            return Ok(None);
-        }
-        Ok(Some(DirectoryTransaction {
-            stage: Some(StagingDir::Private(temp)),
-            root,
-            parent: parent_handle,
-        }))
+        Ok(None)
     }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
@@ -7669,6 +7679,7 @@ mod staging_tests {
         .unwrap()
         .unwrap();
         let stage = transaction.stage.unwrap();
+        assert!(stage.protected_stage(), "an already-private destination parent must still qualify for same-volume publication");
         let root = transaction.root;
         fs::create_dir(stage.path().join("child")).unwrap();
         fs::write(stage.path().join("child/a"), b"safe").unwrap();

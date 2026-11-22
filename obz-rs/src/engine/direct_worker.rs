@@ -1,5 +1,5 @@
-//! Decode through one checked final-name handle at a time. The worker never
-//! receives output paths or permission to open an output file itself.
+//! The worker decodes through one checked final-name handle at a time.
+//! It receives neither output paths nor permission to open files itself.
 use super::*;
 
 const ROLLBACK_FILES: usize = 4096;
@@ -320,7 +320,14 @@ impl Pending {
                     )
                 });
         let journal = PublicationJournal::default();
+        let overlap = self.mode == 2
+            && opts.password.is_none()
+            && opts.selected.is_empty()
+            && matches!(&destination, Destination::Claim(_))
+            && entries.iter().all(|entry| !entry.encrypted)
+            && file_count >= 128;
         let mut active = None;
+        let mut completed = None;
         let mut released = 0usize;
         let result = (|| -> Result<usize, String> {
             ctl.check()?;
@@ -364,7 +371,13 @@ impl Pending {
                         let index = data.u32()? as usize;
                         data.end()?;
                         let entry = entries.get(index).ok_or("invalid direct output index")?;
-                        if entry.is_dir || !chosen[index] || verified_files[index] {
+                        if entry.is_dir
+                            || !chosen[index]
+                            || verified_files[index]
+                            || completed
+                                .as_ref()
+                                .is_some_and(|(prior, _, _)| *prior == index)
+                        {
                             return Err("unexpected direct output request".into());
                         }
                         let target = dest.join(validate_name(&entry.name)?);
@@ -397,39 +410,14 @@ impl Pending {
                     29 => {
                         let index = data.u32()? as usize;
                         data.end()?;
-                        let (active_index, target, mut output) =
+                        let (active_index, target, output) =
                             active.take().ok_or("unexpected direct output completion")?;
-                        if index != active_index {
+                        if index != active_index || completed.is_some() {
                             return Err("direct output completion index mismatch".into());
                         }
-                        let entry = &entries[index];
-                        if output
-                            .as_file()
-                            .metadata()
-                            .map_err(|e| e.to_string())?
-                            .len()
-                            != entry.size
-                        {
-                            return Err(format!("decoded size differs for {}", entry.name));
-                        }
-                        crate::motw::apply_to_file(
-                            output.as_file(),
-                            opts.zone_identifier.as_ref(),
-                        )?;
-                        restore_open_file_metadata(output.as_file(), entry)?;
-                        ctl.check()?;
-                        if count % 256 == 0 {
-                            policy.validate_output()?;
-                        }
-                        drop(output.commit_owned(&target, &journal)?);
-                        confirm_encrypted_output(entry, opts.extraction_password_use.as_deref());
-                        released += usize::from(journal.retain_latest(ROLLBACK_FILES));
-                        verified_files[index] = true;
-                        count += 1;
-                        written += entry.size;
-                        decoded = decoded.max(written);
-                        if count == 1 || count % 64 == 0 || count == file_count {
-                            ctl.report_decoding(&entry.name, count, file_count, decoded, total);
+                        completed = Some((index, target, output));
+                        if overlap {
+                            continue;
                         }
                     }
                     4 => {
@@ -445,6 +433,37 @@ impl Pending {
                     }
                     5 => receipt = Some(terminal(data)?),
                     _ => return Err("unexpected direct extraction frame".into()),
+                }
+                // The worker can decode into the next capability after its
+                // ACK while the verified previous file is finalized. At most
+                // two unpublished outputs are held by the parent.
+                if let Some((index, target, mut output)) = completed.take() {
+                    let entry = &entries[index];
+                    if output
+                        .as_file()
+                        .metadata()
+                        .map_err(|e| e.to_string())?
+                        .len()
+                        != entry.size
+                    {
+                        return Err(format!("decoded size differs for {}", entry.name));
+                    }
+                    crate::motw::apply_to_file(output.as_file(), opts.zone_identifier.as_ref())?;
+                    restore_open_file_metadata(output.as_file(), entry)?;
+                    ctl.check()?;
+                    if count % 256 == 0 {
+                        policy.validate_output()?;
+                    }
+                    drop(output.commit_owned(&target, &journal)?);
+                    confirm_encrypted_output(entry, opts.extraction_password_use.as_deref());
+                    released += usize::from(journal.retain_latest(ROLLBACK_FILES));
+                    verified_files[index] = true;
+                    count += 1;
+                    written += entry.size;
+                    decoded = decoded.max(written);
+                    if count == 1 || count % 64 == 0 || count == file_count {
+                        ctl.report_decoding(&entry.name, count, file_count, decoded, total);
+                    }
                 }
             }
             let exit = self.session.wait_exit(ctl)?;
@@ -462,6 +481,7 @@ impl Pending {
                 || receipt.code != -1
                 || count != file_count
                 || active.is_some()
+                || completed.is_some()
             {
                 if receipt.code == 9
                     || (opts.password.is_some()
@@ -524,6 +544,7 @@ impl Pending {
         let mode = self.mode;
         drop(self); // Reap the decoder before abandoning the last writable handle or rolling back.
         drop(active);
+        drop(completed);
         match result {
             Ok(count) => {
                 if PhaseTimer::enabled() {
