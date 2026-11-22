@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm');
-const source=fs.readFileSync(require.resolve('../frontend/file-workspace.js'),'utf8');
-function api(storage){const context={module:{exports:{}},localStorage:storage};vm.runInNewContext(source,context);return context.module.exports;}
+const source=['input-atime.js','file-workspace.js'].map(name=>fs.readFileSync(require.resolve('../frontend/'+name),'utf8')).join('\n');
+function api(storage){const context={localStorage:storage};vm.runInNewContext(source,context);return context.QingFileWorkspace;}
 const local={kind:'local',path:'C:/source',selected:new Set(['C:/source/a.txt'])};
 const archive={kind:'archive',archive:'C:/target.zip',path:'folder/',selected:new Set(['folder/a.txt'])};
 test('preserve applies only to local additions and moves into archives',()=>{

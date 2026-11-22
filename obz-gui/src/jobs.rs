@@ -369,6 +369,15 @@ pub fn cancel_operation(id:u64)->Result<(),String>{
     job.control.cancel(); crate::verification::revoke(); Ok(())
 }
 
+// Only startup speculation owns an unclaimed ID and may drop its registry
+// entry before completion. The worker still holds its control and source pin.
+pub(crate) fn discard_prepared_listing(id: u64) {
+    let job = registry().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    if let Some(job) = job {
+        job.control.cancel();
+    }
+}
+
 #[tauri::command]
 pub fn forget_operation(id:u64)->Result<(),String>{
     let mut jobs=registry().lock().map_err(|_|"job registry unavailable")?;

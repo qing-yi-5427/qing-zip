@@ -16,7 +16,7 @@ use std::{
     io::{Cursor, Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime},
@@ -33,9 +33,13 @@ use windows::{
 const TEXT_LIMIT: u64 = 2 * 1024 * 1024;
 const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
 const CACHE_LIMIT: usize = 64 * 1024 * 1024;
+const MINIMIZED_CACHE_LIMIT: usize = 4 * 1024 * 1024;
+const THUMBNAIL_SOURCE_CACHE_LIMIT: usize = 1024 * 1024;
+const CACHE_ENTRIES: usize = 64;
 const EXPORT_LIMIT: u64 = 512 * 1024 * 1024;
 const MARKER: &[u8] = b"OpenArchive original image preview v1\n";
 static CACHE: Mutex<Option<ArchiveCache>> = Mutex::new(None);
+static WINDOW_MINIMIZED: AtomicBool = AtomicBool::new(false);
 static PASSWORD_HASH: OnceLock<RandomState> = OnceLock::new();
 static VOLATILE: AtomicU64 = AtomicU64::new(1);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -67,6 +71,28 @@ struct ArchiveCache {
     identity: Identity,
     raw: VecDeque<(String, Vec<u8>)>,
     raw_bytes: usize,
+}
+
+impl ArchiveCache {
+    fn trim(&mut self, bytes: usize, entries: usize) {
+        while self.raw_bytes > bytes || self.raw.len() > entries {
+            let Some((_, oldest)) = self.raw.pop_front() else { break };
+            self.raw_bytes -= oldest.len();
+        }
+    }
+}
+
+pub(crate) fn set_window_minimized(minimized: bool) {
+    let was_minimized = WINDOW_MINIMIZED.swap(minimized, Ordering::Relaxed);
+    if minimized && !was_minimized {
+        tauri::async_runtime::spawn_blocking(|| {
+            let Ok(mut guard) = CACHE.lock() else { return };
+            let Some(cache) = guard.as_mut() else { return };
+            if WINDOW_MINIMIZED.load(Ordering::Relaxed) {
+                cache.trim(MINIMIZED_CACHE_LIMIT, CACHE_ENTRIES);
+            }
+        });
+    }
 }
 
 fn no_links(path: &Path) -> Result<(), String> {
@@ -233,6 +259,7 @@ type MemberReader<'a> = dyn FnMut(&str, u64, bool) -> Result<(Vec<u8>, bool), St
 
 fn with_member_reader<T>(
     path: &str, options: &EngineOptions, epoch: u64, names: &[&str],
+    retained_member_limit: usize,
     read: impl FnOnce(&mut MemberReader<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
     let policy = obz_core::machine_policy::scope();
@@ -271,7 +298,7 @@ fn with_member_reader<T>(
             }
             let (bytes, truncated) = reader(name, limit, prefix)?;
             check()?;
-            if !truncated { cache_bytes(cache, name, &bytes); }
+            if !truncated { cache_bytes(cache, name, &bytes, retained_member_limit); }
             Ok((bytes, truncated))
         })
     })? {
@@ -300,7 +327,7 @@ fn with_member_reader<T>(
                 if bytes.len() as u64 > limit || (entry.size_known && bytes.len() as u64 != entry.size) {
                     return Err("预览大小与清单不一致".into());
                 }
-                cache_bytes(cache, name, &bytes);
+                cache_bytes(cache, name, &bytes, retained_member_limit);
                 Ok((bytes, false))
             })?
         }
@@ -319,12 +346,10 @@ fn cached_bytes(cache: &mut ArchiveCache, name: &str, limit: u64, prefix: bool) 
     Some(result)
 }
 
-fn cache_bytes(cache: &mut ArchiveCache, name: &str, bytes: &[u8]) {
-    if cache.identity.volatile != 0 { return; }
-    while cache.raw_bytes + bytes.len() > CACHE_LIMIT || cache.raw.len() >= 64 {
-        let Some((_, old)) = cache.raw.pop_front() else { break };
-        cache.raw_bytes -= old.len();
-    }
+fn cache_bytes(cache: &mut ArchiveCache, name: &str, bytes: &[u8], retained_member_limit: usize) {
+    let limit = if WINDOW_MINIMIZED.load(Ordering::Relaxed) { MINIMIZED_CACHE_LIMIT } else { CACHE_LIMIT };
+    if cache.identity.volatile != 0 || bytes.len() > retained_member_limit.min(limit) { return; }
+    cache.trim(limit - bytes.len(), CACHE_ENTRIES - 1);
     cache.raw_bytes += bytes.len();
     cache.raw.push_back((name.into(), bytes.to_vec()));
 }
@@ -332,7 +357,7 @@ fn cache_bytes(cache: &mut ArchiveCache, name: &str, bytes: &[u8]) {
 fn bytes_for(
     path: &str, name: &str, options: &EngineOptions, limit: u64, epoch: u64,
 ) -> Result<Vec<u8>, String> {
-    with_member_reader(path, options, epoch, &[name], |reader| reader(name, limit, false).map(|(bytes, _)| bytes))
+    with_member_reader(path, options, epoch, &[name], CACHE_LIMIT, |reader| reader(name, limit, false).map(|(bytes, _)| bytes))
 }
 #[cfg(test)]
 fn decode_text(bytes: &[u8], encoding: Option<&str>) -> Result<(String, String), String> {
@@ -528,7 +553,8 @@ fn preview_inner(
         "thumbnail" => { image_format(name)?; IMAGE_LIMIT },
         _ => return Err("不支持的预览方式".into()),
     };
-    let (bytes, truncated) = with_member_reader(path, options, epoch, &[name], |reader| reader(name, limit, kind == "text"))?;
+    let retain = if kind == "thumbnail" { THUMBNAIL_SOURCE_CACHE_LIMIT } else { CACHE_LIMIT };
+    let (bytes, truncated) = with_member_reader(path, options, epoch, &[name], retain, |reader| reader(name, limit, kind == "text"))?;
     render_preview(name, kind, text_encoding, bytes, truncated)
 }
 fn render_preview(
@@ -636,7 +662,7 @@ pub async fn preview_thumbnails(
             Ok(results)
         };
         let requested: Vec<_> = names.iter().map(String::as_str).collect();
-        with_member_reader(&path, &options, epoch, &requested, |reader| {
+        with_member_reader(&path, &options, epoch, &requested, THUMBNAIL_SOURCE_CACHE_LIMIT, |reader| {
             render(&mut |name| reader(name, IMAGE_LIMIT, false).map(|(bytes, _)| bytes))
         })
     }).await.map_err(|e| e.to_string())?
@@ -901,16 +927,34 @@ mod tests {
         image::DynamicImage::new_rgb8(2, 3).write_to(&mut image, image::ImageFormat::Png).unwrap();
         let good = temp.path().join("good.png");
         let bad = temp.path().join("bad.png");
+        let large = temp.path().join("large.bmp");
         fs::write(&good, image.into_inner()).unwrap();
         fs::write(&bad, b"corrupt").unwrap();
+        let mut bmp = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(900, 600).write_to(&mut bmp, image::ImageFormat::Bmp).unwrap();
+        let bmp = bmp.into_inner();
+        assert!(bmp.len() > THUMBNAIL_SOURCE_CACHE_LIMIT);
+        fs::write(&large, &bmp).unwrap();
         let path = temp.path().join("sample.zip").display().to_string();
-        obz_core::engine::create(&path, &[bad.display().to_string(), good.display().to_string()], "zip", &Default::default()).unwrap();
+        let inputs = [bad, good, large].map(|file| file.display().to_string());
+        obz_core::engine::create(&path, &inputs, "zip", &Default::default()).unwrap();
         tauri::async_runtime::block_on(async {
             let invalid = preview_thumbnails(path.clone(), vec!["good.png".into(); 9], None, None).await;
             assert!(invalid.is_err());
-            let rows = preview_thumbnails(path, vec!["bad.png".into(), "good.png".into()], None, None).await.unwrap();
+            let rows = preview_thumbnails(path.clone(), vec!["bad.png".into(), "good.png".into(), "large.bmp".into()], None, None).await.unwrap();
             assert!(matches!(&rows[0], ThumbnailResult::Failed { name, .. } if name == "bad.png"));
             assert!(matches!(&rows[1], ThumbnailResult::Ready(p) if p.name == "good.png" && p.height == Some(3)));
+            assert!(matches!(&rows[2], ThumbnailResult::Ready(p) if p.name == "large.bmp" && p.height == Some(600)));
+            let single = preview_entry(path.clone(), "large.bmp".into(), None, None, "thumbnail".into(), None).await.unwrap();
+            assert_eq!(single.data_url, match &rows[2] { ThumbnailResult::Ready(p) => p.data_url.clone(), _ => None });
+            {
+                let guard = CACHE.lock().unwrap();
+                let raw = &guard.as_ref().unwrap().raw;
+                assert!(raw.iter().any(|(name, _)| name == "good.png"));
+                assert!(!raw.iter().any(|(name, _)| name == "large.bmp"));
+            }
+            assert_eq!(bytes_for(&path, "large.bmp", &Default::default(), IMAGE_LIMIT, EPOCH.load(Ordering::SeqCst)).unwrap(), bmp);
+            assert!(CACHE.lock().unwrap().as_ref().unwrap().raw.iter().any(|(name, _)| name == "large.bmp"));
             clear_preview_cache().await.unwrap();
         });
     }
@@ -1130,9 +1174,15 @@ mod tests {
             b"first"
         );
         {
-            let guard = CACHE.lock().unwrap();
-            let cache = guard.as_ref().unwrap();
-            assert!(cache.raw.iter().all(|(name, _)| name == &one.replace('\\', "/")));
+            let mut guard = CACHE.lock().unwrap();
+            let cache = guard.as_mut().unwrap();
+            let name = one.replace('\\', "/");
+            assert!(cache.raw.iter().all(|(key, _)| key == &name));
+            cache_bytes(cache, "large.bin", &vec![0; MINIMIZED_CACHE_LIMIT + 1], CACHE_LIMIT);
+            assert_eq!(cached_bytes(cache, &name, TEXT_LIMIT, false).unwrap().0, b"first");
+            cache.trim(MINIMIZED_CACHE_LIMIT, CACHE_ENTRIES);
+            assert_eq!(cache.raw_bytes, b"first".len());
+            assert_eq!(cache.raw.len(), 1);
         }
         assert_eq!(
             bytes_for(path, &two.replace('\\', "/"), &options, TEXT_LIMIT, epoch).unwrap(),

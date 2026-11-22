@@ -20,7 +20,7 @@ function harness(respond) {
     s, performance, overlay: {querySelector: () => draft}, tabBusy: () => Boolean(s.active),
     closingArchiveTabs: false, finishingArchiveTabs: false, removingArchiveTabs: false,
     close() {}, updateToolbar() {}, renderHistoryJob() {}, schedulePendingQueue() {}, taskError: String,
-    QingFileWorkspace: {preservationNotice: () => ''},
+    QingInputAtime: {preservationNotice: () => ''},
     renderInlineTask() {
       const job = s.jobs.at(-1);
       frames.push({stage: job.stage, index: job.current, percent: job.percent, overall:QingProgress.value(job), done:job.overall?.done, background: s.backgroundExtraction});

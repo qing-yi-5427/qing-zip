@@ -81,7 +81,16 @@ fn enqueue(paths: &[String]) {
 }
 pub fn queue_startup() {
     let args:Vec<String>=std::env::args().collect();
-    queue_arguments(args, &std::env::current_dir().unwrap_or_default());
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if startup_mode(&args) == StartupMode::Open {
+        let paths = paths(args, &cwd, false);
+        enqueue(&paths);
+        if let Some(path) = paths.into_iter().next() {
+            crate::startup_listing::prepare(path);
+        }
+    } else {
+        queue_arguments(args, &cwd);
+    }
 }
 pub fn receive(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
     queue_arguments(args, Path::new(&cwd));

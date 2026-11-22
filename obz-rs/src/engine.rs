@@ -6087,6 +6087,12 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
     )?;
     Ok((temp, inner.display().to_string()))
 }
+/// Pin a validated archive and its ancestor names while preparing a desktop listing.
+#[cfg(windows)]
+pub fn pin_archive_for_listing(path: &Path) -> Result<impl std::ops::Deref<Target = File>, String> {
+    crate::engine_stream::pin(path)
+}
+
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
     let read = || with_zip_source(path, opts, |path| {

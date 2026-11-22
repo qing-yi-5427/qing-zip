@@ -211,7 +211,7 @@ test('access-time warnings survive task cleanup without marking archive data fai
  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
  for(const uncertain of [false,true]){
   const result={outputs:['C:/out.zip'],input_atime:{applied_handles:1,unavailable_handles:0,unconfirmed_sources:uncertain?1:0,warnings:uncertain?[{source:'C:/input.txt',phase:'alternate_stream_proof'}]:[]}};
-  const state={jobs:[]};const context=makeContext({s:state,QingFileWorkspace:require('../frontend/file-workspace.js'),esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
+  const state={jobs:[]};const context=makeContext({s:state,QingInputAtime:require('../frontend/input-atime.js'),esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
   vm.runInContext(taskSource(source)+runSource(source),context);
   await context.run({operation:'create'},'新建压缩文件',{silent:true});
   assert.equal(state.jobs[0].partial,false);
@@ -239,4 +239,63 @@ test('batch count excludes failed integrity and advances the next job from the c
  const values=state.jobs.map(require('../frontend/progress.js').value);
  assert.deepEqual(values,[33,null,66]);
  assert.equal(batch.done,2);
+});
+
+test('queued archive progress appears only for a slow listing and can cancel it', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const cancel = source.split('\n').find(line => line.startsWith("case'canceljob':"));
+  const scenario = () => {
+    const s = {jobs: [], view: 'home'};
+    const rendered = [], timers = new Map(), commands = [];
+    let ready, settle;
+    const waiting = new Promise(resolve => { ready = resolve; });
+    const reply = new Promise(resolve => { settle = resolve; });
+    const context = makeContext({
+      s, overlay: {hidden: true, dataset: {}}, shellQueueRunning: false, $: () => null,
+      setTimeout(fn, delay) { timers.set(delay, fn); return delay; },
+      clearTimeout(id) { timers.delete(id); },
+      close() {}, render() { rendered.push(s.view); },
+      renderProgress() {}, renderInlineTask() {},
+      QingArchiveListing: {read: listing => listing},
+      invoke: async (name, args) => {
+        commands.push([name, args]);
+        if (name === 'start_operation') return 11;
+        if (name === 'wait_operation') { ready(); return reply; }
+        if (name === 'take_archive_listing') return {entries: []};
+      },
+    });
+    vm.runInContext(taskSource(source)+runSource(source)+
+      `async function cancelJob(){switch('canceljob'){${cancel}}}`, context);
+    return {
+      context, s, rendered, timers, commands, waiting, settle,
+      result: context.run({operation: 'list'}, '打开压缩包', {deferProgress: true}),
+    };
+  };
+
+  const fast = scenario();
+  await fast.waiting;
+  assert.deepEqual(fast.rendered, []);
+  fast.settle({status: 'complete', progress: {}});
+  assert.deepEqual((await fast.result).entries, []);
+  assert.deepEqual(fast.rendered, []);
+  assert.equal(fast.timers.size, 0);
+
+  const failed = scenario();
+  await failed.waiting;
+  failed.settle({status: 'failed', error: 'archive error', progress: {}});
+  await assert.rejects(failed.result, /archive error/);
+  assert.deepEqual(failed.rendered, []);
+  assert.equal(failed.timers.size, 0);
+
+  const slow = scenario();
+  await slow.waiting;
+  const showProgress = slow.timers.get(180);
+  slow.timers.delete(180);
+  showProgress();
+  assert.deepEqual(slow.rendered, ['jobs']);
+  await slow.context.cancelJob();
+  assert.equal(slow.commands.find(([name]) => name === 'cancel_operation')[1].id, 11);
+  slow.settle({status: 'complete', progress: {}});
+  await assert.rejects(slow.result, /operation cancelled/);
+  assert.equal(slow.s.active, null);
 });
