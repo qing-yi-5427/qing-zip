@@ -519,3 +519,23 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
  overflow-wrap: anywhere;
 }
 #qing-archive .oa-password-entry input { width: 100%; }
+
+#qing-archive #oa-archive-maintenance {
+  margin-inline-start:auto;
+  padding-inline:10px;
+  gap:6px;
+  white-space:nowrap;
+}
+#qing-archive #oa-archive-maintenance svg:last-child {
+  width:12px;
+  transform:rotate(90deg);
+}
+#qing-archive .oa-password-vault-link {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px;
+}
+#qing-archive .oa-password-vault-link p { margin:0; }
+#qing-archive #oa-shell-settings-title { scroll-margin-top:1rem; }
+#qing-archive [data-action=shell-open-entry] { margin-top:8px; }

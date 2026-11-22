@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const makeContext=value=>vm.createContext(Object.assign(value,{QingProgress:require('../frontend/progress.js'),renderHistoryJob() {},deepExtract:{jobActions:()=>''},performance,updateToolbar:()=>{},schedulePendingQueue:()=>{}}));
-const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('const tabs=')) + source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('));
+const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('function pageHeading(')) + source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('));
 const runSource=source=>source.slice(source.indexOf('async function run('),source.indexOf('function forgetRecycledArchives('));
 
 

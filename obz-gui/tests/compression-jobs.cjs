@@ -95,8 +95,7 @@ test('result buttons resolve their own archive, including after a later job has 
   const {ui, s} = harness(request => done({outputs: [request.path]}));
   const events = [];
   ui.openArchive = async p => { events.push(['open', p]); throw Error('file no longer exists'); };
-  ui.openDialog = p => events.push(['dialog', p]);
-  ui.error = e => events.push(['error', e.message]);
+  ui.showOpenFailure = (p, e) => events.push(['open-failure', p, e.message]);
   await ui.runCompression([first, second], false);
   await ui.runCompression([input('later')], false);
   const dataset = {compressionOutput: s.jobs[0].id, archiveIndex: '1', outputAction: 'open'};
@@ -105,7 +104,7 @@ test('result buttons resolve their own archive, including after a later job has 
   assert.deepEqual(events, []);
   s.active = null;
   await ui.useCompressionResult({dataset});
-  assert.deepEqual(events, [['open', second.path], ['dialog', second.path], ['error', 'file no longer exists']]);
+  assert.deepEqual(events, [['open', second.path], ['open-failure', second.path, 'file no longer exists']]);
 });
 
 test('multi-archive progress counts acknowledged create and verify steps monotonically', async () => {

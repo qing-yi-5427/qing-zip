@@ -71,7 +71,7 @@ for(const deep of [false,true]){
    section('function extractionSummary(', 'function updateExtractPreview(')+
    section('function extract({', 'async function submitExtraction(')+
    section('function recycleBlockReason(', 'function replaceSiblings(')+
-   app.split('\n').find(line=>line.startsWith("root.addEventListener('change',e=>{const t=e.target;if(t.id==='oa-add-preserve-atime'"));
+   app.split('\n').find(line=>line.startsWith("root.addEventListener('change'")&&line.includes("t.id==='oa-add-preserve-atime'"));
   const box={id:'oa-recycle-after',dataset:{}},status={dataset:{}},submit={lastChild:{}},scope={name:'extract-scope',dataset:{}};
   const conflict={id:'qa-conflict',value:'error',dataset:{}};
   const elements={'oa-recycle-after':box,'oa-extract-source-status':status,'oa-deep-extract':{checked:deep},'qa-conflict':conflict,'qa-destination':{value:''}};

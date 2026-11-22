@@ -81,7 +81,7 @@ try:
  nested=root/'hash-tree';(nested/'one'/'two').mkdir(parents=True);empty=root/'empty';empty.mkdir()
  files={nested/'a.txt':b'alpha',nested/'one'/'two'/'b.bin':b'nested bytes',root/'outside.txt':b'outside'}
  for path,payload in files.items():path.write_bytes(payload)
- b=Browser();b.click('[data-view="tools"]');b.click('[data-launch-tool="checksum"]');b.wait('!!document.querySelector("iframe")')
+ b=Browser();b.click('[data-action="app-menu"]');b.click('[data-menu="tools"]');b.click('[data-action="checksum-tool"]');b.wait('!!document.querySelector("iframe")')
  url=b.js('document.querySelector("iframe").src');b.call('Page.navigate',{'url':url});b.wait('!!document.querySelector("#checksum-folder")')
  b.wait('Array.from(document.querySelector("#hash-algorithm").options).some(o=>o.value==="SHA256")');b.select('#hash-algorithm','SHA256')
  b.click('#checksum-folder')

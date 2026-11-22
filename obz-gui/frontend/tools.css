@@ -43,3 +43,8 @@ fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 #hash-choices label { display: flex; gap: var(--qa-space-2); align-items: center; }
 #parts-size { flex: 1; min-width: 120px; }
 #parts-unit { width: 130px; flex: 0 0 130px; }
+
+#runbar:not(:has(button:not(.hidden), #status:not(:empty))), #result:empty { display: none; }
+.vault-entries { margin: 0; padding: 0; list-style: none; }
+.vault-entries li { display: flex; justify-content: space-between; align-items: center; gap: var(--qa-space-3); padding-block: var(--qa-space-2); border-bottom: 1px solid var(--qa-line); }
+.vault-entries small { display: block; }

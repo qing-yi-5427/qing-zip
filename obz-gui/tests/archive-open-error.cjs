@@ -14,3 +14,19 @@ test('ordinary corruption and cancellation errors remain visible',()=>{
  for(const message of ['CRC failed','operation cancelled','Cannot open C:\\password.zip as archive'])
   assert.equal(context.archiveOpenMessage('Error: '+message),message);
 });
+test('corrupt ZIP recovery targets the failed path and clears an obsolete offer',()=>{
+ const button={hidden:true,dataset:{}};
+ context.overlay={querySelector:()=>button};
+ vm.runInContext(source.split('\n').find(line=>line.startsWith('function taskError(')),context);
+ const failed='C:\\fixture\\bad.zip';
+ context.offerRepairAfterOpenFailure(failed,Error('Cannot open as archive'));
+ assert.equal(button.hidden,false);
+ assert.equal(button.dataset.failedPath,failed);
+ for(const [path,error] of [
+  [failed,'wrong password'],[failed,'operation cancelled'],['C:\\fixture\\bad.7z','Cannot open as archive'],['','']
+ ]){
+  context.offerRepairAfterOpenFailure(path,Error(error));
+  assert.equal(button.hidden,true);
+  assert.equal(button.dataset.failedPath,'');
+ }
+});
