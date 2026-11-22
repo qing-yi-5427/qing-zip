@@ -203,7 +203,7 @@ fn verify_completed_files(result: &Value, expected: u64, control: &JobControl) -
 fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) -> Result<OperationResponse,String> {
     if let Some(id)=request.password_id.take() {
         if request.options.password.is_some(){return Err("choose password or password_id, not both".into());}
-        request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.get(&id)?);
+        request.options.password=Some(obz_core::services::Vault::open(operations::vault_path()?)?.password_book_password(&id)?);
     }
     if request.operation == "external-edit" {return crate::nested::edit_job(request.path,request.name,request.options,request.label);}
     if matches!(request.operation.as_str(),"deep-extract"|"deep-resume"|"deep-discard"){return crate::deep_extract::execute(request,recycle_after,control);}

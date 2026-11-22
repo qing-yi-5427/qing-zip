@@ -35,7 +35,7 @@ pub fn remember<'a>(passwords: impl IntoIterator<Item = (&'a str, &'a str)>) -> 
 pub async fn password_book_list() -> Result<Vec<VaultLabel>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         vault()?
-            .extraction_passwords()
+            .password_book_entries()
             .map_err(|_| "无法读取本机密码本".into())
     })
     .await
@@ -46,21 +46,35 @@ pub async fn password_book_list() -> Result<Vec<VaultLabel>, String> {
 pub async fn password_book_get(id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         vault()?
-            .extraction_password(&id)
-            .map_err(|_| "无法读取这条解压密码".into())
+            .password_book_password(&id)
+            .map_err(|_| "无法读取这条密码".into())
     })
     .await
-    .map_err(|_| "无法读取这条解压密码".to_owned())?
+    .map_err(|_| "无法读取这条密码".to_owned())?
+}
+
+#[tauri::command]
+pub async fn password_book_save(label: String, password: String) -> Result<VaultLabel, String> {
+    if password.is_empty() {
+        return Err("请输入密码".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        vault()?
+            .save_password_book_entry(&label, &password)
+            .map_err(|_| "无法保存这条密码".into())
+    })
+    .await
+    .map_err(|_| "无法保存这条密码".to_owned())?
 }
 
 #[tauri::command]
 pub async fn password_book_delete(id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         vault()?
-            .remove_extraction_password(&id)
+            .remove_password_book_entry(&id)
             .map(|_| ())
-            .map_err(|_| "无法删除这条解压密码".into())
+            .map_err(|_| "无法删除这条密码".into())
     })
     .await
-    .map_err(|_| "无法删除这条解压密码".to_owned())?
+    .map_err(|_| "无法删除这条密码".to_owned())?
 }

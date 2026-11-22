@@ -23,6 +23,18 @@ struct VaultEntry {
 struct VaultData {
     entries: Vec<VaultEntry>,
 }
+impl VaultData {
+    fn next_id(&self, prefix: &str) -> Result<String, String> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "system clock unavailable")?
+            .as_nanos();
+        (0..=u64::MAX)
+            .map(|index| format!("{prefix}-{timestamp:x}-{index:x}"))
+            .find(|id| self.entries.iter().all(|entry| &entry.id != id))
+            .ok_or_else(|| "vault entry ID space exhausted".into())
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct VaultLabel {
     pub id: String,
@@ -122,21 +134,27 @@ impl Vault {
         Ok(())
     }
     pub fn list(&self) -> Result<Vec<VaultLabel>, String> {
-        self.list_entries(false)
+        self.list_entries(Some(false))
     }
 
     pub fn extraction_passwords(&self) -> Result<Vec<VaultLabel>, String> {
-        let mut entries = self.list_entries(true)?;
+        let mut entries = self.list_entries(Some(true))?;
         entries.reverse();
         Ok(entries)
     }
 
-    fn list_entries(&self, automatic: bool) -> Result<Vec<VaultLabel>, String> {
+    pub fn password_book_entries(&self) -> Result<Vec<VaultLabel>, String> {
+        let mut entries = self.list_entries(None)?;
+        entries.reverse();
+        Ok(entries)
+    }
+
+    fn list_entries(&self, automatic: Option<bool>) -> Result<Vec<VaultLabel>, String> {
         Ok(self
             .load()?
             .entries
             .into_iter()
-            .filter(|entry| entry.automatic == automatic)
+            .filter(|entry| automatic.is_none_or(|automatic| entry.automatic == automatic))
             .map(|e| VaultLabel {
                 id: e.id,
                 label: e.label,
@@ -162,39 +180,72 @@ impl Vault {
         self.save(&data)
     }
     pub fn get(&self, id: &str) -> Result<String, String> {
-        self.get_entry(id, false)
+        self.get_entry(id, Some(false))
     }
 
     pub fn extraction_password(&self, id: &str) -> Result<String, String> {
-        self.get_entry(id, true)
+        self.get_entry(id, Some(true))
     }
 
-    fn get_entry(&self, id: &str, automatic: bool) -> Result<String, String> {
+    pub fn password_book_password(&self, id: &str) -> Result<String, String> {
+        self.get_entry(id, None)
+    }
+
+    fn get_entry(&self, id: &str, automatic: Option<bool>) -> Result<String, String> {
         self.load()?
             .entries
             .into_iter()
-            .find(|e| e.id == id && e.automatic == automatic)
+            .find(|e| e.id == id && automatic.is_none_or(|automatic| e.automatic == automatic))
             .map(|e| e.password)
             .ok_or_else(|| "password entry not found".into())
     }
     pub fn remove(&self, id: &str) -> Result<bool, String> {
-        self.remove_entry(id, false)
+        self.remove_entry(id, Some(false))
     }
 
     pub fn remove_extraction_password(&self, id: &str) -> Result<bool, String> {
-        self.remove_entry(id, true)
+        self.remove_entry(id, Some(true))
     }
 
-    fn remove_entry(&self, id: &str, automatic: bool) -> Result<bool, String> {
+    pub fn remove_password_book_entry(&self, id: &str) -> Result<bool, String> {
+        self.remove_entry(id, None)
+    }
+
+    fn remove_entry(&self, id: &str, automatic: Option<bool>) -> Result<bool, String> {
         let _lock = self.write_lock()?;
         let mut data = self.load()?;
         let before = data.entries.len();
-        data.entries.retain(|e| e.id != id || e.automatic != automatic);
+        data.entries.retain(|e| e.id != id || automatic.is_some_and(|automatic| e.automatic != automatic));
         if data.entries.len() == before {
             return Ok(false);
         }
         self.save(&data)?;
         Ok(true)
+    }
+
+    pub fn save_password_book_entry(&self, label: &str, password: &str) -> Result<VaultLabel, String> {
+        let label = label.trim();
+        let label = if label.is_empty() { "未命名密码" } else { label };
+        if label.len() > 1024 || password.is_empty() || password.len() > 65536 {
+            return Err("invalid vault entry size".into());
+        }
+        let _lock = self.write_lock()?;
+        let mut data = self.load()?;
+        if let Some(entry) = data.entries.iter().find(|entry| entry.label == label && entry.password == password) {
+            return Ok(VaultLabel {
+                id: entry.id.clone(),
+                label: entry.label.clone(),
+            });
+        }
+        let id = data.next_id("manual")?;
+        data.entries.push(VaultEntry {
+            id: id.clone(),
+            label: label.into(),
+            password: password.into(),
+            automatic: false,
+        });
+        self.save(&data)?;
+        Ok(VaultLabel { id, label: label.into() })
     }
 
     pub fn remember_extraction_passwords<'a>(
@@ -206,17 +257,11 @@ impl Vault {
         let before = data.entries.len();
         for (label, password) in passwords {
             if password.is_empty() || password.len() > 65536
-                || data.entries.iter().any(|entry| entry.automatic && entry.password == password)
+                || data.entries.iter().any(|entry| entry.password == password)
             {
                 continue;
             }
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| "system clock unavailable")?
-                .as_nanos();
-            let id = (0u64..).map(|index| format!("extract-{timestamp:x}-{index:x}"))
-                .find(|id| data.entries.iter().all(|entry| &entry.id != id))
-                .expect("vault entry space exhausted");
+            let id = data.next_id("extract")?;
             data.entries.push(VaultEntry {
                 id,
                 label: if label.is_empty() { "解压密码".into() } else { label.chars().take(256).collect() },
@@ -1655,6 +1700,68 @@ mod tests {
         let bytes = fs::read(path).unwrap();
         assert!(!bytes.windows(13).any(|part| part == b"second-secret"));
     }
+    #[cfg(windows)]
+    #[test]
+    fn password_book_preserves_legacy_ids_and_exact_passwords() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("vault.dpapi");
+        let vault = Vault::open(&path).unwrap();
+        vault.put("legacy-manual", "手动密码", "legacy-secret").unwrap();
+        vault.remember_extraction_passwords([("archive.zip", "auto-secret")]).unwrap();
+        let automatic_id = vault.extraction_passwords().unwrap().remove(0).id;
+        let legacy = vault.password_book_entries().unwrap();
+        assert_eq!(legacy.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), [automatic_id.as_str(), "legacy-manual"]);
+
+        assert!(vault.save_password_book_entry("label", "").is_err());
+        let whitespace = vault.save_password_book_entry("  ", "  ").unwrap();
+        assert_eq!(whitespace.label, "未命名密码");
+        assert_eq!(vault.password_book_password(&whitespace.id).unwrap(), "  ");
+        assert_eq!(vault.save_password_book_entry("", "  ").unwrap().id, whitespace.id);
+
+        let renamed = vault.save_password_book_entry("  新备注  ", "auto-secret").unwrap();
+        assert_eq!(renamed.label, "新备注");
+        assert_ne!(renamed.id, automatic_id);
+        assert_eq!(vault.save_password_book_entry("新备注", "auto-secret").unwrap().id, renamed.id);
+        let different = vault.save_password_book_entry("新备注", " auto-secret ").unwrap();
+        assert_ne!(different.id, renamed.id);
+
+        vault.remember_extraction_passwords([("duplicate.zip", "legacy-secret")]).unwrap();
+        assert_eq!(vault.extraction_passwords().unwrap().len(), 1);
+        assert_eq!(vault.password_book_password(&automatic_id).unwrap(), "auto-secret");
+        assert_eq!(vault.password_book_password("legacy-manual").unwrap(), "legacy-secret");
+        assert!(vault.remove_password_book_entry(&automatic_id).unwrap());
+        assert!(vault.remove_password_book_entry("legacy-manual").unwrap());
+        assert!(!vault.remove_password_book_entry(&automatic_id).unwrap());
+        assert_eq!(vault.password_book_password(&renamed.id).unwrap(), "auto-secret");
+        assert_eq!(vault.password_book_password(&different.id).unwrap(), " auto-secret ");
+        assert_eq!(vault.password_book_entries().unwrap().len(), 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn password_book_serializes_concurrent_automatic_and_manual_saves() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("vault.dpapi");
+        let workers: Vec<_> = (0..6).map(|index| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let vault = Vault::open(path).unwrap();
+                if index % 2 == 0 {
+                    vault.save_password_book_entry("shared.zip", "same-password").unwrap();
+                } else {
+                    vault.remember_extraction_passwords([("shared.zip", "same-password")]).unwrap();
+                }
+            })
+        }).collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let vault = Vault::open(path).unwrap();
+        let entries = vault.password_book_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(vault.password_book_password(&entries[0].id).unwrap(), "same-password");
+    }
+
     #[cfg(windows)]
     #[test]
     fn vault_publish_retries_only_unchanged_authorized_target() {

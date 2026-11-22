@@ -207,7 +207,7 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     let restricted = policy.as_ref().is_some_and(|p| p.restricted());
     if let Some(id) = &r.password_id {
         if r.options.password.is_some() { return Err("choose password or password_id, not both".into()); }
-        r.options.password = Some(services::Vault::open(vault_path()?)?.get(id)?);
+        r.options.password = Some(services::Vault::open(vault_path()?)?.password_book_password(id)?);
     }
     if r.operation == "list" {
         let header_encrypted = r.detect_header_encryption.then_some(false);

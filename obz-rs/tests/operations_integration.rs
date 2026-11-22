@@ -60,7 +60,25 @@ fn cli_vault_isolated_profile_integrates_password_id() {
     call(p,json!({"operation":"create","path":archive,"inputs":[source],"password_id":"fixture"})).unwrap();
     assert_eq!(call(p,json!({"operation":"test","path":archive,"password_id":"fixture"})).unwrap()["valid"],true);
     assert!(call(p,json!({"operation":"test","path":archive,"options":{"password":"wrong"}})).is_err());
-    call(p,json!({"operation":"vault-delete","name":"fixture"})).unwrap(); assert_eq!(call(p,json!({"operation":"vault-list"})).unwrap(),json!([]));
+    let vault = obz_core::services::Vault::open(p.join("profile/OpenBandiZip/passwords.dpapi")).unwrap();
+    let manual = vault.save_password_book_entry("Test 2", "vault-fixture-secret").unwrap();
+    vault.remember_extraction_passwords([("vault.7z", "another-secret")]).unwrap();
+    let automatic = vault.extraction_passwords().unwrap().remove(0);
+    let second_archive = p.join("automatic.7z");
+    call(p, json!({"operation":"create","path":second_archive,"inputs":[source],"options":{"password":"another-secret"}})).unwrap();
+    for (path, id, output) in [
+        (&archive, manual.id.as_str(), "manual-out"),
+        (&second_archive, automatic.id.as_str(), "automatic-out"),
+    ] {
+        let dest = p.join(output);
+        call(p, json!({"operation":"extract","path":path,"dest":dest,"password_id":id})).unwrap();
+        assert_eq!(fs::read(dest.join("file.txt")).unwrap(), b"secret content");
+    }
+    call(p,json!({"operation":"vault-delete","name":"fixture"})).unwrap();
+    assert_eq!(call(p,json!({"operation":"vault-list"})).unwrap()[0]["id"], manual.id);
+    call(p,json!({"operation":"vault-delete","name":manual.id})).unwrap();
+    assert_eq!(call(p,json!({"operation":"vault-list"})).unwrap(),json!([]));
+    assert_eq!(vault.password_book_password(&automatic.id).unwrap(), "another-secret");
 }
 
 #[cfg(windows)]

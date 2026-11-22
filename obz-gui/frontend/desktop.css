@@ -510,6 +510,15 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 }
 #qing-archive .oa-password-choices > p { margin: 0; }
 #qing-archive .oa-password-choices > p:empty { display: none; }
+#qing-archive .oa-password-add {
+ padding-bottom: 16px;
+ border-bottom: 1px solid var(--qa-line);
+}
+#qing-archive .oa-password-add .qa-fieldrow { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+#qing-archive .oa-password-add [role=status],
+#qing-archive [data-book-status] { margin-block: 10px 0; }
+#qing-archive .oa-password-add [role=status]:empty,
+#qing-archive [data-book-status]:empty { display: none; }
 #qing-archive .oa-password-entry { flex-wrap: wrap; }
 #qing-archive .oa-password-entry > div:first-child {
  display: grid;
@@ -530,12 +539,5 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
   width:12px;
   transform:rotate(90deg);
 }
-#qing-archive .oa-password-vault-link {
-  display:flex;
-  flex-wrap:wrap;
-  align-items:center;
-  gap:8px;
-}
-#qing-archive .oa-password-vault-link p { margin:0; }
 #qing-archive #oa-shell-settings-title { scroll-margin-top:1rem; }
 #qing-archive [data-action=shell-open-entry] { margin-top:8px; }

@@ -290,7 +290,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![browse_local, probe_local_directory, plan_compression_outputs, local_streams,
-            password_book::password_book_list, password_book::password_book_get, password_book::password_book_delete,
+            password_book::password_book_list, password_book::password_book_get, password_book::password_book_save, password_book::password_book_delete,
             open_archive,
             extract_archive,
             create_zip,

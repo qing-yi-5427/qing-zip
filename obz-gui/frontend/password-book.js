@@ -7,9 +7,17 @@
    <button type="button" class="qa-button quiet" data-password-picker="${id}" aria-expanded="false" aria-controls="${id}-book">从密码本选择</button>
    <div id="${id}-book" class="oa-password-choices" hidden></div>
   </div>`;
-  const settingsMarkup = `<section class="qa-setting-group" aria-labelledby="oa-password-book-title">
-   <h3 id="oa-password-book-title" tabindex="-1">解压密码本</h3>
-   <p>成功解密并解压时使用的密码会自动保存，可在下次输入密码时选用。</p>
+  const pageMarkup = `<form class="oa-password-add" autocomplete="off" data-book-add>
+   <div class="qa-fieldrow">
+    <label class="qa-field">备注（选填）<input data-book-label type="text"></label>
+    <label class="qa-field">密码<input data-book-password type="password" autocomplete="new-password" required></label>
+   </div>
+   <button type="submit" class="qa-button primary">添加密码</button>
+   <p data-book-save-status role="status"></p>
+  </form>
+  <section class="qa-setting-group" aria-labelledby="oa-password-book-title">
+   <h3 id="oa-password-book-title" tabindex="-1">已保存的密码</h3>
+   <p class="qa-sub">成功解密并解压时使用的密码会自动保存。输入解压密码时可在密码本中选用。</p>
    <p data-book-status role="status"></p>
    <div data-book-entries></div>
   </section>`;
@@ -17,8 +25,9 @@
   function distinguishEntries(entries) {
    const totals = new Map();
    const occurrences = new Map();
-   for (const {label} of entries) totals.set(label, (totals.get(label) ?? 0) + 1);
-   return entries.map(({id, label}) => {
+   const named = entries.map(({id, label}) => ({id, label: label.trim() ? label : id}));
+   for (const {label} of named) totals.set(label, (totals.get(label) ?? 0) + 1);
+   return named.map(({id, label}) => {
     if (totals.get(label) === 1) return {id, label};
     const occurrence = (occurrences.get(label) ?? 0) + 1;
     occurrences.set(label, occurrence);
@@ -90,14 +99,57 @@
    }
   }
 
-  async function mountSettings(container) {
+  let pendingWrite = null;
+  let listRequest = 0;
+  function write(command, args) {
+   const request = invoke(command, args);
+   pendingWrite = request;
+   return request.finally(() => { pendingWrite = null; });
+  }
+
+  function mountPage(container) {
+   const form = container.querySelector('[data-book-add]');
+   const label = form.querySelector('[data-book-label]');
+   const password = form.querySelector('[data-book-password]');
+   const submit = form.querySelector('button');
+   const saveStatus = form.querySelector('[data-book-save-status]');
+   form.onsubmit = async event => {
+    event.preventDefault();
+    if (submit.disabled || pendingWrite || !password.value) return;
+    submit.disabled = label.disabled = password.disabled = true;
+    saveStatus.textContent = '正在保存密码…';
+    try {
+     await write('password_book_save', {label: label.value, password: password.value});
+     form.reset();
+     if (form.isConnected) {
+      saveStatus.textContent = '已保存密码。';
+      await loadEntries(container);
+     }
+    } catch {
+     if (form.isConnected) saveStatus.textContent = '无法保存密码，请重试。';
+    } finally {
+     submit.disabled = label.disabled = password.disabled = false;
+     if (form.isConnected && (document.activeElement === document.body || form.contains(document.activeElement))) {
+      password.focus({preventScroll: true});
+     }
+    }
+   };
+   loadEntries(container);
+  }
+
+  async function loadEntries(container) {
    const heading = container.querySelector('#oa-password-book-title');
    const status = container.querySelector('[data-book-status]');
    const list = container.querySelector('[data-book-entries]');
+   const request = ++listRequest;
+   const current = () => list.isConnected && request === listRequest;
+   list.replaceChildren();
    status.textContent = '正在读取密码本…';
    try {
+    if (pendingWrite) await pendingWrite.catch(() => {});
+    if (!current()) return;
     const entries = await invoke('password_book_list');
-    if (!list.isConnected) return;
+    if (!current()) return;
     status.textContent = entries.length ? '' : '密码本暂无记录。';
     for (const {id, label} of distinguishEntries(entries)) {
      const row = document.createElement('div');
@@ -138,12 +190,12 @@
       }
      };
      remove.onclick = async () => {
-      if (!window.confirm('从密码本删除此密码？')) return;
+      if (pendingWrite || !window.confirm('从密码本删除此密码？')) return;
       conceal();
       reveal.disabled = remove.disabled = true;
       status.textContent = '';
       try {
-       await invoke('password_book_delete', {id});
+       await write('password_book_delete', {id});
        if (!row.isConnected) return;
        row.remove();
        if (!list.childElementCount) status.textContent = '密码本暂无记录。';
@@ -156,10 +208,10 @@
      list.append(row);
     }
    } catch {
-    if (list.isConnected) status.textContent = '无法读取密码本。';
+    if (current()) status.textContent = '无法读取密码本。';
    }
   }
 
-  return {settingsMarkup, mountPickers, mountSettings, closePicker};
+  return {pageMarkup, mountPickers, mountPage, closePicker};
  };
 })();
