@@ -3,7 +3,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !ifndef VERSION
-!define VERSION "0.12.19"
+!define VERSION "0.12.20"
 !endif
 !ifndef STAGING
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"

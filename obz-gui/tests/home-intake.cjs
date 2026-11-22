@@ -7,6 +7,48 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
 const logic = source.slice(source.indexOf('let homeIntake='), source.indexOf('const compressionExtensions='));
 
+test('home starts without programmatic focus and restores its control after navigation', () => {
+ const body = {};
+ const document = {activeElement: body};
+ const heading = {matches: () => false, hasAttribute: () => false, focus() { document.activeElement = this; }};
+ const control = {
+  matches: () => true,
+  hasAttribute: name => name === 'data-action',
+  getAttribute: () => 'home-smart',
+  focus() { document.activeElement = this; },
+ };
+ const main = {
+  contains: element => element === control || element === heading,
+  querySelector: selector => selector === 'h1' ? heading : selector === '[data-action="home-smart"]' ? control : null,
+  set innerHTML(_) { document.activeElement = body; },
+ };
+ const noop = () => {};
+ const {render, navigate} = vm.runInNewContext(
+  source.slice(source.indexOf('const pagePositions='), source.indexOf('function dialog(')) + '({render,navigate})',
+  {
+   s: {page: 'files', view: 'home'}, main, document, CSS: {escape: String},
+   overlay: {hidden: true, dataset: {}}, $: () => ({}),
+   archiveTabs: [], currentTabId: null, homeIntake: null, close: noop,
+   settings: noop, associationPage: noop, batchPage: noop, profilesPage: noop,
+   toolbox: noop, toolPage: noop, historyPage: noop, passwordBookPage: noop,
+   home: noop, releaseListingWindow: noop, stopThumbnailObserver: noop,
+   renderChrome: noop, updateColumnScroll: noop, renderInlineTask: noop,
+  },
+ );
+ render();
+ assert.equal(document.activeElement, body);
+ assert.equal(heading.tabIndex, undefined);
+
+ control.focus();
+ main.scrollTop = 42;
+ navigate('tools');
+ assert.equal(document.activeElement, heading);
+ assert.equal(heading.tabIndex, -1);
+ navigate('files');
+ assert.equal(document.activeElement, control);
+ assert.equal(main.scrollTop, 42);
+});
+
 test('ZIP repair moves from home to a labeled toolbox group while recent files remain on home',()=>{
  const context={
   btn:(_label,action)=>action, esc:String, filename:path.win32.basename,

@@ -480,10 +480,10 @@ function rememberPage(focus=document.activeElement){
  pagePositions.set(renderedPage,{top:main.scrollTop,left:main.scrollLeft,
   focus:key?'['+key+'="'+CSS.escape(focus.getAttribute(key))+'"]':previous?.focus});
 }
-function applyPagePosition(page,transition,position){
+function applyPagePosition(page,restoreFocus,position){
  main.scrollTop=position?.top||0;
  main.scrollLeft=position?.left||0;
- if(!transition||!overlay.hidden||page.startsWith('archive:'))return;
+ if(!restoreFocus||!overlay.hidden||page.startsWith('archive:'))return;
  const target=(position?.focus&&main.querySelector(position.focus))||main.querySelector('h1')||main;
  if(!target.matches('button,input,select,textarea,a[href]'))target.tabIndex=-1;
  target.focus({preventScroll:true});
@@ -491,6 +491,7 @@ function applyPagePosition(page,transition,position){
 function render(){if(overlay.dataset.page==='close-confirm')return;releaseListingWindow();stopThumbnailObserver();rememberPage();
  const page=s.page==='files'?(s.archive?'archive:'+currentTabId:'home'):s.page==='tool'?'tool:'+toolContext.op+':'+toolContext.origin:s.page;
  const transition=page!==renderedPage;
+ const focusTransition=transition&&renderedPage!=='';
  const currentTab=archiveTabs.find(tab=>tab.id===currentTabId);
  const position=page.startsWith('archive:')?(transition?{top:currentTab?.scrollTop,left:currentTab?.scrollLeft}:{top:main.scrollTop,left:main.scrollLeft}):pagePositions.get(page);
  renderedPage=page;
@@ -501,7 +502,7 @@ function render(){if(overlay.dataset.page==='close-confirm')return;releaseListin
   if(s.page==='tool'&&toolContext.scope==='archive')mountArchiveTool($('qa-tools'),toolContext);
   if(s.page==='password-book')passwordBook.mountPage(main);
  }
- renderChrome();if(s.page==='files'&&s.archive)rows();applyPagePosition(page,transition,position);updateColumnScroll();$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';renderInlineTask();$('oa-total').textContent=s.archive?`${archiveIndex(s.entries).files} 个文件 · ${archiveIndex(s.entries).directories} 个文件夹`:'';if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
+ renderChrome();if(s.page==='files'&&s.archive)rows();applyPagePosition(page,focusTransition,position);updateColumnScroll();$('qa-status-text').textContent=s.active?'正在处理文件…':'就绪';renderInlineTask();$('oa-total').textContent=s.archive?`${archiveIndex(s.entries).files} 个文件 · ${archiveIndex(s.entries).directories} 个文件夹`:'';if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
 
 function navigate(v){if(!['files','archive','home','tools','tool','history','settings','associations','batch','profiles','jobs','password-book'].includes(v))return;if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}if(renderedPage==='archive:'+currentTabId)saveCurrentTab();rememberPage();close(false);if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();}
 
