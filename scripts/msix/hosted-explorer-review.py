@@ -34,7 +34,23 @@ try:
  archive=root/'sample.zip'
  with zipfile.ZipFile(archive,'w') as z:z.writestr('inside.txt','synthetic archive content\n')
  report['source_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
- shell=Dispatch('Shell.Application');shell.Open(str(root));desktop=Desktop(backend='uia')
+ desktop=Desktop(backend='uia')
+ # Hosted Windows 11 ARM images can start behind first-run privacy setup.
+ # Complete it only on this disposable machine before interacting with Explorer.
+ report['first_run_actions']=[]
+ for _ in range(12):
+  candidates=[]
+  for top in desktop.windows():
+   try:
+    if top.is_visible():
+     for button in top.descendants(control_type='Button'):
+      if button.is_visible() and button.element_info.name in ('Next','Accept'):
+       candidates.append(button)
+   except Exception: pass
+  if not candidates: break
+  button=candidates[0];report['first_run_actions'].append(button.element_info.name);button.click_input();time.sleep(2)
+ snapshot('desktop-after-first-run');save()
+ shell=Dispatch('Shell.Application');shell.Open(str(root))
  def explorer():
   for w in shell.Windows():
    try:
