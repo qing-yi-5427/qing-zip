@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('baseline', 'combined', 'round2')]
+    [ValidateSet('baseline', 'combined', 'round2', 'midwrite')]
     [string]$Trial,
     [ValidatePattern('^[0-9]{1,20}$')]
     [string]$BuildRun
@@ -17,7 +17,8 @@ $runs = @{
     combined = @{ id = '45116763549'; source = 'e9eeecd414fa7379fc959967fb1645ced24eeb62' }
     round2 = @{ id = '45118493619'; source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' }
 }
-$trialRun = $runs[$Trial]
+$trialRun = if ($Trial -eq 'midwrite') { $runs.round2 } else { $runs[$Trial] }
+$mode = if ($Trial -eq 'midwrite') { 'midwrite' } else { 'historical' }
 if ($BuildRun) { $trialRun.id = $BuildRun }
 $tempRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
 if ($tempRoot -notmatch '^[A-Za-z]:\\[^"\r\n]+$') { throw 'Expected local runner temp path' }
@@ -132,7 +133,7 @@ try {
     Set-Content -LiteralPath (Join-Path ('{0}:\' -f $letter) 'qz-volume-owner') -Value $marker -Encoding ascii -NoNewline
     $context.stage = 'product'
     Write-Receipt
-    python (Join-Path $PSScriptRoot 'check-hosted-zip-capacity.py') $job $letter $label $marker $trialRun.source
+    python (Join-Path $PSScriptRoot 'check-hosted-zip-capacity.py') $job $letter $label $marker $trialRun.source $mode
     $productExit = $LASTEXITCODE
     $productReceipt = Join-Path $evidence 'zip-space-receipt.json'
     if (Test-Path -LiteralPath $productReceipt) {

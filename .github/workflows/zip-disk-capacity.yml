@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       trial:
-        description: Run both historical cases or only the final round-two package
+        description: Select historical, final package, or incomplete-write acceptance
         type: choice
-        options: [historical, round2]
+        options: [historical, round2, midwrite]
         default: historical
       baseline_build_run:
         description: Replacement hardened run for the pinned baseline source
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        trial: ${{ fromJSON(inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
+        trial: ${{ fromJSON(inputs.trial == 'midwrite' && '["midwrite"]' || inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -56,6 +56,7 @@ jobs:
             'baseline' { $env:BASELINE_RUN }
             'combined' { $env:COMBINED_RUN }
             'round2' { $env:ROUND2_RUN }
+            'midwrite' { $env:ROUND2_RUN }
           }
           if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
           else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }

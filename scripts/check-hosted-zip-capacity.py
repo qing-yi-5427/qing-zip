@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 MIB = 1024 * 1024
@@ -156,11 +157,151 @@ def exercise(case, cli, work, env, root, marker, identity, result):
           "Retry did not publish exact content while preserving unrelated files")
     result["status"] = "passed"
 
+def reserve_for_midwrite(filler, root, marker, identity, headroom):
+    usage = verify_volume(root, marker, identity)
+    amount = (usage.free - headroom) // 4096 * 4096
+    check(0 < amount < CAPACITY, "Insufficient isolated volume headroom to reserve")
+    with filler.open("x+b", buffering=0) as handle:
+        check(volume_identity(root, handle) == identity, "Reserve handle left verified volume")
+        block = b"\x7d" * MIB
+        while amount:
+            chunk = block[:min(amount, len(block))]
+            check(handle.write(chunk) == len(chunk), "Reserve write was short")
+            amount -= len(chunk)
+        os.fsync(handle.fileno())
+
+
+def observe_extract(cli, work, env, args, stage_parents, root, prefix, payload_size, observations):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.GetFileSizeEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_int64)]
+    kernel.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    size, count = ctypes.c_int64(), wintypes.DWORD()
+    content = ctypes.create_string_buffer(len(prefix))
+    largest = 0
+    started = time.perf_counter()
+    log = work / "midwrite-stderr.txt"
+    with log.open("xb") as stderr:
+        process = subprocess.Popen([cli, "extract", *args], cwd=work, env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr)
+        try:
+            while process.poll() is None:
+                elapsed = time.perf_counter() - started
+                check(elapsed < 60, "Midwrite observation exceeded product timeout")
+                observations["polls"] += 1
+                for parent in stage_parents:
+                    for directory in parent.glob(".qing-zip-stage-*"):
+                        path = directory / "payload.bin"
+                        # Open only the fixture's private file, read-only, sharing
+                        # read, write and delete so cleanup remains unimpeded.
+                        handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x00200000, None)
+                        if handle == wintypes.HANDLE(-1).value:
+                            observations["open_errors"] += 1
+                            continue
+                        try:
+                            if not kernel.GetFileSizeEx(handle, ctypes.byref(size)):
+                                continue
+                            if not largest < size.value < payload_size or size.value < len(prefix):
+                                continue
+                            if not kernel.ReadFile(handle, content, len(prefix), ctypes.byref(count), None):
+                                continue
+                            if count.value != len(prefix) or content.raw != prefix:
+                                continue
+                            largest = size.value
+                            observations["samples"].append({
+                                "elapsed_ms": round(elapsed * 1000, 2),
+                                "file_bytes": largest,
+                                "free_bytes": shutil.disk_usage(root).free,
+                                "prefix_sha256": hashlib.sha256(content.raw).hexdigest(),
+                                "private_temp_parent": parent.name,
+                            })
+                        finally:
+                            kernel.CloseHandle(handle)
+                time.sleep(0.001)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+    message = log.read_text(encoding="utf-8", errors="replace").strip()
+    message = message.replace(str(work.parent), "<qa-root>").replace(str(root), "<qa-volume>/")
+    return {"exit": process.returncode, "stderr": message[:1800],
+            "space_diagnostic": bool(SPACE_ERROR.search(message))}
+
+
+def exercise_midwrite(cli, work, env, root, marker, identity, result):
+    # Above the 8 MiB memory-per-member threshold and small enough for a
+    # complete extraction plus a second publication copy after releasing space.
+    payload_size, headroom = 32 * MIB, 28 * MIB
+    prefix_size = 64
+    data = random.Random(112).randbytes(payload_size)
+    archive = work / "midwrite.zip"
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_STORED) as fixture:
+        fixture.writestr("payload.bin", data)
+    job = root / ("qa-" + marker) / "midwrite"
+    destination, temporary = job / "output", job / "temp"
+    destination.mkdir(parents=True)
+    temporary.mkdir()
+    target, sentinel = destination / "payload.bin", destination / "unrelated.txt"
+    target.write_bytes(b"Keep the existing destination after incomplete extraction.\n")
+    sentinel.write_bytes(b"Keep this unrelated file.\n")
+    args = (archive, destination, "--overwrite", "overwrite", "--threads", "1")
+    env = dict(env, TEMP=str(temporary), TMP=str(temporary))
+    before, archive_sha = snapshot(job), sha(archive)
+    filler = job.parent / "midwrite-owned-reserve.bin"
+    restored_required = 2 * payload_size + 4 * MIB
+    free_before = verify_volume(root, marker, identity).free
+    check(free_before >= restored_required, "Isolated volume cannot support an unconstrained retry")
+    observations = {"polls": 0, "open_errors": 0, "samples": []}
+    result.update(payload_bytes=payload_size, free_before_reserve=free_before, state_before=before,
+                  archive_before=archive_sha, observations=observations)
+    try:
+        reserve_for_midwrite(filler, root, marker, identity, headroom)
+        free = verify_volume(root, marker, identity).free
+        result["free_at_launch"] = free
+        check(headroom - 64 * 1024 <= free < payload_size, "Expected genuine nonzero space shortfall")
+        result["full_attempt"] = observe_extract(cli, work, env, args, (temporary, job, destination),
+                                                 root, data[:prefix_size], payload_size, observations)
+        result["free_after_failure"] = verify_volume(root, marker, identity).free
+        result["state_after_failure"], result["archive_after_failure"] = snapshot(job), sha(archive)
+    finally:
+        if filler.exists():
+            verify_volume(root, marker, identity)
+            filler.unlink()
+            result["free_after_release"] = verify_volume(root, marker, identity).free
+
+    if result["state_after_failure"] != before or result["archive_after_failure"] != archive_sha:
+        result["status"] = "failed"
+        raise RuntimeError("Incomplete overwrite changed the original archive, existing target, or private stage tree")
+
+    samples = observations["samples"]
+    check(samples, "Did not observe actual payload bytes in an incomplete private staging file")
+    open_error = result["full_attempt"]
+    check(open_error["space_diagnostic"] and
+          (samples[-1]["free_bytes"] <= 4096 or re.search(r"os error (112|39)\b|0x800700(70|27)\b", open_error["stderr"], re.I)),
+          "Could not confirm native disk exhaustion after observing staged payload bytes")
+    result["status"] = "failed"
+    check(open_error["exit"] == 1, "Expected a handled CLI failure after writing payload bytes")
+    check(result["free_after_release"] >= restored_required, "Insufficient space after releasing owned reserve")
+    result["retry"] = invoke(cli, work, env, "extract", args)
+    expected_payload_sha = hashlib.sha256(data).hexdigest()
+    expected_after = dict(before, **{"output/payload.bin": expected_payload_sha})
+    result["state_after_retry"], result["archive_after_retry"] = snapshot(job), sha(archive)
+    result["expected_payload_sha256"] = expected_payload_sha
+    check(result["retry"]["exit"] == 0 and result["state_after_retry"] == expected_after
+          and result["archive_after_retry"] == archive_sha,
+          "Retry did not publish the exact member and preserve all other files")
+    result["status"] = "passed"
+
 
 def main():
     check(os.name == "nt" and all(os.environ.get(key) == value for key, value in HOSTED.items()),
           "Requires a disposable GitHub-hosted Windows x64 job")
-    job, letter, label, marker, source_commit = sys.argv[1:]
+    job, letter, label, marker, source_commit, mode = sys.argv[1:]
+    check(mode in {'historical', 'midwrite'}, 'Invalid test mode')
     job = Path(job).resolve(strict=True)
     check(job.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
           and job.name.startswith("qz-capacity-"), "Expected exact job-owned runner temp root")
@@ -183,10 +324,6 @@ def main():
         (root / ("qa-" + marker)).mkdir()
         work = job / "fixtures"
         work.mkdir()
-        source = work / "payload.bin"
-        source.write_bytes(random.Random(112).randbytes(PAYLOAD))
-        with zipfile.ZipFile(work / "source.zip", "x", compression=zipfile.ZIP_STORED) as fixture:
-            fixture.write(source, source.name)
         cli = job / "stage/obz.exe"
         report.update(cli_sha256=sha(cli), worker_sha256=sha(job / "stage/obz-worker.exe"))
         env = dict(os.environ)
@@ -194,11 +331,19 @@ def main():
             owned = work / name
             owned.mkdir(exist_ok=True)
             env[variable] = str(owned)
-        for case in ("create", "extract"):
+        if mode == 'historical':
+            source = work / "payload.bin"
+            source.write_bytes(random.Random(112).randbytes(PAYLOAD))
+            with zipfile.ZipFile(work / "source.zip", "x", compression=zipfile.ZIP_STORED) as fixture:
+                fixture.write(source, source.name)
+        for case in ("midwrite",) if mode == 'midwrite' else ("create", "extract"):
             result = {"status": "blocked"}
             report["cases"][case] = result
             try:
-                exercise(case, cli, work, env, root, marker, identity, result)
+                if case == "midwrite":
+                    exercise_midwrite(cli, work, env, root, marker, identity, result)
+                else:
+                    exercise(case, cli, work, env, root, marker, identity, result)
             except (RuntimeError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
                 result["error"] = str(error).replace(str(job), "<qa-root>").replace(str(root), "<qa-volume>/")
             save()
