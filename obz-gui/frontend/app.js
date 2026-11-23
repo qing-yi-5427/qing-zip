@@ -745,7 +745,7 @@ function engineFileProblems(text){
  const add=line=>{if(line&&!found.includes(line))found.push(line);};
  for(let i=0;i<lines.length;i++){
   const marker=/^(?:(?:System|Open)\s+)?(?:WARNINGS?|ERRORS?):\s*(.*)$/i.exec(lines[i]);
-  if(!marker)continue;
+  if(!marker||/^\d+$/.test(marker[1]))continue; // "Errors: 1" is the closing count, not a reason.
   add(marker[1]);
   const next=lines.slice(i+1).find(Boolean);
   if(!marker[1]&&next)add(next);
