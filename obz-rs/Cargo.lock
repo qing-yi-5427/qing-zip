@@ -866,6 +866,7 @@ dependencies = [
  "md-5",
  "miniz_oxide 0.8.9",
  "oxiarc-lzhuf",
+ "rars",
  "serde",
  "serde_json",
  "sha1",

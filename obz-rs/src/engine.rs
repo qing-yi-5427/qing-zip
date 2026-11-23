@@ -3,6 +3,8 @@
 mod compressed_tar;
 #[cfg(nana_selected_worker)]
 pub mod selected_worker;
+#[cfg(nana_selected_worker)]
+mod rar15_stored;
 #[cfg(windows)]
 pub mod verification_lease;
 #[cfg(windows)]
@@ -2953,6 +2955,10 @@ fn extract_raw_to(
     // listing/format guard through decoding and publication.
     let source_path = absolute(path)?;
     let mut source_guard = crate::engine_stream::pin(&source_path)?;
+    #[cfg(nana_selected_worker)]
+    let stored_rar = if opts.verification_reuse.is_none() {
+        rar15_stored::Plan::prepare(&source_path, &mut source_guard, opts, &ctl)?
+    } else { None };
     #[cfg(windows)]
     let _volume_guards = crate::engine_stream::pin_numbered_7z_parts(&source_path)?;
     let mut memory_source = if policy.restricted() { None } else { memory_archive_source(path, opts) };
@@ -2966,13 +2972,13 @@ fn extract_raw_to(
         None
     };
     #[cfg(nana_selected_worker)]
-    let direct = if _volume_guards.is_empty() && opts.verification_reuse.is_none()
+    let direct = if stored_rar.is_none() && _volume_guards.is_empty() && opts.verification_reuse.is_none()
         && crate::stream_formats::raw_format(path).is_none()
     {
         selected_worker::direct_worker::prepare(&source_path, &mut source_guard, opts, &ctl)?
     } else { None };
     #[cfg(nana_selected_worker)]
-    let prefetched = if direct.is_none() && _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
+    let prefetched = if stored_rar.is_none() && direct.is_none() && _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
     #[cfg(nana_selected_worker)]
     let (all_entries,mut payload_source,mut full_worker,mut direct_worker)=match (direct,prefetched) {
         (Some((entries,pending)), _) => (entries,PayloadSource::Engine,None,Some(pending)),
@@ -2981,6 +2987,8 @@ fn extract_raw_to(
     };
     #[cfg(not(nana_selected_worker))]
     let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
+    #[cfg(nana_selected_worker)]
+    if let Some(plan) = &stored_rar { plan.verify_manifest(&all_entries)?; }
     let rar = has_rar_signature(&mut source_guard);
     ctl.set("preparing-extraction", None, "");
     #[cfg(windows)]
@@ -3256,7 +3264,14 @@ fn extract_raw_to(
         let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
         #[cfg(not(nana_selected_worker))]
         let full_streamed = false;
-        let streamed = full_streamed || split_streamed || (!unencrypted_projection && memory.is_none() && decode_selected_zip(
+        #[cfg(nana_selected_worker)]
+        let stored_rar_streamed = if let Some(plan) = &stored_rar {
+            plan.stage(&source_guard, &entries, stage.path(), stage_guards, &ctl)?;
+            true
+        } else { false };
+        #[cfg(not(nana_selected_worker))]
+        let stored_rar_streamed = false;
+        let streamed = stored_rar_streamed || full_streamed || split_streamed || (!unencrypted_projection && memory.is_none() && decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,
@@ -4955,7 +4970,18 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
     ctl.check()?;
     ctl.set("testing", None, "Checking archive integrity");
     let mut a = base("t", opts)?;
-    let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
+    let source_path = absolute(path)?;
+    let mut source_guard = crate::engine_stream::pin(&source_path)?;
+    #[cfg(nana_selected_worker)]
+    if let Some(plan) = rar15_stored::Plan::prepare(&source_path, &mut source_guard, opts, &ctl)? {
+        let (entries, _) = list_raw_with_source(path, opts, &mut source_guard)?;
+        plan.verify_manifest(&entries)?;
+        ctl.set("testing", None, "Checking archive integrity");
+        plan.test(&source_guard, &ctl)?;
+        policy.unchanged()?;
+        ctl.set("complete", Some(100), "Archive integrity verified");
+        return Ok(());
+    }
     if verified_empty_zip(path, opts, &mut source_guard, &ctl)? {
         ctl.set("complete", Some(100), "Archive integrity verified");
         return Ok(());

@@ -54,6 +54,7 @@ jobs:
             'engine::selected_worker::zip_listing::tests::zip_member_times_reject_wrong_types_counts_and_existing_unsafe_metadata',
             'engine::selected_worker::zip_listing::tests::zip_member_times_protocol_v2_is_synchronized_and_rejects_v1',
             'engine::parent_round_robin_preserves_every_index_and_parent_order',
+            'engine::rar15_stored::tests::ordinary_volume_headers_share_one_metadata_budget',
             'engine::parent_round_robin_requires_owned_direct_memory_error_publication'
             'engine::release_helpers_use_only_the_bundled_runtime'
           )
@@ -73,6 +74,15 @@ jobs:
           }
           cargo test --locked --manifest-path obz-rs/Cargo.toml --test deep_extract -- --test-threads=1
           exit $LASTEXITCODE
+      - name: Classic stored RAR volume verification and extraction
+        shell: pwsh
+        run: |
+          $testName = 'cli_classic_stored_rar_volumes_are_verified_before_publication'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test operations_integration $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing RAR test: $testName" }
       - name: Explorer argument, COM and filesystem selection tests
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
