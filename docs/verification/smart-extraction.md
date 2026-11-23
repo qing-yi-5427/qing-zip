@@ -22,4 +22,10 @@ python scripts/check-smart-extraction-gui.py `
   --scratch-parent (Join-Path $env:PUBLIC 'Documents')
 ```
 
-输出包含双方预告与任务截图，以及包含相对路径与哈希的 JSON。从首页选择后缀改为 `.dat` 的普通 ZIP 会打开预填的深度解压对话框，预告与任务均指向 `home`。脚本还核对工具箱批量输出、深度同名目录编号和 `--smart-extract` 参数转交。真实 Explorer 右键菜单与 OLE 拖放属于单独的验收范围。
+输出包含双方预告与任务截图，以及包含相对路径与哈希的 JSON。从首页选择后缀改为 `.dat` 的普通 ZIP 会打开预填的深度解压对话框，预告与任务均指向 `home`。脚本还核对工具箱批量输出、深度同名目录编号和 `--smart-extract` 参数转交。已注册的 Explorer 右键菜单需独立验收。
+
+## 从资源管理器实际拖入首页
+
+托管 Windows x64 桌面上，将临时文件夹中的 `parcel.dat` 从原生 Explorer 实际拖入 qing-zip。驱动核对了鼠标按下和落点所属的窗口。悬停时，首页显示「松开以识别文件」。松开后应用识别出 ZIP，显示预期输出目录。点击开始后，任务记录指向 `parcel`，磁盘中的 `parcel/item.txt` 与生成的内容相同，原包 SHA-256 保持一致。桌面为 1024 × 768。应用使用真实 Tauri 文件拖放接口。[托管运行](https://github.com/qing-yi-5427/qing-zip/actions/runs/45109164716) · [鼠标和文件回执](smart-extraction/explorer-drop/receipt.json)
+
+[悬停](smart-extraction/explorer-drop/hover.png) · [识别与预告](smart-extraction/explorer-drop/preview.png) · [完成结果](smart-extraction/explorer-drop/result.png)
