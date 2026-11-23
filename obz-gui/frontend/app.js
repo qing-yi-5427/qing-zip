@@ -1463,7 +1463,8 @@ function validateCompressionSources(format,inputs,separate){
   addFiles.focus();
   throw Error('请先添加要压缩的文件或文件夹。');
  }
- if(window.qingCompression.singleFile(format)&&((!separate&&inputs.length!==1)||inputs.some(input=>/[\\/]$/.test(input)))){
+ // Folder sources are rejected by plan_compression_outputs, which can see the file system.
+ if(window.qingCompression.singleFile(format)&&!separate&&inputs.length!==1){
   invalidCompressionField($('qa-format'),'此格式每个压缩包只接受一个文件。请调整来源或更改格式。');
  }
 }
@@ -1495,7 +1496,8 @@ async function confirmCompressionOutputs(format,inputs,volumeBytes){
  button.disabled=true;
  body.inert=true;
  try{
-  const outputs=await invoke('plan_compression_outputs',{paths,format,volumeBytes:volumeBytes||null});
+  const sources=separate?inputs.map(input=>[input]):[inputs];
+  const outputs=await invoke('plan_compression_outputs',{paths,format,volumeBytes:volumeBytes||null,sources});
   if(!preview.isConnected||save.value.trim()!==(separate?path:paths[0])||separate!==$('oa-separate').checked||format!==$('qa-format').value||JSON.stringify(inputs)!==JSON.stringify(lines('qa-inputs')))return null;
   const conflict=outputs.some((output,i)=>output!==paths[i]);
   const key=JSON.stringify({paths,outputs,volumeBytes});
@@ -1510,10 +1512,13 @@ async function confirmCompressionOutputs(format,inputs,volumeBytes){
   return outputs;
  }catch(reason){
   if(!preview.isConnected)return null;
-  if(/unsafe archive path|输出文件名无效|输出路径缺少目录/.test(String(reason))){
+  const text=String(reason);
+  if(/unsafe archive path|输出文件名无效|输出路径缺少目录/.test(text)){
    body.inert=false;
    invalidCompressionField(save,'输出文件名无效。请检查文件名，或选择其他保存位置。');
   }
+  if(/^(?:Error:\s*)?所选格式只能压缩单个文件/.test(text)){body.inert=false;invalidCompressionField($('qa-format'),text.replace(/^Error:\s*/,''));}
+  if(/^(?:Error:\s*)?保存位置在来源文件夹内/.test(text)){body.inert=false;invalidCompressionField(save,text.replace(/^Error:\s*/,''));}
   throw reason;
  }finally{
   button.disabled=false;

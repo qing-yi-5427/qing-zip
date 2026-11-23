@@ -71,7 +71,8 @@ test('single-file formats validate combined sources before creating jobs and all
   assert.equal(focused, 'add-files');
   assert.throws(() => context.validateCompressionSources('gzip', ['a.txt', 'b.txt'], false), /只接受一个文件/);
   assert.equal(focused, 'format');
-  assert.throws(() => context.validateCompressionSources('gzip', ['C:\\folder\\'], true), /只接受一个文件/);
+  // Whether a separate source is a folder is decided by plan_compression_outputs.
+  assert.doesNotThrow(() => context.validateCompressionSources('gzip', ['C:\\folder'], true));
   assert.doesNotThrow(() => context.validateCompressionSources('gzip', ['a.txt', 'b.txt'], true));
   assert.doesNotThrow(() => context.validateCompressionSources('tgz', ['a.txt', 'b.txt'], false));
 });
@@ -114,6 +115,7 @@ test('a renamed output requires acknowledgment and a changed collision requires 
   context.invoke = async (command, args) => {
     assert.equal(command, 'plan_compression_outputs');
     assert.deepEqual(Array.from(args.paths), [requested]);
+    assert.deepEqual(JSON.parse(JSON.stringify(args.sources)), [inputs]);
     assert.equal(body.inert, true);
     assert.equal(button.disabled, true);
     return [chosen];
@@ -129,6 +131,32 @@ test('a renamed output requires acknowledgment and a changed collision requires 
   assert.equal(await context.confirmCompressionOutputs('zip', inputs), null);
   assert.match(preview.innerHTML, /将创建以下压缩包/);
   assert.deepEqual(await context.confirmCompressionOutputs('zip', inputs), [chosen]);
+});
+
+test('source problems found while planning point at the field that fixes them', async () => {
+  const {context, fields} = fixture();
+  const preview = fields['oa-compression-preview'] = {dataset: {}, hidden: true, isConnected: true, closest: () => ({inert: false})};
+  const button = {disabled: false, textContent: '创建压缩包', setAttribute() {}, removeAttribute() {}, focus() {}};
+  let focused = '';
+  fields['qa-save'] = {value: 'D:\\out', setAttribute() {}, focus() { focused = 'save'; }};
+  fields['qa-format'].focus = () => { focused = 'format'; };
+  fields['oa-separate'] = {checked: true};
+  context.overlay = {querySelector: () => button};
+  context.document = {activeElement: button};
+  context.compressionLeaf = input => input.split('\\').at(-1);
+  context.compressionExtensions = {gzip: '.gz', zip: '.zip'};
+  const inputs = ['C:\\a.txt', 'C:\\dir'];
+  let sent, failure;
+  context.invoke = async (_command, args) => { sent = JSON.parse(JSON.stringify(args.sources)); throw failure; };
+  failure = '所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR.GZ、ZIP 或 7z 等格式，或移除文件夹来源：\nC:\\dir';
+  await assert.rejects(context.confirmCompressionOutputs('gzip', inputs), error => error.message === failure);
+  assert.deepEqual(sent, [['C:\\a.txt'], ['C:\\dir']]);
+  assert.equal(focused, 'format');
+  assert.equal(button.disabled, false);
+  failure = '保存位置在来源文件夹内，压缩包会把自己打包进去。请选择来源文件夹以外的位置：\nC:\\dir';
+  await assert.rejects(context.confirmCompressionOutputs('zip', inputs), error => error.message === failure);
+  assert.equal(focused, 'save');
+  assert.equal(preview.hidden, true);
 });
 
 test('same basenames show the nearest parents that distinguish their paths', () => {

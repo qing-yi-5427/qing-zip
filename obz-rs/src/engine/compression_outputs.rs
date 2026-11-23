@@ -2,14 +2,18 @@ use super::*;
 
 /// Suggest unused output paths without creating directories or reserving files.
 /// Actual publication still checks every output and never overwrites it.
-pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Option<u64>) -> Result<Vec<String>, String> {
+/// `sources[i]` lists the inputs of `paths[i]`; source problems that would only
+/// surface after earlier outputs of a batch were written are reported here.
+pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Option<u64>, sources: &[Vec<String>]) -> Result<Vec<String>, String> {
     if volume_bytes == Some(0) { return Err("分卷大小必须大于零".into()); }
+    if sources.len() != paths.len() { return Err("来源与输出数量不一致".into()); }
     let mut directories: HashMap<String, (HashSet<String>, HashSet<String>)> = HashMap::new();
     let mut results = Vec::with_capacity(paths.len());
-    for requested in paths {
+    for (requested, inputs) in paths.iter().zip(sources) {
         let path = std::path::absolute(requested).map_err(|e| e.to_string())?;
         let parent = path.parent().ok_or("输出路径缺少目录")?;
         no_links(parent)?;
+        check_sources(parent, inputs, format)?;
         let filename = path.file_name().and_then(|name| name.to_str()).ok_or("输出文件名无效")?;
         validate_name(filename)?;
         let directory_key = path_key(parent);
@@ -54,6 +58,34 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
     }
     Ok(results)
 }
+
+/// Report the create-time source errors before any output of a batch exists.
+/// Missing sources are left to creation, which names them.
+fn check_sources(parent: &Path, inputs: &[String], format: &str) -> Result<(), String> {
+    let mut roots = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        roots.push(std::path::absolute(input).map_err(|e| e.to_string())?);
+    }
+    let single_stream = matches!(format, "gzip" | "bzip2" | "xz") || crate::stream_formats::canonical_raw_format(format).is_some();
+    if single_stream {
+        if let Some(folder) = roots.iter().find(|root| root.is_dir()) {
+            return Err(format!("{SINGLE_STREAM_FOLDER}\n{}", folder.display()));
+        }
+        if roots.len() > 1 { return Err("所选格式每个压缩包只接受一个文件。请调整来源或更改格式。".into()); }
+    }
+    for root in &roots {
+        if !root.is_dir() { continue; }
+        let Some(existing) = parent.ancestors().find(|path| path.exists()) else { continue };
+        let (Ok(output), Ok(source)) = (fs::canonicalize(existing), fs::canonicalize(root)) else { continue };
+        if output.starts_with(&source) {
+            return Err(format!("{OUTPUT_IN_SOURCE}\n{}", root.display()));
+        }
+    }
+    Ok(())
+}
+
+const SINGLE_STREAM_FOLDER: &str = "所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR.GZ、ZIP 或 7z 等格式，或移除文件夹来源：";
+const OUTPUT_IN_SOURCE: &str = "保存位置在来源文件夹内，压缩包会把自己打包进去。请选择来源文件夹以外的位置：";
 
 fn volume_base(name: &str) -> Option<&str> {
     let (base, suffix) = name.rsplit_once('.')?;
@@ -161,8 +193,36 @@ mod tests {
         fs::write(dir.path().join("output.zip.003"), b"previous split").unwrap();
         fs::write(dir.path().join("Output (2).zip"), b"previous archive").unwrap();
         let paths = vec![path.display().to_string(); 2];
-        let chosen = plan_compression_outputs(&paths, "zip", Some(1024)).unwrap();
+        let chosen = plan_compression_outputs(&paths, "zip", Some(1024), &[vec![], vec![]]).unwrap();
         assert_eq!(chosen, ["Output (3).zip", "Output (4).zip"].map(|name| dir.path().join(name).display().to_string()));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn plan_rejects_batch_sources_that_creation_would_reject_midway() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        let folder = dir.path().join("project");
+        fs::write(&file, b"a").unwrap();
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("x.txt"), b"x").unwrap();
+        let path = |name: &str, parent: &Path| parent.join(name).display().to_string();
+        let (file_source, folder_source) = (vec![file.display().to_string()], vec![folder.display().to_string()]);
+        // Separate GZip: the folder source fails before the file's output is planned or written.
+        let error = plan_compression_outputs(&[path("a.txt.gz", dir.path()), path("project.gz", dir.path())], "gzip", None,
+            &[file_source.clone(), folder_source.clone()]).unwrap_err();
+        assert!(error.starts_with(SINGLE_STREAM_FOLDER) && error.ends_with(&folder.display().to_string()), "{error}");
+        assert!(plan_compression_outputs(&[path("a.txt.zst", dir.path())], "zstd", None, &[folder_source.clone()]).is_err());
+        assert!(plan_compression_outputs(&[path("x.tar.gz", dir.path())], "tgz", None, &[folder_source.clone()]).is_ok());
+        // Output inside a source folder, including a not-yet-created subfolder.
+        let nested = folder.join("new").join("out");
+        let error = plan_compression_outputs(&[path("a.zip", dir.path()), path("project.zip", &nested)], "zip", None,
+            &[file_source.clone(), folder_source.clone()]).unwrap_err();
+        assert!(error.starts_with(OUTPUT_IN_SOURCE), "{error}");
+        assert!(!folder.join("new").exists());
+        // A file source beside the output and a sibling folder are fine.
+        assert!(plan_compression_outputs(&[path("both.zip", dir.path())], "zip", None,
+            &[vec![file.display().to_string(), folder.display().to_string()]]).is_ok());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
