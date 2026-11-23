@@ -13,7 +13,6 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class CaptureWindow {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
 }
 '@
@@ -42,16 +41,11 @@ function SettingsScreenshot($window) {
     $bitmap = [System.Drawing.Bitmap]::new([int]$rect.Width, [int]$rect.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
-        if ($hwnd -eq [CaptureWindow]::GetForegroundWindow()) {
-            $graphics.CopyFromScreen([int]$rect.X, [int]$rect.Y, 0, 0, $bitmap.Size)
-            $info.screenshot_method = 'foreground settings window bounds'
-        } else {
-            $hdc = $graphics.GetHdc()
-            try { $printed = [CaptureWindow]::PrintWindow($hwnd, $hdc, 0) }
-            finally { $graphics.ReleaseHdc($hdc) }
-            if (!$printed) { throw 'Settings did not paint to a PrintWindow capture' }
-            $info.screenshot_method = 'PrintWindow for the Settings HWND'
-        }
+        $hdc = $graphics.GetHdc()
+        try { $printed = [CaptureWindow]::PrintWindow($hwnd, $hdc, 0) }
+        finally { $graphics.ReleaseHdc($hdc) }
+        if (!$printed) { throw 'Settings did not paint to a PrintWindow capture' }
+        $info.screenshot_method = 'PrintWindow for the Settings HWND'
         $samples = @(foreach ($column in 1..9) {
             foreach ($row in 1..9) {
                 $bitmap.GetPixel([int]($bitmap.Width * $column / 10), [int]($bitmap.Height * $row / 10)).ToArgb()

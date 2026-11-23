@@ -4,6 +4,7 @@ import base64
 import ctypes
 from ctypes import wintypes
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,61 @@ from native_menu_accessibility import check_host
 class MonitorInfo(ctypes.Structure):
     _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
                 ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+
+class DisplayMode(ctypes.Structure):
+    # DEVMODEW with the display members of its two unions.
+    _fields_ = [
+        ("device", wintypes.WCHAR * 32), ("spec_version", wintypes.WORD),
+        ("driver_version", wintypes.WORD), ("size", wintypes.WORD), ("driver_extra", wintypes.WORD),
+        ("fields", wintypes.DWORD), ("position", wintypes.POINT), ("orientation", wintypes.DWORD),
+        ("fixed_output", wintypes.DWORD), ("printing", wintypes.SHORT * 5),
+        ("form_name", wintypes.WCHAR * 32), ("log_pixels", wintypes.WORD),
+        ("bits", wintypes.DWORD), ("width", wintypes.DWORD), ("height", wintypes.DWORD),
+        ("flags", wintypes.DWORD), ("frequency", wintypes.DWORD), ("trailing", wintypes.DWORD * 8),
+    ]
+
+    def dimensions(self):
+        return [self.width, self.height]
+
+
+def display_modes():
+    check_host()
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    enumerate_mode = user.EnumDisplaySettingsW
+    enumerate_mode.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(DisplayMode)]
+    enumerate_mode.restype = wintypes.BOOL
+    change = user.ChangeDisplaySettingsW
+    change.argtypes = [ctypes.POINTER(DisplayMode), wintypes.DWORD]
+    change.restype = wintypes.LONG
+
+    def read(index):
+        mode = DisplayMode()
+        mode.size = ctypes.sizeof(mode)
+        return mode if enumerate_mode(None, index, ctypes.byref(mode)) else None
+
+    current = read(0xFFFFFFFF)  # ENUM_CURRENT_SETTINGS
+    if not current:
+        raise RuntimeError("The primary display graphics mode could not be read")
+    offered = {}
+    for index in itertools.count():
+        mode = read(index)
+        if not mode:
+            break
+        if (mode.bits, mode.frequency, mode.flags) == (current.bits, current.frequency, current.flags):
+            offered[tuple(mode.dimensions())] = mode
+
+    def temporary(mode):
+        # Bit depth, width, height, display flags and frequency from the driver.
+        mode.fields = 0x007C0000
+        mode.driver_extra = 0
+        result = change(ctypes.byref(mode), 2)  # CDS_TEST
+        if result == 0:
+            result = change(ctypes.byref(mode), 4)  # CDS_FULLSCREEN (temporary)
+        if result != 0:
+            raise RuntimeError(f"Windows rejected temporary display mode {mode.dimensions()}: {result}")
+
+    return current, offered, temporary
 
 
 def window_metrics(pid):
@@ -141,6 +197,7 @@ def verify_scale(call, js, output, executable, pid):
 
     original = None
     attempted = False
+    resolution_touched = False
     try:
         original = report["initial_native"] = measure()
         original_percent = round(original["window_dpi"] * 100 / 96)
@@ -155,9 +212,42 @@ def verify_scale(call, js, output, executable, pid):
         if original_percent == 200:
             report["status"] = "BLOCKED_ALREADY_200"
             raise RuntimeError("The runner is already at 200%, so it does not provide a before/after transition")
-        if not any(it["percent"] == 200 and it["enabled"] for it in probe.get("options", ())):
+
+        def has_200(state):
+            return any(it["percent"] == 200 and it["enabled"] for it in state.get("options", ()))
+
+        if not has_200(probe):
+            original_mode, offered, set_resolution = display_modes()
+            if original_mode.dimensions() != original["monitor_pixels"]:
+                raise RuntimeError("The graphics mode did not match the original app monitor")
+            report["offered_modes_at_original_refresh"] = sorted(offered)
+            choices = report["temporary_resolution_attempts"] = []
+            for size in ((1600, 1200), (1920, 1080)):
+                if size not in offered:
+                    continue
+                choice = {"pixels": size}
+                choices.append(choice)
+                resolution_touched = True
+                try:
+                    set_resolution(offered[size])
+                except RuntimeError as error:
+                    choice["error"] = str(error)
+                    continue
+                for _ in range(50):
+                    if measure()["monitor_pixels"] == list(size):
+                        break
+                    time.sleep(0.2)
+                else:
+                    raise RuntimeError("The temporary mode did not reach the app's monitor")
+                probe = settings(f"at-{size[0]}x{size[1]}")
+                if probe.get("error"):
+                    raise RuntimeError(probe["error"])
+                choice["options"] = probe["options"]
+                if has_200(probe):
+                    break
+        if not has_200(probe):
             report["status"] = "BLOCKED_200_UNAVAILABLE"
-            raise RuntimeError("The observed Windows Scale list does not provide an enabled 200% option")
+            raise RuntimeError("The tested Windows display modes do not offer an enabled 200% Scale")
         attempted = True
         selected = settings("apply-200", 200)
         if not selected.get("selection_invoked"):
@@ -168,15 +258,28 @@ def verify_scale(call, js, output, executable, pid):
         try:
             if original is not None:
                 report["change_attempted"] = attempted
-                if attempted:
-                    if measure()["window_dpi"] != original["window_dpi"]:
-                        restored = settings("restore", original_percent)
-                        if not restored.get("selection_invoked"):
-                            raise RuntimeError(restored.get("error", "Windows did not accept the original Scale"))
+                report["temporary_resolution_attempted"] = resolution_touched
+                if attempted or resolution_touched:
+                    try:
+                        if measure()["window_dpi"] != original["window_dpi"]:
+                            restored = settings("restore", original_percent)
+                            if not restored.get("selection_invoked"):
+                                raise RuntimeError(restored.get("error", "Windows did not accept the original Scale"))
+                            snapshot("scale-restored", original["window_dpi"], original["primary_monitor"], capture=False)
+                    finally:
+                        if resolution_touched:
+                            set_resolution(original_mode)
+                            for _ in range(50):
+                                if measure()["monitor_pixels"] == original["monitor_pixels"]:
+                                    break
+                                time.sleep(0.2)
+                            else:
+                                raise RuntimeError("Original monitor resolution did not return")
                     confirmation = settings("restored")
                     if confirmation.get("current") != original_percent:
                         raise RuntimeError("Original Scale was not observable after restoration")
-                snapshot("restored", original["window_dpi"], original["primary_monitor"], capture=attempted)
+                snapshot("restored", original["window_dpi"], original["primary_monitor"],
+                         capture=attempted or resolution_touched)
                 report["restored"] = True
         except BaseException as error:
             report["status"] = "FAIL_RESTORE"
