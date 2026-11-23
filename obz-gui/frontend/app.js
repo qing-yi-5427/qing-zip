@@ -722,6 +722,9 @@ function taskError(e){
   return '磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
  }
  if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';
+ if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：parent archive or its member changed since opening$/i.test(text)){
+  return '外层压缩包或其中的文件已被修改。工作副本已保留，请从有未保存更改的标签另存为。';
+ }
  return text;
 }
 function showPreservationNotice(message){dialog('操作提示',`<p>${esc(message)}</p>`,btn('关闭','close'));}

@@ -72,6 +72,27 @@ test('nested disk space failure keeps the recovery advice and is announced once 
   assert.equal(field.textContent,advice);
 });
 
+test('nested parent conflict names the changed source and announces the recovery action once', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const cause = '写回失败，内层工作副本已保留，可重试或另存为：parent archive or its member changed since opening';
+  const expected = '外层压缩包或其中的文件已被修改。工作副本已保留，请从有未保存更改的标签另存为。';
+  const field = { textContent: '' };
+  const context = makeContext({
+    s: { view: 'jobs' }, esc: String, btn: () => '',
+    overlay: { hidden: false, dataset: { page: 'jobs' }, querySelector: () => ({ textContent: expected }) },
+    $: () => field,
+  });
+  vm.runInContext(taskSource(source), context);
+  vm.runInContext(source.slice(source.indexOf('function taskError('), source.indexOf('async function copySelectedFiles(')), context);
+  const card = context.jobCard({ id: 1, label: '保存至外层压缩包', status: 'failed', error: cause });
+  assert.ok(card.includes(expected));
+  assert.equal(context.taskError(Error(cause)), expected);
+  context.error(Error(cause));
+  assert.equal(field.textContent, '');
+  const compound = cause + ' (failed to verify the working copy)';
+  assert.equal(context.taskError(compound), compound);
+});
+
 test('nested save shows the real outer archive and the path of each enclosed member', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const outer={archive:'D:/archives/outer.zip'};
