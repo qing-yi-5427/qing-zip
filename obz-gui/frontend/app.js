@@ -390,7 +390,7 @@ function rows() {
 const ordinaryRetries=new Map();
 const deepSessionJobs=new Map();
 const phaseLabels={preflight:'检查输入',listing:'读取目录',validating:'检查文件和目标',
- decoding:'验证并解码',extracting:'解压文件','staging-files':'写入已验证文件','publishing-files':'保存已验证文件',
+ decoding:'验证并解码',decompressing:'解压压缩流',extracting:'解压文件','staging-files':'写入已验证文件','publishing-files':'保存已验证文件',
  'preparing-extraction':'检查目标路径与临时空间','verifying-stage':'核对临时文件',
  'staged-directory-metadata':'核对临时目录属性','preparing-publication':'准备保存解压文件',
  'output-directory-metadata':'恢复输出目录属性','cleaning-stage':'清理临时文件',
@@ -437,10 +437,11 @@ function updateJobProgress(j,v){
 function jobMeasurements(j){
  const work=j.work;
  if(!work)return '';
- const parts=[`${work.items_done.toLocaleString()} / ${work.items_total.toLocaleString()} 个文件`];
+ const parts=[];
+ if(work.items_total>0)parts.push(`${work.items_done.toLocaleString()} / ${work.items_total.toLocaleString()} 个文件`);
  if(work.bytes_total!=null)parts.push(`${size(work.bytes_done)} / ${size(work.bytes_total)}`);
  const bps=j.rate?.bps,remaining=work.bytes_total-work.bytes_done;
- if(bps>0&&remaining>0&&performance.now()-j.rate.time<2500){
+ if(j.status==='running'&&!j.cancelRequested&&bps>0&&remaining>0&&performance.now()-j.rate.time<2500){
   const seconds=Math.ceil(remaining/bps);
   parts.push(size(bps)+'/秒',seconds>=60?`本阶段约 ${Math.ceil(seconds/60)} 分钟`:`本阶段约 ${seconds} 秒`);
  }
@@ -499,6 +500,8 @@ function jobCard(j,inline=false){
   'Decoding RAR into temporary storage on the output volume':'正在解码到目标盘的临时目录',
   'Decoding RAR into the system temporary directory':'正在解码到系统临时目录',
   'Reading archive directory':'正在读取压缩包目录',
+  'Opening compressed TAR stream':'正在打开压缩的 TAR 数据流',
+  'Reading compressed TAR stream':'正在读取压缩的 TAR 数据流',
   'Verifying archive and staging selected files':'正在验证压缩包并暂存选中内容',
   'Verifying complete archive in bounded memory':'正在验证压缩包内容',
   'Verifying complete solid archive in bounded memory':'正在验证固实压缩包',
