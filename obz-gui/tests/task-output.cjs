@@ -159,7 +159,7 @@ test('native extraction follows the password preference and never saves for temp
       }
       if (command === 'wait_operation') {
         return {status: 'complete', progress: {}, result: {
-          files: 1, destination: 'C:/test-output', password_book_error: 'fixture backend detail',
+          files: 1, destination: 'C:/test-output', output_directory: 'C:/test-output/BUNDLE', password_book_error: 'fixture backend detail',
         }};
       }
     },
@@ -172,6 +172,8 @@ test('native extraction follows the password preference and never saves for temp
   await context.run(request, 'extract', {silent: true});
   await context.run({operation:'deep-extract'}, 'deep extract', {silent: true});
   assert.deepEqual(rememberPassword, [false, true, false, false]);
+  assert.equal(context.s.jobs[1].outputPath, 'C:/test-output/BUNDLE');
+  assert.match(context.s.jobs[1].summary, /C:\/test-output\/BUNDLE/);
   assert.match(context.s.jobs[1].summary, /解压密码未能保存到密码本/);
   assert.doesNotMatch(context.s.jobs[1].summary, /fixture/);
 });

@@ -49,6 +49,47 @@ fn write_zip(path: &Path, files: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 #[test]
+fn cli_smart_extraction_reports_the_retained_top_level_directory() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let archive = root.join("bundle.zip");
+    let original = write_zip(&archive, &[("BUNDLE/photos/a.txt", b"photo"), ("loose.txt", b"loose")]);
+    let dest = root.join("selected");
+    let response = call(root, json!({
+        "operation": "extract", "path": archive, "dest": dest, "smart": true,
+        "options": {"selected": ["BUNDLE"]},
+    })).unwrap();
+    assert_eq!(response["destination"], json!(dest));
+    assert_eq!(response["output_directory"], json!(dest.join("BUNDLE")));
+    assert_eq!(fs::read(dest.join("BUNDLE/photos/a.txt")).unwrap(), b"photo");
+    assert!(!dest.join("loose.txt").exists());
+
+    let dest = root.join("whole");
+    let response = call(root, json!({
+        "operation": "extract", "path": archive, "dest": dest, "smart": true,
+    })).unwrap();
+    assert_eq!(response["destination"], json!(dest.join("bundle")));
+    assert!(response.get("output_directory").is_none());
+    assert_eq!(fs::read(dest.join("bundle/loose.txt")).unwrap(), b"loose");
+    assert_eq!(fs::read(archive).unwrap(), original);
+
+    let archive = root.join("bundle.tar");
+    let mut tar = tar::Builder::new(fs::File::create(&archive).unwrap());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(5);
+    header.set_mode(0o644);
+    tar.append_data(&mut header, "BUNDLE/photo.txt", b"photo".as_slice()).unwrap();
+    drop(tar.into_inner().unwrap());
+    let dest = root.join("tar");
+    let response = call(root, json!({
+        "operation": "extract", "path": archive, "dest": dest, "smart": true,
+    })).unwrap();
+    assert_eq!(response["destination"], json!(dest));
+    assert_eq!(response["output_directory"], json!(dest.join("BUNDLE")));
+    assert_eq!(fs::read(dest.join("BUNDLE/photo.txt")).unwrap(), b"photo");
+}
+
+#[test]
 fn cli_auto_rename_reserves_actual_extraction_paths() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path();

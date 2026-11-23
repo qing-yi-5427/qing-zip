@@ -6204,18 +6204,20 @@ pub(crate) fn extract_smart_engine(
     base: &str,
     opts: &EngineOptions,
     allow_unencrypted_projection: bool,
-) -> Result<(usize, String), String> {
+) -> Result<(usize, crate::smart_extract::Layout), String> {
     let mut options = opts.clone();
     if options.zone_identifier.is_none() {
         options.zone_identifier = Some(crate::motw::archive_context(Path::new(path))?);
     }
     with_zip_source(path, &options, |source| {
-        let mut destination = String::new();
+        let mut layout = None;
         let files = extract_raw_to(source, &options, allow_unencrypted_projection, None, |entries| {
-            destination = crate::smart_extract::destination(path, base, entries, &options)?;
-            absolute(&destination)
+            let planned = crate::smart_extract::layout(path, base, entries, &options)?;
+            let directory = absolute(&planned.directory)?;
+            layout = Some(planned);
+            Ok(directory)
         })?;
-        Ok((files, destination))
+        Ok((files, layout.ok_or("missing smart extraction layout")?))
     })
 }
 
