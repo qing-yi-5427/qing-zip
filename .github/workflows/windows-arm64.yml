@@ -274,7 +274,7 @@ jobs:
           python scripts/check-arm64-package.py dist/arm64 (Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads')
           exit $LASTEXITCODE
       - name: Upgrade the previous official ARM64 release in its registered directory
-        if: github.event_name == 'workflow_dispatch' && inputs.run_installer_upgrade
+        if: github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -289,7 +289,7 @@ jobs:
           python scripts/check-nsis-upgrade-hosted.py --arch ARM64 --old-setup (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-setup.exe') --old-portable (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-portable.zip') --candidate-setup "$candidate-setup.exe" --candidate-stage "$candidate-portable" --out evidence/arm64-upgrade
           exit $LASTEXITCODE
       - name: Save ARM64 upgrade and uninstall receipt
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_installer_upgrade
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: arm64-release-upgrade

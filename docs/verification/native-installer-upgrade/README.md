@@ -9,4 +9,4 @@
 
 两个系统上，卸载均移除了候选发行文件、卸载登记和所属快捷方式。五份合成用户数据逐一比较 SHA-256，卸载前后全部一致。保留的旧版文件已在初装后逐个对照该版本官方便携包。静默升级沿用现有保留策略。初次安装使用临时自定义目录，首次采用默认安装目录、真实签名的 Explorer 扩展升级仍需独立验证。
 
-ARM64 可在 `Windows ARM64 native validation` 手动选择 `run_installer_upgrade` 复跑该流程。该步骤自行核对官方旧版资产 SHA-256。[托管验收脚本](../../../scripts/check-nsis-upgrade-hosted.py) · [ARM64 工作流](../../../.github/workflows/windows-arm64.yml)
+ARM64 常规推送和 PR 构建会自动执行这项验收；首轮托管实测升级步骤用时 15 秒。也可在 `Windows ARM64 native validation` 手动选择 `run_installer_upgrade` 复跑该流程。该步骤自行核对官方旧版资产 SHA-256。[托管验收脚本](../../../scripts/check-nsis-upgrade-hosted.py) · [ARM64 工作流](../../../.github/workflows/windows-arm64.yml)
