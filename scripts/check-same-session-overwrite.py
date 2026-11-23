@@ -125,7 +125,7 @@ def main():
         exercise(args, root, report)
         report["status"] = "PASS"
     except Exception as error:
-        report["error"] = batch["text_without_paths"](repr(error), root)
+        report["error"] = type(error).__name__ + ": " + batch["text_without_paths"](str(error), root)
         raise
     finally:
         deadline = time.monotonic() + 15
