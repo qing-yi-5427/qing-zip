@@ -400,7 +400,7 @@ fn check_create_ack(kind: u8, body: &[u8], nonce: &[u8; 16]) -> Result<(), Strin
     if kind != CREATE_ACK || body != nonce { return Err("create helper response identity mismatch".into()); }
     Ok(())
 }
-fn create_handshake_frame(session: &Session, ctl: &JobControl) -> Result<Frame, String> {
+pub(super) fn create_handshake_frame(session: &Session, ctl: &JobControl) -> Result<Frame, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         ctl.check()?;
@@ -412,7 +412,7 @@ fn create_handshake_frame(session: &Session, ctl: &JobControl) -> Result<Frame, 
         }
     }
 }
-fn legacy_create_exit(session: &Session, ctl: &JobControl) -> Result<(), String> {
+pub(super) fn legacy_create_exit(session: &Session, ctl: &JobControl) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         ctl.check()?;

@@ -5813,7 +5813,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
             // compress. Prepare it only for edits that copy existing members.
             let eligible = opts.password.is_none() && opts.codepage.is_none()
                 && opts.edit_receipt.is_none() && !_policy.restricted()
-                && zip_layout.is_some_and(|layout| !layout.zip64 && layout.entries < u16::MAX
+                && zip_layout.as_ref().is_some_and(|layout| !layout.zip64 && layout.entries < u16::MAX
                     && u64::from(layout.directory) + u64::from(layout.directory_size) == layout.end_record)
                 && source.direct_zip(&locked_path)? && source.local_ntfs();
             if eligible {
@@ -5861,6 +5861,18 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
             None => archive_add::prepare(&path, inputs, workspace.folder, opts, entries),
         }
     }).transpose()?;
+    #[cfg(nana_selected_worker)]
+    let append_count = if prepared.is_none() && !opts.preserve_input_atime && opts.password.is_none()
+        && opts.codepage.is_none() && opts.edit_receipt.is_none() && opts.update_mode == UpdateMode::Add
+        && !_policy.restricted() {
+        zip_layout.filter(|layout| !layout.zip64 && layout.entries < u16::MAX
+            && layout.directory_size <= 8 * 1024 * 1024
+            && u64::from(layout.directory) + u64::from(layout.directory_size) == layout.end_record)
+            .filter(|layout| protection.as_ref().is_some_and(|(_, entries)| entries.len() == usize::from(layout.entries)
+                && entries.iter().all(|entry| !entry.encrypted && (entry.is_dir
+                    || matches!(entry.method.as_str(), "Store" | "Deflate")))))
+            .map(|layout| layout.entries)
+    } else { None };
     let protection = protection.map(|(protection, _)| protection);
     #[cfg(windows)]
     if let Some(report)=move_report.as_deref_mut(){report.plan(prepared.as_ref().and_then(|p|p.proof.as_ref()).ok_or("missing archive move plan")?);}
@@ -5932,21 +5944,27 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     let names = match &prepared { Some(p) => p.names.clone(), None => ordinary_names()? };
     #[cfg(not(windows))]
     let names = ordinary_names()?;
+    let ctl = control(opts);
+    ctl.set("updating", None, "Updating a temporary archive copy");
+    #[cfg(nana_selected_worker)]
+    let appended = if let Some(count) = append_count.filter(|_| direct && source.local_ntfs()) {
+        selected_worker::zip_append::try_encode(&executable()?, source.pinned_archive(), &output, &names, count, &ctl)?
+    } else { false };
+    #[cfg(not(nana_selected_worker))]
+    let appended = false;
     #[cfg(windows)]
-    let _list = update_list::append(&mut a, if direct { &path } else { &staged }, names)?;
+    let _list = if appended { None } else { update_list::append(&mut a, if direct { &path } else { &staged }, names)? };
     #[cfg(not(windows))]
     {
         a.push("--".into());
         a.push(staged.display().to_string());
         a.extend(names);
     }
-    let ctl = control(opts);
-    ctl.set("updating", None, "Updating a temporary archive copy");
     #[cfg(windows)]
     let cwd = prepared.as_ref().map(|p| p.cwd.as_path());
     #[cfg(not(windows))]
     let cwd = None;
-    if !move_noop {
+    if !move_noop && !appended {
         let program = executable()?;
         #[cfg(nana_selected_worker)]
         let disposable = direct && verified_console.as_ref().is_some_and(|verified| verified.exe == program);

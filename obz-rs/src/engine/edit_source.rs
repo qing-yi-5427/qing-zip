@@ -396,6 +396,11 @@ impl EditSource {
             && super::selected_worker::create_zip::local_ntfs(&self.path, &self.read)
     }
 
+    #[cfg(nana_selected_worker)]
+    pub(super) fn pinned_archive(&self) -> &File {
+        &self.read
+    }
+
     pub(crate) fn commit_tracked(self, output: EditOutput, options: &super::EngineOptions) -> Result<(), String> {
         let Some(receipt) = &options.edit_receipt else { return self.commit(output) };
         // Both references are acquired while the original edit guard and private

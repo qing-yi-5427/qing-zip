@@ -58,10 +58,14 @@ extern "C" {
         input: *mut Handle,
         output: *mut Handle,
     ) -> u32;
+    fn qing_spawn_zip_append_worker(exe: *const u16, process: *mut Handle, input: *mut Handle,
+        output: *mut Handle, lifetime: *mut Handle) -> u32;
 }
 
 #[path = "create_zip.rs"]
 pub mod create_zip;
+#[path = "zip_append.rs"]
+pub mod zip_append;
 #[path = "rar_listing.rs"]
 pub(super) mod rar_listing;
 #[path = "zip_listing.rs"]
@@ -412,6 +416,7 @@ fn read_frame_with_direct_manifest(stdout: &mut impl std::io::Read, limit: usize
 }
 struct Session {
     child: OwnedHandle,
+    _job: Option<OwnedHandle>,
     input: Option<File>,
     receiver: Option<Receiver<Result<Frame, String>>>,
     reader: Option<JoinHandle<()>>,
@@ -424,15 +429,17 @@ impl Session {
         Self::start_reader(exe, mode, false)
     }
     fn start_reader(exe: &Path, mode: u8, direct: bool) -> Result<Self, String> {
-        let create_zip = mode == 1;
+        let create_zip = matches!(mode, 1 | 5);
         let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
         let (mut process, mut input, mut output) = (
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         );
+        let mut job = std::ptr::null_mut();
         let error = unsafe {
-            if mode == 4 {rar_listing::qing_spawn_rar_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 3 {qing_spawn_full_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
+            if mode == 5 { qing_spawn_zip_append_worker(wide.as_ptr(), &mut process, &mut input, &mut output, &mut job) }
+            else if mode == 4 {rar_listing::qing_spawn_rar_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 3 {qing_spawn_full_worker(wide.as_ptr(), &mut process, &mut input, &mut output)} else if mode == 2 { zip_listing::qing_spawn_zip_list_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else if create_zip { create_zip::qing_spawn_create_worker(wide.as_ptr(), &mut process, &mut input, &mut output) } else { qing_spawn_selected_worker(wide.as_ptr(), &mut process, &mut input, &mut output) }
         };
         if error != 0 {
             return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
@@ -443,6 +450,7 @@ impl Session {
         let (tx, rx) = mpsc::sync_channel(2);
         let mut s = Self {
             child,
+            _job: (!job.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(job) }),
             input,
             receiver: Some(rx),
             reader: None,

@@ -15,12 +15,28 @@ struct Attributes {
   LPPROC_THREAD_ATTRIBUTE_LIST list{};
   ~Attributes() { if (list) DeleteProcThreadAttributeList(list); }
 };
+
+DWORD create_kill_job(Handle &job) {
+  job.value = CreateJobObjectW(nullptr, nullptr);
+  if (!job.value) return GetLastError();
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  return SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits))
+      ? ERROR_SUCCESS : GetLastError();
+}
 }
 
 static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DWORD threads,
-                                 HANDLE *process, HANDLE *input, HANDLE *output, unsigned mode = 0) noexcept {
+                                 HANDLE *process, HANDLE *input, HANDLE *output, unsigned mode = 0,
+                                 HANDLE *lifetime = nullptr) noexcept {
   *process = *input = *output = nullptr;
+  if (lifetime) *lifetime = nullptr;
   try {
+    Handle job;
+    if (lifetime) {
+      const auto status = create_kill_job(job);
+      if (status) return status;
+    }
     Handle child_in, parent_in, child_out, parent_out, child_err;
     if (!CreatePipe(&child_in.value, &parent_in.value, nullptr, 0) ||
         !CreatePipe(&parent_out.value, &child_out.value, nullptr, archive || mode == 4 ? 64 * 1024 : 0)) return GetLastError();
@@ -32,12 +48,13 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
         !SetHandleInformation(child_out.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) return GetLastError();
 
     SIZE_T length = 0;
-    InitializeProcThreadAttributeList(nullptr, 2, 0, &length);
+    const DWORD attributes_count = lifetime ? 3 : 2;
+    InitializeProcThreadAttributeList(nullptr, attributes_count, 0, &length);
     if (!length) return GetLastError();
     std::vector<unsigned char> buffer(length);
     Attributes attributes;
     auto list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data());
-    if (!InitializeProcThreadAttributeList(list, 2, 0, &length)) return GetLastError();
+    if (!InitializeProcThreadAttributeList(list, attributes_count, 0, &length)) return GetLastError();
     attributes.list = list;
     HANDLE allowed[] = {child_in.value, child_out.value, child_err.value};
     if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, allowed,
@@ -45,6 +62,9 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
     DWORD child_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
     if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
                                    &child_policy, sizeof(child_policy), nullptr, nullptr)) return GetLastError();
+    HANDLE job_list[] = {job.value};
+    if (lifetime && !UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                                               job_list, sizeof(job_list), nullptr, nullptr)) return GetLastError();
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -64,13 +84,14 @@ static DWORD spawn_archive_worker(const wchar_t *exe, const wchar_t *archive, DW
       if (threads) command += L" -mmt=" + std::to_wstring(threads);
       command += L" -- \"" + std::wstring(file) + L"\"";
     } else {
-      command += mode == 4 ? L" --internal-rar-list-worker" : mode == 3 ? L" --full-archive-worker" : mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
+      command += mode == 5 ? L" --internal-zip-append-worker" : mode == 4 ? L" --internal-rar-list-worker" : mode == 3 ? L" --full-archive-worker" : mode == 2 ? L" --internal-zip-list-worker" : mode == 1 ? L" --internal-create-worker" : L" --internal-selected-worker";
     }
     if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
                         DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
                         &startup.StartupInfo, &child)) return GetLastError();
     CloseHandle(child.hThread);
     *process = child.hProcess; *input = parent_in.take(); *output = parent_out.take();
+    if (lifetime) *lifetime = job.take();
     return ERROR_SUCCESS;
   } catch (...) { return ERROR_OUTOFMEMORY; }
 }
@@ -104,6 +125,11 @@ extern "C" DWORD qing_spawn_rar_list_worker(const wchar_t *exe, HANDLE *process,
   return spawn_archive_worker(exe, nullptr, 0, process, input, output, 4);
 }
 
+extern "C" DWORD qing_spawn_zip_append_worker(const wchar_t *exe, HANDLE *process, HANDLE *input,
+                                               HANDLE *output, HANDLE *lifetime) noexcept {
+  return spawn_archive_worker(exe, nullptr, 0, process, input, output, 5, lifetime);
+}
+
 extern "C" DWORD qing_spawn_owned_update(const wchar_t *exe, wchar_t *command, const wchar_t *cwd,
                                          HANDLE input, HANDLE output, HANDLE error,
                                          HANDLE *process, HANDLE *owner) noexcept {
@@ -112,12 +138,8 @@ extern "C" DWORD qing_spawn_owned_update(const wchar_t *exe, wchar_t *command, c
     // The caller alone owns this unnamed, non-inheritable handle. The kernel
     // assigns the child to the job during CreateProcess, before it can run.
     Handle job;
-    job.value = CreateJobObjectW(nullptr, nullptr);
-    if (!job.value) return GetLastError();
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
-      return GetLastError();
+    const auto job_status = create_kill_job(job);
+    if (job_status) return job_status;
 
     Handle child_in, child_out, child_err;
     const HANDLE self = GetCurrentProcess();

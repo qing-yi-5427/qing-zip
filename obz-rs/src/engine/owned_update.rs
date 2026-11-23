@@ -217,7 +217,7 @@ impl Process {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{update_with_control, EngineOptions, JobControl};
+    use crate::engine::{update_with_control, EngineOptions, JobControl, UpdateMode};
     use std::{cell::RefCell, fs, rc::Rc};
 
     #[link(name = "Kernel32")]
@@ -245,6 +245,9 @@ mod tests {
         let cancel = control.clone();
         let handle = Rc::new(RefCell::new(None));
         let observed = handle.clone();
+        // The console still owns non-default update modes even when the new
+        // seekable Add helper is installed beside this test executable.
+        let options = EngineOptions { update_mode: UpdateMode::Update, ..Default::default() };
         AFTER_LAUNCH.with(|hook| {
             hook.replace(Some(Box::new(move |child, _command| {
                 let process = child.process.as_raw_handle();
@@ -272,7 +275,7 @@ mod tests {
             archive_path,
             "add",
             &[added.display().to_string()],
-            &EngineOptions::default(),
+            &options,
             &control,
         );
         assert_eq!(result.unwrap_err(), "operation cancelled");
@@ -292,7 +295,7 @@ mod tests {
             archive_path,
             "add",
             &[added.display().to_string()],
-            &EngineOptions::default(),
+            &options,
         )
         .unwrap();
         let mut zip = zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();
