@@ -736,14 +736,15 @@ function taskError(e){
  return text;
 }
 // 7-Zip console failures carry a banner, scan log and progress before the
-// WARNING/ERROR lines that name the file. Keep only those lines.
+// WARNING/ERROR lines (also "Open ERROR:", "System ERROR:", "ERRORS:") that
+// name the file and the reason. Keep only those lines.
 function engineFileProblems(text){
  const failed=/^(?:Error:\s*)?archive engine failed \((-?\d+)\):([\s\S]*)$/i.exec(text);
  if(!failed)return '';
  const lines=failed[2].split(/\r?\n/).map(line=>line.trim()),found=[];
  const add=line=>{if(line&&!found.includes(line))found.push(line);};
  for(let i=0;i<lines.length;i++){
-  const marker=/^(?:WARNING|ERROR|System ERROR):\s*(.*)$/i.exec(lines[i]);
+  const marker=/^(?:(?:System|Open)\s+)?(?:WARNINGS?|ERRORS?):\s*(.*)$/i.exec(lines[i]);
   if(!marker)continue;
   add(marker[1]);
   const next=lines.slice(i+1).find(Boolean);

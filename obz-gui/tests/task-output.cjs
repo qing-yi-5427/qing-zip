@@ -33,6 +33,9 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   const dump=`archive engine failed (2): \nNanaZip 7.0 , version 2610.2 (x64) : (c) M2-Team and Contributors. All rights reserved.\n\nScanning the drive:\n1 folder, 2 files, 13000 bytes (13 KiB)\n\nCreating archive: C:\\Users\\a\\.tmpo34LoX\\out.7z\n\n  0%\n\nWARNING: 另一个程序正在使用此文件，进程无法访问。\n${locked}\n\n\n\nSystem ERROR:\n另一个程序正在使用此文件，进程无法访问。\n `;
   assert.equal(context.taskError(Error(dump)), `归档引擎未能完成（代码 2）：\n另一个程序正在使用此文件，进程无法访问。\n${locked}\n请关闭正在使用该文件的程序后重试。`);
   assert.equal(context.taskError('archive engine failed (2): ERROR: Data Error : a.bin'), '归档引擎未能完成（代码 2）：\nData Error : a.bin');
+  const broken='C:\\t\\.qing-zip-stage-3af6\\broken.zip';
+  assert.equal(context.taskError(Error(`archive engine failed (2):    0M Scan C:\\t\\\n          \n\nERROR: ${broken} : ${broken}\nOpen ERROR: Cannot open the file as [zip] archive\n\n\nERRORS:\nIs not archive`)),
+    `归档引擎未能完成（代码 2）：\n${broken} : ${broken}\nCannot open the file as [zip] archive\nIs not archive`);
   const opaque='archive engine failed (255): Enter password (will not be echoed): Break signaled';
   assert.equal(context.taskError(opaque), opaque);
   assert.match(context.taskError('output archive already exists; use update to modify it'), /^目标位置已出现同名文件.*未覆盖。\n重试时会重新检查/);
