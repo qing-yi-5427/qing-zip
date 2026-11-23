@@ -123,9 +123,22 @@ def main():
         passed('upgraded_cli_tests_and_extracts_original_archive')
         uninstall(inst,root);uninstalled=True
         check(not (shortcuts/'qing-zip.lnk').exists() and not (shortcuts/'卸载.lnk').exists(),'owned Start menu shortcuts remained')
-        check(all(not (inst/name).exists() for name in shipped),'candidate shipped file survived uninstall')
+        report['candidate_files_remaining']=[name for name in sorted(shipped) if (inst/name).exists()]
+        save()
+        check(not report['candidate_files_remaining'],'candidate shipped file survived uninstall; see receipt')
+        passed('uninstall_removed_candidate_payload_registration_and_shortcuts')
         remaining={p.relative_to(inst).as_posix() for p in inst.rglob('*') if p.is_file()}
-        check(remaining=={sentinel.relative_to(inst).as_posix(),archive.relative_to(inst).as_posix()},'unexpected remaining files after uninstall')
+        expected_remaining={sentinel.relative_to(inst).as_posix(),archive.relative_to(inst).as_posix()}
+        report['remaining_after_uninstall']=[]
+        with zipfile.ZipFile(old_portable) as previous:
+            old_names=set(previous.namelist())
+            for name in sorted(remaining):
+                digest=sha(inst/name)
+                from_old=name in old_names and hashlib.sha256(previous.read(name)).hexdigest()==digest
+                report['remaining_after_uninstall'].append({'relative_path':name,'sha256':digest,
+                    'classification':'synthetic_user_file' if name in expected_remaining else 'unchanged_previous_release_file' if from_old else 'unexpected'})
+        save()
+        check(remaining==expected_remaining,'unexpected remaining files after uninstall; see receipt')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(extracted)==source_sha
               and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'uninstall changed user data')
         report.update({'old_executable_version':'0.12.20.0','candidate_executable_version':'0.12.23.0',

@@ -15,4 +15,6 @@
 
 `nsis-upgrade-acceptance-evidence` artifact 保留构建与 PE 记录和 `acceptance/receipt.json`。脚本逐步写入检查点；失败时仅在注册路径确为本次目标时尝试其卸载器，若无法安全卸载则不强行删除安装根，由一次性 runner 回收。构建、下载或环境检查提前失败时，artifact 可能只有初始记录；这不构成通过。没有覆盖默认安装目录、真实用户配置、文件关联或 Explorer 右键注册、重启恢复及特殊文件系统。
 
+首次托管运行已通过旧版安装、原位升级和升级后解压，但卸载后“仅余合成用户文件”检查失败。首次收据没有记录额外文件的具体名称，不能推断原因；后续收据会记录相对名称、哈希及其是否与旧发行包中的文件完全一致，不会自动删除这些额外文件。详见 [首次作业](https://github.com/qing-yi-5427/qing-zip/actions/runs/45110662819)。
+
 本机只运行 `python scripts/test-hosted-installer-guard.py` 验证非托管环境会在访问安装器前拒绝执行；安装/卸载脚本必须由上述托管工作流执行。
