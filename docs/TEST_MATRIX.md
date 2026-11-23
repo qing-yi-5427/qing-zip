@@ -4,6 +4,15 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
+## 普通批量解压
+
+| Windows 11 x64 实际操作 | 结果 |
+| --- | --- |
+| 三个 ZIP，中间与已有文件冲突 | PASS。候选显示两项成功、一项失败，可查明冲突原因。成功文件内容正确，原包、已有文件和哨兵的哈希均相同。[前后对照](verification/round5/ordinary-batch/README.md) |
+| 在第二项停止，再点「继续未开始的项目」 | PASS。在相同会话中，第三项写入原计划的第三个目录。第一项文件的身份、时间和长度不变，第二项保留已取消状态。[窗口与文件回执](verification/round5/ordinary-batch/candidate/receipt.json) |
+| 关闭并重开程序后继续普通批次 | NOT RUN。当前继续入口针对本次会话。 |
+| 普通批量完整性检查，第二个路径缺失 | PASS。检查弹窗与批量页均显示两项成功、一项失败。展开可查缺失项，两个有效 ZIP 和旁文件均原样保全。[窗口及文件回执](verification/round5/ordinary-batch/candidate/integrity.json) |
+
 ## 嵌套编辑窗口、关闭与恢复
 
 | 输入与操作 | 验收 |

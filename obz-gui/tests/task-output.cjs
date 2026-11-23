@@ -453,7 +453,6 @@ test('partial moves retain counts and the backend reason in task history', async
     if(reason)assert.ok(state.jobs[0].summary.includes(reason));
     assert.equal(state.jobs[0].partial,true);
     Object.assign(context,{esc:String,shellQueueStatus:()=>'',btn:()=>''});
-    vm.runInContext(source.split('\n').find(line=>line.startsWith('function jobs()')),context);
     const card=context.jobs();assert.match(card,/部分完成/);assert.ok(!card.includes('已完成'));
     if(reason)assert.ok(card.includes(reason));
     vm.runInContext(historySource(source),context);
@@ -508,6 +507,10 @@ test('batch count excludes failed integrity and advances the next job from the c
  const values=state.jobs.map(require('../frontend/progress.js').value);
  assert.deepEqual(values,[33,null,66]);
  assert.equal(batch.done,2);
+ Object.assign(context,{esc:String,btn:()=>''});
+ const lastCard=context.jobCard(state.jobs[2]);
+ assert.match(lastCard,/已完成 · 100%/);
+ assert.doesNotMatch(lastCard,/总进度|66%/);
 });
 
 test('queued archive progress appears only for a slow listing and can cancel it', async () => {

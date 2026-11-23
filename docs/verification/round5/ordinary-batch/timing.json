@@ -1,0 +1,61 @@
+{
+  "os": "Windows-11-10.0.26300-SP0",
+  "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+  "cache": "No OS cache flush; one warm-up pair. A fresh process and fixture per run.",
+  "boundary": "Trusted start click to visible terminal result; startup, output checks and screenshots excluded.",
+  "binaries_sha256": {
+    "baseline": {
+      "qing-zip.exe": "d8a26d9696b947101735f6421e71a3f73edaacea8e12ba5f68b34dbdd26f5957",
+      "obz.exe": "fdc3adaf4eef546dccaa9596b1c9b6da25513b8e557c51e437f2f2e207fa5da0",
+      "obz-worker.exe": "4e7f9b6b6e3d608e3dcc99ddeacd14732ab8029e1b7c33c83c0461a30afa86d0"
+    },
+    "candidate": {
+      "qing-zip.exe": "99331dba0378f5446acc3f8122b6c7b62cb56d887598c29bcc4b9805f2393b15",
+      "obz.exe": "fdc3adaf4eef546dccaa9596b1c9b6da25513b8e557c51e437f2f2e207fa5da0",
+      "obz-worker.exe": "4e7f9b6b6e3d608e3dcc99ddeacd14732ab8029e1b7c33c83c0461a30afa86d0"
+    }
+  },
+  "samples_ms": [
+    {
+      "candidate": 86.5,
+      "baseline": 87.5
+    },
+    {
+      "baseline": 87.8,
+      "candidate": 82.6
+    },
+    {
+      "candidate": 82.9,
+      "baseline": 77.2
+    },
+    {
+      "baseline": 75.5,
+      "candidate": 83
+    },
+    {
+      "candidate": 84.1,
+      "baseline": 78.3
+    }
+  ],
+  "warmup_ms": {
+    "baseline": 77.1,
+    "candidate": 87.9
+  },
+  "summary_ms": {
+    "baseline": {
+      "median": 78.3,
+      "min": 75.5,
+      "max": 87.8
+    },
+    "candidate": {
+      "median": 83,
+      "min": 82.6,
+      "max": 86.5
+    },
+    "paired_difference": {
+      "median": 5.7,
+      "min": -5.2,
+      "max": 7.5
+    }
+  }
+}

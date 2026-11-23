@@ -244,3 +244,12 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+#qing-archive .oa-batch-outcome {
+  margin-block: 5px 14px;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--qa-line);
+  overflow-wrap: anywhere;
+}
+#qing-archive .oa-batch-outcome p { margin-block: 4px; }
+#qing-archive .oa-batch-outcome details { margin-block: 7px; }
+#qing-archive .oa-batch-outcome .qa-actions { flex-wrap: wrap; }
