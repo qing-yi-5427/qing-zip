@@ -70,9 +70,13 @@ try:
   entry=report['scenarios'][key]={'menu_visible':False,'activated':False,'handoff_observed':False};save()
   window.set_focus();item=wait(lambda: next((x for x in window.descendants(control_type='ListItem') if x.element_info.name==filename),None))
   item.click_input(button='right');time.sleep(2); snapshot(key+'-menu');entry['menu_controls']=text_controls()
+  group=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name=='qing-zip' and x.element_info.control_type=='MenuItem' and x.is_visible()),None)
+  if group:
+   entry['top_level_visible']=True
+   rect=group.rectangle();mouse.move(coords=(int((rect.left+rect.right)/2),int((rect.top+rect.bottom)/2)));time.sleep(2);snapshot(key+'-submenu')
   menu=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name==label and x.is_visible()),None)
   if not menu:
-   entry['error']='Command not observed in the initial Explorer context menu';keyboard.send_keys('{ESC}');save();continue
+   entry['error']='Command not observed after opening qing-zip submenu';keyboard.send_keys('{ESC}');save();continue
   entry['menu_visible']=True;menu.click_input();entry['activated']=True;time.sleep(3);snapshot(key+'-after');
   processes=subprocess.run(['powershell','-NoProfile','-Command',"Get-CimInstance Win32_Process -Filter \"name = 'qing-zip.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],capture_output=True,text=True,timeout=15)
   entry['gui_process_present']=bool(processes.stdout.strip());entry['handoff_observed']=entry['gui_process_present']

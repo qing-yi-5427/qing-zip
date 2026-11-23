@@ -2,6 +2,29 @@
 from contextlib import contextmanager
 import json
 
+
+@contextmanager
+def hosted_debug_session(executable, receipt):
+    """Connect only to the named GUI on the disposable runner's loopback interface."""
+    import os
+    import socket
+    import winreg
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("The per-executable WebView2 test override requires a disposable hosted runner")
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    arguments = f"--remote-debugging-port={port} --remote-debugging-address=127.0.0.1"
+    key = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments",
+                             0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
+    evidence = {"passed": False, "executable": executable.name, "port": port}
+    with guarded_run(winreg, key, executable.name, arguments, evidence, receipt) as lifetime:
+        lifetime.update(port=port, arguments=arguments)
+        yield lifetime
+        evidence["passed"] = True
+
 @contextmanager
 def guarded_run(registry, policy, name, arguments, evidence, receipt):
     state = {'proc': None}

@@ -32,21 +32,21 @@ try {
   $receipt.msix_sha256=(Get-FileHash $msix).Hash.ToLowerInvariant(); $receipt.stage='register'; Save-Receipt
   ./scripts/msix/Register-Package.ps1 -PackagePath $msix -ExternalLocation (Join-Path $app[0].DirectoryName 'shell') -Publisher $publisher -SignToolPath "$sdk/signtool.exe"
   $pkg=@(Get-AppxPackage -Name 'QingYi.QingZip.Shell'); if ($pkg.Count -ne 1 -or $pkg[0].Publisher -cne $publisher) { throw 'Registration missing' }
-  # Mimic the product's opt-in Explorer settings only in this disposable profile.
+  # Start only with absent product and legacy keys; the test profile is disposable.
   $exe=$app[0].FullName
-  $roots=@('HKCU:\Software\Classes\*\shell\qing-zip','HKCU:\Software\Classes\*\shell\qing-zip-compress-files','HKCU:\Software\Classes\CLSID\{B1031E9C-F2AA-4658-8932-E2596415A942}')
-  foreach ($key in $roots) { if (Test-Path -LiteralPath $key) { throw 'Test setting key already exists' } }
-  foreach ($key in $roots) { New-Item -Path $key -Force | Out-Null; $ownedKeys += $key }
-  $open=$roots[0]+'\command'; $file=$roots[1]+'\command'; $server=$roots[2]+'\LocalServer32'
-  foreach ($key in @($open,$file,$server)) { New-Item -Path $key -Force | Out-Null }
-  Set-Item -LiteralPath $open -Value ('"'+$exe+'" "%1"')
-  New-ItemProperty -LiteralPath $roots[1] -Name QingZipExecutable -Value $exe -PropertyType String | Out-Null
-  New-ItemProperty -LiteralPath $roots[2] -Name QingZipExecutable -Value $exe -PropertyType String | Out-Null
-  Set-Item -LiteralPath $server -Value ('"'+$exe+'" --shell-compress-server')
-  New-ItemProperty -LiteralPath $file -Name DelegateExecute -Value '{B1031E9C-F2AA-4658-8932-E2596415A942}' -PropertyType String | Out-Null
-  $receipt.test_settings='created from product predicates in isolated user profile'
+  $roots=@('HKCU:\Software\Classes\*\shell\qing-zip','HKCU:\Software\Classes\*\shell\qing-zip-compress-files','HKCU:\Software\Classes\CLSID\{B1031E9C-F2AA-4658-8932-E2596415A942}','HKCU:\Software\Classes\*\shell\OpenBandiZip','HKCU:\Software\Classes\*\shell\OpenArchive')
+  foreach ($key in $roots) { if (Test-Path -LiteralPath $key) { throw 'Product or legacy test setting already exists' } }
+  $ownedKeys=$roots[0..2]
+  $cli=Join-Path $app[0].DirectoryName 'obz.exe'; & $cli shell-enable $exe
+  if ($LASTEXITCODE) { throw 'Product shell-enable failed' }
+  $openCommand=(Get-Item -LiteralPath ($roots[0]+'\command')).GetValue('')
+  if ($openCommand -ine ('"'+$exe+'" "%1"')) { throw 'Product shell command path mismatch' }
+  python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1
+  if ($LASTEXITCODE) { throw 'UI dependencies unavailable' }
+  python scripts/msix/hosted-explorer-settings.py $exe $job
+  if ($LASTEXITCODE) { throw 'Product GUI settings failed' }
+  $receipt.test_settings='product CLI shell-enable and GUI file compression switch'
   $receipt.registration='passed'; $receipt.package_full_name=$pkg[0].PackageFullName; $receipt.stage='explorer'; Save-Receipt
-  python -m pip install pywinauto==0.6.9 pillow==11.3.0; if ($LASTEXITCODE) { throw 'UI dependencies unavailable' }
   python -u scripts/msix/hosted-explorer-review.py --root $job --app $app[0].FullName
   if ($LASTEXITCODE) { throw 'Explorer observation did not pass; inspect evidence' }
   $receipt.stage='completed'
