@@ -64,7 +64,11 @@ def connect(app, port, driver):
         with suppress(OSError, urllib.error.URLError):
             with urllib.request.urlopen(endpoint + '/json/version', timeout=1):
                 browser = driver.chromium.connect_over_cdp(endpoint)
-                return browser, browser.contexts[0].pages[0]
+                while time.monotonic() < deadline:
+                    if browser.contexts and browser.contexts[0].pages:
+                        return browser, browser.contexts[0].pages[0]
+                    time.sleep(.1)
+                raise RuntimeError('WebView2 page unavailable')
         time.sleep(.2)
     raise RuntimeError('WebView2 debugging endpoint unavailable')
 
