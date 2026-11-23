@@ -226,7 +226,7 @@ jobs:
           if ($exe.Count -ne 1) { throw 'Expected one GUI executable' }
           New-Item -ItemType Directory -Force nested-restart-evidence | Out-Null
           @{ product_source=$run.head_sha; product_run=$run.id; package_sha256=(Get-FileHash $package[0].FullName).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash $exe[0].FullName).Hash.ToLowerInvariant(); harness=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 nested-restart-evidence/package.json
-          python -m pip install --disable-pip-version-check playwright==1.55.0
+          python -m pip install --disable-pip-version-check playwright==1.55.0 pywinauto==0.6.9
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/nested_restart_gui.py --exe $exe[0].FullName
           exit $LASTEXITCODE
