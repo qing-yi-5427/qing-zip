@@ -48,6 +48,9 @@ with tempfile.TemporaryDirectory(prefix='qz-create-headless-', ignore_cleanup_er
             assert result == [['zip','Store','0'],['zip','Deflate','5'],['7z','Copy','0'],['7z','LZMA2','5'],['zipx','Store','0'],['zipx','XZ','5'],['sfx','Copy','0'],['sfx','LZMA2','5']], result
             extra = js('''(()=>{let $=x=>document.querySelector(x),set=(s,v)=>{let e=$(s);e.value=v;e.dispatchEvent(new Event('change',{bubbles:true}))};set('#qa-format','7z');set('#oa-method','LZ4');set('#oa-method','Copy');let copy=[$('#oa-method').value,$('#qa-level').value];$('#qa-new-password').value='test-only';$('#oa-password-again').value='test-only';set('#qa-format','tar');let notice=!$('#oa-password-unsupported').hidden;set('#qa-format','zip');return {copy,notice,password:$('#qa-new-password').value,confirmation:$('#oa-password-again').value}})()''')
             assert extra == {'copy':['Copy','0'],'notice':True,'password':'test-only','confirmation':'test-only'}, extra
+            # With the advanced panel collapsed, leaving "only store" by level must not keep the hidden store method.
+            roundtrip = js('''(()=>{let $=x=>document.querySelector(x),set=(s,v)=>{let e=$(s);e.value=v;e.dispatchEvent(new Event('change',{bubbles:true}))};let out=[];for(let format of ['zip','7z','zipx','sfx']){set('#qa-format',format);set('#oa-method','');set('#qa-level','0');set('#qa-level','5');out.push([format,$('#oa-method').value,$('#qa-level').value,$('#oa-compression-advanced').hidden])}return out})()''')
+            assert roundtrip == [[format,'','5',True] for format in ['zip','7z','zipx','sfx']], roundtrip
             print(json.dumps({'passed':True,'cases':result}))
     finally:
         proc.terminate()

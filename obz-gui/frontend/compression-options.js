@@ -13,12 +13,17 @@ function timeSupported(format){return ['zip','7z','sfx'].includes(format);}
 const rawFormats=['zstd','brotli','lz4','lz5','lizard'];
 function singleFile(format){return ['gzip','bzip2','xz',...rawFormats].includes(format);}
 function volumeSupported(format){return !['tgz','tbz2','txz','iso','lzh',...rawFormats].includes(format);}
-// A named encoder overrides -mx=0 in 7-Zip. Keep the two controls in
-// agreement so that "only store" really produces uncompressed entries.
+// A named encoder overrides -mx in 7-Zip. Keep the two controls in
+// agreement so that "only store" really produces uncompressed entries, and a
+// compressing level never silently keeps the store method selected for 0,
+// which stays hidden while the advanced settings are collapsed.
 function reconcileStore(format,method,level,changed){
  const store={zip:'Store',zipx:'Store','7z':'Copy',sfx:'Copy'}[format];
  if(!store)return {method,level};
- if(changed==='level'&&Number(level)===0)return {method:store,level:'0'};
+ if(changed==='level'){
+  if(Number(level)===0)return {method:store,level:'0'};
+  if(method===store)return {method:'',level};
+ }
  if(changed==='method'){
   if(method===store)return {method,level:'0'};
   if(Number(level)===0)return {method,level:'5'};

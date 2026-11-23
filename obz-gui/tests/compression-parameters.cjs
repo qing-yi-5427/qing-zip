@@ -20,6 +20,11 @@ test('store level and explicit methods stay consistent in both directions',()=>{
   assert.deepEqual({...reconcile(format,'Deflate','0','level')},{method:store,level:'0'});
   assert.deepEqual({...reconcile(format,store,'5','method')},{method:store,level:'0'});
   assert.deepEqual({...reconcile(format,'LZMA','0','method')},{method:'LZMA',level:'5'});
+  // Leaving "only store" by level drops the hidden store method; other
+  // explicit methods and the explicit store choice itself are kept.
+  for(const level of ['1','5','9'])assert.deepEqual({...reconcile(format,store,level,'level')},{method:'',level});
+  assert.deepEqual({...reconcile(format,'BZip2','9','level')},{method:'BZip2',level:'9'});
+  assert.deepEqual({...reconcile(format,'','5','level')},{method:'',level:'5'});
  }
  assert.deepEqual({...reconcile('brotli','','0','level')},{method:'',level:'0'});
 });
