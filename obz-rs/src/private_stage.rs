@@ -400,6 +400,12 @@ pub(crate) fn open_retired_rename_source(parent: &File, leaf: &OsStr) -> Result<
     open_private_child(parent, leaf, ChildAccess::RetiredRenameSource)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn move_retired_noclobber(file: &File, parent: &File, leaf: &OsStr) -> Result<(), String> {
+    let name: Vec<_> = leaf.encode_wide().collect();
+    output::rename(file, parent, &name, false)
+}
+
 enum ChildAccess {
     #[cfg(target_arch = "x86_64")]
     RetiredRenameSource,

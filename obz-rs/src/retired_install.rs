@@ -85,6 +85,8 @@ impl Candidate {
     }
 }
 
+pub type MoveReport = Vec<(&'static str, Result<(), String>)>;
+
 pub struct Review {
     // Preserve ancestry and installation directory identity through selection.
     install: Vec<File>,
@@ -95,7 +97,7 @@ pub struct Review {
 impl Review {
     pub fn open(root: &Path) -> Result<Self, String> {
         let install = pin_install_root(root)?;
-        if install.len() < 3 {
+        if install.len() < 2 {
             return Err("安装目录需要独立的上级文件夹".into());
         }
         let when = SystemTime::now()
@@ -132,7 +134,7 @@ impl Review {
 
     /// The caller supplies only the items individually confirmed by the user.
     /// A new sibling recovery directory follows ordinary user ACL inheritance.
-    pub fn relocate(&self, selected: &[usize]) -> Result<Vec<(&'static str, bool)>, String> {
+    pub fn relocate(&self, selected: &[usize]) -> Result<MoveReport, String> {
         if selected.is_empty() {
             return Ok(Vec::new());
         }
@@ -145,10 +147,10 @@ impl Review {
         for &i in selected {
             let item = self.candidates.get(i).ok_or("未知的迁移候选")?;
             let name = item.relative_path();
-            let moved = (|| -> Result<bool, String> {
+            let moved = (|| -> Result<(), String> {
                 let (_source_parents, file, stamp) = inspect(source, item.entry, true)?;
                 if stamp != item.stamp {
-                    return Ok(false);
+                    return Err("文件身份或修改时间与预览时不同".into());
                 }
                 let relative = Path::new(name);
                 let mut prefix = PathBuf::new();
@@ -160,10 +162,9 @@ impl Review {
                         dirs.insert(prefix.clone(), created);
                     }
                 }
-                let target = self.recovery.join(relative);
-                engine::rename_handle_noclobber_in(&file, &target, Some(&dirs[&prefix]))
-            })()
-            .unwrap_or(false);
+                let leaf = relative.file_name().ok_or("旧版文件没有名称")?;
+                private_stage::move_retired_noclobber(&file, &dirs[&prefix], leaf)
+            })();
             report.push((name, moved));
         }
         Ok(report)

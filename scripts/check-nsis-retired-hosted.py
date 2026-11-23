@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 import zipfile
 
 TITLE = "qing-zip 旧版文件"
@@ -17,6 +18,8 @@ MOVE = {"runtime/zpaq/zpaq.exe", "licenses/7zip-26.05/README.txt"}
 MODIFIED = "licenses/python-3.14.9/LICENSE.txt"
 SAME_BYTES = "licenses/rust/url-2.5.8/LICENSE-MIT"
 SAME_NAME = "runtime/zpaq/zpaq64.exe"
+CHANGED_AFTER_PREVIEW = "licenses/rust/form_urlencoded-1.2.2/LICENSE-MIT"
+FIRST_FILE, RECOVERY_EDIT, RESULTS = 200, 102, 103
 
 
 def require_hosted():
@@ -47,6 +50,10 @@ class Dialogs:
         self.user.IsWindowEnabled.argtypes = [win.HWND]
         self.user.GetDlgItem.argtypes = [win.HWND, ctypes.c_int]
         self.user.GetDlgItem.restype = win.HWND
+        self.user.GetWindowLongW.argtypes = [win.HWND, ctypes.c_int]
+        self.user.GetWindowLongW.restype = ctypes.c_long
+        self.user.GetWindowRect.argtypes = [win.HWND, ctypes.POINTER(win.RECT)]
+        self.user.SetForegroundWindow.argtypes = [win.HWND]
         self.user.PostMessageW.argtypes = [win.HWND, win.UINT, win.WPARAM, win.LPARAM]
         self.user.SendMessageTimeoutW.argtypes = [
             win.HWND, win.UINT, win.WPARAM, win.LPARAM, win.UINT, win.UINT, ctypes.POINTER(ctypes.c_size_t),
@@ -108,10 +115,38 @@ class Dialogs:
         return bool(self.user.PostMessageW(window, 0x0111, button, target))
 
 
-def interactive_setup(setup, root, inst, mode, old_paths, trace):
+
+    def message(self, window, message):
+        result = ctypes.c_size_t()
+        if not self.user.SendMessageTimeoutW(window, message, 0, 0, 2, 1000, ctypes.byref(result)):
+            raise RuntimeError(f"control message 0x{message:x} was not delivered")
+        return result.value
+
+    def select(self, window, checkbox):
+        self.user.SetForegroundWindow(window)
+        self.message(checkbox, 0x00F5)  # BM_CLICK
+        if self.message(checkbox, 0x00F0) != 1:
+            raise AssertionError("native checkbox did not become checked")
+
+    def screenshot(self, window, filename):
+        from PIL import ImageGrab
+        self.user.SetForegroundWindow(window)
+        time.sleep(.25)
+        rectangle = win.RECT()
+        if not self.user.GetWindowRect(window, ctypes.byref(rectangle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        region = (rectangle.left, rectangle.top, rectangle.right, rectangle.bottom)
+        image = ImageGrab.grab(bbox=region)
+        if image.width < 100 or image.height < 100 or not any(lo != hi for lo, hi in image.getextrema()):
+            raise AssertionError("installer screenshot contains no visible dialog")
+        image.save(filename)
+
+
+def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_after_preview=None):
     ui = Dialogs()
     process = subprocess.Popen([str(setup), f"/D={inst}"], cwd=root, stdin=subprocess.DEVNULL)
-    last = None
+    handled = False
+    result_closed = False
     try:
         deadline = time.monotonic() + 150
         while process.poll() is None and time.monotonic() < deadline:
@@ -119,43 +154,74 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace):
                       if ui.caption(w) == TITLE and ui.is_exe(ui.pid(w), inst / "qing-zip.exe")]
             if helper:
                 window = helper[0]
-                text = "\n".join(ui.text(child) for child in ui.windows(window))
-                signature = (window, text)
-                if signature != last:
-                    if "是否逐项查看" in text:
-                        trace.append({"dialog": "offer"})
-                        button = 7 if mode == "decline" else 6
-                    elif "要将这一项移至恢复目录" in text:
-                        name = next((name for name in old_paths if name in text), None)
-                        if name is None:
-                            raise AssertionError("unrecognized candidate prompt")
-                        trace.append({"dialog": "candidate", "relative_path": name})
-                        button = 6 if name in MOVE else 7
-                    elif "文件保留原相对路径" in text:
-                        trace.append({"dialog": "summary", "moved": sorted(name for name in MOVE if f"已移至恢复目录  {name}" in text)})
-                        button = 1
-                    else:
-                        trace.append({"dialog": "other"})
-                        button = 1
-                    if ui.click(window, button):
-                        last = signature
-                        time.sleep(.2)
-                        continue
+                result_box = ui.user.GetDlgItem(window, RESULTS)
+                if not result_box:
+                    raise AssertionError("expected one native list and in-place result")
+                if ui.user.IsWindowVisible(result_box):
+                    if not result_closed:
+                        text = ui.text(result_box)
+                        trace.append({"dialog": "summary",
+                                      "moved": sorted(name for name in MOVE if f"已移动  {name}" in text),
+                                      "retained": sorted(name for name in old_paths if f"未移动  {name}" in text),
+                                      "text": text})
+                        ui.screenshot(window, evidence / f"{mode}-result.png")
+                        if not ui.click(window, 2):
+                            raise AssertionError("result close button is unavailable")
+                        result_closed = True
+                elif not handled:
+                    items = {}
+                    for index in range(len(old_paths)):
+                        control = ui.user.GetDlgItem(window, FIRST_FILE + index)
+                        if control:
+                            name = ui.text(control)
+                            if name not in old_paths or name in items:
+                                raise AssertionError("unexpected or duplicate native checkbox")
+                            if ui.user.GetWindowLongW(control, -16) & 0xF != 3 or ui.message(control, 0x00F0) != 0:
+                                raise AssertionError("offers must be unchecked native automatic checkboxes")
+                            items[name] = control
+                    apply = ui.user.GetDlgItem(window, 1)
+                    recovery = Path(ui.text(ui.user.GetDlgItem(window, RECOVERY_EDIT)))
+                    if not items or not apply or ui.user.IsWindowEnabled(apply):
+                        raise AssertionError("empty or preselected native file list")
+                    if recovery.parent != inst.parent or not recovery.name.startswith("qing-zip-v0.12.20-Recovery-"):
+                        raise AssertionError("recovery location was not displayed in the actual window")
+                    trace.append({"dialog": "offer", "candidates": sorted(items), "all_unchecked": True})
+                    ui.screenshot(window, evidence / f"{mode}-offer.png")
+                    if mode == "repeat":
+                        raise AssertionError("repeat unexpectedly offered the old migration")
+                    choices = MOVE | {CHANGED_AFTER_PREVIEW} if mode == "selected" else set(sorted(items)[:1])
+                    if not choices <= items.keys():
+                        raise AssertionError("requested test candidate missing from the window")
+                    for name in sorted(choices):
+                        ui.select(window, items[name])
+                    if not ui.user.IsWindowEnabled(apply):
+                        raise AssertionError("checked candidates did not enable the submit button")
+                    ui.screenshot(window, evidence / f"{mode}-choices.png")
+                    if mode == "selected":
+                        edit_after_preview()
+                    trace.append({"dialog": "commit" if mode == "selected" else "cancel",
+                                  "checked": sorted(choices)})
+                    if not ui.click(window, 1 if mode == "selected" else 2):
+                        raise AssertionError("configured list action was unavailable")
+                    handled = True
             else:
                 windows = [w for w in ui.windows() if ui.pid(w) == process.pid and "qing-zip" in ui.caption(w).casefold()]
                 for window in windows:
                     next_button = ui.user.GetDlgItem(window, 1)
                     if not next_button:
                         continue
-                    # MUI's Next, Agree, Install and Finish all use IDOK.
-                    # The installer owns this window and no optional boxes are changed.
+                    # MUI's Next, Agree, Install and Finish share IDOK.
                     label = ui.text(next_button)
-                    if label and ui.click(window, 1):
+                    if label and ui.user.IsWindowEnabled(next_button):
                         stage = {"dialog": "setup", "button": label}
-                        if not trace or trace[-1] != stage:
-                            trace.append(stage)
-                        time.sleep(.3)
-                        break
+                        new_stage = not trace or trace[-1] != stage
+                        if new_stage and "install" in label.casefold() and mode == "selected":
+                            ui.screenshot(window, evidence / "installer-before-upgrade.png")
+                        if ui.click(window, 1):
+                            if new_stage:
+                                trace.append(stage)
+                            time.sleep(.3)
+                            break
             time.sleep(.1)
         if process.poll() is None:
             raise RuntimeError("timed out driving actual NSIS setup windows")
@@ -173,11 +239,17 @@ def tree(root, sha):
 
 def exercise(args, old, runner_temp, mode, shipped, manifest, report):
     root = Path(tempfile.mkdtemp(prefix=f"qz-retired-{mode}-", dir=runner_temp)).resolve()
-    inst = root / "application"
+    direct = mode == "decline"
+    drive_root = Path(runner_temp.anchor)
+    inst = drive_root / ("qz-retired-cancel-" + uuid.uuid4().hex) if direct else root / "application"
+    recovery_parent = inst.parent
+    before_recoveries = set(recovery_parent.glob("qing-zip-v0.12.20-Recovery-*"))
     uninstalled = False
     report["status"] = "started"
     try:
-        old.check(root.parent == runner_temp and not any(c.isspace() for c in str(inst)), "invalid private /D path")
+        old.check(root.parent == runner_temp and not inst.exists() and not any(c.isspace() for c in str(inst)),
+                  "invalid fresh /D path")
+        report["drive_root_child"] = direct
         old.check(not old.key_exists(old.ARP) and not old.key_exists(old.INSTALL), "refusing pre-existing registration")
         old.run([args.old_setup, "/S", f"/D={inst}"], root)
         old.installed_version("0.12.20", inst)
@@ -185,7 +257,8 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
         old.check(baseline == manifest, "initial retired-file hashes differ from official release")
         report["old_installed"] = baseline
         old.run([args.candidate_stage / "qing-zip.exe", "--review-retired-install-files"], root, timeout=15)
-        old.check(not list(root.glob("qing-zip-v0.12.20-Recovery-*")), "mismatched install directory created a recovery")
+        old.check(set(recovery_parent.glob("qing-zip-v0.12.20-Recovery-*")) == before_recoveries,
+                  "mismatched install directory created a recovery")
         report["mismatched_registration_preserved"] = True
         expected = dict(baseline)
 
@@ -215,22 +288,28 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             expected.update({name: old.sha(inst / name) for name in (MODIFIED, SAME_BYTES, SAME_NAME)})
         traces = report.setdefault("dialogs", [])
         before_ids = {name: (inst / name).stat().st_ino for name in MOVE}
+        def edit_after_preview():
+            path = inst / CHANGED_AFTER_PREVIEW
+            path.write_bytes(path.read_bytes() + b"\nUser annotation added while reviewing.\n")
+            expected[CHANGED_AFTER_PREVIEW] = old.sha(path)
+
         if mode == "quiet":
             old.run([args.candidate_setup, "/S", f"/D={inst}"], root)
         else:
-            interactive_setup(args.candidate_setup, root, inst, mode, manifest, traces)
+            interactive_setup(args.candidate_setup, root, inst, mode, manifest, traces, args.out, edit_after_preview)
         old.installed_version("0.12.23", inst)
         old.check(all(old.sha(inst / name) == digest for name, digest in shipped.items()), "candidate file hash mismatch")
         if mode != "quiet":
             old.check(any(d["dialog"] == "offer" for d in traces), "no explicit old file review was shown")
-        recoveries = list(root.glob("qing-zip-v0.12.20-Recovery-*"))
+        recoveries = sorted(set(recovery_parent.glob("qing-zip-v0.12.20-Recovery-*")) - before_recoveries)
         selected = MOVE if mode == "selected" else set()
         old.check(len(recoveries) == bool(selected), "unexpected recovery directory count")
         if selected:
-            offered = {d["relative_path"] for d in traces if d["dialog"] == "candidate"}
+            offered = set(next(d["candidates"] for d in traces if d["dialog"] == "offer"))
             old.check(offered == set(manifest) - {MODIFIED, SAME_NAME} and SAME_BYTES in offered,
                       "candidate list included modified or excluded byte-identical unclaimed files")
-            old.check(any(d.get("moved") == sorted(MOVE) for d in traces), "missing actual relocation summary")
+            old.check(any(d.get("moved") == sorted(MOVE) and d.get("retained") == [CHANGED_AFTER_PREVIEW] for d in traces),
+                      "missing mixed success and safe retention in the in-place result")
             recovery = recoveries[0]
             report["recovered"] = tree(recovery, old.sha)
             old.check(report["recovered"] == {name: expected[name] for name in selected}, "wrong recovery content")
@@ -239,8 +318,9 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             for name in selected:
                 del expected[name]
                 old.check(not (inst / name).exists(), "selected object remains in install root")
-        else:
-            old.check(not any(d["dialog"] == "candidate" for d in traces), "decline unexpectedly entered per-file review")
+        elif mode == "decline":
+            old.check(any(d["dialog"] == "cancel" for d in traces), "cancel did not exercise a checked item")
+            old.check(not any(d["dialog"] == "summary" for d in traces), "cancel unexpectedly committed the list")
         old.check(all(old.sha(inst / name) == digest for name, digest in expected.items()), "retained file changed after upgrade")
         report["retained_after_upgrade"] = dict(expected)
 
@@ -250,10 +330,10 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
         old.check(old.sha(output / source.name) == old.sha(source) and old.sha(archive) == archive_sha, "original archive changed")
         if selected:
             repeat = report.setdefault("repeat_dialogs", [])
-            interactive_setup(args.candidate_setup, root, inst, "repeat", manifest, repeat)
+            interactive_setup(args.candidate_setup, root, inst, "repeat", manifest, repeat, args.out)
             old.installed_version("0.12.23", inst)
             old.check(all(d["dialog"] == "setup" for d in repeat), "repeat unexpectedly offered old file migration")
-            old.check(list(root.glob("qing-zip-v0.12.20-Recovery-*")) == recoveries, "repeat created a new recovery path")
+            old.check(set(recovery_parent.glob("qing-zip-v0.12.20-Recovery-*")) == before_recoveries | set(recoveries), "repeat created a new recovery path")
             old.check(tree(recovery, old.sha) == report["recovered"], "repeat changed recovery bytes")
         old.uninstall(inst, root)
         uninstalled = True
@@ -275,6 +355,9 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             except (OSError, RuntimeError, AssertionError):
                 report["cleanup_uninstall"] = "not confirmed"
         if uninstalled and root.parent == runner_temp:
+            if direct and inst.exists() and inst.resolve() == inst and inst.parent == drive_root and inst.name.startswith("qz-retired-cancel-"):
+                shutil.rmtree(inst)
+                report["direct_install_cleaned"] = not inst.exists()
             shutil.rmtree(root)
             report["owned_root_cleaned"] = not root.exists()
 
@@ -300,7 +383,7 @@ def main():
         with zipfile.ZipFile(args.old_portable) as prior:
             manifest = {name: old.hashlib.sha256(prior.read(name)).hexdigest()
                         for name in prior.namelist() if not name.endswith("/") and name not in shipped}
-        old.check(len(manifest) == 10 and MOVE | {MODIFIED, SAME_BYTES, SAME_NAME} <= set(manifest),
+        old.check(len(manifest) == 10 and MOVE | {MODIFIED, SAME_BYTES, SAME_NAME, CHANGED_AFTER_PREVIEW} <= set(manifest),
                   "unexpected official retired inventory")
         for mode in ("quiet", "decline", "selected"):
             case = report["cases"][mode] = {}

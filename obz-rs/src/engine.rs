@@ -4521,7 +4521,7 @@ fn rename_directory_noclobber(root: &File, target: &Path) -> Result<bool, String
     rename_handle_noclobber_in(root, target, None)
 }
 #[cfg(any(windows, test))]
-pub(crate) fn rename_handle_noclobber_in(
+fn rename_handle_noclobber_in(
     root: &File,
     target: &Path,
     parent: Option<&File>,

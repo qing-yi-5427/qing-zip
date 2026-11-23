@@ -56,6 +56,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $inputDir = Join-Path $env:RUNNER_TEMP 'qz-retired-input'
           $dist = Join-Path $env:RUNNER_TEMP 'qz-retired-dist'
+          python -m pip install Pillow==11.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/check-nsis-retired-hosted.py --old-setup (Join-Path $inputDir 'qing-zip-0.12.20-setup.exe') --old-portable (Join-Path $inputDir 'qing-zip-0.12.20-portable.zip') --candidate-setup (Join-Path $dist 'qing-zip-0.12.23-setup.exe') --candidate-stage (Join-Path $dist 'qing-zip-0.12.23-portable') --out evidence/retired
           exit $LASTEXITCODE
       - name: Upload installer and migration receipts
