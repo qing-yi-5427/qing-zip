@@ -507,6 +507,10 @@ test('batch count excludes failed integrity and advances the next job from the c
  const values=state.jobs.map(require('../frontend/progress.js').value);
  assert.deepEqual(values,[33,null,66]);
  assert.equal(batch.done,2);
+ Object.assign(context,{esc:String,btn:()=>''});
+ const lastCard=context.jobCard(state.jobs[2]);
+ assert.match(lastCard,/已完成 · 100%/);
+ assert.doesNotMatch(lastCard,/总进度|66%/);
 });
 
 test('queued archive progress appears only for a slow listing and can cancel it', async () => {

@@ -492,8 +492,9 @@ function jobCard(j,inline=false){
  const phase=running?(j.archives?compressionStageLabel(j):phaseLabels[j.phase]||(j.phase?'正在处理':'等待引擎响应')):jobStatus(j);
  const badge=j.status==='failed'?'failed':deepCanContinue(j)?'attention':j.deep?.cancelled||j.status==='cancelled'?'cancelled':
   j.partial||deepReportPending(j.deep)?'attention':j.status;
- const percent=QingProgress.value(j);
- const progressLabel=QingProgress.label(j,percent);
+ const progressJob=!running&&j.overall&&!j.archives?{...j,overall:null}:j;
+ const percent=QingProgress.value(progressJob);
+ const progressLabel=QingProgress.label(progressJob,percent);
  const stageMetric=running&&j.overall&&!j.cancelRequested?QingProgress.label({status:'running'},j.percent):'';
  const display=running?({'Verifying all archive entries':'正在验证全部归档条目',
   'Decoding archive into temporary storage':'正在解码到临时位置',
@@ -563,9 +564,10 @@ function renderInlineTask(){
  }
  cancel.hidden=!running||job.phase==='recycling'||!!job.cancelRequested;
  cancel.textContent=s.batchRunning&&job.id===s.active?'停止批量处理':'取消任务';
- output.hidden=running||!job.outputPath||!!result;
- output.dataset.jobOutput=String(job.id);
- output.textContent=job.deep?.outputs?.length>1?'打开首个结果':'打开输出位置';
+ output.hidden=running||!(result?result.hasOutput:job.outputPath);
+ output.dataset.jobOutput=result?'':String(job.id);
+ if(result)output.dataset.action='batch-output';else delete output.dataset.action;
+ output.textContent=result?'打开输出目录':job.deep?.outputs?.length>1?'打开首个结果':'打开输出位置';
  $('oa-task-dismiss').hidden=running;
  if(running&&(!s.active||s.active===job.id||job===s.compressionJob))$('qa-status-text').textContent=text;
  else if(!s.active)$('qa-status-text').textContent='就绪';
@@ -576,7 +578,7 @@ function renderInlineTask(){
  content.hidden=!detailsOpen;
  if(s.inlineExpanded&&active===cancel&&cancel.hidden)(output.hidden?details:output).focus({preventScroll:true});
  if(!s.inlineExpanded||!detailsOpen)return;
- const html=shellQueueStatus()+(result?batchResultMarkup(result,true):jobCard(job,true));
+ const html=shellQueueStatus()+(result?batchResultMarkup(result,true,false):jobCard(job,true));
  const jobId=String(job.id),replacingJob=content.dataset.jobId!==jobId;
  if(!replacingJob&&content.renderedHtml===html)return;
  if(!replacingJob&&running&&taskDetailSelection(content))return;
@@ -621,9 +623,9 @@ function batchPage(){
   <p class="qa-sub">某个压缩包处理失败后会继续下一项。</p>
  </section>`;
 }
-function batchResultMarkup(result,compact=false){
+function batchResultMarkup(result,compact=false,showOutput=true){
  const review=result.attention&&compact?btn('查看批量结果','batch-result','quiet'):'';
- const output=result.hasOutput?btn('打开输出目录','batch-output','quiet'):'';
+ const output=showOutput&&result.hasOutput?btn('打开输出目录','batch-output','quiet'):'';
  const unresolved=compact?[]:result.entries.filter(entry=>entry.status!=='complete');
  const details=unresolved.length?`<details><summary>查看 ${unresolved.length} 项明细</summary>
   <ul class="oa-batch-plan">${unresolved.map(entry=>`<li><strong>${entry.index+1}. ${esc(filename(entry.path))} · ${entry.label}</strong>
