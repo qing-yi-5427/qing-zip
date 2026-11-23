@@ -1,5 +1,6 @@
 """Install, upgrade and uninstall only on an asserted disposable hosted runner."""
-import argparse, hashlib, json, os, shutil, subprocess, tempfile, time, winreg, zipfile
+import argparse, ctypes, hashlib, json, os, shutil, subprocess, tempfile, time, winreg, zipfile
+from ctypes import wintypes
 from pathlib import Path
 
 OLD_SETUP='83a08671edde7bb53ff37582f4d82fd880c968029ddcd39001119efc11a979e1'
@@ -12,6 +13,26 @@ def sha(path):
     with path.open('rb') as f:
         while chunk:=f.read(1024*1024): h.update(chunk)
     return h.hexdigest()
+
+def executable_version(path):
+    version=ctypes.WinDLL('version',use_last_error=True)
+    version.GetFileVersionInfoSizeW.argtypes=[wintypes.LPCWSTR,ctypes.POINTER(wintypes.DWORD)]
+    version.GetFileVersionInfoSizeW.restype=wintypes.DWORD
+    version.GetFileVersionInfoW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID]
+    version.GetFileVersionInfoW.restype=wintypes.BOOL
+    version.VerQueryValueW.argtypes=[wintypes.LPCVOID,wintypes.LPCWSTR,ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(wintypes.UINT)]
+    version.VerQueryValueW.restype=wintypes.BOOL
+    length=version.GetFileVersionInfoSizeW(str(path),None)
+    if not length: raise ctypes.WinError(ctypes.get_last_error())
+    data=ctypes.create_string_buffer(length)
+    if not version.GetFileVersionInfoW(str(path),0,length,data): raise ctypes.WinError(ctypes.get_last_error())
+    pointer=ctypes.c_void_p();size=wintypes.UINT()
+    if not version.VerQueryValueW(data,'\\',ctypes.byref(pointer),ctypes.byref(size)) or size.value<16:
+        raise RuntimeError('missing fixed executable version')
+    fields=ctypes.cast(pointer,ctypes.POINTER(wintypes.DWORD))
+    if fields[0]!=0xFEEF04BD: raise RuntimeError('invalid executable version signature')
+    ms,ls=fields[2],fields[3]
+    return '.'.join(str(v) for v in (ms>>16,ms&0xffff,ls>>16,ls&0xffff))
 
 def key_exists(name):
     try:
@@ -77,6 +98,7 @@ def main():
             old_hashes={name:hashlib.sha256(archive.read(name)).hexdigest() for name in ('qing-zip.exe','obz.exe','obz-worker.exe')}
         run([old_setup,'/S',f'/D={inst}'],root)
         installed_version('0.12.20',inst)
+        check(executable_version(inst/'qing-zip.exe')=='0.12.20.0','unexpected old executable version')
         check(all(sha(inst/name)==digest for name,digest in old_hashes.items()),'installed old binaries differ from official portable')
         check((shortcuts/'qing-zip.lnk').is_file() and (shortcuts/'卸载.lnk').is_file(),'expected Start menu shortcuts missing')
         passed('official_release_installed_to_owned_directory')
@@ -89,6 +111,7 @@ def main():
         passed('old_archive_and_user_sentinels_created')
         run([candidate_setup,'/S',f'/D={inst}'],root)
         installed_version('0.12.23',inst)
+        check(executable_version(inst/'qing-zip.exe')=='0.12.23.0','unexpected candidate executable version')
         shipped={p.relative_to(stage).as_posix():sha(p) for p in stage.rglob('*') if p.is_file()}
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in shipped.items()),'upgraded payload differs from candidate portable stage')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'upgrade changed user data')
@@ -105,7 +128,8 @@ def main():
         check(remaining=={sentinel.relative_to(inst).as_posix(),archive.relative_to(inst).as_posix()},'unexpected remaining files after uninstall')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(extracted)==source_sha
               and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'uninstall changed user data')
-        report.update({'source_sha256':source_sha,'archive_sha256':original_sha,'extracted_sha256':sha(extracted),
+        report.update({'old_executable_version':'0.12.20.0','candidate_executable_version':'0.12.23.0',
+                       'source_sha256':source_sha,'archive_sha256':original_sha,'extracted_sha256':sha(extracted),
                        'inside_sentinel_sha256':sentinel_sha,'outside_sentinel_sha256':external_sha,
                        'candidate_shipped_file_count':len(shipped),'remaining_user_file_count':len(remaining)})
         passed('uninstall_removed_payload_and_registration_preserved_user_files')
