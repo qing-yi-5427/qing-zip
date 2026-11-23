@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import random
 from pathlib import Path
 import socket
 import subprocess
@@ -28,11 +29,13 @@ def members(payload):
         return {name: hashlib.sha256(archive.read(name)).hexdigest() for name in archive.namelist()}
 
 
-def fixture(root):
+def fixture(root, large=False):
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, 'w', zipfile.ZIP_STORED) as archive:
         archive.writestr('before.txt', b'editable nested content\n')
         archive.writestr('unchanged.txt', b'preserve nested sibling\n')
+        if large:
+            archive.writestr('bulk.bin', random.Random(86).randbytes(64 * 1024 * 1024))
     payload = inner.getvalue()
     outer = root / 'outer.zip'
     with zipfile.ZipFile(outer, 'w', zipfile.ZIP_STORED) as archive:
@@ -153,6 +156,7 @@ def main():
         raise RuntimeError('Disposable hosted Windows required')
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
+    parser.add_argument('--large', action='store_true', help='Use a deterministic 64 MiB stored inner ZIP member')
     parser.add_argument('--expect-recovery', action='store_true', help='Require interrupted edit in retained copies and save it through the native dialog')
     options = parser.parse_args()
     exe = options.exe.resolve(strict=True)
@@ -177,11 +181,11 @@ def main():
                     root.mkdir()
                     temp = root / 'temp'
                     temp.mkdir()
-                    outer = fixture(root)
+                    outer = fixture(root, large=options.large)
                     before = inspect_outer(outer)
                     neighbour_hash = digest(root / 'neighbour.txt')
                     env = dict(os.environ, TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(root / 'local'), APPDATA=str(root / 'roaming'), WEBVIEW2_USER_DATA_FOLDER=str(root / 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=arguments)
-                    entry = report['scenarios'][case] = {'before': before, 'neighbour_sha256': neighbour_hash}
+                    entry = report['scenarios'][case] = {'before': before, 'neighbour_sha256': neighbour_hash, 'large_member_bytes': 64 * 1024 * 1024 if options.large else 0}
                     save()
                     app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
                     entry['first_gui_pid'] = app.pid
@@ -251,7 +255,8 @@ def main():
                     entry['reopened_inner_entries'] = page.locator('[data-entry]').evaluate_all('(els)=>els.map(e=>e.getAttribute("data-entry"))')
                     page.screenshot(path=str(evidence / f'{case}-reopened-inner.png'))
                     expected_name = 'after.txt' if case == 'save-close' else 'before.txt'
-                    if sorted(entry['reopened_inner_entries']) != sorted([expected_name, 'unchanged.txt']):
+                    expected_entries = [expected_name, 'unchanged.txt'] + (['bulk.bin'] if options.large else [])
+                    if sorted(entry['reopened_inner_entries']) != sorted(expected_entries):
                         raise RuntimeError('Reopened inner archive entries differ from expected')
                     entry['retained_menu'] = retained_dialog(page, evidence, case)
                     entry['retained_options_first'] = page.locator('#oa-retained-edit option').count()

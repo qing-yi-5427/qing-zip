@@ -21,6 +21,10 @@ on:
         description: 'Expected portable ZIP SHA-256'
         type: string
         default: 'b09d5089eaa0e8bcb5f376598c03be99e5773a716f008e17d49f696450bee6d5'
+      nested_large_fixture:
+        description: 'Use one 64 MiB stored inner ZIP member in each ordinary scenario'
+        type: boolean
+        default: false
       nested_expect_recovery:
         description: 'Require recovery list, Save As and second-restart verification'
         type: boolean
@@ -227,6 +231,7 @@ jobs:
       NESTED_PRODUCT_SOURCE: ${{ inputs.nested_product_source }}
       NESTED_PACKAGE_SHA256: ${{ inputs.nested_package_sha256 }}
       NESTED_EXPECT_RECOVERY: ${{ inputs.nested_expect_recovery }}
+      NESTED_LARGE_FIXTURE: ${{ inputs.nested_large_fixture }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -252,6 +257,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $captureArgs=@('--exe', $exe[0].FullName)
           if ($env:NESTED_EXPECT_RECOVERY -eq 'true') { $captureArgs += '--expect-recovery' }
+          if ($env:NESTED_LARGE_FIXTURE -eq 'true') { $captureArgs += '--large' }
           python scripts/nested_restart_gui.py @captureArgs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           if ($env:NESTED_EXPECT_RECOVERY -eq 'true') {
