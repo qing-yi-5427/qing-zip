@@ -56,7 +56,9 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   const detail='CRC failed: operation cancelled.txt';
   context.s.jobs[0]={label:'解压',status:'failed',error:detail};
   assert.ok(context.jobs().includes(detail));
-  context.error(Error(detail));assert.equal(field.textContent,'Error: '+detail);
+  context.error(Error(detail));assert.equal(field.textContent,detail);
+  context.error(Error('请输入有效的压缩包文件名。'));assert.equal(field.textContent,'请输入有效的压缩包文件名。');
+  context.error('Error: backend text');assert.equal(field.textContent,'backend text');
   assert.equal(context.s.jobs[0].error,detail);
 });
 

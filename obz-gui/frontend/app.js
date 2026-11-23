@@ -712,7 +712,8 @@ function close(restoreFocus=true){if($('qa-open-status')?.closest('.qa-dialog')?
 }if(overlay.dataset.page==='home-inspecting'&&homeIntake){stopHomeIntake();return;}if($('qa-edit-inputs')?.closest('.qa-dialog').getAttribute('aria-busy')==='true'&&overlay.dataset.page!=='close-confirm')return;if($('qa-property-status')&&Number.isInteger(s.active))invoke('cancel_operation',{id:s.active}).catch(()=>{});if(pendingNestedOpen&&!openingArchive&&!s.active){const orphan=pendingNestedOpen.session;pendingNestedOpen=null;if(orphan)invoke('close_nested',{ids:[orphan.id],discard:false}).catch(error);}hideMenu();if($('qa-tools')?.contentWindow?.obzBusy){toast('请先等待或取消当前工具任务。');return;}if(s.active&&s.view==='jobs'&&!s.backgroundExtraction){if(overlay.dataset.page==='close-confirm')action('keep-running').catch(error);return;}if(overlay.dataset.page==='home-review')homeReview=null;overlay.hidden=true;overlay.replaceChildren();overlay.dataset.page='';root.querySelector('.qa-shell').inert=false;if($('oa-task-panel'))$('oa-task-panel').inert=false;$('oa-menu').inert=false;$('oa-toolbar').inert=false;$('oa-archive-tabs').inert=false;if(s.view==='jobs')s.view=s.page==='files'?(s.archive?'archive':'home'):s.page;if(restoreFocus){if(returnFocus?.isConnected&&returnFocus.getClientRects().length)returnFocus.focus();else{main.tabIndex=-1;main.focus();}}}
 
 function taskError(e){
- const text=String(e),directoryError=archiveDirectoryError(text);
+ // String(Error(x)) is "Error: x"; the JavaScript class name is not part of the message.
+ const text=String(e).replace(/^Error:\s*/,''),directoryError=archiveDirectoryError(text);
  if(directoryError)return directoryError;
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);
  if(conflict)return '目标位置已有同名项目。\n'+conflict[1];
