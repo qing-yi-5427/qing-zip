@@ -3,7 +3,7 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hos
 New-Item -ItemType Directory -Force explorer-evidence | Out-Null
 $receipt = @{ stage='start'; registration='not attempted'; unregistered=$false; certificates_removed=$false; source=(git rev-parse HEAD).Trim() }
 function Save-Receipt { $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 explorer-evidence/setup.json }
-$cert=$null; $thumb=$null; $publisher='CN=QingZip Disposable Explorer QA'; $job=Join-Path $env:RUNNER_TEMP ('qz-explorer-'+[guid]::NewGuid().ToString('N'))
+$cert=$null; $thumb=$null; $ownedKeys=@(); $publisher='CN=QingZip Disposable Explorer QA'; $job=Join-Path $env:RUNNER_TEMP ('qz-explorer-'+[guid]::NewGuid().ToString('N'))
 Save-Receipt
 try {
   if (@(Get-AppxPackage -Name 'QingYi.QingZip.Shell').Count) { throw 'Existing product identity; refusing to change it' }
@@ -32,6 +32,19 @@ try {
   $receipt.msix_sha256=(Get-FileHash $msix).Hash.ToLowerInvariant(); $receipt.stage='register'; Save-Receipt
   ./scripts/msix/Register-Package.ps1 -PackagePath $msix -ExternalLocation (Join-Path $app[0].DirectoryName 'shell') -Publisher $publisher -SignToolPath "$sdk/signtool.exe"
   $pkg=@(Get-AppxPackage -Name 'QingYi.QingZip.Shell'); if ($pkg.Count -ne 1 -or $pkg[0].Publisher -cne $publisher) { throw 'Registration missing' }
+  # Mimic the product's opt-in Explorer settings only in this disposable profile.
+  $exe=$app[0].FullName
+  $roots=@('HKCU:\Software\Classes\*\shell\qing-zip','HKCU:\Software\Classes\*\shell\qing-zip-compress-files','HKCU:\Software\Classes\CLSID\{B1031E9C-F2AA-4658-8932-E2596415A942}')
+  foreach ($key in $roots) { if (Test-Path -LiteralPath $key) { throw 'Test setting key already exists' } }
+  foreach ($key in $roots) { New-Item -Path $key -Force | Out-Null; $ownedKeys += $key }
+  $open=$roots[0]+'\command'; $file=$roots[1]+'\command'; $server=$roots[2]+'\LocalServer32'
+  foreach ($key in @($open,$file,$server)) { New-Item -Path $key -Force | Out-Null }
+  Set-Item -LiteralPath $open -Value ('"'+$exe+'" "%1"')
+  New-ItemProperty -LiteralPath $roots[1] -Name QingZipExecutable -Value $exe -PropertyType String | Out-Null
+  New-ItemProperty -LiteralPath $roots[2] -Name QingZipExecutable -Value $exe -PropertyType String | Out-Null
+  Set-Item -LiteralPath $server -Value ('"'+$exe+'" --shell-compress-server')
+  New-ItemProperty -LiteralPath $file -Name DelegateExecute -Value '{B1031E9C-F2AA-4658-8932-E2596415A942}' -PropertyType String | Out-Null
+  $receipt.test_settings='created from product predicates in isolated user profile'
   $receipt.registration='passed'; $receipt.package_full_name=$pkg[0].PackageFullName; $receipt.stage='explorer'; Save-Receipt
   python -m pip install pywinauto==0.6.9 pillow==11.3.0; if ($LASTEXITCODE) { throw 'UI dependencies unavailable' }
   python -u scripts/msix/hosted-explorer-review.py --root $job --app $app[0].FullName
@@ -39,10 +52,11 @@ try {
   $receipt.stage='completed'
 } catch { $receipt.error=$_.Exception.Message.Replace($job,'<test-root>'); throw }
 finally {
+  try { foreach ($key in $ownedKeys) { if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Recurse -Force } }; $receipt.settings_removed=(@($ownedKeys | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0) } catch { $receipt.settings_error=$_.Exception.Message }
   try { ./scripts/msix/Unregister-Package.ps1 -Publisher $publisher; $receipt.unregistered=@(Get-AppxPackage -Name 'QingYi.QingZip.Shell').Count -eq 0 } catch { $receipt.unregister_error=$_.Exception.Message }
   try {
     if ($thumb) { foreach ($store in @('Cert:/CurrentUser/My','Cert:/CurrentUser/TrustedPeople','Cert:/LocalMachine/Root')) { $entry=Join-Path $store $thumb; if (Test-Path $entry) { Remove-Item -LiteralPath $entry -Force } }; $receipt.certificates_removed=!(Test-Path "Cert:/CurrentUser/My/$thumb") -and !(Test-Path "Cert:/CurrentUser/TrustedPeople/$thumb") -and !(Test-Path "Cert:/LocalMachine/Root/$thumb") } else { $receipt.certificates_removed=$true }
   } catch { $receipt.certificate_error=$_.Exception.Message }
   Save-Receipt
-  if (!$receipt.unregistered -or !$receipt.certificates_removed) { throw 'Disposable runner cleanup not verified' }
+  if (!$receipt.unregistered -or !$receipt.certificates_removed -or !$receipt.settings_removed) { throw 'Disposable runner cleanup not verified' }
 }
