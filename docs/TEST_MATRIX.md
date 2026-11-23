@@ -260,3 +260,7 @@ Windows 11 ARM64 从官方 0.11.27、Windows Server 2025 x64 从官方 0.12.20 �
 ## 普通 ZIP 新增时的强退
 
 Windows 11 x64 上观察专属写入进程正在写入 128 MiB 新成员后强退，候选三轮均 PASS。重开和重试后原包旁为 0 字节，另一个并发任务继续完成。输入与输出范围、兼容性控制和计时见[普通 Add 的独立文件回执](verification/round7/ordinary-zip-add/README.md)。
+
+## 普通归档解压修改时间
+
+已安装 Windows 11 x64 主线 `be86c35` 上，ZIP、TAR、TAR.GZ、TAR.BZ2、TAR.XZ 的整包和单文件提取均通过。核对显式目录、空目录、已提取成员的秒级修改时间、输出集合及归档和文件 SHA-256。同一 ZIP 的 7-Zip 对照也通过。 [回执与复跑](verification/round10/ordinary-extract-mtime/README.md)
