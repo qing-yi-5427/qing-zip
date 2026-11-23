@@ -1,0 +1,568 @@
+{
+  "status": "BLOCKED_200_UNAVAILABLE",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "arch": "ARM64",
+  "gui_sha256": "bf51ebf15f1b528d09438dbcc8c7f532edd989a864b5d0d61fad6ffe092981b0",
+  "settings_mutation": "Windows Settings Scale combobox via UI Automation",
+  "observations": {
+    "before": {
+      "native": {
+        "window_dpi": 96,
+        "awareness": 2,
+        "window_title": "qing-zip",
+        "visible_package_windows": 3,
+        "monitor_pixels": [
+          1024,
+          768
+        ],
+        "remote_session": false,
+        "primary_monitor": true
+      },
+      "webview": {
+        "dpr": 1,
+        "width": 1028,
+        "height": 779,
+        "menu": {
+          "hidden": false,
+          "left": 99.359375,
+          "top": 45,
+          "right": 384.359375,
+          "bottom": 347.5,
+          "width": 285,
+          "height": 302.5,
+          "items": 7
+        }
+      },
+      "screenshot_sha256": "0bf2155eadf5e9d65b2e6f58f6a122ac5ed9bc6b86d6b1ef664775c1dfcc8835"
+    },
+    "settings-before": {
+      "requested": 0,
+      "action": "probe",
+      "settings_visible": true,
+      "combos": [
+        {
+          "selection": "100% (Recommended)",
+          "name": "Scale",
+          "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "1024 \u00d7 768 (Recommended)",
+          "name": "Display resolution",
+          "id": "SystemSettings_Display_Resolution_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "Landscape",
+          "name": "Display orientation",
+          "id": "SystemSettings_Display_Orientation_ComboBox",
+          "enabled": false
+        }
+      ],
+      "settings_window_count": 1,
+      "current": 100,
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ],
+      "screenshot_method": "PrintWindow for the Settings HWND",
+      "screenshot_error": "Settings window capture was blank",
+      "resolution_options": [
+        {
+          "enabled": true,
+          "label": "1920 \u00d7 1080"
+        },
+        {
+          "enabled": true,
+          "label": "1680 \u00d7 1050"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 1200"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1440 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1366 \u00d7 768"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 1024"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 800"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 720"
+        },
+        {
+          "enabled": true,
+          "label": "1152 \u00d7 864"
+        },
+        {
+          "enabled": true,
+          "label": "1024 \u00d7 768 (Recommended)"
+        },
+        {
+          "enabled": true,
+          "label": "800 \u00d7 600"
+        }
+      ],
+      "video_controllers": [
+        {
+          "Name": "Microsoft Hyper-V Video",
+          "DriverVersion": "10.0.26100.1150",
+          "VideoModeDescription": "1024 x 768 x 4294967296 colors"
+        }
+      ]
+    },
+    "settings-at-1600x1200": {
+      "requested": 0,
+      "action": "probe",
+      "settings_visible": true,
+      "combos": [
+        {
+          "selection": "100% (Recommended)",
+          "name": "Scale",
+          "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "1600 \u00d7 1200",
+          "name": "Display resolution",
+          "id": "SystemSettings_Display_Resolution_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "Landscape",
+          "name": "Display orientation",
+          "id": "SystemSettings_Display_Orientation_ComboBox",
+          "enabled": false
+        }
+      ],
+      "settings_window_count": 1,
+      "current": 100,
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ],
+      "screenshot_method": "PrintWindow for the Settings HWND",
+      "screenshot_error": "Settings window capture was blank",
+      "resolution_options": [
+        {
+          "enabled": true,
+          "label": "1920 \u00d7 1080"
+        },
+        {
+          "enabled": true,
+          "label": "1680 \u00d7 1050"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 1200"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1440 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1366 \u00d7 768"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 1024"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 800"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 720"
+        },
+        {
+          "enabled": true,
+          "label": "1152 \u00d7 864"
+        },
+        {
+          "enabled": true,
+          "label": "1024 \u00d7 768 (Recommended)"
+        },
+        {
+          "enabled": true,
+          "label": "800 \u00d7 600"
+        }
+      ],
+      "video_controllers": [
+        {
+          "Name": "Microsoft Hyper-V Video",
+          "DriverVersion": "10.0.26100.1150",
+          "VideoModeDescription": "1600 x 1200 x 4294967296 colors"
+        }
+      ]
+    },
+    "settings-at-1920x1080": {
+      "requested": 0,
+      "action": "probe",
+      "settings_visible": true,
+      "combos": [
+        {
+          "selection": "100% (Recommended)",
+          "name": "Scale",
+          "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "1920 \u00d7 1080",
+          "name": "Display resolution",
+          "id": "SystemSettings_Display_Resolution_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "Landscape",
+          "name": "Display orientation",
+          "id": "SystemSettings_Display_Orientation_ComboBox",
+          "enabled": false
+        }
+      ],
+      "settings_window_count": 1,
+      "current": 100,
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ],
+      "screenshot_method": "PrintWindow for the Settings HWND",
+      "screenshot_error": "Settings window capture was blank",
+      "resolution_options": [
+        {
+          "enabled": true,
+          "label": "1920 \u00d7 1080"
+        },
+        {
+          "enabled": true,
+          "label": "1680 \u00d7 1050"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 1200"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1440 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1366 \u00d7 768"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 1024"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 800"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 720"
+        },
+        {
+          "enabled": true,
+          "label": "1152 \u00d7 864"
+        },
+        {
+          "enabled": true,
+          "label": "1024 \u00d7 768 (Recommended)"
+        },
+        {
+          "enabled": true,
+          "label": "800 \u00d7 600"
+        }
+      ],
+      "video_controllers": [
+        {
+          "Name": "Microsoft Hyper-V Video",
+          "DriverVersion": "10.0.26100.1150",
+          "VideoModeDescription": "1920 x 1080 x 4294967296 colors"
+        }
+      ]
+    },
+    "settings-restored": {
+      "requested": 0,
+      "action": "probe",
+      "settings_visible": true,
+      "combos": [
+        {
+          "selection": "100% (Recommended)",
+          "name": "Scale",
+          "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "1024 \u00d7 768 (Recommended)",
+          "name": "Display resolution",
+          "id": "SystemSettings_Display_Resolution_ComboBox",
+          "enabled": true
+        },
+        {
+          "selection": "Landscape",
+          "name": "Display orientation",
+          "id": "SystemSettings_Display_Orientation_ComboBox",
+          "enabled": false
+        }
+      ],
+      "settings_window_count": 1,
+      "current": 100,
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ],
+      "screenshot_method": "PrintWindow for the Settings HWND",
+      "screenshot_error": "Settings window capture was blank",
+      "resolution_options": [
+        {
+          "enabled": true,
+          "label": "1920 \u00d7 1080"
+        },
+        {
+          "enabled": true,
+          "label": "1680 \u00d7 1050"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 1200"
+        },
+        {
+          "enabled": true,
+          "label": "1600 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1440 \u00d7 900"
+        },
+        {
+          "enabled": true,
+          "label": "1366 \u00d7 768"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 1024"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 800"
+        },
+        {
+          "enabled": true,
+          "label": "1280 \u00d7 720"
+        },
+        {
+          "enabled": true,
+          "label": "1152 \u00d7 864"
+        },
+        {
+          "enabled": true,
+          "label": "1024 \u00d7 768 (Recommended)"
+        },
+        {
+          "enabled": true,
+          "label": "800 \u00d7 600"
+        }
+      ],
+      "video_controllers": [
+        {
+          "Name": "Microsoft Hyper-V Video",
+          "DriverVersion": "10.0.26100.1150",
+          "VideoModeDescription": "1024 x 768 x 4294967296 colors"
+        }
+      ]
+    },
+    "restored": {
+      "native": {
+        "window_dpi": 96,
+        "awareness": 2,
+        "window_title": "qing-zip",
+        "visible_package_windows": 3,
+        "monitor_pixels": [
+          1024,
+          768
+        ],
+        "remote_session": false,
+        "primary_monitor": true
+      },
+      "webview": {
+        "dpr": 1,
+        "width": 1028,
+        "height": 779,
+        "menu": {
+          "hidden": false,
+          "left": 99.359375,
+          "top": 45,
+          "right": 384.359375,
+          "bottom": 347.5,
+          "width": 285,
+          "height": 302.5,
+          "items": 7
+        }
+      },
+      "screenshot_sha256": "0bf2155eadf5e9d65b2e6f58f6a122ac5ed9bc6b86d6b1ef664775c1dfcc8835"
+    }
+  },
+  "restored": true,
+  "initial_native": {
+    "window_dpi": 96,
+    "awareness": 2,
+    "window_title": "qing-zip",
+    "visible_package_windows": 3,
+    "monitor_pixels": [
+      1024,
+      768
+    ],
+    "remote_session": false,
+    "primary_monitor": true
+  },
+  "offered_modes_at_original_refresh": [
+    [
+      640,
+      480
+    ],
+    [
+      800,
+      600
+    ],
+    [
+      1024,
+      768
+    ],
+    [
+      1152,
+      864
+    ],
+    [
+      1280,
+      720
+    ],
+    [
+      1280,
+      800
+    ],
+    [
+      1280,
+      1024
+    ],
+    [
+      1366,
+      768
+    ],
+    [
+      1440,
+      900
+    ],
+    [
+      1600,
+      900
+    ],
+    [
+      1600,
+      1200
+    ],
+    [
+      1680,
+      1050
+    ],
+    [
+      1920,
+      1080
+    ]
+  ],
+  "temporary_resolution_attempts": [
+    {
+      "pixels": [
+        1600,
+        1200
+      ],
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "pixels": [
+        1920,
+        1080
+      ],
+      "options": [
+        {
+          "label": "100% (Recommended)",
+          "percent": 100,
+          "enabled": true
+        },
+        {
+          "label": "125%",
+          "percent": 125,
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "change_attempted": false,
+  "temporary_resolution_attempted": true
+}

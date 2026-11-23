@@ -1,0 +1,13 @@
+{
+  "scope": "read-only Windows host enumeration; no display settings or virtual machine changed",
+  "date": "2026-11-23",
+  "method": "EnumDisplayMonitors/GetMonitorInfoW/GetDpiForMonitor effective DPI; querying process per-monitor aware",
+  "monitors": [
+    {"primary": true, "pixel_width": 3840, "pixel_height": 2160, "effective_dpi": 144, "scale_percent": 150},
+    {"primary": false, "pixel_width": 2160, "pixel_height": 3840, "effective_dpi": 144, "scale_percent": 150}
+  ],
+  "vmware_service": {"name": "VMAuthdService", "status": "Stopped", "start_type": "Manual"},
+  "vm_processes_observed": 0,
+  "hyperv_feature_state": "unavailable without elevation; not requested",
+  "system_200_percent_observed": false
+}

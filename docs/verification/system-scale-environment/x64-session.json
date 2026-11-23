@@ -1,0 +1,153 @@
+{
+  "status": "observed",
+  "action": "navigate only",
+  "session_processes": [],
+  "scale_controls": [
+    {
+      "type": "ControlType.Group",
+      "name": "Scale & layout",
+      "patterns": [
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": ""
+    },
+    {
+      "type": "ControlType.Text",
+      "name": "Scale & layout",
+      "patterns": [
+        "TextPatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": ""
+    },
+    {
+      "type": "ControlType.Group",
+      "name": "Scale",
+      "patterns": [
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": "SystemSettings_Display_Scaling_ItemSizeOverride_EntityItem"
+    },
+    {
+      "type": "ControlType.Text",
+      "name": "Scale",
+      "patterns": [
+        "TextPatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": ""
+    },
+    {
+      "type": "ControlType.ComboBox",
+      "name": "Scale",
+      "patterns": [
+        "SelectionPatternIdentifiers.Pattern",
+        "ExpandCollapsePatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern",
+        "ItemContainerPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox"
+    },
+    {
+      "type": "ControlType.Button",
+      "name": "Scale",
+      "patterns": [
+        "InvokePatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "enabled": true,
+      "offscreen": false,
+      "id": "EntityItemButton"
+    }
+  ],
+  "custom_page_controls": [
+    {
+      "offscreen": false,
+      "type": "ControlType.Button",
+      "id": "",
+      "enabled": true,
+      "name": "Custom scaling"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "name": "Custom scaling"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "id": "Message",
+      "enabled": true,
+      "name": "You shouldn't change these settings unless you need to—it can cause text and apps to become unreadable. All your displays will be set to the custom scaling size you enter and it can be difficult to go back to your original settings."
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "name": "Custom scaling"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "name": "Enter a custom scaling size between 100% - 500% (not recommended)"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Edit",
+      "id": "SystemSettings_Display_Scaling_CustomOverride_ValueTextBox",
+      "enabled": true,
+      "name": "Custom scaling"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Button",
+      "id": "SystemSettings_Display_Scaling_CustomOverride_CustomScalingButton",
+      "enabled": false,
+      "name": "Apply"
+    },
+    {
+      "offscreen": false,
+      "type": "ControlType.Group",
+      "id": "SystemSettings_Display_EaseOfAccessScaling_ButtonEntityItem",
+      "enabled": true,
+      "name": "Text size"
+    }
+  ],
+  "current_process": {
+    "ProcessId": 9716,
+    "ParentProcessId": 9896,
+    "SessionId": 2,
+    "Name": "pwsh.exe"
+  },
+  "runner_processes": [
+    {
+      "ProcessId": 1380,
+      "ParentProcessId": 10064,
+      "SessionId": 2,
+      "Name": "Runner.Listener.exe"
+    },
+    {
+      "ProcessId": 9896,
+      "ParentProcessId": 1380,
+      "SessionId": 2,
+      "Name": "Runner.Worker.exe"
+    }
+  ],
+  "sessions": " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n>runneradmin           console             2  Active      none   11/23/2026 10:54 AM",
+  "navigation_invoked": true
+}
