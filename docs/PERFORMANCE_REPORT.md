@@ -253,3 +253,7 @@ python scripts/check-archive-interop.py `
 回归比较时固定数据、线程、档案设置、存储位置与系统负载，交替执行两个精确版本，同时报告范围及预热。GUI 启动、预览与内存单独比较，在相同 DPI、显示状态与 WebView2 版本下记录从操作到可交互的耗时及进程树私有提交内存。
 
 另已在真实 Tauri/WebView2 窗口中配对测量 10,000 和 50,000 文件 ZIP 的可见首行、检索、排序、滚动及进程树内存。最终组合包 `e9eeecd` 的复测用于报告，历史 `a849a48` 样本的来源和读数另存。测试窗口未取得 Win32 前台焦点。[真实 WebView2 大归档浏览采样](verification/WEBVIEW_ARCHIVE_BROWSING.md)
+
+## 前台窗口首次可操作的测量
+
+Windows x64 托管桌面上的主线 `14b9e2a` 从启动到实际选中首行，10,000 条目 ZIP 中位 853 ms、50,000 条目 ZIP 中位 1,304 ms。两档和上一主线的五对差值均跨零。测量为热缓存、新进程，含自动化观察延迟。[环境、逐次数据和前台截图](verification/foreground-archive-browse/README.md)
