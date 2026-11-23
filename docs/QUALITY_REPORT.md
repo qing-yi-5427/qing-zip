@@ -63,4 +63,4 @@ python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --seven
 
 ## 后续验收
 
-普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。真实满盘已验证普通 ZIP 创建及覆盖解压的报错、文件保全和腾出空间后的重试。后续关注已注册一级菜单、Windows 10、更新/嵌套写回时盘满、批量中断和过期候选回收。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)
+普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。在操作开始时已满的卷上，普通 ZIP 创建与覆盖解压都明确报错，并在腾出空间后重试成功。另两次覆盖提取在暂存文件已写约 28 MiB 后才遇空间不足，原包、已有目标、无关文件及暂存目录清单均保全。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) 后续关注已注册一级菜单、Windows 10、更新/嵌套写回时盘满、批量中断和过期候选回收。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)
