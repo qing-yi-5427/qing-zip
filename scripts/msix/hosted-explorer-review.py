@@ -104,13 +104,31 @@ try:
     entry['visible_controls']=[{'name':x.element_info.name,'type':x.element_info.control_type} for x in app_window.descendants() if x.is_visible() and x.element_info.name][:150]
    except Exception as e:entry['window_error']=repr(e)
   snapshot(key+'-after')
+  if key=='compress' and 'window_error' not in entry:
+   image=ImageGrab.grab(); rgb=image.convert('RGB')
+   if image.size==(1024,768):
+    r,g,b=rgb.getpixel((780,604))
+    if b>120 and b>g and g>r+15:
+     mouse.click(coords=(780,604)); entry['create_clicked']=True
+     created=folder/'plain.txt.zip'
+     for _ in range(150):
+      if created.is_file():
+       try:
+        with zipfile.ZipFile(created) as z:
+         if z.namelist()==['plain.txt'] and hashlib.sha256(z.read('plain.txt')).hexdigest()==plain_hash:break
+       except (OSError,zipfile.BadZipFile):pass
+      time.sleep(.2)
+     else:created=None
+     if created:entry['created_zip_sha256']=hashlib.sha256(created.read_bytes()).hexdigest();entry['created_member_sha256']=plain_hash;entry['created_output']='plain.txt.zip'
+     entry['compression_verified']=created is not None
+     snapshot('compress-created')
   entry['output_matches_expected']=valid_outputs() if key!='compress' else None
   entry['relative_output_directory']='archive' if key=='smart' else ('.' if key=='here' else None)
   entry['archive_preserved']=hashlib.sha256(archive.read_bytes()).hexdigest()==archive_hash
   entry['plain_preserved']=hashlib.sha256(plain.read_bytes()).hexdigest()==plain_hash
   entry['gui_windows']=[w.element_info.name for w in desktop.windows() if w.is_visible() and 'qing' in w.element_info.name.lower()]
-  entry['handoff_observed']=entry['output_matches_expected'] if key!='compress' else False
-  if key=='compress':entry['error']='Compression form and output not yet verified'
+  entry['handoff_observed']=entry['output_matches_expected'] if key!='compress' else entry.get('compression_verified',False)
+  if key=='compress' and not entry['handoff_observed']:entry['error']='Compression output not verified'
   save()
   for proc in psutil.process_iter(['pid','exe','name']):
    try:
