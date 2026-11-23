@@ -235,6 +235,60 @@ impl EditOutput {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+
+    #[cfg(nana_selected_worker)]
+    pub(super) fn disposable_zip_candidate(&self) -> Result<DisposableZipCandidate, String> {
+        let leaf = self.path.file_name().ok_or("missing candidate filename")?;
+        let file = private_stage::create_disposable_child_file(&self.output_pin, leaf)?;
+        DisposableZipCandidate::set_disposition(&file, true)?;
+        Ok(DisposableZipCandidate(file))
+    }
+}
+
+#[cfg(nana_selected_worker)]
+pub(super) struct DisposableZipCandidate(File);
+
+#[cfg(nana_selected_worker)]
+impl DisposableZipCandidate {
+    fn set_disposition(file: &File, delete: bool) -> Result<(), String> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileInformationByHandle(file: *mut c_void, class: i32, info: *const c_void, size: u32) -> i32;
+        }
+        const FILE_DISPOSITION_INFO: i32 = 4;
+        let mark = u8::from(delete);
+        // Unlike FILE_DELETE_ON_CLOSE, this delete disposition can be cleared
+        // through the original handle. It is tied to the file, never its name.
+        if unsafe { SetFileInformationByHandle(file.as_raw_handle(), FILE_DISPOSITION_INFO, (&mark as *const u8).cast(), 1) } == 0 {
+            return Err(format!("cannot protect temporary ZIP output: {}", io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn writer(&self) -> Result<File, String> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+            fn DuplicateHandle(source: *mut c_void, handle: *mut c_void, target: *mut c_void,
+                duplicate: *mut *mut c_void, access: u32, inherit: i32, options: u32) -> i32;
+        }
+        let mut duplicate = std::ptr::null_mut();
+        // Keep DELETE in this process. The job's stdout opens no path and
+        // shares the same file object and write position, with no DELETE right.
+        const WRITE_DATA_READ_ATTRIBUTES_SYNCHRONIZE: u32 = 0x100082;
+        if unsafe {
+            let current = GetCurrentProcess();
+            DuplicateHandle(current, self.0.as_raw_handle(), current, &mut duplicate,
+                WRITE_DATA_READ_ATTRIBUTES_SYNCHRONIZE, 0, 0)
+        } == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(unsafe { File::from_raw_handle(duplicate) })
+    }
+
+    pub(super) fn finish(self) -> Result<(), String> {
+        Self::set_disposition(&self.0, false)
+    }
 }
 
 /// Binds a caller-held private candidate object to one edit transaction.
@@ -332,6 +386,14 @@ impl EditSource {
             .seek_read(&mut magic, 0)
             .map_err(|e| e.to_string())?;
         Ok(count == 4 && matches!(&magic, b"PK\x03\x04" | b"PK\x05\x06"))
+    }
+
+    #[cfg(nana_selected_worker)]
+    pub(super) fn local_ntfs(&self) -> bool {
+        const FILE_ATTRIBUTE_ENCRYPTED: u32 = 0x4000;
+        self.read.metadata().is_ok_and(|meta| meta.file_attributes() & FILE_ATTRIBUTE_ENCRYPTED == 0)
+            && self.parent.metadata().is_ok_and(|meta| meta.file_attributes() & FILE_ATTRIBUTE_ENCRYPTED == 0)
+            && super::selected_worker::create_zip::local_ntfs(&self.path, &self.read)
     }
 
     pub(crate) fn commit_tracked(self, output: EditOutput, options: &super::EngineOptions) -> Result<(), String> {
@@ -656,6 +718,41 @@ impl Drop for PreserveOnDrop {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(nana_selected_worker)]
+    #[test]
+    fn disposable_zip_candidate_reclaims_only_its_new_file() {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("edit.zip");
+        let other = temp.path().join("other.zip");
+        fs::write(&path, b"unchanged original").unwrap();
+        fs::write(&other, b"unchanged neighbor").unwrap();
+        let edit = EditSource::open(&path).unwrap();
+        let output = edit.output().unwrap();
+        {
+            let abort = output.disposable_zip_candidate().unwrap();
+            let mut writer = abort.writer().unwrap();
+            writer.write_all(b"scratch bytes").unwrap();
+            assert_eq!(writer.metadata().unwrap().len(), 13);
+            assert!(DisposableZipCandidate::set_disposition(&writer, false).is_err());
+            assert!(fs::read(output.path()).is_err());
+            drop(abort);
+            assert_eq!(writer.metadata().unwrap().len(), 13);
+        }
+        assert!(!output.path().exists());
+        assert_eq!(fs::read(&path).unwrap(), b"unchanged original");
+        assert_eq!(fs::read(&other).unwrap(), b"unchanged neighbor");
+        let candidate = output.disposable_zip_candidate().unwrap();
+        let mut writer = candidate.writer().unwrap();
+        writer.write_all(b"finished candidate").unwrap();
+        drop(writer);
+        candidate.finish().unwrap();
+        assert_eq!(fs::read(output.path()).unwrap(), b"finished candidate");
+        assert!(output.disposable_zip_candidate().is_err());
+        assert_eq!(fs::read(output.path()).unwrap(), b"finished candidate");
+    }
 
     #[test]
     fn guarded_commit_keeps_exact_public_object_until_drop() {

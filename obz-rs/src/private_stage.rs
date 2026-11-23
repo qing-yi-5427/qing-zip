@@ -374,6 +374,11 @@ pub(crate) fn create_child_file(parent: &File, leaf: &OsStr) -> Result<File, Str
     open_private_child(parent, leaf, ChildAccess::CreateFile)
 }
 
+#[cfg(nana_selected_worker)]
+pub(crate) fn create_disposable_child_file(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    open_private_child(parent, leaf, ChildAccess::CreateDisposableFile)
+}
+
 /// FILE_CREATE yields an identity handle only for a directory created by this call.
 pub(crate) fn create_journal_directory(parent:&File,leaf:&OsStr)->Result<File,String>{
     open_private_child(parent,leaf,ChildAccess::CreateJournalDirectory)
@@ -422,6 +427,8 @@ enum ChildAccess {
     OpenDirectory,
     Metadata,
     CreateFile,
+    #[cfg(nana_selected_worker)]
+    CreateDisposableFile,
     CreateDirectory,
     CreateJournalDirectory,
     #[cfg(target_pointer_width = "64")]
@@ -476,6 +483,10 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         // FILE_NON_DIRECTORY_FILE. Existing files, links and reparse leaves
         // cannot be opened or truncated.
         ChildAccess::CreateFile => (0x100182, 0x80, 1, 2, 0x200060, "create private stage file"),
+        // As above, plus DELETE and exclusive sharing. Only a new file can
+        // become disposable, and only its owner can change that disposition.
+        #[cfg(nana_selected_worker)]
+        ChildAccess::CreateDisposableFile => (0x110182, 0x80, 0, 2, 0x200060, "create disposable ZIP candidate"),
         ChildAccess::OpenDirectory => (0x100081, 0, 3, 1, 0x200021, "pin output directory"),
         ChildAccess::CreateJournalDirectory => (0x120180, 0, 7, 2, 0x200021, "create journaled output directory"),
         ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),

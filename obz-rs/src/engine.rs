@@ -5794,8 +5794,42 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
     #[cfg(windows)]
     let source = edit_source::EditSource::open_controlled(&locked_path,&control(opts))?;
-    zip_volume_view::require_editable(&locked_path)?;
+    let zip_layout = zip_volume_view::require_editable(&locked_path)?;
+    #[cfg(nana_selected_worker)]
+    let mut verified_console = None;
+    #[cfg(not(nana_selected_worker))]
+    let _ = zip_layout;
     if action != "add" {
+        #[cfg(nana_selected_worker)]
+        let existing = {
+            // Stdout is sequential and can change how newly added members
+            // compress. Prepare it only for edits that copy existing members.
+            let eligible = opts.password.is_none() && opts.codepage.is_none()
+                && opts.edit_receipt.is_none() && !_policy.restricted()
+                && zip_layout.is_some_and(|layout| !layout.zip64 && layout.entries < u16::MAX
+                    && u64::from(layout.directory) + u64::from(layout.directory_size) == layout.end_record)
+                && source.direct_zip(&locked_path)? && source.local_ntfs();
+            if eligible {
+                let program = executable()?;
+                // Runtime identity and the source listing are independent
+                // reads. Keep the verified runtime pins through writer exit.
+                let (listed, proof) = thread::scope(|scope| {
+                    let verify = thread::Builder::new().spawn_scoped(scope,
+                        || owned_update::verified_bundled_nana_console(&program)).ok();
+                    let listed = list(path, opts);
+                    (listed, verify.and_then(|worker| worker.join().ok().flatten()))
+                });
+                let entries = listed?;
+                if entries.iter().all(|entry| !entry.encrypted &&
+                    (entry.is_dir || matches!(entry.method.as_str(), "Store" | "Deflate"))) {
+                    verified_console = proof;
+                }
+                entries
+            } else {
+                list(path, opts)?
+            }
+        };
+        #[cfg(not(nana_selected_worker))]
         let existing = list(path, opts)?;
         validate_update_names(existing.into_iter().map(|entry| entry.name).collect(), inputs, action == "rename")?;
     }
@@ -5906,12 +5940,29 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     #[cfg(not(windows))]
     let cwd = None;
     if !move_noop {
+        let program = executable()?;
+        #[cfg(nana_selected_worker)]
+        let disposable = direct && verified_console.as_ref().is_some_and(|verified| verified.exe == program);
+        #[cfg(nana_selected_worker)]
+        if disposable {
+            a.splice(1..1, ["-so".into(), "-bso2".into()]);
+        }
+        #[cfg(nana_selected_worker)]
+        let candidate = disposable.then(|| output.disposable_zip_candidate()).transpose()?;
+        #[cfg(nana_selected_worker)]
+        let stdout = candidate.as_ref().map(|file| file.writer()).transpose()?;
+        #[cfg(not(nana_selected_worker))]
+        let stdout = None;
         #[cfg(nana_selected_worker)]
         let lifetime = if direct { EngineLifetime::OwnedZipUpdate } else { EngineLifetime::Ordinary };
         #[cfg(not(nana_selected_worker))]
         let lifetime = EngineLifetime::Ordinary;
-        let (log, _) = run_program_log_with_directory(executable()?, &a, cwd, opts, None, false, false, None, None, lifetime)?;
+        let (log, _) = run_program_log_with_directory(program, &a, cwd, opts, stdout, false, false, None, None, lifetime)?;
         read_engine_output(log)?;
+        #[cfg(nana_selected_worker)]
+        if let Some(candidate) = candidate {
+            candidate.finish()?;
+        }
     }
     #[cfg(test)]
     update_modes_tests::AFTER_ENGINE.with(|hook| {

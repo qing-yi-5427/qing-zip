@@ -73,6 +73,10 @@ fn ordinary_ntfs(file: &File) -> bool {
     }
 }
 
+pub(in crate::engine) fn local_ntfs(path: &Path, file: &File) -> bool {
+    local_disk(path) && ordinary_ntfs(file)
+}
+
 pub(in crate::engine) fn eligible(format: &str, names: &[String], opts: &EngineOptions) -> bool {
     format == "zip"
         && names.len() == 1
