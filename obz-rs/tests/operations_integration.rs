@@ -165,14 +165,18 @@ fn cli_file_colliding_with_directory_honors_safe_conflict_policies() {
     fs::create_dir(&output).unwrap();
     fs::write(output.join("folder"), b"local file").unwrap();
     for policy in ["rename", "skip"] {
-        let error = call(root, json!({
-            "operation": "extract", "path": nested, "dest": output,
-            "options": {"overwrite": policy},
-        })).unwrap_err();
-        assert!(error.contains("output parent is a file") || error.contains("create output directory"), "{error}");
-        assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
-        assert_eq!(fs::read(output.join("folder")).unwrap(), b"local file");
-        assert_eq!(fs::read(&nested).unwrap(), original);
+        for selected in [vec![], vec!["notes.txt", "folder"]] {
+            let error = call(root, json!({
+                "operation": "extract", "path": nested, "dest": output,
+                "allow_unencrypted_projection": !selected.is_empty(),
+                "options": {"overwrite": policy, "selected": selected},
+            })).unwrap_err();
+            let blocked = output.join("folder");
+            assert!(error.contains(&format!("destination conflict: output parent is a file: {}", blocked.display())), "{error}");
+            assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
+            assert_eq!(fs::read(blocked).unwrap(), b"local file");
+            assert_eq!(fs::read(&nested).unwrap(), original);
+        }
     }
 }
 

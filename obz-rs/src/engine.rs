@@ -1551,6 +1551,9 @@ impl CheckedDirectories {
                             continue;
                         }
                         Err(_) if !self.exclusive_claim && component.is_dir() => { self.check(component)?; continue; }
+                        Err(_) if !self.exclusive_claim && component.symlink_metadata().is_ok_and(|metadata| metadata.is_file()) => {
+                            return Err(output_parent_conflict(component));
+                        }
                         Err(error) => return Err(error),
                     }
                 }
@@ -2907,6 +2910,10 @@ impl StagedContents<'_> {
     }
 }
 
+fn output_parent_conflict(path: &Path) -> String {
+    format!("destination conflict: output parent is a file: {}", path.display())
+}
+
 fn preflight_output_targets(
     entries: &[&Entry],
     dest: &Path,
@@ -2929,7 +2936,7 @@ fn preflight_output_targets(
         }
         for parent in target.ancestors().skip(1) {
             if !output_guards.pinned(parent) && parent.exists() && !parent.is_dir() {
-                return Err("output parent is a file".into());
+                return Err(output_parent_conflict(parent));
             }
         }
     }

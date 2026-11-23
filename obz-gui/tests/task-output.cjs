@@ -103,6 +103,29 @@ test('restoring the compression draft shows the same actionable failure as the t
   }
 });
 
+test('a blocked output directory names the existing file in the task and extraction retry', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const blocked = 'D:/解压/相册';
+  const cause = `destination conflict: output parent is a file: ${blocked}`;
+  const expected = `解压需要创建文件夹，但这个位置已有同名文件。\n${blocked}\n请选择其他保存位置后重试。`;
+  const selected = ['另一份.txt', '相册'];
+  let retryBody;
+  const context = makeContext({
+    ordinaryRetries: new Map([[1, {job: {error: cause}, selected, source: 'photos.zip', dest: 'D:/解压',
+      location: {item: '', label: '预计输出目录'}, overwrite: 'skip'}]]),
+    archiveDirectoryError: () => '', esc: String, filename: String, btn: () => '',
+    dialog: (_title, body) => { retryBody = body; }, extractionPathMarkup: () => '', conflicts: () => '',
+    updateExtractionRetry() {}, labelExtractionShortcut() {}, $: () => ({focus() {}}),
+  });
+  vm.runInContext(source.slice(source.indexOf('function taskError('), source.indexOf('function showPreservationNotice(')), context);
+  vm.runInContext(source.slice(source.indexOf('function openExtractionRetry('), source.indexOf('function updateExtractionRetry(')), context);
+  assert.equal(context.taskError(Error(cause)), expected);
+  context.openExtractionRetry(1);
+  assert.ok(retryBody.includes(expected));
+  assert.match(retryBody, /原选定范围（2 项）/);
+  assert.doesNotMatch(retryBody, /destination conflict:|output parent is a file:/);
+});
+
 test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const cause='写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)';

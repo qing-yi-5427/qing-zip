@@ -1,0 +1,457 @@
+{
+  "source": "14b9e2a8a5c2de35dea31acf1f222ad10ca354f0",
+  "binaries_sha256": {
+    "qing-zip.exe": "6846fd7c9aa34d66963de221483772d84d885c8296d03878dc887a69f73b11b2",
+    "obz.exe": "42ce063d4c0780254d26f358d968b093b5ffa0dddfb852427d16ce53894f2ec1",
+    "obz-worker.exe": "898b0b99b428e71cdfd58ef481c8420b7af873e3174c1f66f7b9eac1c5678f74"
+  },
+  "portable_zip_sha256": "0c00da2912bc7cc5b142dab31161b296ca03bd926e878dc781ba45d0fa0a9d66",
+  "strategies": {
+    "error": "停止并报告冲突",
+    "rename": "自动重命名",
+    "skip": "跳过已有文件",
+    "overwrite": "替换已有文件"
+  },
+  "cases": [
+    {
+      "occupant": "file",
+      "strategy": "cancel",
+      "strategy_help": "用解压出的文件替换目标中的同名文件。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "表单已取消",
+      "task_started": false,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      }
+    },
+    {
+      "occupant": "file",
+      "strategy": "error",
+      "strategy_help": "发现同名文件时停止，可在任务中调整后重试。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "失败",
+      "conflict_path": "out/z-conflict.txt",
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      }
+    },
+    {
+      "occupant": "file",
+      "strategy": "rename",
+      "strategy_help": "保留已有文件，将新文件自动改名后保存。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "已完成",
+      "output_directory": "out",
+      "output_count": 2,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict (2).txt": "6d08490227ffd2aead8374d3bdc4dcb9021f017201e0032dfdbc3bcdd7c1cfb9",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      }
+    },
+    {
+      "occupant": "file",
+      "strategy": "skip",
+      "strategy_help": "保留已有文件，继续解压其他项目。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "已完成",
+      "output_directory": "out",
+      "output_count": 1,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      }
+    },
+    {
+      "occupant": "file",
+      "strategy": "overwrite",
+      "strategy_help": "用解压出的文件替换目标中的同名文件。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "已完成",
+      "output_directory": "out",
+      "output_count": 2,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt": "6d08490227ffd2aead8374d3bdc4dcb9021f017201e0032dfdbc3bcdd7c1cfb9"
+        },
+        "directories": []
+      }
+    },
+    {
+      "occupant": "directory",
+      "strategy": "error",
+      "strategy_help": "发现同名文件时停止，可在任务中调整后重试。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "失败",
+      "conflict_path": "out/z-conflict.txt",
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      },
+      "destination_after": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      }
+    },
+    {
+      "occupant": "directory",
+      "strategy": "rename",
+      "strategy_help": "保留已有文件，将新文件自动改名后保存。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "已完成",
+      "output_directory": "out",
+      "output_count": 2,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      },
+      "destination_after": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict (2).txt": "6d08490227ffd2aead8374d3bdc4dcb9021f017201e0032dfdbc3bcdd7c1cfb9",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      }
+    },
+    {
+      "occupant": "directory",
+      "strategy": "skip",
+      "strategy_help": "保留已有文件，继续解压其他项目。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "已完成",
+      "output_directory": "out",
+      "output_count": 1,
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      },
+      "destination_after": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      }
+    },
+    {
+      "occupant": "directory",
+      "strategy": "overwrite",
+      "strategy_help": "用解压出的文件替换目标中的同名文件。",
+      "selected": [
+        "a-selected.txt",
+        "z-conflict.txt"
+      ],
+      "unselected": [
+        "excluded-folder/hidden.txt",
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "status": "失败",
+      "conflict_path": "out/z-conflict.txt",
+      "archive_sha256": "415c3cd5dfceb071d0ff226246570c1331a334306935baef9bc7a3514543154e",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      },
+      "destination_after": {
+        "files": {
+          "excluded.txt": "b68a131104625743bdb74dc7de7ee1ba7f89a8a568d2fad184f19c548f46c5f0",
+          "outside-selection.txt": "01cdbae852c26ecb2ce5c7c08f11200253269657630985252b9f3be5593df9dd",
+          "z-conflict (1).txt": "4b61a6d769e6fde4858636e36a22e8bcb67372245764377640d9667668b94a74",
+          "z-conflict.txt/keep.txt": "8a543ce3ab1b74f7652d87ad3ae1b5840200150faaefc1ccff06b0e54f867732"
+        },
+        "directories": [
+          "z-conflict.txt"
+        ]
+      }
+    },
+    {
+      "occupant": "parent",
+      "strategy": "skip",
+      "strategy_help": "保留已有文件，继续解压其他项目。",
+      "selected": [
+        "a-selected.txt",
+        "picked"
+      ],
+      "unselected": [
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "blocked_message": "create output directory: 当文件已存在时，无法创建该文件。 (os error 183)",
+      "retry": {
+        "status": "已完成",
+        "output_directory": "retry-out",
+        "output_count": 2
+      },
+      "archive_sha256": "b2be73eff381ee2bc3f2867fe65f524d2240bb9625b591963d195e3e4e6a8dee",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "outside-selection.txt": "b7a7b978c5e1e69583189413ef574913848fea62011786f6e43030fe94b510b8",
+          "picked": "350de0183eaa5c376fb5dc04d2500d14beae3504e6dc14392583cdbe7411c409"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "outside-selection.txt": "b7a7b978c5e1e69583189413ef574913848fea62011786f6e43030fe94b510b8",
+          "picked": "350de0183eaa5c376fb5dc04d2500d14beae3504e6dc14392583cdbe7411c409"
+        },
+        "directories": []
+      },
+      "retry_contents": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "picked/child.txt": "5e17f8ece9d06e79baf3d9618f534a5caf4177899a30faee61eb83562d4b9705"
+        },
+        "directories": [
+          "picked"
+        ]
+      }
+    },
+    {
+      "occupant": "parent",
+      "strategy": "rename",
+      "strategy_help": "保留已有文件，将新文件自动改名后保存。",
+      "selected": [
+        "a-selected.txt",
+        "picked"
+      ],
+      "unselected": [
+        "excluded.txt"
+      ],
+      "preview": "out",
+      "blocked_message": "create output directory: 当文件已存在时，无法创建该文件。 (os error 183)",
+      "retry": {
+        "status": "已完成",
+        "output_directory": "retry-out",
+        "output_count": 2
+      },
+      "archive_sha256": "b2be73eff381ee2bc3f2867fe65f524d2240bb9625b591963d195e3e4e6a8dee",
+      "outside_sha256": "d8c3268e8624300f49b51899ba8023a89d8f00e9ab3c06d8f260062e81171f08",
+      "destination_before": {
+        "files": {
+          "outside-selection.txt": "b7a7b978c5e1e69583189413ef574913848fea62011786f6e43030fe94b510b8",
+          "picked": "350de0183eaa5c376fb5dc04d2500d14beae3504e6dc14392583cdbe7411c409"
+        },
+        "directories": []
+      },
+      "destination_after": {
+        "files": {
+          "outside-selection.txt": "b7a7b978c5e1e69583189413ef574913848fea62011786f6e43030fe94b510b8",
+          "picked": "350de0183eaa5c376fb5dc04d2500d14beae3504e6dc14392583cdbe7411c409"
+        },
+        "directories": []
+      },
+      "retry_contents": {
+        "files": {
+          "a-selected.txt": "4433a5a713d7286b129cdccc076a707608a8f9b659b7dc42e2bb273616419e00",
+          "picked/child.txt": "5e17f8ece9d06e79baf3d9618f534a5caf4177899a30faee61eb83562d4b9705"
+        },
+        "directories": [
+          "picked"
+        ]
+      }
+    }
+  ]
+}
