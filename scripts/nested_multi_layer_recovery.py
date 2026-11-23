@@ -107,6 +107,16 @@ def exercise(args, root, receipt, qa):
         receipt["fresh_process_without_live_nested_sessions"] = True
 
         chosen = "project-b"
+        # Cancel an actual native save dialog before committing any export.
+        from pywinauto import Desktop
+        select.select_option(index=matching[chosen][0])
+        page.locator('[data-action="external-retained-save"]').click()
+        cancel_dialog = Desktop(backend="uia").window(process=process.pid, class_name="#32770")
+        cancel_dialog.wait("visible", timeout=20)
+        cancel_dialog.capture_as_image().save(args.out / "save-as-before-cancel.png")
+        cancel_dialog.child_window(auto_id="2", control_type="Button").click_input()
+        expect(page.locator('#oa-retained-edit option')).to_have_count(2)
+        receipt['cancelled_save_retained_both_records'] = True
         select.select_option(index=matching[chosen][0])
         page.screenshot(path=args.out / "cold-selected-project-b.png")
         external = root / "export"
@@ -116,11 +126,21 @@ def exercise(args, root, receipt, qa):
         _, _, modified_name = originals[chosen]
         receipt["export"] = verify_export(recovered, receipt["cases"][chosen], modified_name, qa)
         receipt["export"]["selected_source"] = chosen
+        receipt["save_failure_retry"] = "not observed"
         assert {entry.name for entry in external.iterdir()} == {"recovered-middle.zip"}
         assert qa["digest"](recovered) != receipt["cases"]["project-a"]["retained_private_middle_sha256"]
         with suppress(Error):
             page.locator('[data-window="close"]').click()
         assert process.wait(timeout=20) == 0
+
+    with launch(args.exe, root, "cold-again", first, args.out) as (process, browser, page):
+        expect(page.locator('[data-entry="middle.zip"]')).to_be_visible(timeout=60000)
+        retained_dialog(page, args.out, "cold-again")
+        labels = [label.replace(str(root), "<test-root>") for label in page.locator('#oa-retained-edit option').all_text_contents()]
+        assert len(labels) == 1 and "project-a" in labels[0].casefold() and "project-b" not in labels[0].casefold(), labels
+        receipt['after_export_remaining_labels'] = labels
+        receipt['successful_save_consumed_only_project_b'] = True
+        stop_own(process, browser)
 
     for tag, (initial, sibling, _) in originals.items():
         entry = receipt["cases"][tag]

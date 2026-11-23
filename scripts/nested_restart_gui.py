@@ -281,6 +281,10 @@ def main():
                         entry['second_reopen_menu'] = retained_dialog(page, evidence, 'terminate-second')
                         entry['retained_options_second'] = page.locator('#oa-retained-edit option').count()
                         entry['no_new_copies_on_second_reopen'] = entry['retained_options_second'] <= entry['retained_options_first']
+                        if options.expect_recovery:
+                            entry['record_removed_after_successful_export'] = entry['retained_options_first'] == 1 and entry['retained_options_second'] == 0
+                            if not entry['record_removed_after_successful_export']:
+                                raise RuntimeError('Successful export did not remove the recovered record')
                         entry['outer_unchanged_after_second_reopen'] = inspect_outer(outer) == before
                         entry['neighbour_unchanged_after_second_reopen'] = digest(root / 'neighbour.txt') == neighbour_hash
                         if not (entry['no_new_copies_on_second_reopen'] and entry['outer_unchanged_after_second_reopen'] and entry['neighbour_unchanged_after_second_reopen']):
