@@ -673,12 +673,17 @@ function renderBatchResults(){
  if(host)host.innerHTML=batchResultsMarkup();
  if(s.page==='history')render();
 }
+function updateBatchResume(problem,record){
+ if((s.batchResumeProblem??null)===problem&&s.savedBatch?.revision===record?.revision)return;
+ s.batchResumeProblem=problem;
+ s.savedBatch=savedBatch(record);
+ renderBatchResults();
+}
 function loadBatchResume(){
  if(batchResumeLoad)return batchResumeLoad;
  batchResumeLoad=invoke('load_batch_resume').then(({state,record})=>{
-  s.batchResumeProblem=state==='damaged'||state==='unsupported'?state:null;
-  s.savedBatch=savedBatch(record);
- }).catch(()=>{s.batchResumeProblem='unavailable';s.savedBatch=null;}).finally(()=>{batchResumeLoad=null;renderBatchResults();});
+  updateBatchResume(state==='damaged'||state==='unsupported'?state:null,record);
+ }).catch(()=>updateBatchResume('unavailable')).finally(()=>{batchResumeLoad=null;});
  return batchResumeLoad;
 }
 function sealBatchResume(plan){

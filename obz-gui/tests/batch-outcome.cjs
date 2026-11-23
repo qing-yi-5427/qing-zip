@@ -32,13 +32,14 @@ function scenario(responses, operation='extract', store=checkpoints()) {
   const calls = [];
   const s = { jobs: [] };
   const modal = {};
+  let renders=0;
   const context = vm.createContext({
     s, filename: path.win32.basename, btn: label => label,
     esc: value => String(value).replaceAll('<', '&lt;'), taskError: error => String(error),
     $: id => id==='oa-batch-resume-review'?modal.review:null,
     dialog(title,body,actions){Object.assign(modal,{title,body,actions});},
     showPreservationNotice(message){modal.notice=message;},
-    close() {}, render() {}, renderProgress() {}, invoke:store.invoke,
+    close() {}, render() { renders++; }, renderProgress() {}, invoke:store.invoke,
     async run(request, label, { onStart, batch }) {
       calls.push(request);
       const response = responses.shift();
@@ -56,7 +57,7 @@ function scenario(responses, operation='extract', store=checkpoints()) {
     path: name, index, status: 'pending', dest: context.batchExtractionTarget('D:\\out',name,index),
   }));
   const plan = { operation, entries, overwrite: 'error', destination: 'D:\\out' };
-  return { calls, s, context, plan, store, modal };
+  return { calls, s, context, plan, store, modal, get renders(){return renders;} };
 }
 
 test('batch keeps startup failures and partially completed jobs visible after the final success', async () => {
@@ -255,4 +256,18 @@ test('normal exit while claiming a paused queue does not dispatch another archiv
   await resume;
   assert.deepEqual(reopened.calls,[]);
   assert.deepEqual(first.store.record.plan.entries.map(entry=>entry.status),['cancelled','pending','pending']);
+});
+
+test('an unchanged pending-record read leaves existing task history nodes intact', async () => {
+  const current=scenario([]);
+  current.s.page='history';
+  await current.context.loadBatchResume();
+  assert.equal(current.renders,0);
+  const paused=scenario([{status:'cancelled',stop:true}], 'extract', current.store);
+  await paused.context.runBatch(paused.plan);
+  await current.context.loadBatchResume();
+  assert.equal(current.renders,1);
+  assert.match(current.context.batchResultsMarkup(),/待继续的批量解压/);
+  await current.context.loadBatchResume();
+  assert.equal(current.renders,1);
 });
