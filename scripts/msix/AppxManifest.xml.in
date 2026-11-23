@@ -25,6 +25,7 @@
           <com:SurrogateServer DisplayName="qing-zip commands">
             <com:Class Id="9A406E20-1F79-49F3-94F9-179D18761D4A" Path="qing-shell.dll" ThreadingModel="STA" />
             <com:Class Id="A65CB9C7-E692-4D0B-A5A1-4F19530EE312" Path="qing-shell.dll" ThreadingModel="STA" />
+            <com:Class Id="182148F9-276F-4DB8-8136-A181FB81353F" Path="qing-shell.dll" ThreadingModel="STA" />
             <com:Class Id="8148C339-AF9A-4E1E-8BE9-469F28DA1B75" Path="qing-shell.dll" ThreadingModel="STA" />
             <com:Class Id="0C0C73E7-2D76-4823-AB70-F9BE332B1360" Path="qing-shell.dll" ThreadingModel="STA" />
           </com:SurrogateServer>
@@ -32,6 +33,7 @@
         <desktop4:Extension Category="windows.fileExplorerContextMenus"><desktop4:FileExplorerContextMenus>
           <desktop5:ItemType Type="*">
             <desktop5:Verb Id="QingZipOpen" Clsid="9A406E20-1F79-49F3-94F9-179D18761D4A" />
+            <desktop5:Verb Id="QingZipCompressFiles" Clsid="182148F9-276F-4DB8-8136-A181FB81353F" />
             <desktop5:Verb Id="QingZipSmartExtract" Clsid="8148C339-AF9A-4E1E-8BE9-469F28DA1B75" />
             <desktop5:Verb Id="QingZipExtractHere" Clsid="0C0C73E7-2D76-4823-AB70-F9BE332B1360" />
           </desktop5:ItemType>
