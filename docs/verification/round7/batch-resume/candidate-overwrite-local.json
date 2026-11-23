@@ -1,0 +1,29 @@
+{
+  "source": "9c9258c+local guarded candidate v2",
+  "binaries_sha256": {
+    "qing-zip.exe": "c70d2df2d370bee494528e61fa86fe4dc3f4eeb973cf1044188731e4466296cf",
+    "obz.exe": "048e5bfe808b34ed5914230930caa1db8e3fae2da71686ade690a85b0b351812",
+    "obz-worker.exe": "48a632ffc845f6443174d8c728aef28cd3e4b4f9af5fe81acdc275817d2d41ab"
+  },
+  "source_artifact": "locally staged portable directory",
+  "stop_control_text": "停止批量处理",
+  "same_named_target_after_restart": "7545f48695b21fc8b928ccbc5ff60f01bc22f6322d8885214d673c3f8926d2b7",
+  "input_before_restart": {
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
+    "third.zip": "7e4344d79756acf05a0b4a1527e5eb5d470f8c3796f2c682faca9716e21d86d7"
+  },
+  "current_inputs_after_replacement_and_after_resume": {
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
+    "third.zip": "245a65f13f2fe72516196b41a3516187d736c734ffb145f0c69e0f101aac883d"
+  },
+  "output": {
+    "1-first/file.txt": "c469af0d900e727bc5f85e0b9af09053268df5518d93ec1e6c11deed5942a092",
+    "2-second/outside-archive.txt": "b74da086f942a5c01f0f863443ca3a9b73f9b669091d0c336b94f9dd3bb64d95",
+    "3-third/file.txt": "f8c40505eb712724496850ffabce906039a7f404f6a360c336b8397761f288d4",
+    "sentinel.txt": "9e308c7ad347094c7753dd64d7af92e6af34052c7bc6d1b0ea72e378fa031318"
+  },
+  "declining_preserved_target_and_record": true,
+  "first_identity_and_mtime_preserved": true
+}

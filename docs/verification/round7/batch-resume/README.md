@@ -16,6 +16,8 @@
 | 磁盘记录不可写、损坏或来自未来版本 | 配置目录被普通文件占用时仍可同会话继续。已识别损坏记录只在主动点击备份后移开，备份和原记录字节一致。较新格式文件原样保留。 |
 | 保存待续记录期间关窗 | 在 WebView 测试中仅延迟真实的保存请求。当前原生解压任务已经结束，从实际标题栏关闭时仍出现确认，保存后正常退出。重新打开能继续第三项。 |
 
+本机候选是 Windows 11 x64 的实际 Tauri/WebView2 窗口，GUI 来自 a963bcf 的 Debug 构建，CLI、worker 与原版便携包逐字节一致。关窗竞争的修前候选在延迟同一请求时直接退出，修后在同一节点显示确认，并等待封存后正常退出。[两次正常退出](candidate-cold-local.json) · [明确替换](candidate-overwrite-local.json) · [不可写](candidate-unwritable-local.json) · [备份损坏](candidate-damaged-local.json) · [封存间隙](candidate-closing-local.json)
+
 ## 复跑
 
 使用 Windows、Python 3.12+、pywin32 和 Playwright。程序目录含 GUI、CLI、worker 及同一便携包中的运行时。夹具父目录必须已存在，输出回执目录应为新目录。关闭自己打开的 qing-zip 窗口后启动测试；脚本会拒绝与已有 qing-zip 实例共用。仅使用脚本生成的 ZIP 和独立测试配置。

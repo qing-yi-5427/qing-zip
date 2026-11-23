@@ -1,0 +1,33 @@
+{
+  "source": "9c9258c+local guarded candidate v2",
+  "binaries_sha256": {
+    "qing-zip.exe": "c70d2df2d370bee494528e61fa86fe4dc3f4eeb973cf1044188731e4466296cf",
+    "obz.exe": "048e5bfe808b34ed5914230930caa1db8e3fae2da71686ade690a85b0b351812",
+    "obz-worker.exe": "48a632ffc845f6443174d8c728aef28cd3e4b4f9af5fe81acdc275817d2d41ab"
+  },
+  "source_artifact": "locally staged portable directory",
+  "reopened": "待继续的批量解压\n\n成功 1 · 已取消 1 · 未开始 3\n\n输出目录 · <fixture>\\out\n\n同名文件 · 自动重命名\n\n继续时会读取列表中路径上的当前压缩包。\n\n查看 4 项明细\n2. second.zip · 已取消\n<fixture>\\in\\second.zip\n3. third.zip · 未开始\n<fixture>\\in\\third.zip\n<fixture>\\out\\3-third\n4. fourth.zip · 未开始\n<fixture>\\in\\fourth.zip\n<fixture>\\out\\4-fourth\n5. fifth.zip · 未开始\n<fixture>\\in\\fifth.zip\n<fixture>\\out\\5-fifth\n继续未开始的项目\n打开输出目录\n清除待继续项目\n\n停止新的批量解压时，新批次的待继续项目会替换这份记录。",
+  "busy_record_claim_started_no_job": true,
+  "reopened_again": "待继续的批量解压\n\n成功 1 · 已取消 1 · 已中断 1 · 未开始 2\n\n输出目录 · <fixture>\\out\n\n同名文件 · 自动重命名\n\n继续时会读取列表中路径上的当前压缩包。\n\n查看 4 项明细\n2. second.zip · 已取消\n<fixture>\\in\\second.zip\n3. third.zip · 已中断\n<fixture>\\in\\third.zip\n4. fourth.zip · 未开始\n<fixture>\\in\\fourth.zip\n<fixture>\\out\\4-fourth\n5. fifth.zip · 未开始\n<fixture>\\in\\fifth.zip\n<fixture>\\out\\5-fifth\n继续未开始的项目\n打开输出目录\n清除待继续项目\n\n停止新的批量解压时，新批次的待继续项目会替换这份记录。",
+  "resumed_in_order": [
+    "批量 4/5 · 解压",
+    "批量 5/5 · 解压"
+  ],
+  "output": {
+    "1-first/file.txt": "c469af0d900e727bc5f85e0b9af09053268df5518d93ec1e6c11deed5942a092",
+    "2-second/outside-archive.txt": "b74da086f942a5c01f0f863443ca3a9b73f9b669091d0c336b94f9dd3bb64d95",
+    "4-fourth/file (1).txt": "5e1f1d451c379d61477a4676bf9be6ca551a2689b687b5a905daacbf8b5fb59e",
+    "4-fourth/file.txt": "90759a6806ae4c1c31f449a8ceab96a9f8e8220dcfbba56a916939834ebc0991",
+    "5-fifth/file.txt": "aad8d2e2ec723479c17ae8de4d2d04e3e0e7826fdde2fe1dcd8067b931f4c5c2",
+    "sentinel.txt": "9e308c7ad347094c7753dd64d7af92e6af34052c7bc6d1b0ea72e378fa031318"
+  },
+  "sources_before_and_after": {
+    "fifth.zip": "e321bda73e272002010aa3b21861be1acd9bb641e27a3a0fa4d5d24dd4ed3c0f",
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "fourth.zip": "85aef229e92efccf9c1003ffdfdb2806b9aadbb72caed412fa61e43bd6818e45",
+    "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
+    "third.zip": "cf3718074739d8ea66535b24a136e9f2a467e880c6d4f838748c5d5ed170c617"
+  },
+  "first_identity_and_mtime_preserved": true,
+  "consumed_record_absent_after_final_reopen": true
+}
