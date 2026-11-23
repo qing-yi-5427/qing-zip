@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      nested_restart_capture:
+        description: 'Capture nested archive restart behavior using the pinned R3 package'
+        type: boolean
+        default: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -14,6 +18,7 @@ permissions:
   contents: read
 jobs:
   public-regressions:
+    if: github.event_name != 'workflow_dispatch' || !inputs.nested_restart_capture
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -192,3 +197,44 @@ jobs:
             dist/x64/*-portable.zip
             target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
             target/hardened/x86_64-pc-windows-msvc/release/pe-security.json
+
+  nested-restart-capture:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.nested_restart_capture
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify R3 build and run isolated nested restart scenarios
+        shell: pwsh
+        run: |
+          $run=gh api repos/qing-yi-5427/qing-zip/actions/runs/45128040411 | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_sha -cne 'fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6' -or $run.conclusion -cne 'success') { throw 'Unexpected R3 build' }
+          gh run download 45128040411 --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir download
+          if ($LASTEXITCODE) { throw 'R3 artifact unavailable' }
+          $package=@(Get-ChildItem download -Recurse -File -Filter '*-portable.zip')
+          if ($package.Count -ne 1) { throw 'Expected one portable package' }
+          Expand-Archive -LiteralPath $package[0].FullName -DestinationPath staged
+          $exe=@(Get-ChildItem staged -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected one GUI executable' }
+          New-Item -ItemType Directory -Force nested-restart-evidence | Out-Null
+          @{ product_source=$run.head_sha; product_run=$run.id; package_sha256=(Get-FileHash $package[0].FullName).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash $exe[0].FullName).Hash.ToLowerInvariant(); harness=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 nested-restart-evidence/package.json
+          python -m pip install --disable-pip-version-check playwright==1.55.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/nested_restart_gui.py --exe $exe[0].FullName
+          exit $LASTEXITCODE
+      - name: Preserve real GUI observations and cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nested-restart-gui-evidence
+          path: nested-restart-evidence/
+          if-no-files-found: warn
+          retention-days: 30
