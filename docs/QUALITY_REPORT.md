@@ -4,7 +4,7 @@
 
 ## 主线安装版的 ZIP 中断与解压反馈
 
-Windows 11 x64 安装版 `9c9258c` 在新增成员的写入过程中遭强退，三轮重开、重试后分别留有 3、3、2 MiB 临时文件。三轮均保全原包、来源、另一个并发任务的成品，重试内容正确。P2 磁盘占用问题继续跟踪。普通单卷明文 Store/Deflate ZIP 的改名和删除在同一安装版各测三轮，六次均回收了原包旁已写入的候选。引擎范围及写完到提交间的中断仍需单列。[安装版逐轮回执](verification/round6/installed-main/README.md)
+Windows 11 x64 安装版 `9c9258c` 在新增成员的写入过程中遭强退，三轮重开、重试后分别留有 3、3、2 MiB 临时文件。三轮均保全原包、来源、另一个并发任务的成品，重试内容正确。新增成员的后续修正已在普通单卷 ZIP 写入阶段独立验收，三轮原包旁的候选均回收到 0 字节。[普通新增回归及边界](verification/round7/ordinary-zip-add/README.md)普通单卷明文 Store/Deflate ZIP 的改名和删除在同一安装版各测三轮，六次均回收了原包旁已写入的候选。引擎范围及写完到提交间的中断仍需单列。[安装版逐轮回执](verification/round6/installed-main/README.md)
 
 选择性解压中遇到普通文件挡住父目录时，任务和重试表单现显示具体路径，并提示另选保存位置。安装版在新目的地仅提取先前选中的成员。[真实重试窗口](verification/round6/installed-main/parent-retry.png)
 

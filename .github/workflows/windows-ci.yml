@@ -207,6 +207,22 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
           python scripts/check-public-package.py $portable[0].FullName
           exit $LASTEXITCODE
+      - name: Interrupt an ordinary ZIP add and verify the original and retry
+        shell: pwsh
+        run: |
+          $cli = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter obz.exe)
+          if ($cli.Count -ne 1) { throw 'Expected one packaged CLI' }
+          python -m pip install --disable-pip-version-check psutil==7.2.2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check-interrupted-archive-update.py --cli $cli[0].FullName --action add --require-owned --require-reclaimed --out (Join-Path $env:RUNNER_TEMP 'zip-add-interruption.jsonl')
+          exit $LASTEXITCODE
+      - name: Save ordinary ZIP add interruption trials
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-zip-add-interruption
+          path: ${{ runner.temp }}/zip-add-interruption.jsonl
+          if-no-files-found: warn
       - name: Verify packaged native ZIP cache and cancellation
         shell: pwsh
         run: |

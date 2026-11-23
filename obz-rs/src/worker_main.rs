@@ -8,6 +8,7 @@ fn main() -> std::process::ExitCode {
             match mode.as_deref() {
                 Some("--full-archive-worker") => return std::process::ExitCode::from(obz_core::engine::selected_worker::run_full_child()),
                 Some("--internal-create-worker") => return std::process::ExitCode::from(obz_core::engine::selected_worker::create_zip::helper_worker()),
+                Some("--internal-zip-append-worker") => return std::process::ExitCode::from(obz_core::engine::selected_worker::zip_append::helper_worker()),
                 _ => (),
             }
         }

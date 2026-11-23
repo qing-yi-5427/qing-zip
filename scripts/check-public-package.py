@@ -3,16 +3,18 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import json
+import os
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
 
-def run_archive(cli, work, *args, returns_error=False):
+def run_archive(cli, work, *args, returns_error=False, require_seekable_update=False):
     result = subprocess.run(
         [cli, *args], cwd=work, stdin=subprocess.DEVNULL, capture_output=True,
         encoding="utf-8", errors="replace", timeout=60,
+        env={**os.environ, "OPEN_ARCHIVE_PROFILE": "1"} if require_seekable_update else None,
     )
     if returns_error:
         if result.returncode != 1 or not result.stderr.strip():
@@ -20,6 +22,8 @@ def run_archive(cli, work, *args, returns_error=False):
         return
     if result.returncode:
         raise RuntimeError(f"{args[0]} failed ({result.returncode}): {result.stderr}")
+    if require_seekable_update and "OA_ZIP_APPEND status=encoding" not in result.stderr:
+        raise RuntimeError("The packaged ZIP update helper did not write the candidate")
     return json.loads(result.stdout)
 
 
@@ -98,6 +102,23 @@ def smoke(portable):
                 raise RuntimeError(f"Incomplete {suffix} extraction changed files")
             check_locked_destination(cli, work, archive, output, source_bytes, contents)
             print(f"{suffix.upper()}: round trip, conflicts, incomplete download, locked destination and retry passed")
+        edit = work / "editing.zip"
+        folder = work / "folder"
+        folder.mkdir()
+        (folder / "empty.bin").touch()
+        with zipfile.ZipFile(edit, "w") as original:
+            original.writestr("keep.txt", b"original member")
+            original.writestr(sample.name, b"old member")
+        run_archive(cli, work, "add", edit, "folder", sample, require_seekable_update=True)
+        with zipfile.ZipFile(edit) as updated:
+            if {name: updated.read(name) for name in updated.namelist()} != {
+                "keep.txt": b"original member", sample.name: contents,
+                "folder/": b"", "folder/empty.bin": b"",
+            } or sample.read_bytes() != contents:
+                raise RuntimeError("Packaged ZIP Add changed an unselected member or source")
+        if list(work.glob(".qing-zip-stage-*")):
+            raise RuntimeError("Packaged ZIP Add left an editing stage after success")
+        print("ZIP: packaged seekable Add, existing-member replacement and empty input passed")
 
 
 if __name__ == "__main__":

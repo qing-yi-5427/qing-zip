@@ -1,0 +1,237 @@
+{
+  "system": "Windows-11-10.0.26300-SP0",
+  "python": "3.14.0",
+  "cpu": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+  "cache": "OS cache retained; untimed fixture copy immediately before each CLI call",
+  "timing": "child startup through successful CLI exit; output verification outside timer",
+  "binary_sha256": {
+    "baseline": "048e5bfe808b34ed5914230930caa1db8e3fae2da71686ade690a85b0b351812",
+    "candidate": "724aa814897e5af314da1acaf486609c142889d67040f1e152e08ad91660864a"
+  },
+  "cases": [
+    {
+      "original_entries": 10000,
+      "original_bytes": 1530019,
+      "original_sha256": "42cbf149513ae7098a06ad457ff5d7de6fca5fda0baf513aac10ddbae9627632",
+      "warmup": {
+        "baseline": {
+          "ms": 455.726,
+          "bytes": 1530197,
+          "new_method": 8,
+          "members_verified": 10001,
+          "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+        },
+        "candidate": {
+          "ms": 469.039,
+          "bytes": 1530197,
+          "new_method": 8,
+          "members_verified": 10001,
+          "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+        }
+      },
+      "rounds": [
+        {
+          "baseline": {
+            "ms": 449.708,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          },
+          "candidate": {
+            "ms": 461.842,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 458.251,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          },
+          "baseline": {
+            "ms": 458.548,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          }
+        },
+        {
+          "baseline": {
+            "ms": 446.645,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          },
+          "candidate": {
+            "ms": 477.657,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 482.297,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          },
+          "baseline": {
+            "ms": 456.578,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          }
+        },
+        {
+          "baseline": {
+            "ms": 451.208,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          },
+          "candidate": {
+            "ms": 465.03,
+            "bytes": 1530197,
+            "new_method": 8,
+            "members_verified": 10001,
+            "zip_sha256": "f15f49911d0d8581d7533b6f830cdff0b3e9ee86eb288fe7ff09145a8795dc65"
+          }
+        }
+      ],
+      "median_ms": {
+        "baseline": 451.208,
+        "candidate": 465.03
+      },
+      "paired_delta_ms": {
+        "median": 13.822,
+        "min": -0.297,
+        "max": 31.012
+      }
+    },
+    {
+      "original_entries": 50000,
+      "original_bytes": 7650007,
+      "original_sha256": "d24eaf3696280324512126b588ef64266eb416af6a38362cb94a5e5486228800",
+      "warmup": {
+        "baseline": {
+          "ms": 2867.732,
+          "bytes": 7650185,
+          "new_method": 8,
+          "members_verified": 50001,
+          "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+        },
+        "candidate": {
+          "ms": 2958.586,
+          "bytes": 7650185,
+          "new_method": 8,
+          "members_verified": 50001,
+          "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+        }
+      },
+      "rounds": [
+        {
+          "baseline": {
+            "ms": 2874.958,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          },
+          "candidate": {
+            "ms": 2923.703,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 2899.018,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          },
+          "baseline": {
+            "ms": 2930.799,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          }
+        },
+        {
+          "baseline": {
+            "ms": 2878.46,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          },
+          "candidate": {
+            "ms": 2922.967,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 2920.585,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          },
+          "baseline": {
+            "ms": 2849.131,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          }
+        },
+        {
+          "baseline": {
+            "ms": 2889.532,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          },
+          "candidate": {
+            "ms": 2883.997,
+            "bytes": 7650185,
+            "new_method": 8,
+            "members_verified": 50001,
+            "zip_sha256": "4489e237d3e1616a00e3d124ef0bd1be22b573c3be4805a7903a25780a2b72a4"
+          }
+        }
+      ],
+      "median_ms": {
+        "baseline": 2878.46,
+        "candidate": 2920.585
+      },
+      "paired_delta_ms": {
+        "median": 44.507,
+        "min": -31.781,
+        "max": 71.454
+      }
+    }
+  ]
+}

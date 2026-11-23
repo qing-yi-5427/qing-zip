@@ -176,12 +176,16 @@ def trial(cli, root, round_number, require_owned, action, require_reclaimed):
                             key = f"{image.name}:{argv[1] if len(argv)>1 else ''}"
                             observations[key] = max(observations.get(key, 0), io.read_bytes)
                             argv_folded = [arg.casefold() for arg in argv]
-                            if (len(argv) > 1 and argv[1] == backend_action and str(archive).casefold() in argv_folded
-                                    and all(member.casefold() in argv_folded for member in members)
-                                    and io.read_bytes >= 2 * 1024 * 1024 and io.write_bytes >= 1024 * 1024):
-                                active = {"image": image.name, "command": backend_action,
-                                          "handle_stdout": "-so" in argv, "read_bytes": io.read_bytes,
-                                          "write_bytes": io.write_bytes, "arguments_match_fixture": True,
+                            named = (len(argv) > 1 and argv[1] == backend_action and str(archive).casefold() in argv_folded
+                                     and all(member.casefold() in argv_folded for member in members))
+                            seekable = (action == 'add' and image == cli.with_name('obz-worker.exe')
+                                        and argv[1:] == ['--internal-zip-append-worker'] and child.ppid() == edit.pid)
+                            if ((named or seekable) and io.read_bytes >= 2 * 1024 * 1024
+                                    and io.write_bytes >= 1024 * 1024):
+                                active = {"image": image.name, "command": argv[1], "handle_stdout": "-so" in argv,
+                                          "seekable_worker": seekable, "read_bytes": io.read_bytes,
+                                          "write_bytes": io.write_bytes, "arguments_match_fixture": named,
+                                          "fixture_bound_by_editor": seekable,
                                           "observed_candidate_file_bytes": staged_candidate_size(job, argv),
                                           "observed_seconds": round(time.monotonic() - start_time, 3)}
                                 writer_pid = child.pid
@@ -250,7 +254,7 @@ def trial(cli, root, round_number, require_owned, action, require_reclaimed):
         raise RuntimeError("Retried archive did not match the expected member hashes")
     after_retry = retained_files(job, scratch)
     reclaimed = all(state.get("archive_sibling", {}).get("bytes", 0) == 0 for state in (after_reopen, after_retry))
-    if require_reclaimed and (not active["handle_stdout"] or not reclaimed):
+    if require_reclaimed and (not (active["handle_stdout"] or active["seekable_worker"]) or not reclaimed):
         raise RuntimeError(f"Owned output was not used or retained data: {active}; reopened={after_reopen}; retried={after_retry}")
     return {"round": round_number, "action": action, "fixture_mib": fixture_mib,
             "observed": active, "independent_observed": independent_active,
