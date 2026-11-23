@@ -1,5 +1,8 @@
 """Interrupt a normal packaged CLI update while another independent archive completes."""
 import argparse
+import ctypes
+from ctypes import wintypes
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -12,6 +15,41 @@ import time
 import zipfile
 
 import psutil
+
+
+class ProcessIo(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in
+                ('reads', 'writes', 'other', 'read_bytes', 'write_bytes', 'other_bytes')]
+
+
+@contextmanager
+def observed_writer(pid):
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    api.OpenProcess.restype = wintypes.HANDLE
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.GetProcessIoCounters.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessIo)]
+    api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    api.WaitForSingleObject.restype = wintypes.DWORD
+    # Query the exact observed writer after exit, without granting termination.
+    process = api.OpenProcess(0x100000 | 0x1000, False, pid)
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    def written():
+        stats = ProcessIo()
+        if not api.GetProcessIoCounters(process, ctypes.byref(stats)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return stats.write_bytes
+
+    def wait():
+        if api.WaitForSingleObject(process, 45_000) != 0:
+            raise RuntimeError('The observed update writer did not exit')
+
+    try:
+        yield written, wait
+    finally:
+        api.CloseHandle(process)
 
 
 def digest(data):
@@ -38,12 +76,13 @@ def retained_files(job, scratch):
     return counts
 
 
-def trial(cli, root, round_number):
+def trial(cli, root, round_number, require_owned):
     job = root / f"update-{round_number}"
     job.mkdir()
     scratch = job / "temp"
     scratch.mkdir()
-    env = {**os.environ, "TEMP": str(scratch), "TMP": str(scratch)}
+    env = {**os.environ, "TEMP": str(scratch), "TMP": str(scratch),
+           "LOCALAPPDATA": str(scratch / "local"), "APPDATA": str(scratch / "roaming")}
     source = job / "addition.bin"
     source.write_bytes(random.Random(round_number).randbytes(128 * 1024 * 1024))
     original = b"existing archive member"
@@ -68,6 +107,7 @@ def trial(cli, root, round_number):
                 editor = psutil.Process(edit.pid)
                 seen = {}
                 active = None
+                writer_pid = None
                 independent_active = None
                 observations = {}
                 max_other_write = 0
@@ -96,6 +136,7 @@ def trial(cli, root, round_number):
                                 active = {"image": image.name, "command": "a", "read_bytes": io.read_bytes,
                                           "write_bytes": io.write_bytes, "arguments_match_fixture": True,
                                           "observed_seconds": round(time.monotonic() - start_time, 3)}
+                                writer_pid = child.pid
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
                             continue
                     try:
@@ -119,11 +160,22 @@ def trial(cli, root, round_number):
                     log.flush()
                     detail = (job / 'output.log').read_text(encoding='utf-8', errors='replace')[-2000:]
                     raise RuntimeError(f"Could not observe both jobs concurrently: edit={edit.poll()}, other={other.poll()}, update={active}, independent={independent_active}, seen={observations}, independent_seen={other_observations}, independent_max_write={max_other_write}, log={detail}")
-                interrupted_at = time.monotonic()
-                independent_running_at_kill = other.poll() is None
-                edit.kill()
-                exit_code = edit.wait(timeout=30)
-                start = time.monotonic()
+                with observed_writer(writer_pid) as (writer_bytes, wait_writer):
+                    before = writer_bytes()
+                    interrupted_at = time.monotonic()
+                    independent_running_at_kill = other.poll() is None
+                    edit.kill()
+                    exit_code = edit.wait(timeout=30)
+                    owner_exited_at = time.monotonic()
+                    at_owner_exit = writer_bytes()
+                    wait_writer()
+                    released_after_owner_exit = time.monotonic() - owner_exited_at
+                    final = writer_bytes()
+                bytes_after_owner_exit = final - at_owner_exit
+                if require_owned and (released_after_owner_exit >= 1 or bytes_after_owner_exit != 0):
+                    raise RuntimeError(f'Update writer outlived its owner for {released_after_owner_exit:.3f}s '
+                                       f'and wrote {bytes_after_owner_exit} additional bytes')
+                start = owner_exited_at
                 _, alive = psutil.wait_procs(list(seen.values()), timeout=45)
                 cleanup_seconds = time.monotonic() - start
                 if alive:
@@ -154,6 +206,10 @@ def trial(cli, root, round_number):
             "independent_completion_observed_by_seconds": round(independent_observed_done-start_time, 3),
             "reopen_seconds": round(reopen_seconds, 3), "retry_seconds": round(retry_seconds, 3),
             "observed_helpers_released_seconds": round(cleanup_seconds, 3),
+            "writer_released_after_owner_exit_seconds": round(released_after_owner_exit, 4),
+            "writer_bytes_before_interrupt": before,
+            "writer_bytes_at_owner_exit": at_owner_exit,
+            "writer_bytes_written_after_owner_exit": bytes_after_owner_exit,
             "archive_unchanged_after_reopen": True, "source_unchanged": True,
             "independent_job_verified": True, "retry_verified": True,
             "retained_after_reopen": after_reopen, "retained_after_retry": retained_files(job, scratch)}
@@ -163,6 +219,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--out", type=Path, help="write sanitized JSONL to a new file")
+    parser.add_argument("--require-owned", action="store_true", help="require the update writer to stop with its owner")
     args = parser.parse_args()
     cli = args.cli.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="qing-zip-interrupted-update-") as work:
@@ -171,7 +228,7 @@ if __name__ == "__main__":
             for number in range(1, 4):
                 line = json.dumps({"cli_sha256": digest(cli.read_bytes()), "script_sha256": digest(Path(__file__).read_bytes()),
                                    "platform": platform.platform(), "python": platform.python_version(),
-                                   "psutil": psutil.__version__, **trial(cli, Path(work), number)})
+                                   "psutil": psutil.__version__, **trial(cli, Path(work), number, args.require_owned)})
                 print(line, flush=True)
                 if receipt:
                     receipt.write(line+'\n'); receipt.flush()

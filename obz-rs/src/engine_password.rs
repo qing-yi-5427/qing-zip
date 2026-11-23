@@ -52,7 +52,12 @@ pub struct PasswordInput(JoinHandle<io::Result<()>>);
 impl PasswordInput {
     pub fn spawn(child: &mut Child, password: &str) -> Result<Self, String> {
         validate(password)?;
-        let mut stdin = child.stdin.take().ok_or("engine password pipe missing")?;
+        let stdin = child.stdin.take().ok_or("engine password pipe missing")?;
+        Self::spawn_writer(stdin, password)
+    }
+
+    pub(crate) fn spawn_writer(mut stdin: impl Write + Send + 'static, password: &str) -> Result<Self, String> {
+        validate(password)?;
         let mut line = SecretLine(Vec::with_capacity(password.len() + 1));
         line.0.extend_from_slice(password.as_bytes());
         line.0.push(b'\n');

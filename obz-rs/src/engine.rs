@@ -5,6 +5,8 @@ mod compressed_tar;
 pub mod selected_worker;
 #[cfg(nana_selected_worker)]
 mod rar15_stored;
+#[cfg(nana_selected_worker)]
+mod owned_update;
 #[cfg(windows)]
 pub mod verification_lease;
 #[cfg(windows)]
@@ -591,6 +593,18 @@ pub fn wait_for_process(child: &std::process::Child, timeout: Duration) -> std::
     { let _ = child; thread::sleep(timeout); Ok(()) }
 }
 
+#[cfg(nana_selected_worker)]
+static ARCHIVE_SPAWN: Mutex<()> = Mutex::new(());
+
+/// Keep first-party archive launches out of the temporary ZIP engine stdio
+/// inheritance window. This lock is released before any process I/O or wait.
+#[doc(hidden)]
+pub fn spawn_archive_process(command: &mut Command) -> std::io::Result<std::process::Child> {
+    #[cfg(nana_selected_worker)]
+    let _guard = ARCHIVE_SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.spawn()
+}
+
 fn run_program(
     program: PathBuf,
     args: &[String],
@@ -619,7 +633,7 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None)
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, EngineLifetime::Ordinary)
         .map(|(log, _)| log)
 }
 fn run_staged_decode(
@@ -630,11 +644,58 @@ fn run_staged_decode(
     output_size: Option<u64>,
 ) -> Result<(), String> {
     let (log, _) = run_program_log_with_directory(
-        executable()?, args, None, opts, output, allow_zealfs, false, output_size, None,
+        executable()?, args, None, opts, output, allow_zealfs, false, output_size, None, EngineLifetime::Ordinary,
     )?;
     // Match the regular runner's output validation.
     read_engine_output(log)?;
     Ok(())
+}
+
+enum EngineLifetime {
+    Ordinary,
+    #[cfg(nana_selected_worker)]
+    OwnedZipUpdate,
+}
+
+enum EngineProcess {
+    Standard(std::process::Child),
+    #[cfg(nana_selected_worker)]
+    OwnedUpdate(owned_update::Process),
+}
+
+impl EngineProcess {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Standard(child) => child.try_wait(),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => child.try_wait(),
+        }
+    }
+
+    fn wait_ready(&self, timeout: Duration) -> std::io::Result<()> {
+        match self {
+            Self::Standard(child) => wait_for_process(child, timeout),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => child.wait_ready(timeout),
+        }
+    }
+
+    fn stop(&mut self) {
+        match self {
+            Self::Standard(child) => { let _ = child.kill(); let _ = child.wait(); }
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => { let _ = child.kill(); let _ = child.wait(); }
+        }
+    }
+
+    fn send_password(&mut self, password: &str) -> Result<crate::engine_password::PasswordInput, String> {
+        use crate::engine_password::PasswordInput;
+        match self {
+            Self::Standard(child) => PasswordInput::spawn(child, password),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -648,6 +709,7 @@ fn run_program_log_with_directory(
     collect_directory: bool,
     output_size: Option<u64>,
     stream_input: Option<File>,
+    lifetime: EngineLifetime,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
@@ -687,13 +749,8 @@ fn run_program_log_with_directory(
     if stream_input.is_some() && opts.password.is_some() {
         return Err("archive stream input cannot carry password prompts".into());
     }
-    let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
-        if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
-    });
-    cmd.args(&guarded_args)
-        .stdin(stdin)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(errors.as_file().try_clone().map_err(|e| e.to_string())?));
+    let stderr = errors.as_file().try_clone().map_err(|e| e.to_string())?;
+    cmd.args(&guarded_args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -710,9 +767,21 @@ fn run_program_log_with_directory(
             && policy.as_ref().is_some_and(|policy| !policy.restricted());
         cmd.creation_flags(if detached_listing { DETACHED_PROCESS } else { CREATE_NO_WINDOW });
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("cannot launch archive engine: {e}"))?;
+    let mut child = match lifetime {
+        EngineLifetime::Ordinary => {
+            let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
+                if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
+            });
+            EngineProcess::Standard(spawn_archive_process(cmd.stdin(stdin).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)))
+                .map_err(|e| format!("cannot launch archive engine: {e}"))?)
+        }
+        #[cfg(nana_selected_worker)]
+        EngineLifetime::OwnedZipUpdate => {
+            if stream_input.is_some() { return Err("ZIP update cannot carry archive stream input".into()); }
+            EngineProcess::OwnedUpdate(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
+                .map_err(|e| format!("无法启动受本次 ZIP 更新控制的归档引擎：{e}"))?)
+        }
+    };
     #[cfg(test)]
     crate::machine_policy::child_started(cmd.get_program(), args.first().map(String::as_str).unwrap_or(""));
     // Retain the normal exclusive, delete-on-close diagnostic spool. No
@@ -722,18 +791,16 @@ fn run_program_log_with_directory(
         match DirectoryCapture::start(pipe, spool, ctl.clone()) {
             Ok(capture) => Some(capture),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 return Err(error);
             }
         }
     } else { None };
     let password_input = match opts.password.as_deref() {
-        Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
+        Some(password) => match child.send_password(password) {
             Ok(input) => Some(input),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 return Err(error);
             }
         },
@@ -741,14 +808,12 @@ fn run_program_log_with_directory(
     };
     let status = loop {
         if ctl.check().is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
             if let Some(input) = password_input { let _ = input.finish(); }
             return Err("operation cancelled".into());
         }
         if let Some(reader) = capture.as_mut().filter(|reader| reader.ended()) {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
             return Err(reader.finish().err()
                 .unwrap_or_else(|| "archive directory reader stopped unexpectedly".into()));
         }
@@ -758,16 +823,14 @@ fn run_program_log_with_directory(
                 if let Some(progress) = &mut live_progress {
                     progress.sample(&ctl);
                 }
-                if let Err(e) = wait_for_process(&child, Duration::from_millis(40)) {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                if let Err(e) = child.wait_ready(Duration::from_millis(40)) {
+                    child.stop();
                     if let Some(input) = password_input { let _ = input.finish(); }
                     return Err(e.to_string());
                 }
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 if let Some(input) = password_input { let _ = input.finish(); }
                 return Err(e.to_string());
             }
@@ -1206,7 +1269,7 @@ fn run_technical_listing_with_directory(
     args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool, collect_directory: bool,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let execute = |args: &[String]| run_program_log_with_directory(
-        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None, None,
+        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None, None, EngineLifetime::Ordinary,
     );
     match execute(args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
@@ -5842,7 +5905,14 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     let cwd = prepared.as_ref().map(|p| p.cwd.as_path());
     #[cfg(not(windows))]
     let cwd = None;
-    if !move_noop { run(&a, cwd, opts, None)?; }
+    if !move_noop {
+        #[cfg(nana_selected_worker)]
+        let lifetime = if direct { EngineLifetime::OwnedZipUpdate } else { EngineLifetime::Ordinary };
+        #[cfg(not(nana_selected_worker))]
+        let lifetime = EngineLifetime::Ordinary;
+        let (log, _) = run_program_log_with_directory(executable()?, &a, cwd, opts, None, false, false, None, None, lifetime)?;
+        read_engine_output(log)?;
+    }
     #[cfg(test)]
     update_modes_tests::AFTER_ENGINE.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() { run(&staged); }

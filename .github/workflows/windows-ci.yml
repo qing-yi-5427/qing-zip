@@ -101,6 +101,15 @@ jobs:
           Write-Output $result
           if ($code) { exit $code }
           if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing RAR test: $testName" }
+      - name: Cancel and retry an ordinary ZIP update
+        shell: pwsh
+        run: |
+          $testName = 'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing ZIP update test: $testName" }
       - name: Explorer argument, COM and filesystem selection tests
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh

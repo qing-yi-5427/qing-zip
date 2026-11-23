@@ -131,7 +131,7 @@ fn run(request: serde_json::Value, opts: &EngineOptions) -> Result<serde_json::V
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = crate::engine::spawn_archive_process(&mut cmd).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let _job = match job::Job::attach(&child) {
         Ok(j) => j,

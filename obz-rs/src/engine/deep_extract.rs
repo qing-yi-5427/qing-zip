@@ -1754,7 +1754,7 @@ fn decode_stream(
         .create_new(true)
         .open(target)
         .map_err(|e| e.to_string())?;
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let mut child = super::spawn_archive_process(&mut command).map_err(|e| e.to_string())?;
     let password = if let Some(password) = opts.password.as_deref() {
         match PasswordInput::spawn(&mut child, password) {
             Ok(v) => Some(v),

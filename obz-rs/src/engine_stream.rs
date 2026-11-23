@@ -74,8 +74,7 @@ fn capture_member_preview(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let mut child = command
-        .spawn()
+    let mut child = engine::spawn_archive_process(&mut command)
         .map_err(|error| format!("cannot launch stream decoder: {error}"))?;
     #[cfg(test)]
     crate::machine_policy::child_started(command.get_program(), "x");

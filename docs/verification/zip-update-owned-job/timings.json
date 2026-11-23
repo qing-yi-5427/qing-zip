@@ -1,0 +1,186 @@
+{
+  "engine_sha256": {
+    "baseline": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139",
+    "candidate": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139"
+  },
+  "cli_sha256": {
+    "baseline": "600cfebdc7b1cc8d9dac754ad1b07921488dd51d5ac4d9cb485db80ea4ffcf62",
+    "candidate": "07837c957b93577bb1336fd80f3fb2243e573dd9217293f8a30cadbe6bd3ffeb"
+  },
+  "cases": {
+    "1024": {
+      "pairs": [
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 92.97,
+          "candidate": 90.644
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 92.871,
+          "baseline": 97.023
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 97.87,
+          "candidate": 104.383
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 95.955,
+          "baseline": 93.287
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 93.515,
+          "candidate": 95.153
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 92.995,
+          "baseline": 94.358
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 97.585,
+          "candidate": 93.997
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 95.962,
+          "baseline": 94.306
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 91.742,
+          "candidate": 101.418
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 93.359,
+          "baseline": 95.062
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 91.053,
+          "candidate": 91.722
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 92.816,
+          "baseline": 92.411
+        }
+      ],
+      "baseline_median_ms": 93.91,
+      "candidate_median_ms": 93.678,
+      "paired_median_delta_ms": 0.537
+    },
+    "16777216": {
+      "pairs": [
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 401.275,
+          "candidate": 398.608
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 397.526,
+          "baseline": 404.275
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 403.736,
+          "candidate": 396.246
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 396.396,
+          "baseline": 405.149
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 397.606,
+          "candidate": 403.372
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 405.092,
+          "baseline": 399.86
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": 394.105,
+          "candidate": 408.342
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": 413.233,
+          "baseline": 397.746
+        }
+      ],
+      "baseline_median_ms": 400.567,
+      "candidate_median_ms": 400.99,
+      "paired_median_delta_ms": 1.282
+    }
+  }
+}

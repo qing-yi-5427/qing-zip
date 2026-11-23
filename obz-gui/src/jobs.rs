@@ -72,7 +72,7 @@ pub(crate) fn confirm_single_volume(request: &Request, control: &JobControl) -> 
         .stdin(if request.options.password.is_some(){Stdio::piped()}else{Stdio::null()})
         .stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cp)=request.options.codepage {command.arg(format!("-mcp={cp}"));}
-    let mut child=command.arg("--").arg(&request.path).spawn().map_err(|e|e.to_string())?;
+    let mut child=obz_core::engine::spawn_archive_process(command.arg("--").arg(&request.path)).map_err(|e|e.to_string())?;
     let password_input=match request.options.password.as_deref() {
         Some(password)=>match obz_core::engine_password::PasswordInput::spawn(&mut child,password) {
             Ok(input)=>Some(input),
