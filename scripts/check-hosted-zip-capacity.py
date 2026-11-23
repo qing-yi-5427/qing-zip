@@ -280,6 +280,8 @@ def exercise_midwrite(cli, work, env, root, marker, identity, result):
 
     samples = observations["samples"]
     check(samples, "Did not observe actual payload bytes in an incomplete private staging file")
+    check(any(payload_size - sample["file_bytes"] > sample["free_bytes"] for sample in samples),
+          "Observed staging did not show a remaining payload larger than free space")
     failure = result["full_attempt"]
     # A failed native write can be larger than the remaining free clusters.
     # Polling also cannot capture the last instant before stage cleanup.
