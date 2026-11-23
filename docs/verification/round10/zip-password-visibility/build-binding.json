@@ -1,0 +1,25 @@
+{
+  "source": "800461ecdf8d11b6810b0bb7b6bc486da19d0fee",
+  "git_tree": "de646d7b0d0e8d80e8b5adbb4f73508a586fdebc",
+  "tauri_gui_sha256": "df03f7cbbcb6c4c6e3a9aff8ad2f6ec8aa19635d8f2405c0fbc6a7975a9cd97d",
+  "target": "x86_64-pc-windows-msvc",
+  "rustflags": [
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "control-flow-guard=yes",
+    "-C",
+    "link-arg=/CETCOMPAT",
+    "-C",
+    "link-arg=/DYNAMICBASE",
+    "-C",
+    "link-arg=/HIGHENTROPYVA",
+    "-C",
+    "link-arg=/NXCOMPAT"
+  ],
+  "installed_main": "be86c3560cb56e83efaa66b3a18a8d18943754e1",
+  "installed_gui_sha256": "0200fee7c28d0e5b68bff2f91d6a2f07a43f9e85eece4fd1a875c6cc74a48dbe",
+  "baseline_artifact_id": 14868574888,
+  "baseline_portable_sha256": "97a2fc4e963ae910609e3a9eb53a7ad8e0abe699b3dc4e512f5fee70d6b7ec66",
+  "support_files_matching_installed": 738
+}
