@@ -234,3 +234,25 @@ test('a close during a delayed seal waits for the one durable write and leaves t
   assert.equal(saving,1);
   assert.deepEqual(base.record.plan.entries.map(entry=>entry.status),['complete','cancelled','pending']);
 });
+
+test('normal exit while claiming a paused queue does not dispatch another archive', async () => {
+  const first=scenario([{status:'cancelled',stop:true}]);
+  await first.context.runBatch(first.plan);
+  let release;
+  let claiming=false;
+  const paused=new Promise(resolve=>{release=resolve;});
+  const store={async invoke(name,args) {
+    if(name==='take_batch_resume'){claiming=true;await paused;}
+    return first.store.invoke(name,args);
+  }};
+  const reopened=scenario([{status:'complete'}], 'extract', store);
+  await reopened.context.loadBatchResume();
+  const resume=reopened.context.useBatchResume(reopened.s.savedBatch);
+  while(!claiming)await new Promise(resolve=>setImmediate(resolve));
+  const exit=reopened.context.saveBatchBeforeExit();
+  release();
+  assert.equal(await exit,true);
+  await resume;
+  assert.deepEqual(reopened.calls,[]);
+  assert.deepEqual(first.store.record.plan.entries.map(entry=>entry.status),['cancelled','pending','pending']);
+});

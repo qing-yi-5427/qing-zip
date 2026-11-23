@@ -310,38 +310,52 @@ def record_recovery(args, root):
             "sources": original_inputs, "output": output_hashes}
 
 
+def delay_invocation(page, command):
+    # Wait at one real IPC boundary while the native close event remains live.
+    page.evaluate("""command => {
+        const fetchActual = window.fetch.bind(window);
+        const delayedCall = window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
+        const paused = new Promise(resolve => { window.releaseBatchCallForQa = resolve; });
+        window.fetch = async (url, init) => {
+            if (url === delayedCall) {
+                document.body.dataset.qaBatchCallWaiting = "true";
+                await paused;
+            }
+            return fetchActual(url, init);
+        };
+    }""", command)
+
+
+def exit_during_delayed_call(page, wait, screenshot):
+    expect(page.locator('body[data-qa-batch-call-waiting="true"]')).to_have_count(1)
+    page.locator('[data-window="close"]').click()
+    prompt = page.locator("#oa-exit-confirm")
+    expect(prompt).to_be_visible()
+    page.screenshot(path=screenshot)
+    prompt.locator('[data-action="cancel-exit"]').click()
+    expect(prompt.locator('[data-action="cancel-exit"]')).to_be_disabled()
+    page.evaluate("window.releaseBatchCallForQa()")
+    assert wait() == 0
+
+
 def exit_while_saving(args, root):
     inputs, paths, output, expected = batch["fixtures"](root, True)
     original_inputs, original_outputs = snapshot(inputs), snapshot(output)
     result = {"source": args.source, **helpers["verify_package"](args)}
     with launch(args, root) as (page, wait):
         batch["fill_batch"](page, paths, output, expect)
-        # Delay only delivery of the actual seal operation. Native work,
-        # close admission, the decision and the on-disk record remain real.
-        page.evaluate("""() => {
-            const fetchActual = window.fetch.bind(window);
-            const sealIpc = window.__TAURI_INTERNALS__.convertFileSrc("save_batch_resume", "ipc");
-            const paused = new Promise(resolve => { window.releaseSealForQa = resolve; });
-            window.fetch = async (url, init) => {
-                if (url === sealIpc) {
-                    document.body.dataset.qaSealWaiting = "true";
-                    await paused;
-                }
-                return fetchActual(url, init);
-            };
-        }""")
+        delay_invocation(page, "save_batch_resume")
         page.locator('[data-action="batch-start"]').click()
         batch["stop_active_second"](page, result, expect)
-        expect(page.locator('body[data-qa-seal-waiting="true"]')).to_have_count(1)
-        page.locator('[data-window="close"]').click()
-        prompt = page.locator("#oa-exit-confirm")
-        expect(prompt).to_be_visible()
-        page.screenshot(path=args.out / "normal-close-awaits-record.png")
-        prompt.locator('[data-action="cancel-exit"]').click()
-        expect(prompt.locator('[data-action="cancel-exit"]')).to_be_disabled()
-        page.evaluate("window.releaseSealForQa()")
-        assert wait() == 0
+        exit_during_delayed_call(page, wait, args.out / "normal-close-awaits-record.png")
     record = sealed(root, ["complete", "cancelled", "pending"], paths, output, "error")
+    with launch(args, root) as (page, wait):
+        report, _ = show_saved(page, root, output, "成功 1 · 已取消 1 · 未开始 1", "停止并报告冲突")
+        delay_invocation(page, "take_batch_resume")
+        report.get_by_role("button", name="继续未开始的项目").click()
+        exit_during_delayed_call(page, wait, args.out / "normal-close-awaits-claim.png")
+    assert not (output / "3-third").exists()
+    sealed(root, ["complete", "cancelled", "pending"], paths, output, "error")
     with launch(args, root) as (page, wait):
         report, _ = show_saved(page, root, output, "成功 1 · 已取消 1 · 未开始 1", "停止并报告冲突")
         report.get_by_role("button", name="继续未开始的项目").click()
@@ -351,7 +365,8 @@ def exit_while_saving(args, root):
     output_hashes = snapshot(output)
     assert output_hashes == {**original_outputs, "1-first/file.txt": expected["first"],
                              "3-third/file.txt": expected["third"]}
-    return {**result, "normal_close_waited_for_seal": True, "sources": original_inputs, "output": output_hashes}
+    return {**result, "normal_close_waited_for_seal": True, "normal_close_before_claim_left_tail_pending": True,
+            "sources": original_inputs, "output": output_hashes}
 
 
 def main():

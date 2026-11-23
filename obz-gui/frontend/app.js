@@ -747,6 +747,7 @@ async function useBatchResume(result,discard=false){
  if(s.active||s.batchRunning)throw Error('已有任务正在运行。');
  if(!result.revision){if(!discard)await runBatch(result);return;}
  let plan;
+ if(!discard)s.batchStop=false;
  s.active='starting';
  try{
   const claim=claimSavedBatch(result,discard);
@@ -758,10 +759,10 @@ async function useBatchResume(result,discard=false){
 }
 
 async function saveBatchBeforeExit(box){
+ s.batchStop=true;
  if(batchResumeClaim)await batchResumeClaim.catch(()=>{});
  const plan=s.activeBatchPlan||(s.batchResult?.saveWarning?s.batchResult:null);
  if(!plan)return true;
- s.batchStop=true;
  plan.closing=true;
  if(box?.dataset.withoutBatchResume==='true'||await sealBatchResume(plan))return true;
  plan.closing=false;
@@ -774,7 +775,7 @@ async function saveBatchBeforeExit(box){
 async function runBatch(plan,guarded=false){
  if(s.active||s.batchRunning)throw Error('已有任务正在运行。');
  s.batchResult=null;
- s.batchStop=false;
+ if(!guarded)s.batchStop=false;
  s.batchRunning=true;
  s.activeBatchPlan=plan;
  const counter={done:plan.entries.filter(entry=>entry.status==='complete').length,total:plan.entries.length};
