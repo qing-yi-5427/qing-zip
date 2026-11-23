@@ -124,6 +124,7 @@ def retained_dialog(page, evidence, case):
 
 def save_retained_copy(page, app, destination, evidence):
     from pywinauto import Desktop, keyboard
+    initial_count = page.locator('#oa-retained-edit option').count()
     page.locator('[data-action="external-retained-save"]').click()
     picker = Desktop(backend="uia").window(process=app.pid, class_name="#32770")
     picker.wait("visible", timeout=20)
@@ -154,11 +155,13 @@ def save_retained_copy(page, app, destination, evidence):
             try:
                 with zipfile.ZipFile(destination) as archive:
                     if archive.testzip() is None:
-                        return
+                        remaining = page.evaluate("window.__TAURI__.core.invoke('retained_edits')")
+                        if len(remaining) < initial_count:
+                            return
             except (OSError, zipfile.BadZipFile):
                 pass
         time.sleep(.2)
-    raise RuntimeError("Native Save As did not produce a readable ZIP")
+    raise RuntimeError("Native Save As did not produce a readable ZIP and consume its record")
 
 
 def main():
