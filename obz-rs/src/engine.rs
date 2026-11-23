@@ -2944,6 +2944,7 @@ fn extract_raw_to(
     recovery_reserve: Option<u64>,
     destination: impl FnOnce(&[Entry]) -> Result<PathBuf, String>,
 ) -> Result<usize, String> {
+    let _extraction_timer = PhaseTimer::new("extract-engine-total");
     #[cfg(windows)]
     let _reuse_scope=opts.verification_capture.as_ref().map(verification_lease::Capture::scope);
     let policy = crate::machine_policy::scope();
@@ -3007,7 +3008,11 @@ fn extract_raw_to(
             selected_source = None;
         }
     }
-    let expected = expected_tree(&all_entries)?;
+    let expected = {
+        let _timer = PhaseTimer::new("extract-expected-tree");
+        expected_tree(&all_entries)?
+    };
+    let selection_timer = PhaseTimer::new("extract-selection-plan");
     let dest = destination(&all_entries)?;
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
@@ -3041,11 +3046,19 @@ fn extract_raw_to(
     // on early errors (the output may share TEMP ancestors).
     let mut stage;
     let mut output_guards = CheckedDirectories::default();
-    output_guards.check(&dest)?;
+    drop(selection_timer);
+    {
+        let _timer = PhaseTimer::new("extract-output-check");
+        output_guards.check(&dest)?;
+    }
     #[cfg(nana_selected_worker)]
     if let Some(mut pending) = direct_worker.take() {
         if !unencrypted_projection {
-            if let Some(claim) = selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)? {
+            let claim = {
+                let _timer = PhaseTimer::new("direct-extract-destination");
+                selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)?
+            };
+            if let Some(claim) = claim {
                 if let Some(reserve) = recovery_reserve {
                     ensure_archive_space(&dest, &entries, None, reserve)?;
                 }

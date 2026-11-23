@@ -6,7 +6,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 namespace {
 constexpr size_t frame_limit = 16 * 1024 * 1024;
 constexpr size_t direct_manifest_limit = 128 * 1024 * 1024;
+constexpr size_t zip_read_ahead_size = 64 * 1024;
 constexpr uint32_t no_index = UINT32_MAX;
 using Bytes = std::vector<uint8_t>;
 
@@ -107,6 +110,9 @@ struct Worker {
   uint32_t rar_header_volume = no_index;
   uint64_t rar_header_offset = 0;
   DWORD rar_header_size = 0;
+  std::unique_ptr<uint8_t[]> zip_read_ahead;
+  uint64_t zip_read_offset = 0;
+  DWORD zip_read_size = 0;
   uint32_t cp_present = 0, codepage = 0;
   uint32_t thread_limit = 0;
   void start(const wchar_t *runtime, uint8_t kind = 1) {
@@ -195,10 +201,40 @@ HRESULT __stdcall read_at(void *context, uint32_t index, uint64_t offset, void *
       const auto result = read(buffer, size, count);
       *got = count; return result;
     }
-    LARGE_INTEGER pos{}; pos.QuadPart = static_cast<LONGLONG>(offset); DWORD n = 0;
-    if (!SetFilePointerEx(w.sources[index], pos, nullptr, FILE_BEGIN) ||
-        !ReadFile(w.sources[index], buffer, size, &n, nullptr)) return HRESULT_FROM_WIN32(GetLastError());
-    *got = n; return S_OK;
+    auto read = [&](void *destination, DWORD requested, DWORD *count) -> HRESULT {
+      LARGE_INTEGER pos{}; pos.QuadPart = static_cast<LONGLONG>(offset);
+      if (!SetFilePointerEx(w.sources[index], pos, nullptr, FILE_BEGIN) ||
+          !ReadFile(w.sources[index], destination, requested, count, nullptr))
+        return HRESULT_FROM_WIN32(GetLastError());
+      return S_OK;
+    };
+    if (w.zip_read_ahead && size <= zip_read_ahead_size / 2) {
+      if (offset >= w.zip_read_offset) {
+        const uint64_t within = offset - w.zip_read_offset;
+        if (within <= w.zip_read_size && size <= w.zip_read_size - within) {
+          memcpy(buffer, w.zip_read_ahead.get() + within, size);
+          *got = size;
+          return S_OK;
+        }
+      }
+      // This buffer is local to a single immutable source handle. A failed
+      // speculative fill must still take the original, exact-read path.
+      w.zip_read_size = 0;
+      DWORD available = 0;
+      const auto requested = static_cast<DWORD>(std::min<uint64_t>(
+          zip_read_ahead_size, w.volumes[index].fixed_size - offset));
+      if (read(w.zip_read_ahead.get(), requested, &available) == S_OK && available >= size) {
+        w.zip_read_offset = offset;
+        w.zip_read_size = available;
+        memcpy(buffer, w.zip_read_ahead.get(), size);
+        *got = size;
+        return S_OK;
+      }
+    }
+    DWORD count = 0;
+    const HRESULT result = read(buffer, size, &count);
+    if (result == S_OK) *got = count;
+    return result;
   });
 }
 HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, uint32_t count, uint8_t *ack) {
@@ -206,6 +242,8 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
   return guarded(w, [&]() -> HRESULT {
     Bytes msg = w.message(); put(msg, count);
     const size_t limit = w.direct ? direct_manifest_limit : frame_limit;
+    bool partial_zip = false;
+    bool public_zip = true;
     for (uint32_t i = 0; i < count; ++i) {
       const auto &e = items[i]; if (e.index != i) return E_FAIL;
       put(msg, e.name_units, limit); append(msg, e.name, size_t(e.name_units) * 2, limit);
@@ -230,9 +268,16 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
             (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return E_FAIL;
       }
       w.outputs[i] = handle; w.selected[i] = selected; ack[i] = selected;
+      partial_zip |= !selected;
+      public_zip &= !items[i].encrypted;
       if(w.hashing)w.sizes[i]=items[i].size;
     }
-    r.end(); return S_OK;
+    r.end();
+    if (w.direct && w.single_mode == 2 && partial_zip && public_zip && w.password.empty()) {
+      std::lock_guard<std::mutex> lock(w.source_lock);
+      w.zip_read_ahead.reset(new (std::nothrow) uint8_t[zip_read_ahead_size]);
+    }
+    return S_OK;
   });
 }
 HRESULT __stdcall prepared(void *) { return S_OK; } // Parent prepared directories before granting capabilities.
