@@ -1,14 +1,15 @@
 //! Owns private nested archive workspaces for the lifetime of their tabs.
 use obz_core::{
     engine::{
-        nested::{ArchiveRevision, EditReceipt, NestedArchive},
+        nested::{ordinary_recovery_zip, ArchiveRevision, EditReceipt, NestedArchive},
         EngineOptions, JobControl,
     },
     operations::{OperationResponse, Request},
 };
 use serde::Serialize;
+use crate::edit_copies::{self, CopyRecord, NestedCopy};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
@@ -26,6 +27,46 @@ struct Session {
     dirty: bool,
     conflict: bool,
     editor: Option<crate::editor_process::EditorProcess>,
+    recovery: Recovery,
+    recovery_unavailable: bool,
+}
+enum Recovery {
+    Unchecked,
+    Disabled,
+    Armed(NestedCopy),
+}
+impl Session {
+    fn recovered_path(&self) -> Option<&str> {
+        matches!(self.recovery, Recovery::Armed(_)).then(|| self.archive.path().to_str()).flatten()
+    }
+    fn register_recovery(&self, copy: NestedCopy) -> Result<(), String> {
+        edit_copies::remember(CopyRecord {
+            path: self.archive.path().to_string_lossy().into_owned(),
+            parent: self.parent.clone(),
+            member: self.member.clone(),
+            nested: Some(copy),
+        })
+    }
+    fn clear_recovery(&mut self) -> Result<(), String> {
+        if let Some(path) = self.recovered_path() {
+            edit_copies::forget(path)?;
+            self.recovery = Recovery::Unchecked;
+        }
+        Ok(())
+    }
+    fn publish_recovery(&mut self, revision: &ArchiveRevision) -> Result<(), String> {
+        if self.recovery_unavailable {
+            return Err("无法绑定临时工作副本".into());
+        }
+        if let Recovery::Armed(copy) = &self.recovery {
+            let mut copy = copy.clone();
+            if copy.proof.record_commit(self.archive.path(), revision)? {
+                self.register_recovery(copy.clone())?;
+                self.recovery = Recovery::Armed(copy);
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Serialize)]
 pub struct View {
@@ -75,6 +116,10 @@ pub fn cleanup_if_idle() -> Option<bool> {
     // Dropping workspaces can touch disk. Only the registry decision and
     // detachment need to happen under the job-admission lock.
     let removed = crate::jobs::if_idle(take_clean_sessions)?;
+    if let Some(sessions) = &removed {
+        let paths = sessions.values().filter_map(Session::recovered_path).collect::<Vec<_>>();
+        let _ = crate::edit_copies::forget_many(&paths);
+    }
     Some(removed.is_some())
 }
 fn take_clean_sessions() -> Option<BTreeMap<u64, Session>> {
@@ -152,7 +197,7 @@ fn open_impl(
     let archive = if editor.is_some() {
         NestedArchive::open_external(&parent, &member, &options, &crate::edit_copies::root()?)?
     } else {
-        NestedArchive::open(&parent, &member, &options)?
+        NestedArchive::open_with_recovery(&parent, &member, &options)?
     };
     let path_key = key(&crate::desktop::canonical_spelling(archive.path(), false)?);
     let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
@@ -177,6 +222,7 @@ fn open_impl(
                 path: archive.path().to_string_lossy().into_owned(),
                 parent: parent.clone(),
                 member: member.clone(),
+                nested: None,
             })?;
             let process =
                 match crate::editor_process::EditorProcess::launch(&editor, archive.path()) {
@@ -193,6 +239,11 @@ fn open_impl(
     };
     options.control = None;
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let recovery = if process.is_none() && options.password.is_none() {
+        Recovery::Unchecked
+    } else {
+        Recovery::Disabled
+    };
     let session = Session {
         archive,
         path_key,
@@ -202,6 +253,8 @@ fn open_impl(
         dirty: false,
         conflict: false,
         editor: process,
+        recovery,
+        recovery_unavailable: false,
     };
     let result = serde_json::to_value(view(id, &session)).map_err(|e| e.to_string())?;
     sessions.insert(id, session);
@@ -215,6 +268,10 @@ fn session_views() -> Vec<View> {
         .iter()
         .map(|(&id, s)| view(id, s))
         .collect()
+}
+pub(crate) fn active_copy_paths() -> HashSet<String> {
+    registry().lock().unwrap_or_else(|e| e.into_inner()).values()
+        .map(|session| session.archive.path().to_string_lossy().into_owned()).collect()
 }
 #[tauri::command]
 pub async fn nested_sessions() -> Result<Vec<View>, String> {
@@ -261,6 +318,10 @@ fn close_idle_sessions(ids: Vec<u64>, discard: bool) -> Result<Vec<Session>, Str
     {
         return Err("请通过外部编辑会话确认写回或结束编辑".into());
     }
+    let records = ids.iter().filter_map(|id| sessions.get(id).and_then(Session::recovered_path)).collect::<Vec<_>>();
+    // Removing the owned workspace also invalidates any stale index entry.
+    // An unavailable index must not veto an explicit discard or clean close.
+    let _ = edit_copies::forget_many(&records);
     let removed = ids.into_iter().filter_map(|id| sessions.remove(&id)).collect();
     update_dirty(&sessions);
     Ok(removed)
@@ -286,13 +347,17 @@ fn acknowledge(
     path: &str,
     revision: &ArchiveRevision,
     skip: Option<u64>,
-) {
+) -> Option<String> {
+    let mut warning = None;
     for (&id, session) in sessions.iter_mut() {
         if skip == Some(id) {
             continue;
         }
         if session.path_key == key(path) {
             session.dirty = true;
+            if let Err(error) = session.publish_recovery(revision) {
+                warning = Some(format!("内层更改已保存在当前标签，跨会话恢复登记未完成。关闭前请保存或另存为：{error}"));
+            }
         }
         if key(&session.parent) == key(path) {
             match session
@@ -305,11 +370,12 @@ fn acknowledge(
         }
     }
     update_dirty(sessions);
+    warning
 }
-pub fn committed(path: &str, revision: &ArchiveRevision) {
+pub fn committed(path: &str, revision: &ArchiveRevision) -> Option<String> {
     let path = request_key(path);
     let mut sessions = registry().lock().unwrap_or_else(|e| e.into_inner());
-    acknowledge(&mut sessions, &path, revision, None);
+    acknowledge(&mut sessions, &path, revision, None)
 }
 pub fn save_job(path: &str, control: &JobControl) -> Result<OperationResponse, String> {
     save_impl(path, control, false)
@@ -353,15 +419,22 @@ fn save_impl(
     {
         return Err("请通过外部编辑会话确认写回包内文件".into());
     }
+    let mut warning = None;
     for id in pending {
+        let session = sessions.get(&id).ok_or("内层归档会话已关闭")?;
+        if !session.dirty {
+            continue;
+        }
+        if control.cancelled.load(Ordering::SeqCst) {
+            return Err("operation cancelled".into());
+        }
+        let sensitive = matches!(session.recovery, Recovery::Disabled);
+        let parent = key(&session.parent);
+        if let Some((&parent_id, _)) = sessions.iter().find(|(_, s)| s.path_key == parent) {
+            arm_recovery(&mut sessions, parent_id, sensitive)?;
+        }
         let (parent, receipt) = {
             let session = sessions.get_mut(&id).ok_or("内层归档会话已关闭")?;
-            if !session.dirty {
-                continue;
-            }
-            if control.cancelled.load(Ordering::SeqCst) {
-                return Err("operation cancelled".into());
-            }
             let mut options = session.options.clone();
             options.control = Some(control.clone());
             let receipt = EditReceipt::capture(&mut options);
@@ -373,33 +446,107 @@ fn save_impl(
             session.conflict = false;
             (session.parent.clone(), receipt.take())
         };
-        if let Some(receipt) = receipt {
-            acknowledge(&mut sessions, &parent, &receipt, Some(id));
-        }
         update_dirty(&sessions);
+        if let Some(receipt) = receipt {
+            if let Some(message) = acknowledge(&mut sessions, &parent, &receipt, Some(id)) {
+                warning = Some(message);
+                // The earlier child is still useful if the new parent could
+                // not be registered and saving the outer archive later fails.
+                continue;
+            }
+        }
+        if let Err(error) = sessions.get_mut(&id).ok_or("内层归档会话已关闭")?.clear_recovery() {
+            warning = Some(format!("内层更改已写回，但恢复登记未能清除：{error}"));
+        }
     }
-    Ok(OperationResponse::Json(serde_json::json!({"saved":true})))
+    Ok(OperationResponse::Json(serde_json::json!({"saved":true,"recovery_warning":warning})))
 }
 
-pub fn track(request: &mut Request) -> Option<EditReceipt> {
+fn plain_recovery_chain(sessions: &BTreeMap<u64, Session>, id: u64) -> Option<(String, Vec<String>)> {
+    let mut session = &sessions[&id];
+    if !ordinary_recovery_zip(session.archive.path()) {
+        return None;
+    }
+    let mut members = Vec::new();
+    for _ in 0..sessions.len() {
+        if matches!(session.recovery, Recovery::Disabled)
+            || !session.archive.has_ordinary_source()
+        {
+            return None;
+        }
+        members.push(session.member.clone());
+        let parent = key(&session.parent);
+        match sessions.values().find(|candidate| candidate.path_key == parent) {
+            Some(ancestor) => session = ancestor,
+            None => {
+                members.reverse();
+                return Some((session.parent.clone(), members));
+            }
+        }
+    }
+    None
+}
+
+fn arm_recovery(sessions: &mut BTreeMap<u64, Session>, id: u64, sensitive: bool) -> Result<(), String> {
+    let state = &sessions[&id].recovery;
+    if matches!(state, Recovery::Disabled) {
+        return Ok(());
+    }
+    let origin = (!sensitive && matches!(state, Recovery::Unchecked))
+        .then(|| plain_recovery_chain(sessions, id)).flatten();
+    let session = sessions.get_mut(&id).ok_or("内层归档会话已关闭")?;
+    if sensitive {
+        if matches!(&session.recovery, Recovery::Armed(copy) if copy.proof.has_commit()) {
+            session.clear_recovery().map_err(|error| format!("无法在处理密码数据前撤销旧恢复登记：{error}"))?;
+        }
+        session.recovery = Recovery::Disabled;
+        session.recovery_unavailable = false;
+    } else if matches!(session.recovery, Recovery::Unchecked) {
+        if let Some((outer, members)) = origin {
+            match session.archive.recovery_copy() {
+                Ok(proof) => {
+                    let copy = NestedCopy { outer, members, proof };
+                    // If the index was briefly unavailable, the completed
+                    // receipt can still be recorded after the edit succeeds.
+                    let _ = session.register_recovery(copy.clone());
+                    session.recovery = Recovery::Armed(copy);
+                    session.recovery_unavailable = false;
+                }
+                Err(_) => session.recovery_unavailable = true,
+            }
+        } else {
+            session.recovery = Recovery::Disabled;
+            session.recovery_unavailable = false;
+        }
+    }
+    Ok(())
+}
+
+pub fn track(request: &mut Request) -> Result<Option<EditReceipt>, String> {
     if !matches!(
         request.operation.as_str(),
         "add" | "archive-add" | "archive-move" | "archive-copy" | "delete" | "rename" | "comment-set"
     ) {
-        return None;
+        return Ok(None);
     }
-    let sessions = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
     if sessions.is_empty() {
-        return None;
+        return Ok(None);
     }
     let path = request_key(&request.path);
+    if let Some((&id, _)) = sessions.iter().find(|(_, session)| session.path_key == path) {
+        // Projection from an archive can contain data decoded using another
+        // password context, even if the destination itself has no password.
+        let sensitive = request.options.password.is_some() || request.source_archive.is_some();
+        arm_recovery(&mut sessions, id, sensitive)?;
+    }
     if sessions
         .values()
         .any(|s| key(&s.parent) == path || s.path_key == path)
     {
-        Some(EditReceipt::capture(&mut request.options))
+        Ok(Some(EditReceipt::capture(&mut request.options)))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -509,9 +656,9 @@ mod tests {
             inputs: vec![from.into(), to.into()],
             ..Default::default()
         };
-        let receipt = track(&mut request).unwrap();
+        let receipt = track(&mut request).unwrap().unwrap();
         operations::execute_request(request).unwrap();
-        committed(path, &receipt.take().unwrap());
+        assert!(committed(path, &receipt.take().unwrap()).is_none());
     }
     fn names(path: &str) -> Vec<String> {
         operations::list_archive(path, &Default::default())
@@ -520,6 +667,94 @@ mod tests {
             .map(|e| e.name)
             .collect()
     }
+
+    #[test]
+    fn nested_edit_and_clean_discard_work_when_the_recovery_index_is_unreadable() {
+        let _registry = crate::jobs::test_registry_guard();
+        cleanup();
+        let fixture = tempfile::tempdir().unwrap();
+        let text = fixture.path().join("before.txt");
+        let inner = fixture.path().join("inner.zip");
+        let outer = fixture.path().join("outer.zip");
+        std::fs::write(&text, "unchanged text").unwrap();
+        for (input, output) in [(&text, &inner), (&inner, &outer)] {
+            engine::create(output.to_str().unwrap(), &[input.display().to_string()], "zip", &Default::default()).unwrap();
+        }
+        let index = edit_copies::root().unwrap().join("index.json");
+        let prior = std::fs::read(&index).ok();
+        std::fs::write(&index, "bad index").unwrap();
+        let tab = open(outer.to_str().unwrap(), "inner.zip");
+        let mut request = Request {
+            operation: "rename".into(),
+            path: tab.path.clone(),
+            inputs: vec!["before.txt".into(), "after.txt".into()],
+            ..Default::default()
+        };
+        let receipt = track(&mut request).unwrap().unwrap();
+        operations::execute_request(request).unwrap();
+        let warning = committed(&tab.path, &receipt.take().unwrap()).unwrap();
+        assert!(warning.contains("跨会话恢复登记未完成"));
+        assert_eq!(names(&tab.path), vec!["after.txt"]);
+        assert!(close_sessions(vec![tab.id], false).is_err());
+        close_sessions(vec![tab.id], true).unwrap();
+        assert!(!std::path::Path::new(&tab.path).exists());
+        assert_eq!(std::fs::read(&index).unwrap(), b"bad index");
+        if let Some(previous) = prior {
+            std::fs::write(index, previous).unwrap();
+        } else {
+            std::fs::remove_file(index).unwrap();
+        }
+    }
+
+    #[test]
+    fn nested_recovery_exports_the_latest_detached_parent_without_touching_the_outer() {
+        let _registry = crate::jobs::test_registry_guard();
+        cleanup();
+        let temp = tempfile::tempdir().unwrap();
+        let text = temp.path().join("before.txt");
+        let inner = temp.path().join("inner.zip");
+        let middle = temp.path().join("middle.zip");
+        let outer = temp.path().join("outer.zip");
+        std::fs::write(&text, "my text").unwrap();
+        for (input, output) in [(&text, &inner), (&inner, &middle), (&middle, &outer)] {
+            engine::create(output.to_str().unwrap(), &[input.display().to_string()], "zip", &Default::default()).unwrap();
+        }
+        let middle = open(outer.to_str().unwrap(), "middle.zip");
+        let inner = open(&middle.path, "inner.zip");
+        rename(&inner.path, "before.txt", "after.txt");
+        assert!(!edit_copies::retained_copy_records().unwrap().iter().any(|r| r.path == inner.path));
+        // A separate ordinary writer changes the outer file between the edit
+        // and explicit save; the inner is copied into the middle before the conflict.
+        std::fs::write(&outer, "independent outer contents").unwrap();
+        assert!(save_job(&inner.path, &JobControl::new()).is_err());
+        assert!(!session_views().iter().find(|s| s.id == inner.id).unwrap().dirty);
+        assert!(session_views().iter().find(|s| s.id == middle.id).unwrap().dirty);
+        let detached = {
+            let mut sessions = registry().lock().unwrap();
+            let detached = std::mem::take(&mut *sessions);
+            update_dirty(&sessions);
+            detached
+        };
+        let recovered = edit_copies::retained_copy_records().unwrap().into_iter()
+            .filter(|record| record.path == middle.path || record.path == inner.path).collect::<Vec<_>>();
+        assert_eq!(recovered.len(), 1);
+        let record = &recovered[0];
+        assert_eq!(record.path, middle.path);
+        let nested = record.nested.as_ref().unwrap();
+        assert_eq!(key(&nested.outer), key(outer.to_str().unwrap()));
+        assert_eq!(nested.members, vec!["middle.zip"]);
+        let picked = serde_json::to_string(record).unwrap();
+        assert!(edit_copies::save_copy(&picked, outer.to_str().unwrap()).is_err());
+        let destination = temp.path().join("saved.zip");
+        edit_copies::save_copy(&picked, destination.to_str().unwrap()).unwrap();
+        assert!(edit_copies::save_copy(&picked, temp.path().join("other.zip").to_str().unwrap()).is_err());
+        let readback = NestedArchive::open(destination.to_str().unwrap(), "inner.zip", &Default::default()).unwrap();
+        assert_eq!(names(readback.path().to_str().unwrap()), vec!["after.txt"]);
+        assert_eq!(std::fs::read(&outer).unwrap(), b"independent outer contents");
+        assert_eq!(std::fs::read(&text).unwrap(), b"my text");
+        drop(detached);
+    }
+
     #[test]
     fn session_graph_uses_filesystem_spelling_for_temp_aliases() {
         // A separate process avoids mutating TEMP while unrelated tests run.
