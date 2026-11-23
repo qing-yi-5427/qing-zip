@@ -5,7 +5,7 @@ use journal::{Admission, Journal};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{ErrorKind, Write},
+    io::{BufWriter, ErrorKind, Write},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
@@ -205,11 +205,14 @@ fn new_revision() -> Result<String, String> {
 
 fn persist(root: &Path, record: &SavedBatch, journal: bool) -> Result<File, String> {
     let mut file = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut file, record).map_err(|e| e.to_string())?;
-    if journal {
-        file.write_all(b"\n").map_err(|e| e.to_string())?;
+    {
+        let mut writer = BufWriter::new(file.as_file_mut());
+        serde_json::to_writer(&mut writer, record).map_err(|e| e.to_string())?;
+        if journal {
+            writer.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+        writer.flush().map_err(|e| e.to_string())?;
     }
-    file.flush().map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(root.join(RECORD)).map_err(|e| e.to_string())
 }
@@ -463,6 +466,34 @@ mod tests {
             "index": index,
             "previous": previous.map(|status| serde_json::json!({ "status": status, "hasOutput": true })),
         })).unwrap()
+    }
+
+    #[test]
+    fn a_large_plan_remains_complete_after_registering_the_first_archive() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path();
+        let mut plan = fresh_plan();
+        let first = plan.entries[0].clone();
+        plan.entries = (0..512)
+            .map(|i| {
+                let mut entry = first.clone();
+                entry.path = root.join(format!("archive-{i}.zip")).display().to_string();
+                entry
+            })
+            .collect();
+        let expected = plan.entries.last().unwrap().path.clone();
+        let (mut journal, _) = Journal::begin(root, Some(plan), None).unwrap().unwrap();
+        journal.admit(next(0, None)).unwrap();
+        drop(journal);
+        let BatchResumeState::Ready { record } = load(root).unwrap() else {
+            panic!("expected a complete persisted plan");
+        };
+        assert_eq!(record.plan.entries.len(), 512);
+        assert!(record.plan.entries[0].status == Status::Interrupted);
+        assert!(record.plan.entries[1..]
+            .iter()
+            .all(|e| e.status == Status::Pending));
+        assert_eq!(record.plan.entries.last().unwrap().path, expected);
     }
 
     #[test]
