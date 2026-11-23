@@ -1,0 +1,272 @@
+{
+  "source": {
+    "baseline": "0a97b57ad4dc5dd4d0915fbeb54d68e58f63a080",
+    "candidate": "79276d07ed31ea177bb3fef82782af6b5dabc70f",
+    "optimized": "d42e6beaabc06bae1ce1f5f3f46effb72662bf5a"
+  },
+  "planner_sha256": {
+    "baseline": "0d253f05effe10faebe5ce1abced70c4b067eb914bfd188915b8bf71ebaebef7",
+    "candidate": "ea6378b981df04b1e911af6f9c385d2845f6c85faeebfeab0b8202112398c81a",
+    "optimized": "06902dbb9818a76750be8943d15aa5d990857e531ac12487d9ebe91f1c6fdb56"
+  },
+  "groups": {
+    "20": {
+      "source_files": 20,
+      "bytes_each": 160,
+      "fixture_manifest_sha256": "b365bcc63417fa7887151f1dc97964d2b146c3edfa5cfb4f55bdb3983cc5495e",
+      "pairs": [
+        {
+          "type": "warmup",
+          "order": [
+            "candidate",
+            "baseline",
+            "optimized"
+          ],
+          "candidate_ms": 8.2066,
+          "baseline_ms": 4.9853,
+          "optimized_ms": 6.0531,
+          "difference_ms": 3.2213,
+          "optimized_minus_baseline_ms": 1.0678,
+          "optimized_minus_candidate_ms": -2.1535
+        },
+        {
+          "type": "measured",
+          "order": [
+            "candidate",
+            "optimized",
+            "baseline"
+          ],
+          "candidate_ms": 7.6011,
+          "optimized_ms": 5.6904,
+          "baseline_ms": 4.8813,
+          "difference_ms": 2.7198,
+          "optimized_minus_baseline_ms": 0.8091,
+          "optimized_minus_candidate_ms": -1.9107
+        },
+        {
+          "type": "measured",
+          "order": [
+            "baseline",
+            "candidate",
+            "optimized"
+          ],
+          "baseline_ms": 4.9216,
+          "candidate_ms": 8.0283,
+          "optimized_ms": 5.7944,
+          "difference_ms": 3.1067,
+          "optimized_minus_baseline_ms": 0.8728,
+          "optimized_minus_candidate_ms": -2.2339
+        },
+        {
+          "type": "measured",
+          "order": [
+            "optimized",
+            "baseline",
+            "candidate"
+          ],
+          "optimized_ms": 5.9595,
+          "baseline_ms": 4.8392,
+          "candidate_ms": 7.047,
+          "difference_ms": 2.2078,
+          "optimized_minus_baseline_ms": 1.1203,
+          "optimized_minus_candidate_ms": -1.0875
+        },
+        {
+          "type": "measured",
+          "order": [
+            "baseline",
+            "optimized",
+            "candidate"
+          ],
+          "baseline_ms": 4.8985,
+          "optimized_ms": 5.7232,
+          "candidate_ms": 7.2952,
+          "difference_ms": 2.3967,
+          "optimized_minus_baseline_ms": 0.8247,
+          "optimized_minus_candidate_ms": -1.572
+        },
+        {
+          "type": "measured",
+          "order": [
+            "optimized",
+            "candidate",
+            "baseline"
+          ],
+          "optimized_ms": 6.5344,
+          "candidate_ms": 8.0402,
+          "baseline_ms": 5.2959,
+          "difference_ms": 2.7443,
+          "optimized_minus_baseline_ms": 1.2385,
+          "optimized_minus_candidate_ms": -1.5058
+        }
+      ],
+      "measuring_window_host_cpu_nonidle_percent": 16.07,
+      "measured_stats": {
+        "candidate_ms": {
+          "min": 7.047,
+          "median": 7.6011,
+          "max": 8.0402
+        },
+        "optimized_ms": {
+          "min": 5.6904,
+          "median": 5.7944,
+          "max": 6.5344
+        },
+        "baseline_ms": {
+          "min": 4.8392,
+          "median": 4.8985,
+          "max": 5.2959
+        },
+        "difference_ms": {
+          "min": 2.2078,
+          "median": 2.7198,
+          "max": 3.1067
+        },
+        "optimized_minus_baseline_ms": {
+          "min": 0.8091,
+          "median": 0.8728,
+          "max": 1.2385
+        },
+        "optimized_minus_candidate_ms": {
+          "min": -2.2339,
+          "median": -1.572,
+          "max": -1.0875
+        }
+      },
+      "source_and_output_verified_each_call": true
+    },
+    "1000": {
+      "source_files": 1000,
+      "bytes_each": 160,
+      "fixture_manifest_sha256": "118ee7dfcda4ec3a7a4ef6bd090430aaf63dade831b299635b1bdf0cd96e9e37",
+      "pairs": [
+        {
+          "type": "warmup",
+          "order": [
+            "candidate",
+            "baseline",
+            "optimized"
+          ],
+          "candidate_ms": 351.1393,
+          "baseline_ms": 235.1285,
+          "optimized_ms": 273.9919,
+          "difference_ms": 116.0108,
+          "optimized_minus_baseline_ms": 38.8634,
+          "optimized_minus_candidate_ms": -77.1474
+        },
+        {
+          "type": "measured",
+          "order": [
+            "candidate",
+            "optimized",
+            "baseline"
+          ],
+          "candidate_ms": 362.4201,
+          "optimized_ms": 267.5457,
+          "baseline_ms": 231.3453,
+          "difference_ms": 131.0748,
+          "optimized_minus_baseline_ms": 36.2004,
+          "optimized_minus_candidate_ms": -94.8744
+        },
+        {
+          "type": "measured",
+          "order": [
+            "baseline",
+            "candidate",
+            "optimized"
+          ],
+          "baseline_ms": 239.672,
+          "candidate_ms": 352.5059,
+          "optimized_ms": 273.8279,
+          "difference_ms": 112.8339,
+          "optimized_minus_baseline_ms": 34.1559,
+          "optimized_minus_candidate_ms": -78.678
+        },
+        {
+          "type": "measured",
+          "order": [
+            "optimized",
+            "baseline",
+            "candidate"
+          ],
+          "optimized_ms": 285.6025,
+          "baseline_ms": 242.0185,
+          "candidate_ms": 377.1521,
+          "difference_ms": 135.1336,
+          "optimized_minus_baseline_ms": 43.584,
+          "optimized_minus_candidate_ms": -91.5496
+        },
+        {
+          "type": "measured",
+          "order": [
+            "baseline",
+            "optimized",
+            "candidate"
+          ],
+          "baseline_ms": 242.3424,
+          "optimized_ms": 274.2495,
+          "candidate_ms": 357.1855,
+          "difference_ms": 114.8431,
+          "optimized_minus_baseline_ms": 31.9071,
+          "optimized_minus_candidate_ms": -82.936
+        },
+        {
+          "type": "measured",
+          "order": [
+            "optimized",
+            "candidate",
+            "baseline"
+          ],
+          "optimized_ms": 268.8002,
+          "candidate_ms": 354.1954,
+          "baseline_ms": 236.4398,
+          "difference_ms": 117.7556,
+          "optimized_minus_baseline_ms": 32.3604,
+          "optimized_minus_candidate_ms": -85.3952
+        }
+      ],
+      "measuring_window_host_cpu_nonidle_percent": 19.7,
+      "measured_stats": {
+        "candidate_ms": {
+          "min": 352.5059,
+          "median": 357.1855,
+          "max": 377.1521
+        },
+        "optimized_ms": {
+          "min": 267.5457,
+          "median": 273.8279,
+          "max": 285.6025
+        },
+        "baseline_ms": {
+          "min": 231.3453,
+          "median": 239.672,
+          "max": 242.3424
+        },
+        "difference_ms": {
+          "min": 112.8339,
+          "median": 117.7556,
+          "max": 135.1336
+        },
+        "optimized_minus_baseline_ms": {
+          "min": 31.9071,
+          "median": 34.1559,
+          "max": 43.584
+        },
+        "optimized_minus_candidate_ms": {
+          "min": -94.8744,
+          "median": -85.3952,
+          "max": -78.678
+        }
+      },
+      "source_and_output_verified_each_call": true
+    }
+  },
+  "started_utc": "2026-11-23T12:22:55.921228+00:00",
+  "system": "Windows-11-10.0.26300-SP0",
+  "rust": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "metric": "Rust planner call only; optimized exact Git function bodies and all transitive helpers",
+  "cache": "warm ordinary Windows file cache; fresh fixture for each size, one warmup triplet, no cache flush",
+  "proof": "the full returned paths match; SHA-256 of every source and empty output directory checked outside the timed call",
+  "transitive_helper_sha256": "effe9b5b48abf0243912a3bc45e811de3c57d9558a6ded0f2a0449d116ddfe92",
+  "owned_scratch_cleaned": true
+}
