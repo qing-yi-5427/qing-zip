@@ -25,10 +25,10 @@ with hosted_debug_session(exe,receipt) as debug:
     if 'error' in r or 'exceptionDetails' in r.get('result',{}):raise RuntimeError(str(r))
     return r['result']['result'].get('value')
  for _ in range(300):
-  if js("!!window.__TAURI__?.core && !!document.querySelector('[data-action=settings]')"):break
+  if js("!!window.__TAURI__?.core && !!document.querySelector('[data-action=app-menu]')"):break
   time.sleep(.1)
  else:raise RuntimeError('GUI not ready')
- js("document.querySelector('[data-action=settings]').click()")
+ js("action('settings')")
  for _ in range(100):
   if js("!!document.querySelector('#oa-file-menu')"):break
   time.sleep(.1)
