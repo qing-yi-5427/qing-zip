@@ -379,7 +379,7 @@ def main():
     check(os.name == "nt" and all(os.environ.get(key) == value for key, value in HOSTED.items()),
           "Requires a disposable GitHub-hosted Windows x64 job")
     job, letter, label, marker, source_commit, mode = sys.argv[1:]
-    check(mode in {'workspace', 'historical', 'midwrite', 'update'}, 'Invalid test mode')
+    check(mode in {'workspace', 'historical', 'midwrite', 'update', 'nested'}, 'Invalid test mode')
     job = Path(job).resolve(strict=True)
     check(job.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
           and job.name.startswith("qz-capacity-"), "Expected exact job-owned runner temp root")
@@ -430,6 +430,8 @@ def main():
             save()
         if mode == "update":
             cases = ("update-full", "update-limited")
+        elif mode == "nested":
+            cases = ("nested-save",)
         elif mode == "midwrite":
             cases = ("midwrite",)
         else:
@@ -438,7 +440,11 @@ def main():
             result = {"status": "blocked"}
             report["cases"][case] = result
             try:
-                if mode == "update":
+                if mode == "nested":
+                    from nested_save_capacity import exercise_nested_save
+                    exercise_nested_save(cli.with_name("qing-zip.exe"), work, env, root, marker, identity,
+                                         result, fill, verify_volume, sha, snapshot)
+                elif mode == "update":
                     exercise_update(case, cli, work, env, root, marker, identity, result)
                 elif case == "midwrite":
                     exercise_midwrite(cli, work, env, root, marker, identity, result)

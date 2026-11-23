@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('baseline', 'combined', 'round2', 'midwrite', 'update')]
+    [ValidateSet('baseline', 'combined', 'round2', 'midwrite', 'update', 'nested')]
     [string]$Trial,
     [ValidatePattern('^[0-9]{1,20}$')]
     [string]$BuildRun
@@ -17,13 +17,14 @@ $runs = @{
     combined = @{ id = '45116763549'; source = 'e9eeecd414fa7379fc959967fb1645ced24eeb62' }
     round2 = @{ id = '45118493619'; source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' }
 }
-$trialRun = if ($Trial -in @('midwrite', 'update')) { $runs.round2 } else { $runs[$Trial] }
+$trialRun = if ($Trial -in @('midwrite', 'update', 'nested')) { $runs.round2 } else { $runs[$Trial] }
 $mode = switch ($Trial) {
     'baseline' { 'workspace' }
     'combined' { 'workspace' }
     'round2' { 'historical' }
     'midwrite' { 'midwrite' }
     'update' { 'update' }
+    'nested' { 'nested' }
 }
 if ($BuildRun) { $trialRun.id = $BuildRun }
 $tempRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
