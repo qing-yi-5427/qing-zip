@@ -1,0 +1,133 @@
+{
+  "status": "passed",
+  "product_source": "fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6",
+  "fixed_vhd_bytes": 100663296,
+  "cases": {
+    "update-full": {
+      "status": "passed",
+      "state_before": {
+        "editing.zip": "02904bc5cc744f8419ae9ad89773ea31edb382a49d79c1f231a438c57a8bf19f",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_before": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_before": {
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+      },
+      "volume_bytes": 99545088,
+      "free_at_failure": 0,
+      "filler_bytes": 83726336,
+      "os_full_errors": [
+        {
+          "write_bytes": 1048576,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 65536,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 4096,
+          "errno": 28,
+          "winerror": null
+        }
+      ],
+      "free_at_start": 0,
+      "failure": {
+        "exit": 1,
+        "stderr": "error: create private stage: There is not enough space on the disk. (os error 112)",
+        "space_diagnostic": true
+      },
+      "state_after_failure": {
+        "editing.zip": "02904bc5cc744f8419ae9ad89773ea31edb382a49d79c1f231a438c57a8bf19f",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_after_failure": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_after_failure": {
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+      },
+      "free_after_release": 83726336,
+      "retry": {
+        "exit": 0,
+        "stderr": "",
+        "space_diagnostic": false
+      },
+      "state_after_retry": {
+        "editing.zip": "d29510e845f0a4a3e6daa46040a468191bfa34a54aee8eedecb886487fcd63b6",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_after_retry": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_after_retry": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      }
+    },
+    "update-limited": {
+      "status": "passed",
+      "state_before": {
+        "editing.zip": "02904bc5cc744f8419ae9ad89773ea31edb382a49d79c1f231a438c57a8bf19f",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_before": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_before": {
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+      },
+      "free_at_start": 6291456,
+      "failure": {
+        "exit": 1,
+        "stderr": "error: archive engine failed (2): \nNanaZip 7.0 , version 2610.2 (x64) : (c) M2-Team and Contributors. All rights reserved.\n\nOpen archive: <qa-path>\n--\nPath = <qa-path>\nType = zip\nPhysical Size = 1048791\n\nScanning the drive:\n2 files, 16777237 bytes (17 MiB)\n\nCreating archive: E:\\qa-ba29954267544fada608aa65ec03e149\\update-limited\\.qing-zip-stage-d7e57115534707d962672e72c6b51973\\output\\editing.zip\n\nKeep old data in archive: 1 file, 1048576 bytes (1024 KiB)\nAdd new data to archive: 2 files, 16777237 bytes (17 MiB)\n\n   0M Scan  D:\\a\\_temp\\qz-capacity-ba299542 . 03e149\\fixtures\\update-limited\\\n                                                                            \n  0%\n    \n 31% 2 U replace.txt\n                    \n\n\nSystem ERROR:\nThere is not enough space on the disk.",
+        "space_diagnostic": true
+      },
+      "state_after_failure": {
+        "editing.zip": "02904bc5cc744f8419ae9ad89773ea31edb382a49d79c1f231a438c57a8bf19f",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_after_failure": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_after_failure": {
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+      },
+      "free_after_release": 65892352,
+      "retry": {
+        "exit": 0,
+        "stderr": "",
+        "space_diagnostic": false
+      },
+      "state_after_retry": {
+        "editing.zip": "b85b7934a8cd0af15d3f2e272fc9786b30ff6e8587a65ff0d72c441a2adaf0ae",
+        "unrelated.txt": "926e5db8bc1fad5e634e76a6115643ca450bf6b0635efab1ad5718a83ae96cb5"
+      },
+      "sources_after_retry": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      },
+      "members_after_retry": {
+        "added.bin": "f320a13bc21f12d063bc0e079a0acfbc16286a71fc10aaaa1cb6e454d1b114ff",
+        "keep.bin": "6cc9682e4538a527203b6bdb7eb8cdf6d69137bdf5d48214e3bd6fae2bc4a307",
+        "replace.txt": "95da302ac2abd262bbf58368294e35b10a9834c6010ff58b1194426bdee7a9c2"
+      }
+    }
+  },
+  "cli_sha256": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+  "worker_sha256": "91f8afb33209fc157b038e1bbc8ee3505db43165ae94cdf62313992525aa35f6"
+}

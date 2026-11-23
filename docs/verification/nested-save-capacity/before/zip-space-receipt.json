@@ -1,0 +1,58 @@
+{
+  "status": "passed",
+  "product_source": "b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b",
+  "fixed_vhd_bytes": 100663296,
+  "cases": {
+    "nested-save": {
+      "status": "passed",
+      "outer_before": {
+        "outer.zip": "062ff9582b4b0a6a2c3863706dcfb80b7ccd10b095e668d24f36ddd1bbd3f7ab",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      },
+      "inner_before": {
+        "before.bin": "97fbb6d266ab13904bc29cb00931126b5854ed5dd1245dbf249a270721dc72fa",
+        "unchanged.txt": "03f64bc498c1bf25851272512f5ac770f4a1e636b074f8296525b6df6d675ad5"
+      },
+      "gui_sha256": "9335c4ea5d0bb30dbb52f5404d53b14c5d619a294141a1f4958ba415788e0cd2",
+      "edited_copy_sha256": "c6eb2719d8104f977b5debb365783e1efb383223399079e1deaf557a8bd9461c",
+      "volume_bytes": 99545088,
+      "free_at_failure": 0,
+      "filler_bytes": 82984960,
+      "os_full_errors": [
+        {
+          "write_bytes": 1048576,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 65536,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 4096,
+          "errno": 28,
+          "winerror": null
+        }
+      ],
+      "failure_text": "写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)",
+      "outer_after_failure": {
+        "outer.zip": "062ff9582b4b0a6a2c3863706dcfb80b7ccd10b095e668d24f36ddd1bbd3f7ab",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      },
+      "working_after_failure": "c6eb2719d8104f977b5debb365783e1efb383223399079e1deaf557a8bd9461c",
+      "free_after_release": 82984960,
+      "committed_inner_sha256": "c6eb2719d8104f977b5debb365783e1efb383223399079e1deaf557a8bd9461c",
+      "inner_after_retry": {
+        "after.bin": "97fbb6d266ab13904bc29cb00931126b5854ed5dd1245dbf249a270721dc72fa",
+        "unchanged.txt": "03f64bc498c1bf25851272512f5ac770f4a1e636b074f8296525b6df6d675ad5"
+      },
+      "outer_after_retry": {
+        "outer.zip": "daa72d01533b76513e1aa340d7e7f41fe7b80af201155076a58af4b1e8067c37",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      }
+    }
+  },
+  "cli_sha256": "a6ec1728422d1515f510d687cb82c3de075758c940d1d974bfe7747917b2d3e0",
+  "worker_sha256": "1ae672ee6eb5bc623bb75a9955fa04d61e49ac3f1bda1ca79d866031b78fa708"
+}

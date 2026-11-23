@@ -1,0 +1,44 @@
+{
+  "commit": "fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6",
+  "run_url": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45128040411",
+  "artifact_id": 14796584930,
+  "artifact_sha256": "673923ee2c40b1da06352a88739190d39e40e82ab20e2c2890b75d75233661e0",
+  "portable_filename": "qing-zip-0.12.23-portable.zip",
+  "portable_sha256": "b09d5089eaa0e8bcb5f376598c03be99e5773a716f008e17d49f696450bee6d5",
+  "authored_sha256": {
+    "obz.exe": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+    "obz-worker.exe": "91f8afb33209fc157b038e1bbc8ee3505db43165ae94cdf62313992525aa35f6",
+    "obz-gui.exe": "ace8f3710ec3201290ffed939eaa3e27ba1760ba798ba20dbb019f7c29bb6117"
+  },
+  "runtime_sha256": {
+    "NanaZip.Universal.Console.exe": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139",
+    "NanaZip.Core.dll": "470e80066760f432bef8893ef416ba79fab6b165fbf3db3c1729bbe2b0feb46a",
+    "NanaZip.Codecs.dll": "6fb3d89f4002890c939c07e311fc940dead1a5b571f3daf70e7535da790b65c5",
+    "NanaZip.ZS.Codecs.dll": "8547b43be561fb283115de6e1183a789050b523255a55fe63f802298e5eff869",
+    "K7Base.dll": "6b7903cbadae93f59f6705e73a570da9dee9f76d25879c2e60a5ef1c0b00ea92",
+    "K7User.dll": "916d6ddc18738827921b2ed204c958ebbc4483d8586881a9df8b0f9c5df1052d"
+  },
+  "authored_pe_gate": true,
+  "interruption_replay": {
+    "receipt": "zip-interruption.jsonl",
+    "rounds": 3,
+    "write_bytes_after_owner_exit_sample": [
+      0,
+      0,
+      0
+    ],
+    "writer_exit_seconds_after_owner_exit_sample": [
+      0.0012,
+      0.0008,
+      0.0015
+    ],
+    "original_and_source_hashes_match": true,
+    "independent_job_verified": true,
+    "retry_verified": true,
+    "retained_candidate_bytes": [
+      3145728,
+      2097152,
+      3145728
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "cli_sha256": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+  "reference_sha256": "4a41aa37786c7eae7451e81c2c97458d5d1ae5a3a8154637a0d5f77adc05e619",
+  "interop": {
+    "status": "PASS",
+    "source_manifest_sha256": {
+      "样本 files": null,
+      "样本 files/media": null,
+      "样本 files/子目录": null,
+      "样本 files/空文件.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "样本 files/空目录": null,
+      "样本 files/重名.txt": "63f53e09781c97df2089f97c5fee3c12fe76832dc3061e34aec35ef06f499499",
+      "样本 files/media/seeded.bin": "072b68cd5bd855ff18ab7e57eb1d8259629fd258d146bf9db2958c678f32c5ef",
+      "样本 files/子目录/重名.txt": "6c38d85691dd9fe39634feeb2f7be20274b4f809ef45673f05b127255bb69849"
+    },
+    "archives_sha256": {
+      "qing.zip": "7947fb54497e60012ef6635c66162faf40475bfb80d744c63df8ac132649cb6c",
+      "python.zip": "08bc320de8c69c35f3a731e6d85d4a33f7d25970a48ceb274c2cd10ce4f450cd",
+      "qing.7z.001": "144b01b4158be41ac37ea77127106f3c54e98cb23667b873df2d9ae5fe79f5e5",
+      "qing.7z.002": "c6a7893ec03a27e6b824aeef46062a6e409ae3ae438a71e4ef47a1723bcdbc1b",
+      "qing.7z.003": "c3b5979ed042922d47fbe4ff35f13cac988a063081fa0737a31d21bf04f116db",
+      "7zip.7z": "43d923463dda94ac6c44223381f49dc93232ce9e9efd54596ec2b4f433b271bc"
+    },
+    "zip_directions": [
+      "qing-zip to Python",
+      "Python to qing-zip"
+    ],
+    "sevenz_directions": [
+      "qing-zip split to 7-Zip",
+      "7-Zip solid to qing-zip"
+    ],
+    "selected_overwrite_policies": [
+      "skip",
+      "overwrite"
+    ]
+  }
+}

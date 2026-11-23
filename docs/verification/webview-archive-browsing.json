@@ -1,0 +1,1898 @@
+{
+  "measurement_context": {
+    "began_at": "2026-11-23T12:08:03+08:00",
+    "finished_at": "2026-11-23T12:08:18+08:00",
+    "windows_build": 26300,
+    "display_pixels": [
+      3840,
+      2160
+    ],
+    "baseline_source": "0cc51aa2379321361012f32515edb40b95e2ebf9",
+    "candidate_source": "a849a483fd611c0bef5aebea3ff4da583c5a1f1e",
+    "candidate_bundle": "roadmap-perf",
+    "measurement_role": "earlier_integration"
+  },
+  "gui_sha256": {
+    "baseline": "bd544f5a9fc27f546e54ae0ecb12f036c81967f32b50e4aa6a778fe8be8e2ce9",
+    "candidate": "ef6afa4fe7d0c5762fcd4f573058fa97d5e53ebf8067c66f3aa52f6698cb31e4"
+  },
+  "allow_unfocused": true,
+  "cases": [
+    {
+      "entries": 10000,
+      "archive_sha256": "878de32ce7c8fc325d4641656a5d078e013927cbf8b05008323120b97cfa8bbc",
+      "warmup": {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "candidate": {
+          "open": {
+            "ms": 540.95,
+            "first": "group-010/",
+            "mounted": 11,
+            "visible": 11,
+            "logical": 11,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 246640640,
+              "working_set_bytes": 419815424
+            }
+          },
+          "wide": {
+            "ms": 15.478,
+            "first": "wide/member-000000.txt",
+            "mounted": 21,
+            "visible": 13,
+            "logical": 5000,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "search": {
+            "ms": 9.653,
+            "first": "wide/target-needle.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "whole": {
+            "ms": 7.981,
+            "first": "group-019/nested/member-009999.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "sort": {
+            "ms": 7.009,
+            "first": "wide/target-needle.txt",
+            "mounted": 22,
+            "visible": 13,
+            "logical": 5000,
+            "sort": "descending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "scroll": {
+            "ms": 23.601,
+            "first": "wide/member-004972.txt",
+            "mounted": 32,
+            "visible": 15,
+            "logical": 5000,
+            "sort": "descending",
+            "scroll_top": 1230,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 346566656,
+              "working_set_bytes": 468250624
+            }
+          },
+          "webview": "Edg/157.0.4341.60"
+        },
+        "baseline": {
+          "open": {
+            "ms": 557.029,
+            "first": "group-010/",
+            "mounted": 11,
+            "visible": 11,
+            "logical": 11,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 241799168,
+              "working_set_bytes": 413282304
+            }
+          },
+          "wide": {
+            "ms": 17.006,
+            "first": "wide/member-000000.txt",
+            "mounted": 21,
+            "visible": 13,
+            "logical": 5000,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "search": {
+            "ms": 13.573,
+            "first": "wide/target-needle.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "whole": {
+            "ms": 8.222,
+            "first": "group-019/nested/member-009999.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "sort": {
+            "ms": 7.567,
+            "first": "wide/target-needle.txt",
+            "mounted": 22,
+            "visible": 13,
+            "logical": 5000,
+            "sort": "descending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "scroll": {
+            "ms": 24.151,
+            "first": "wide/member-004972.txt",
+            "mounted": 32,
+            "visible": 15,
+            "logical": 5000,
+            "sort": "descending",
+            "scroll_top": 1230,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 347852800,
+              "working_set_bytes": 463261696
+            }
+          },
+          "webview": "Edg/157.0.4341.60"
+        }
+      },
+      "samples": [
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": {
+            "open": {
+              "ms": 522.655,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 290713600,
+                "working_set_bytes": 422633472
+              }
+            },
+            "wide": {
+              "ms": 15.421,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 10.129,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.049,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 6.913,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 25.273,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 339005440,
+                "working_set_bytes": 453713920
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "candidate": {
+            "open": {
+              "ms": 558.977,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 292130816,
+                "working_set_bytes": 425725952
+              }
+            },
+            "wide": {
+              "ms": 15.657,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 9.478,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.083,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 6.192,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 27.711,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 339050496,
+                "working_set_bytes": 456302592
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": {
+            "open": {
+              "ms": 524.5,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 287006720,
+                "working_set_bytes": 421134336
+              }
+            },
+            "wide": {
+              "ms": 16.253,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 10.753,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.995,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 10.425,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 26.225,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 333119488,
+                "working_set_bytes": 452124672
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "baseline": {
+            "open": {
+              "ms": 545.166,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 286593024,
+                "working_set_bytes": 422522880
+              }
+            },
+            "wide": {
+              "ms": 15.233,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 10.342,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.081,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 6.654,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 22.248,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 327593984,
+                "working_set_bytes": 451104768
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": {
+            "open": {
+              "ms": 515.517,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 290111488,
+                "working_set_bytes": 423108608
+              }
+            },
+            "wide": {
+              "ms": 16.553,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 9.282,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.441,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 7.089,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 22.492,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 336068608,
+                "working_set_bytes": 453066752
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "candidate": {
+            "open": {
+              "ms": 514.781,
+              "first": "group-010/",
+              "mounted": 11,
+              "visible": 11,
+              "logical": 11,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 246468608,
+                "working_set_bytes": 419528704
+              }
+            },
+            "wide": {
+              "ms": 15.494,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 8.791,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 8.14,
+              "first": "group-019/nested/member-009999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 7.544,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 23.816,
+              "first": "wide/member-004972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 5000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 337362944,
+                "working_set_bytes": 461467648
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        }
+      ],
+      "warmup_screenshot_sha256": {
+        "baseline": "df59745c69731c43cfc503494cb035b3edb04354d59e5a63decec6c738b71eb0",
+        "candidate": "df59745c69731c43cfc503494cb035b3edb04354d59e5a63decec6c738b71eb0"
+      }
+    },
+    {
+      "entries": 50000,
+      "archive_sha256": "991b92a538b13a987e8f025f14e5c7a6d28d1a72d4c36ddea946d8deeafb54ac",
+      "warmup": {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "candidate": {
+          "open": {
+            "ms": 658.205,
+            "first": "group-050/",
+            "mounted": 51,
+            "visible": 13,
+            "logical": 51,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 330416128,
+              "working_set_bytes": 466685952
+            }
+          },
+          "wide": {
+            "ms": 23.338,
+            "first": "wide/member-000000.txt",
+            "mounted": 21,
+            "visible": 13,
+            "logical": 25000,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "search": {
+            "ms": 18.422,
+            "first": "wide/target-needle.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "whole": {
+            "ms": 21.55,
+            "first": "group-099/nested/member-049999.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "sort": {
+            "ms": 10.477,
+            "first": "wide/target-needle.txt",
+            "mounted": 22,
+            "visible": 13,
+            "logical": 25000,
+            "sort": "descending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "scroll": {
+            "ms": 26.408,
+            "first": "wide/member-024972.txt",
+            "mounted": 32,
+            "visible": 15,
+            "logical": 25000,
+            "sort": "descending",
+            "scroll_top": 1230,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 420823040,
+              "working_set_bytes": 534306816
+            }
+          },
+          "webview": "Edg/157.0.4341.60"
+        },
+        "baseline": {
+          "open": {
+            "ms": 681.323,
+            "first": "group-050/",
+            "mounted": 51,
+            "visible": 13,
+            "logical": 51,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 332103680,
+              "working_set_bytes": 462544896
+            }
+          },
+          "wide": {
+            "ms": 24.416,
+            "first": "wide/member-000000.txt",
+            "mounted": 21,
+            "visible": 13,
+            "logical": 25000,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "search": {
+            "ms": 22.025,
+            "first": "wide/target-needle.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "whole": {
+            "ms": 23.056,
+            "first": "group-099/nested/member-049999.txt",
+            "mounted": 1,
+            "visible": 1,
+            "logical": 1,
+            "sort": "ascending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              536
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "sort": {
+            "ms": 9.169,
+            "first": "wide/target-needle.txt",
+            "mounted": 22,
+            "visible": 13,
+            "logical": 25000,
+            "sort": "descending",
+            "scroll_top": 0,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false
+          },
+          "scroll": {
+            "ms": 24.703,
+            "first": "wide/member-024972.txt",
+            "mounted": 32,
+            "visible": 15,
+            "logical": 25000,
+            "sort": "descending",
+            "scroll_top": 1230,
+            "device_pixel_ratio": 1.5,
+            "viewport_css_pixels": [
+              898,
+              570
+            ],
+            "document_visible": true,
+            "win32_foreground": false,
+            "memory": {
+              "sampled_processes": 7,
+              "unsampled_processes": 0,
+              "webview_processes": 6,
+              "private_commit_bytes": 423690240,
+              "working_set_bytes": 524386304
+            }
+          },
+          "webview": "Edg/157.0.4341.60"
+        }
+      },
+      "samples": [
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": {
+            "open": {
+              "ms": 664.275,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 334340096,
+                "working_set_bytes": 463855616
+              }
+            },
+            "wide": {
+              "ms": 23.651,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 21.223,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 22.132,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 9.047,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 21.953,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 408502272,
+                "working_set_bytes": 520941568
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "candidate": {
+            "open": {
+              "ms": 667.908,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 333504512,
+                "working_set_bytes": 462077952
+              }
+            },
+            "wide": {
+              "ms": 23.554,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 19.178,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 21.778,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 8.84,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 25.883,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 408297472,
+                "working_set_bytes": 517357568
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "candidate": {
+            "open": {
+              "ms": 652.645,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 328335360,
+                "working_set_bytes": 461213696
+              }
+            },
+            "wide": {
+              "ms": 23.304,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 18.555,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 22.645,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 9.329,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 25.73,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 402845696,
+                "working_set_bytes": 515874816
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "baseline": {
+            "open": {
+              "ms": 670.536,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 332578816,
+                "working_set_bytes": 461946880
+              }
+            },
+            "wide": {
+              "ms": 23.118,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 18.718,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 22.668,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 9.232,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 23.767,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 406421504,
+                "working_set_bytes": 518938624
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "baseline": {
+            "open": {
+              "ms": 670.399,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 329478144,
+                "working_set_bytes": 460435456
+              }
+            },
+            "wide": {
+              "ms": 23.458,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 19.402,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 22.361,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 9.663,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 21.905,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 406781952,
+                "working_set_bytes": 520753152
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          },
+          "candidate": {
+            "open": {
+              "ms": 683.231,
+              "first": "group-050/",
+              "mounted": 51,
+              "visible": 13,
+              "logical": 51,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 330174464,
+                "working_set_bytes": 462073856
+              }
+            },
+            "wide": {
+              "ms": 23.107,
+              "first": "wide/member-000000.txt",
+              "mounted": 21,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "search": {
+              "ms": 19.137,
+              "first": "wide/target-needle.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "whole": {
+              "ms": 22.088,
+              "first": "group-099/nested/member-049999.txt",
+              "mounted": 1,
+              "visible": 1,
+              "logical": 1,
+              "sort": "ascending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                536
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "sort": {
+              "ms": 9.45,
+              "first": "wide/target-needle.txt",
+              "mounted": 22,
+              "visible": 13,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 0,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false
+            },
+            "scroll": {
+              "ms": 24.076,
+              "first": "wide/member-024972.txt",
+              "mounted": 32,
+              "visible": 15,
+              "logical": 25000,
+              "sort": "descending",
+              "scroll_top": 1230,
+              "device_pixel_ratio": 1.5,
+              "viewport_css_pixels": [
+                898,
+                570
+              ],
+              "document_visible": true,
+              "win32_foreground": false,
+              "memory": {
+                "sampled_processes": 7,
+                "unsampled_processes": 0,
+                "webview_processes": 6,
+                "private_commit_bytes": 405110784,
+                "working_set_bytes": 517173248
+              }
+            },
+            "webview": "Edg/157.0.4341.60"
+          }
+        }
+      ],
+      "warmup_screenshot_sha256": {
+        "baseline": "c213e3100f58765c330e0136a47ab7a5aae9dc52838eb4abdd0ca0c58a0125c6",
+        "candidate": "c213e3100f58765c330e0136a47ab7a5aae9dc52838eb4abdd0ca0c58a0125c6"
+      }
+    }
+  ]
+}

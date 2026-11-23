@@ -1,0 +1,62 @@
+{
+  "status": "passed",
+  "product_source": "3ebb566b8b3d49d10e83ff66b4a082d12e251996",
+  "fixed_vhd_bytes": 100663296,
+  "cases": {
+    "nested-save": {
+      "status": "passed",
+      "outer_before": {
+        "outer.zip": "272eb872db69d68fbaded41fb88a5531eed8deacd2aa4071b6812e7a4c3b8444",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      },
+      "inner_before": {
+        "before.bin": "97fbb6d266ab13904bc29cb00931126b5854ed5dd1245dbf249a270721dc72fa",
+        "unchanged.txt": "03f64bc498c1bf25851272512f5ac770f4a1e636b074f8296525b6df6d675ad5"
+      },
+      "gui_sha256": "bbee9e344f3701170c7e994efdc6519d7074f1b6ed5e5fa58cf5be18085d2c3e",
+      "edited_copy_sha256": "c4fc0fe0b7507dd940e9349b9ce8f1b89993a07ca7b70ab6728bf0b5f3313dbd",
+      "volume_bytes": 99545088,
+      "free_at_failure": 0,
+      "filler_bytes": 80580608,
+      "os_full_errors": [
+        {
+          "write_bytes": 1048576,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 65536,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 4096,
+          "errno": 28,
+          "winerror": null
+        }
+      ],
+      "failure_text": "磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。",
+      "dialog_path": "E:\\qa-4f3c52d658c4404dae91906702e2166e\\nested\\outer.zip › inner.zip",
+      "dialog_alerts": [
+        "磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。"
+      ],
+      "outer_after_failure": {
+        "outer.zip": "272eb872db69d68fbaded41fb88a5531eed8deacd2aa4071b6812e7a4c3b8444",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      },
+      "working_after_failure": "c4fc0fe0b7507dd940e9349b9ce8f1b89993a07ca7b70ab6728bf0b5f3313dbd",
+      "free_after_release": 80580608,
+      "committed_inner_sha256": "c4fc0fe0b7507dd940e9349b9ce8f1b89993a07ca7b70ab6728bf0b5f3313dbd",
+      "inner_after_retry": {
+        "after.bin": "97fbb6d266ab13904bc29cb00931126b5854ed5dd1245dbf249a270721dc72fa",
+        "unchanged.txt": "03f64bc498c1bf25851272512f5ac770f4a1e636b074f8296525b6df6d675ad5"
+      },
+      "outer_after_retry": {
+        "outer.zip": "725cbafa32dc2f1d9a4b5327b4129f7d3f38d5141558c7f960fd62036f20e3be",
+        "unrelated.txt": "5b90ed550f02e89f657c10889e881aaae62bffafb1c1472d9dd15592aeeb9928"
+      }
+    }
+  },
+  "cli_sha256": "df97c336d9d300896a10b67b11f87e52682dd9353fe0e15385d1c766caef08fd",
+  "worker_sha256": "736e1bdc9512b6304e7f8260b5e3a7d48da5fa8812863119eff93923f363abfb"
+}

@@ -1,0 +1,51 @@
+{
+  "standard_fixture_sha256": "64041036441cde0f904a15e33cbe83e5ed3974a98cf753de7c48b6ea8d98c823",
+  "binary_sha256": {
+    "before": {
+      "qing-zip.exe": "2f7aaf1ce11bb6cc4e7770bc3e5b0db1ce28abd12ab1abf60be8605c4cf5d683",
+      "obz.exe": "66c3c13f9ff4e434a08274283e3b753057b92b47b33e6bcf3810bb611a33adee",
+      "obz-worker.exe": "b18e8ed26beeae3acccbeca5b8c4917426c2a4ea7de917d0692d68cc98a1b503"
+    },
+    "after": {
+      "qing-zip.exe": "fa2de30b251c3b13c51d247a02bdb8ed775b9116ec93c92c7c73320d929138d5",
+      "obz.exe": "05441f20cb05434cf10a43a9970a51496fd323b38c60f959290649ca8221cfdc",
+      "obz-worker.exe": "c22ad079d09149fd859d7a9811a15749687e0c607a325cbe4b4a6b02816058d0"
+    }
+  },
+  "before": {
+    "preview": "out/BUNDLE",
+    "reported": "out",
+    "file": "out/BUNDLE/photos/a.txt",
+    "output_sha256": "173169ff9d8f1efd3ec3d74266dfe624baeef376dbc0797a6bf33b913b9f1083"
+  },
+  "after": {
+    "preview": "out/BUNDLE",
+    "reported": "out/BUNDLE",
+    "file": "out/BUNDLE/photos/a.txt",
+    "output_sha256": "173169ff9d8f1efd3ec3d74266dfe624baeef376dbc0797a6bf33b913b9f1083"
+  },
+  "deep_with_conflict": {
+    "preview": "deep/BUNDLE",
+    "reported": "deep/BUNDLE (2)",
+    "file": "deep/BUNDLE (2)/photos/a.txt"
+  },
+  "toolbox_batch": {
+    "preview": "batch/BUNDLE",
+    "reported": "batch/BUNDLE",
+    "file": "batch/BUNDLE/photos/a.txt"
+  },
+  "shell_startup_switch": {
+    "reported": "SHELL",
+    "file": "SHELL/item.txt",
+    "source_sha256": "bf9e407b7f604445217f214ef016afb806b9b119d3dcf4f2617b4d5569e3a2f2",
+    "output_sha256": "52398a7dbf09cf7ba3cc0f11d1c8c044f3503101da57975bc2c8b06fa5a0e5c8"
+  },
+  "home_file_picker": {
+    "preview": "home",
+    "reported": "home",
+    "file": "home/item.txt",
+    "source_sha256": "83c41ef460963aa5723a806f5dd4b5da88a2459db39c8a68bd9ac5713386df7e",
+    "output_sha256": "6c2b957671330e00293284732e20e37a06900b3a1f78d47b8247affe7fb5c333"
+  },
+  "inputs_preserved": true
+}

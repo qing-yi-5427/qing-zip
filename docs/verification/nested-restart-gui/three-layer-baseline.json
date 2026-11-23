@@ -1,0 +1,40 @@
+{
+  "status": "passed",
+  "source": "fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6",
+  "windows_build": 26300,
+  "expect_feedback": false,
+  "desktop": "private Win32 non-input desktop, real Tauri/WebView2 product",
+  "binaries_sha256": {
+    "qing-zip.exe": "ace8f3710ec3201290ffed939eaa3e27ba1760ba798ba20dbb019f7c29bb6117",
+    "obz.exe": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+    "obz-worker.exe": "91f8afb33209fc157b038e1bbc8ee3505db43165ae94cdf62313992525aa35f6"
+  },
+  "portable_zip_sha256": "b09d5089eaa0e8bcb5f376598c03be99e5773a716f008e17d49f696450bee6d5",
+  "initial_outer_sha256": "1d9885e424dd3e0916ecb9d6da5abfe1bb3e31f303128df9049eb03c8f039c03",
+  "filesystem_peer_sha256": "83bac66ba8338d1472dbe7929e0f553704fc7eeb3ad63d75012ac27b15048c79",
+  "same_outer_file_id_after_external_write": true,
+  "external_outer_sha256": "fd044dbc6a32f52dbf144cfd8bdf6f157452f0fa2ae5efcd83b99d43fe4cb7a6",
+  "outer_untouched_by_conflicting_save": true,
+  "after_save_dirty": {
+    "middle.zip": true,
+    "inner.zip": false
+  },
+  "immediate_dirty_tab_labels": [
+    "● inner.zip ↳"
+  ],
+  "retained_private_middle_sha256": "2c7163cc58de321f0f30598f7e5401fa51cd2bd7381a4da0852aa43f90db54b7",
+  "edited_inner_sha256": "ee4451b41db74afde400b8e083f545d1070c79412fe9bbf6d48dab9eeac98702",
+  "outer_peer_sha256": "400202b48dd4123bb5db0b7f19ed5a397cbcbe60be383a10fff7f4505c5081a0",
+  "middle_peer_sha256": "251ad221bb500fe22bdde225482c3ce8f81c387db9cb02b7d9f55ade7690a59d",
+  "inner_peer_sha256": "c7dcc5f10fad958dc32459140798dd5fa35ddcd0ff5143ec45e5f5d38402e412",
+  "edited_leaf_sha256": "46beb4f1ed9ac4caeb0f8a072faff0499187edca3eb4e2dfbb084523bb2f3c2b",
+  "normal_close_discarded_private_copies": true,
+  "after_cold_start": {
+    "native_sessions": 0,
+    "retained_edit_options": 0,
+    "outer_sha256": "fd044dbc6a32f52dbf144cfd8bdf6f157452f0fa2ae5efcd83b99d43fe4cb7a6",
+    "filesystem_peer_sha256": "83bac66ba8338d1472dbe7929e0f553704fc7eeb3ad63d75012ac27b15048c79"
+  },
+  "owned_fixture_cleaned": true,
+  "cold_process_different": true
+}

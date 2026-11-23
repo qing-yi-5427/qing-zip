@@ -1,6 +1,6 @@
 # Windows 11 现代右键入口
 
-qing-shell 已有独立的 `IExplorerCommand` 组件和外置目录 MSIX。0.12.23 的 x64 组件和未签名包可独立构建。Windows 11 一级菜单的显示、点击和生命周期仍待签名安装验收。
+qing-shell 已有独立的 `IExplorerCommand` 组件和外置目录 MSIX。0.12.23 的 x64 组件和未签名包可独立构建。Windows 11 ARM64 托管桌面已完成临时测试签名的一级菜单部分验收；正式签名及其他生命周期仍待验收。
 
 五个入口通过应用协议执行，每次最多 128 项。
 
@@ -50,13 +50,13 @@ MSIX 的 `ExternalLocation` 只指向 `shell` 子目录。它仅声明 COM 和�
 | 原生组件 | PASS · Windows 11 x64 build 26300、MSVC 19.44、SDK 10.0.26100.0，Release 构建。CTest 的参数往返、隔离 COM、普通文件与目录选择共 3/3 通过。快速 `GetState` 回调验证返回 `E_PENDING`，实际菜单展开延迟待测。 |
 | 应用队列 | PASS · 运行 `node --test obz-gui/tests/shell-queue.cjs`，20/20 通过。覆盖应用侧的排队、密码重试和取消逻辑。 |
 | 架构与负载 | PASS · 原脚本曾用两个 x64 二进制成功生成标记 ARM64 的 MSIX。修复后 x64 正向打包通过，逐个混入异架构标识的 DLL 或 host 都会在创建输出前报错。测试还从 MSIX 中读取清单，并复算三个外置文件的 SHA-256。 |
-| 真实一级菜单 | BLOCKED · 本机未安装该身份包，当前用户证书库无代码签名证书。真正的菜单外观、文件操作、升级、卸载及 Explorer 稳定性需要在带受信测试身份的 Windows 11 桌面验收。 |
+| 真实一级菜单 | PARTIAL PASS · 一次性 Windows 11 ARM64 托管机用临时受信测试身份注册，Explorer 首层显示 qing-zip 分组，真实点击解压到此处和智能解压，产物及来源哈希通过；普通文件压缩已打开表单并创建可独立读取的 ZIP，窗口退出后重新核验成员和包哈希。详情和原始回执见 [托管验收](../docs/verification/explorer-hosted/README.md)。x64 实际注册、正式签名及生命周期仍待验收。 |
 
 在组件构建后可复跑 `python scripts/msix/test-review-package.py <Release目录> <x64或arm64> <含makeappx和mt的SDK目录>`，需要 PowerShell 7。仓库的 **Explorer review package** 工作流对两种架构分别编译、执行组件测试和未签名打包测试。
 
 **交付建议**。安装版先在独立 Windows 11 环境验证固定安装路径、用户开启与关闭、同发布者升级、注册失败后仍可使用经典入口、卸载后的菜单清理。只有签名和这些步骤均通过，才接入 NSIS。便携版继续提供经典入口。移动便携目录会使包身份记录的 `ExternalLocation` 失效，如以后提供可选注册，需要验证原路径注销和新路径重新注册。Windows 10 沿用经典入口，现有现代菜单清单的最低版本是 Windows 11 build 22000。
 
-**动作覆盖**。现代组件可转交「解压到此处」、智能解压、目录压缩和普通文件多选压缩。「智能解压」复用归档同名顶层目录。ARM64 需使用匹配 Explorer 架构的 DLL，并完成同样的桌面验收。 [Microsoft 现代菜单与架构说明](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)
+**动作覆盖**。现代组件可转交「解压到此处」、智能解压、目录压缩和普通文件多选压缩。「智能解压」复用归档同名顶层目录。ARM64 使用匹配 Explorer 架构的 DLL；本次托管桌面结果及尚未覆盖的边界见上述托管验收。 [Microsoft 现代菜单与架构说明](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/integrate-packaged-app-with-file-explorer)
 
 官方依据：
 
