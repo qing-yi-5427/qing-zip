@@ -280,3 +280,79 @@ fn inspect(
     }
     Ok((chain, file, stamp))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn ordinary_recovery_rename_allows_target_write_sharing_without_clobbering() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let source = root.join("original.txt");
+        let recovery = root.join("recovery");
+        fs::write(&source, b"original release-equivalent file").unwrap();
+        fs::create_dir(&recovery).unwrap();
+        fs::write(recovery.join("user.txt"), b"pre-existing recovery file").unwrap();
+        let pinned = pin_install_root(root).unwrap();
+        let parent = pinned.last().unwrap();
+
+        // This ordinary read-sharing handle refuses delete sharing on the
+        // source. The migration must leave that object alone.
+        {
+            let editor = File::options()
+                .read(true)
+                .share_mode(1)
+                .open(&source)
+                .unwrap();
+            let error =
+                private_stage::open_retired_rename_source(parent, OsStr::new("original.txt"))
+                    .unwrap_err();
+            assert!(error.contains("os error 32"), "{error}");
+            drop(editor);
+        }
+        let source_handle =
+            private_stage::open_retired_rename_source(parent, OsStr::new("original.txt")).unwrap();
+        let expected_id = engine::directory_identity(&source_handle).unwrap();
+        {
+            // The old read-only directory sharing caused NTFS to refuse its
+            // internal write-open of the recovery parent during rename.
+            let read_sharing =
+                private_stage::open_checksum_child(parent, OsStr::new("recovery"), true).unwrap();
+            let error = private_stage::move_retired_noclobber(
+                &source_handle,
+                &read_sharing,
+                OsStr::new("moved.txt"),
+            )
+            .unwrap_err();
+            assert!(error.contains("os error 32"), "{error}");
+        }
+        let destination =
+            private_stage::open_retired_destination(parent, OsStr::new("recovery")).unwrap();
+        assert!(private_stage::move_retired_noclobber(
+            &source_handle,
+            &destination,
+            OsStr::new("user.txt")
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(recovery.join("user.txt")).unwrap(),
+            b"pre-existing recovery file"
+        );
+        assert!(source.is_file());
+        private_stage::move_retired_noclobber(
+            &source_handle,
+            &destination,
+            OsStr::new("moved.txt"),
+        )
+        .unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(recovery.join("moved.txt")).unwrap(),
+            b"original release-equivalent file"
+        );
+        let moved = File::open(recovery.join("moved.txt")).unwrap();
+        assert_eq!(engine::directory_identity(&moved).unwrap(), expected_id);
+    }
+}

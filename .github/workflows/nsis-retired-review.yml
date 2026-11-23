@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/nsis-retired-review.yml'
+      - 'obz-rs/src/private_stage.rs'
       - 'scripts/installer.nsi'
       - 'scripts/check-nsis-retired-hosted.py'
       - 'obz-gui/src/associations/retired_install.rs'
@@ -59,6 +60,11 @@ jobs:
           python -m pip install Pillow==11.3.0
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/check-nsis-retired-hosted.py --old-setup (Join-Path $inputDir 'qing-zip-0.12.20-setup.exe') --old-portable (Join-Path $inputDir 'qing-zip-0.12.20-portable.zip') --candidate-setup (Join-Path $dist 'qing-zip-0.12.23-setup.exe') --candidate-stage (Join-Path $dist 'qing-zip-0.12.23-portable') --out evidence/retired
+          exit $LASTEXITCODE
+      - name: Verify ordinary recovery rename and occupied source
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib retired_install::tests::ordinary_recovery_rename_allows_target_write_sharing_without_clobbering -- --exact
           exit $LASTEXITCODE
       - name: Upload installer and migration receipts
         if: always()
