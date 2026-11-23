@@ -1,12 +1,18 @@
 name: Disposable Windows ZIP disk capacity
 on:
   pull_request:
+    types: [opened, reopened, synchronize, labeled]
     paths:
       - 'scripts/check-hosted-zip-capacity.py'
       - 'scripts/check-hosted-zip-capacity.ps1'
       - '.github/workflows/zip-disk-capacity.yml'
   workflow_dispatch:
     inputs:
+      trial:
+        description: Run both historical cases or only the final round-two package
+        type: choice
+        options: [historical, round2]
+        default: historical
       baseline_build_run:
         description: Replacement hardened run for the pinned baseline source
         type: string
@@ -15,18 +21,26 @@ on:
         description: Replacement hardened run for the pinned combined source
         type: string
         required: false
+      round2_build_run:
+        description: Replacement hardened run for the pinned round-two source
+        type: string
+        required: false
 permissions:
   contents: read
   actions: read
 jobs:
   real-disk-capacity:
-    if: github.repository == 'qing-yi-5427/qing-zip' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: >-
+      github.repository == 'qing-yi-5427/qing-zip' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        (github.event.action != 'labeled' || github.event.label.name == 'qa:zip-disk-capacity-round2')))
     runs-on: windows-2025
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        trial: [baseline, combined]
+        trial: ${{ fromJSON((inputs.trial == 'round2' || github.event.label.name == 'qa:zip-disk-capacity-round2') && '["round2"]' || '["baseline","combined"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -40,9 +54,14 @@ jobs:
           TRIAL: ${{ matrix.trial }}
           BASELINE_RUN: ${{ inputs.baseline_build_run }}
           COMBINED_RUN: ${{ inputs.combined_build_run }}
+          ROUND2_RUN: ${{ inputs.round2_build_run }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $buildRun = if ($env:TRIAL -eq 'baseline') { $env:BASELINE_RUN } else { $env:COMBINED_RUN }
+          $buildRun = switch ($env:TRIAL) {
+            'baseline' { $env:BASELINE_RUN }
+            'combined' { $env:COMBINED_RUN }
+            'round2' { $env:ROUND2_RUN }
+          }
           if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
           else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }
       - name: Upload product, volume and cleanup receipts

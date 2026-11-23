@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('baseline', 'combined')]
+    [ValidateSet('baseline', 'combined', 'round2')]
     [string]$Trial,
     [ValidatePattern('^[0-9]{1,20}$')]
     [string]$BuildRun
@@ -15,6 +15,7 @@ $repo = 'qing-yi-5427/qing-zip'
 $runs = @{
     baseline = @{ id = '45100520858'; source = '51a68cc32bafcd535eac6cef8eee5169a54adcbe' }
     combined = @{ id = '45116763549'; source = 'e9eeecd414fa7379fc959967fb1645ced24eeb62' }
+    round2 = @{ id = '45118493619'; source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' }
 }
 $trialRun = $runs[$Trial]
 if ($BuildRun) { $trialRun.id = $BuildRun }
