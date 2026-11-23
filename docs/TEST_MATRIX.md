@@ -13,19 +13,27 @@
 | Rust 核心单元 | 32 项。列表 JSON 兼容、ZIP 时间字段、父目录任务顺序、运行时路径、LZMA 参数和报告，以及深度解压的计划、字节预算、分卷和发布状态。空间不足使用内存写入回调。 | PASS |
 | Rust 深度解压集成 | 15 项经审阅的普通归档用例。多入口、错扩展名和无扩展名、ZIP/7z/RAR5、压缩 TAR、嵌套目录、分卷、选取、AES 密码续接、冲突重试和保留普通数字伴随文件。回收资格只读取会话报告，样本保留在临时目录。 | PASS |
 | Rust CLI 集成 | 解压和测试的线程参数 1 项。校验工具的目录递归、输入顺序、不可读输入和打开写句柄共 3 项。 | PASS |
+| Rust 引擎取消集成 | 取消后开始列包应返回取消。压缩普通 16 MiB 文件为 7z 的过程中触发取消，断言取消返回且目标包未发布。 | PASS（2 项） |
 | x64 加固产物 | Release CLI、worker、桌面程序。三者均为 x64，PE 审计通过 ASLR、高熵 VA、DEP、CFG、CET 兼容和可写可执行节检查。 | PASS |
 | x64 便携包实跑 | 解包后从包内 CLI 创建、列出、校验、解压 ZIP 与 7z。拒绝覆盖时比较已存在目标文件与原包字节。 | PASS |
+| x64 便携包处理下载不完整的普通归档 | 将生成的 ZIP、7z 各截去后半段，二者的完整性检查和启用覆盖的解压均返回退出码 1 和错误输出。比较完整原包、截断副本、原有目标文件字节和目标目录项。 | PASS |
 | 归档独立互读 | qing-zip ZIP ↔ Python `zipfile`。qing-zip 三卷固实 7z → 官方 7-Zip，官方 7-Zip 固实 7z → qing-zip。校验中文、空格、重名叶子、空文件、空目录、选取解压的跳过和覆盖、未选目标与源归档 SHA-256。使用便携包暂存目录的二进制。 | PASS |
+| 常用格式三程序解压对照 | ZIP、7z、TAR、GZIP、BZ2、XZ、RAR5。qing-zip 0.12.23 加固便携、7-Zip 26.00 x64、Bandizip 7.36 Beta x64。比较相对文件名、输出文件 SHA-256 和每次读取后原包 SHA-256。 | PASS（7 格式 × 3 CLI） |
+| WinRAR 对照 | 当前环境未安装 WinRAR。 | SKIP |
 | x64 Shell 隔离验证 | M4 独立验证相同起始提交。CMake Release、MSVC 19.44、SDK 10.0.26100.0。参数往返、隔离 COM、普通文件选择均通过（3/3）。未签名包验证外置文件哈希及架构检查。 | PASS |
+| 托管 x64 / ARM64 Shell 组件 | M4 提交 `9c27936`。x64 `windows-latest` 和 ARM64 `windows-11-arm` 均验证原生 Shell 组件和未签名稀疏 MSIX，各检查三个外置文件哈希、拒绝两种混用产物。 | PASS（独立 CI） |
 | 前台桌面、DPI 和真实 Explorer | M3 跟踪前台应用与 DPI；正式安装后关联、旧式右键和真实拖出的验收需独立环境。 | NOT RUN（本矩阵） |
 | Windows 11 现代右键 | 包签名、当前用户注册后菜单、卸载后菜单消失和升级保留关联。 | BLOCKED（可信签名和可安装验收环境） |
 | Windows 10 与 Windows 11 ARM64 实机 | 最低系统版本、ARM64 GUI、解压、安装和 Explorer。 | BLOCKED（本轮主机为 Windows 11 x64） |
 | 特殊文件系统、源归档回收和磁盘耗尽 | ADS/TxF、重解析及链接、真实回收站、真实盘满，另在获准的隔离环境验证。合成空间不足的预算模型已列在 Rust 单元行。 | BLOCKED（未启用隔离环境） |
-| 扩展格式、嵌套编辑及修复 | 尚待扩大独立对照。包括 ZIPX、传统加密 ZIP、ALZ/EGG、ISO、嵌套编辑写回和 ZIP 修复。 | NOT RUN |
+| 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。包括 ZIPX、传统加密 ZIP、ALZ/EGG、ISO、嵌套编辑写回、其他损坏类型与 ZIP 修复。 | NOT RUN |
+| GUI 取消、退出和重启后的恢复 | 已覆盖引擎压缩取消、内存取消模型和同一会话的密码续接/发布重试。GUI 真实取消、进行中解压的取消、程序进程中断及重启后恢复尚待验收。 | NOT RUN（上述端到端场景） |
+| 异常路径和数量预算 | 深度、数量和字节计费由内存用例验证，也执行了正常样本的选取预算。异常路径及大量嵌套、超文件数的真实归档场景尚待验证。 | NOT RUN（实包边界） |
+| Rust 格式检查 | `obz-rs` 与 `obz-gui` 均有既有 rustfmt 差异，例如 `obz-rs/build.rs` 和 `obz-gui/src/archive_listing.rs`。 | FAIL |
 
 产物 `qing-zip-0.12.23-portable.zip` 为 33,340,323 字节，SHA-256 为 `61918ca1723598776e79de5ed0f677336ccc2b5c22e5951d49f291dd48e8ab09`。四类普通归档与引擎基准见 [性能基线](PERFORMANCE_REPORT.md)。
 
-Shell 包和原生接口的证据见 [M4 验证记录](https://github.com/qing-yi-5427/qing-zip/pull/1)。
+常用格式对照的细节见 [质量报告](QUALITY_REPORT.md)。Shell 包和原生接口的证据见 [M4 验证记录](https://github.com/qing-yi-5427/qing-zip/pull/1) 与 [原生 x64 / ARM64 托管运行](https://github.com/qing-yi-5427/qing-zip/actions/runs/45096359747)。
 
 ## 复跑命令
 
@@ -112,6 +120,10 @@ foreach ($case in $deep) {
 }
 cargo @core --test extraction_threads
 cargo @core --test checksum_files
+cargo @core --test engine_integration engine_cancel_before_operation -- --exact
+cargo @core --test engine_integration engine_cancels_running_compression_without_output -- --exact
+cargo fmt --check --manifest-path obz-rs/Cargo.toml
+cargo fmt --check --manifest-path obz-gui/Cargo.toml
 ```
 
 ```powershell
