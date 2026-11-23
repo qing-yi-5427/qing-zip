@@ -114,9 +114,7 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     if p.is_file() {
         c.arg("/select,");
     }
-    c.arg(p)
-        .creation_flags(0x08000000)
-        .spawn()
+    obz_core::engine::spawn_archive_process(c.arg(p).creation_flags(0x08000000))
         .map_err(|e| e.to_string())?;
     Ok(())
 }

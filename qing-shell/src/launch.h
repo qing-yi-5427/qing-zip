@@ -6,10 +6,11 @@
 #include <vector>
 
 namespace qing {
-enum class Action { Open, Compress, SmartExtract, ExtractHere };
+enum class Action { Open, CompressFolder, CompressFiles, SmartExtract, ExtractHere };
 inline const wchar_t* argument(Action action) {
     switch (action) {
-    case Action::Compress: return L" --compress-folder";
+    case Action::CompressFolder: return L" --compress-folder";
+    case Action::CompressFiles: return L" --compress-files";
     case Action::SmartExtract: return L" --smart-extract";
     case Action::ExtractHere: return L" --extract-here";
     default: return L"";
@@ -62,10 +63,13 @@ inline HRESULT launch(const std::wstring& executable, Action action,
     if (paths.size() > 128) { return HRESULT_FROM_WIN32(ERROR_TOO_MANY_NAMES); }
     std::wstring command = quote(executable);
     command += argument(action);
+    // File compression shares the existing 32,767 UTF-16 unit limit,
+    // including the terminator required by CreateProcessW.
+    const size_t max_units = action == Action::CompressFiles ? 32766 : 29999;
     for (const auto& path : paths) {
         if (!supported_path(path)) { return E_INVALIDARG; }
         command += L" " + quote(path);
-        if (command.size() >= 30000) { return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE); }
+        if (command.size() > max_units) { return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE); }
     }
     const DWORD attributes = GetFileAttributesW(executable.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {

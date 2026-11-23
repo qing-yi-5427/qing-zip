@@ -12,12 +12,12 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ('https://www.python.org/ftp/python/3.14.9/python-3.14.9-embed-arm64.zip',
-          'a8212664f7622ebc0cb0f9a42d7beee36cebedab97ff47c6bba668cfd85b676d')
-SEVEN = ('https://github.com/ip7z/7zip/releases/download/26.05/7z2605-arm64.exe',
-         '86d5790d5dd84cab4636c3bb7fab10d3ed7cd3e57e6119401bd2769e28165268')
-SEVEN_FILES = {'7z.dll':'311d0a45182401e10c71a12b33a5c4a7171f6a8c1d67eeec9ef5dc2a5c962fe8',
-               '7z.exe':'08c3868b294fd12984bd1537a939ae7200ad695420dc65a2eeeec9f8fdf99772',
+PYTHON = ('https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-arm64.zip',
+          'bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836')
+SEVEN = ('https://github.com/ip7z/7zip/releases/download/26.06/7z2606-arm64.exe',
+         '036a00d478ef81f4b4b85fb37b0f934d558341f3f51aa7d36d2a26454740e625')
+SEVEN_FILES = {'7z.dll':'61812c2d4ab562c23d1ab0f39d8e591fe5bbf3bf80318652f5bc3e4e9e0c6611',
+               '7z.exe':'07cf11646461bcd50b81ed015db18af55d9f434126a08f30b8d92c3efaaa744e',
                'License.txt':'519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d'}
 NSIS = ('https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip',
         'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8')

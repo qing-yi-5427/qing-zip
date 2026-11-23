@@ -1,9 +1,10 @@
 // Pure queue model tests. These do not claim Explorer or desktop GUI clicks.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
-const names=['archiveKey','canRecycleArchive','finishExtraction','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
+const names=['archiveKey','canRecycleArchive','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
+const finish=source.slice(source.indexOf('async function finishExtraction('),source.indexOf('async function runSecondaryListing('));
 const recyclePolicy=source.slice(source.indexOf('function recycleBlockReason('),source.indexOf('function canRecycleArchive('));
 function fixture(options={}){
  const timers=[],calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
@@ -14,7 +15,7 @@ function fixture(options={}){
   shellQueueRunning:false,shellQueuePaused:false,shellQueueInterrupted:false,shellActiveRequest:null,shellPasswordRequest:null,openQueueRunning:false,drainingNativeQueue:false,nativeDrainAgain:false,
   overlay:{hidden:true,dataset:{}},filename:p=>p.split(/[\\/]/).at(-1),
   esc:x=>String(x),btn:(label,action)=>`<button data-action="${action}">${label}</button>`,
-  renderProgress:()=>{},render:()=>{},renderArchiveTabs:()=>{},toast:x=>calls.push(['toast',x]),error:e=>errors.push(String(e)),
+  renderProgress:()=>{},renderHistoryJob:()=>{},render:()=>{},renderArchiveTabs:()=>{},toast:x=>calls.push(['toast',x]),error:e=>errors.push(String(e)),
   localStorage:{setItem:(key,value)=>calls.push(['storage',key,value])},discardArchiveTab:(path)=>calls.push(['discard',path]),
   tabBusy:()=>!!context.s.active,compress:()=>calls.push(['compress']),refreshSources:()=>{if(elements['qa-inputs'])elements['qa-save'].value=context.suggestedCompressionPath(elements['qa-inputs'].value.split('\n').filter(Boolean),'zip',false);},$:id=>elements[id]||null,
   dialog:(title,body,footer)=>{calls.push(['dialog',title,body,footer]);context.overlay.hidden=false;elements['qa-shell-password']={value:''};},
@@ -26,7 +27,7 @@ function fixture(options={}){
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
  const naming=source.slice(source.indexOf('const compressionExtensions='),source.indexOf('function sourceFields('));
- vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+recyclePolicy+functions,context);
+ vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+recyclePolicy+finish+functions,context);
  const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
@@ -34,10 +35,10 @@ function fixture(options={}){
 }
 test('Explorer file selections are grouped in one compression dialog, including deferred selections',async()=>{
  const f=fixture();
- f.context.compress=()=>{
+ f.context.compress=(_profile,paths)=>{
   f.context.overlay.hidden=false;
-  f.elements['qa-inputs']={value:''};
-  f.elements['qa-save']={value:''};
+  f.elements['qa-inputs']={value:paths.join('\n')};
+  f.elements['qa-save']={value:f.context.suggestedCompressionPath(paths,'zip',false)};
  };
  const first=['C:\\sample\\one.txt','C:\\sample\\子 项.txt'];
  const second=['D:\\single.bin'];
@@ -65,6 +66,14 @@ test('smart and here retain exact request rules and inherit completion preferenc
  assert.equal(f.calls.filter(c=>c[0]==='discard').length,2);
  assert.equal(f.calls.filter(c=>c[0]==='window_action').length,1);
  assert.equal(f.calls.at(-1)[0],'window_action');
+});
+test('smart shell extraction opens the retained top-level directory',async()=>{
+ const f=fixture({openAfter:true});
+ const native=f.context.run;
+ f.context.run=async (...args)=>({...await native(...args),output_directory:'C:\\archives\\Bundle'});
+ f.queue('C:\\archives\\bundle.zip',true);
+ await f.context.pumpShellExtractions();
+ assert.equal(f.calls.find(([command])=>command==='reveal_path')[1].path,'C:\\archives\\Bundle');
 });
 test('the first completed job progress dialog permits the next extraction but never a user confirmation',async()=>{
  for(const modal of ['jobs','close-confirm']){

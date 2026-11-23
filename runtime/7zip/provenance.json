@@ -1,13 +1,13 @@
 {
-  "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.exe",
-  "sha256": "fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0",
-  "version": "26.05",
+  "url": "https://github.com/ip7z/7zip/releases/download/26.06/7z2606-x64.exe",
+  "sha256": "9b697f65ecc2d9b0152f5ee96d72dde522a7827690349d9307935dacf40f42ec",
+  "version": "26.06",
   "files": {
-    "7z.exe": "94205cfc054dd3bbeb978905bc619a65b3f04e9e73bb2717841110b6f46d962e",
-    "7z.dll": "78bf6b668d75801e3aa180b4ccb16e6d8395fba80dec8a065055bb6f8dfabb82",
-    "7z.sfx": "5e2b45e773df40fec504e1afe7e511c8815057f8edb92e8b57e5015dd3bf760a",
+    "7z.exe": "dc0493429fe28136fcb177a0e77c9875cbb3b0bff5f2f8eeba4df302e98cef76",
+    "7z.dll": "500db9eb17f3c21b729ba41dd02ecfe1823da05028c7e4ba129084cc74cc364e",
+    "7z.sfx": "73af2700392aa92bc9342ae63844dfeed157d8d68bd356326a9bddb5e9e312d7",
     "License.txt": "519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d"
   },
-  "source_archive_url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-src.7z",
-  "source_archive_sha256": "fa081a1a33186158d71e9e24f494ed852ef8d0c9d06e21a86fb4713d94b55ae9"
+  "source_archive_url": "https://github.com/ip7z/7zip/releases/download/26.06/7z2606-src.7z",
+  "source_archive_sha256": "e0364d39e8208557d939472c9a12d02ed1c12f45ca402e3b408bcaa63b36dd93"
 }

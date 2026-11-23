@@ -20,6 +20,7 @@ mod shell_compress;
 mod associations;
 mod preview;
 mod instance;
+mod startup_listing;
 mod appearance;
 mod window_snap;
 use serde::Serialize;
@@ -30,7 +31,7 @@ fn start_operation(
     recycle_after: Option<bool>,
     remember_password: Option<bool>,
 ) -> Result<u64, String> {
-    if remember_password.unwrap_or(true) {
+    if remember_password == Some(true) {
         password_book::track_extraction(&mut request);
     }
     jobs::start_operation(request, recycle_after)
@@ -159,7 +160,13 @@ async fn cancel_and_close(app: tauri::AppHandle) -> Result<bool,String> {
     verification::revoke();
     jobs::cancel_all();
     tauri::async_runtime::spawn_blocking(move || {
-        for _ in 0..300 {if !jobs::running(){if nested::dirty(){return Ok(false);}nested::cleanup();app.exit(0);return Ok(true);}std::thread::sleep(std::time::Duration::from_millis(100));}
+        for _ in 0..300 {
+            if let Some(closed) = nested::cleanup_if_idle() {
+                if closed { app.exit(0); }
+                return Ok(closed);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         Err("任务正在安全停止，请稍后再关闭窗口。".into())
     }).await.map_err(|e|e.to_string())?
 }
@@ -245,6 +252,7 @@ fn update_memory_target(window: &tauri::Window, last: &std::sync::atomic::Atomic
     use windows_core::Interface;
 
     let Ok(minimized) = window.is_minimized() else { return };
+    preview::set_window_minimized(minimized);
     if last.swap(minimized, Ordering::Relaxed) == minimized { return; }
     if let Some(view) = window.get_webview_window(window.label()) {
         let _ = view.with_webview(move |webview| unsafe {
@@ -273,19 +281,29 @@ fn main() {
         }
         return;
     }
-    instance::queue_startup();
-    let main_minimized = std::sync::atomic::AtomicBool::new(false);
+    let main_low_memory_target = std::sync::atomic::AtomicBool::new(false);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(instance::receive))
+        // Plugin setup runs before the configured WebView window is created.
+        .plugin(tauri::plugin::Builder::<_, ()>::new("startup-listing")
+            .setup(|_, _| { instance::queue_startup(); Ok(()) })
+            .build())
         .on_window_event(move |window,event|{
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Resized(_)) {
-                update_memory_target(window, &main_minimized);
+                update_memory_target(window, &main_low_memory_target);
             }
             if let tauri::WindowEvent::CloseRequested{api,..}=event {
-                if window.label()=="main" && (jobs::running() || nested::dirty()){
-                    use tauri::Emitter;
-                    api.prevent_close();let _=window.emit("close-requested",());
-                } else if window.label()=="main" {verification::revoke();nested::cleanup();
+                if window.label() == "main" {
+                    startup_listing::discard_unclaimed();
+                }
+                if window.label() == "main" {
+                    if nested::cleanup_if_idle() == Some(true) {
+                        verification::revoke();
+                    } else {
+                        use tauri::Emitter;
+                        api.prevent_close();
+                        let _ = window.emit("close-requested", ());
+                    }
                 }
             }
         })
@@ -297,7 +315,7 @@ fn main() {
             pick_files, home_intake::inspect_home_archive, home_intake::pick_home_files,
             pick_folder,
             pick_save, pick_copy_save,
-            pick_files_for_zip, start_operation,
+            pick_files_for_zip, start_operation, startup_listing::start_queued_archive_listing,
             dropped, open_tools, pick_combined_save, app_version, checksum_algorithms, current_executable, startup_path, pick_archive_save, appearance::set_appearance, window_snap::set_snap_button_bounds, window_action, window_maximized, cancel_and_close, nested::nested_sessions, nested::close_nested, nested::external_edits, nested::finish_external_edit, editor_process::pick_editor, edit_copies::retained_edits, verification::revoke_archive_verification, jobs::operation_status, jobs::wait_operation, jobs::take_archive_listing, jobs::cancel_operation, jobs::forget_operation,
             drag::start_drag_preparation, drag::cancel_drag_preparation, drag::finish_drag, drag::discard_drag, desktop::known_folders, desktop::reveal_path, desktop::copy_archive, desktop::clipboard_paths, desktop::clipboard_directory, desktop::discard_clipboard_export, desktop::publish_clipboard_export, recycle_paths, desktop::list_directory,
             associations::folder_menu_enabled, associations::set_folder_menu, associations::file_menu::file_compression_menu_enabled, associations::file_menu::set_file_compression_menu, instance::take_pending_folders, instance::take_pending_compression_files, associations::association_status, associations::set_file_associations, associations::open_default_apps,

@@ -17,7 +17,7 @@ test('ordinary corruption and cancellation errors remain visible',()=>{
 test('corrupt ZIP recovery targets the failed path and clears an obsolete offer',()=>{
  const button={hidden:true,dataset:{}};
  context.overlay={querySelector:()=>button};
- vm.runInContext(source.split('\n').find(line=>line.startsWith('function taskError(')),context);
+ vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('function showPreservationNotice(')),context);
  const failed='C:\\fixture\\bad.zip';
  context.offerRepairAfterOpenFailure(failed,Error('Cannot open as archive'));
  assert.equal(button.hidden,false);

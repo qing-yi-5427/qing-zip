@@ -93,24 +93,10 @@ fn validate(entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 fn runtime(name: &str) -> Result<PathBuf, String> {
-    let rel = PathBuf::from("runtime").join(name);
-    let mut roots = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // A distributed app owns the adjacent runtime. Never prefer a
-            // different runtime in a higher directory over its packaged helper.
-            if dir.join("runtime").is_dir() {
-                let path = dir.join(&rel);
-                return path.is_file().then_some(path).ok_or_else(|| format!("bundled runtime {name} missing"));
-            }
-        }
-        roots.extend(exe.ancestors().skip(1).take(4).map(|dir| dir.join(&rel)));
-    }
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(&rel));
-    roots
-        .into_iter()
-        .find(|p| p.is_file())
-        .ok_or(format!("bundled runtime {name} missing"))
+    let path = engine::bundled_runtime()?.join(name);
+    path.is_file()
+        .then_some(path)
+        .ok_or_else(|| format!("bundled runtime {name} missing"))
 }
 fn run(program: &Path, args: &[String], o: &EngineOptions) -> Result<String, String> {
     check(o)?;
@@ -131,7 +117,7 @@ fn run(program: &Path, args: &[String], o: &EngineOptions) -> Result<String, Str
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = engine::spawn_archive_process(&mut cmd).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let _job = match crate::legacy_worker::job::Job::attach(&child) {
         Ok(j) => j,

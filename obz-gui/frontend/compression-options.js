@@ -10,5 +10,20 @@ function wordRange(format,method=''){
  return null;
 }
 function timeSupported(format){return ['zip','7z','sfx'].includes(format);}
-window.qingCompression=Object.freeze({levels:compressionLevels,wordRange,timeSupported});
+const rawFormats=['zstd','brotli','lz4','lz5','lizard'];
+function singleFile(format){return ['gzip','bzip2','xz',...rawFormats].includes(format);}
+function volumeSupported(format){return !['tgz','tbz2','txz','iso','lzh',...rawFormats].includes(format);}
+// A named encoder overrides -mx=0 in 7-Zip. Keep the two controls in
+// agreement so that "only store" really produces uncompressed entries.
+function reconcileStore(format,method,level,changed){
+ const store={zip:'Store',zipx:'Store','7z':'Copy',sfx:'Copy'}[format];
+ if(!store)return {method,level};
+ if(changed==='level'&&Number(level)===0)return {method:store,level:'0'};
+ if(changed==='method'){
+  if(method===store)return {method,level:'0'};
+  if(Number(level)===0)return {method,level:'5'};
+ }
+ return {method,level};
+}
+window.qingCompression=Object.freeze({levels:compressionLevels,wordRange,timeSupported,singleFile,volumeSupported,reconcileStore});
 })();

@@ -21,7 +21,22 @@ pub(crate) fn test_registry_guard() -> std::sync::MutexGuard<'static, ()> {
     TEST_REGISTRY.lock().unwrap()
 }
 
-pub fn running() -> bool { registry().lock().map(|jobs|jobs.values().any(|j|j.state.lock().map(|s|s.status=="running").unwrap_or(true))).unwrap_or(true) }
+fn has_running(jobs: &BTreeMap<u64, Arc<Job>>) -> bool {
+    jobs.values().any(|job| {
+        job.state
+            .lock()
+            .map(|state| state.status == "running")
+            .unwrap_or(true)
+    })
+}
+pub fn running() -> bool {
+    registry().lock().map(|jobs| has_running(&jobs)).unwrap_or(true)
+}
+// Keep job admission and the nested-session close check in the same order.
+pub(crate) fn if_idle<T>(close: impl FnOnce() -> T) -> Option<T> {
+    let jobs = registry().lock().ok()?;
+    (!has_running(&jobs)).then(close)
+}
 pub fn cancel_all() { if let Ok(jobs)=registry().lock(){for job in jobs.values(){
     let phase=job.control.progress.lock().unwrap_or_else(|e|e.into_inner());
     if phase.phase!="recycling" {job.control.cancel();}
@@ -72,7 +87,7 @@ pub(crate) fn confirm_single_volume(request: &Request, control: &JobControl) -> 
         .stdin(if request.options.password.is_some(){Stdio::piped()}else{Stdio::null()})
         .stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cp)=request.options.codepage {command.arg(format!("-mcp={cp}"));}
-    let mut child=command.arg("--").arg(&request.path).spawn().map_err(|e|e.to_string())?;
+    let mut child=obz_core::engine::spawn_archive_process(command.arg("--").arg(&request.path)).map_err(|e|e.to_string())?;
     let password_input=match request.options.password.as_deref() {
         Some(password)=>match obz_core::engine_password::PasswordInput::spawn(&mut child,password) {
             Ok(input)=>Some(input),
@@ -367,6 +382,15 @@ pub fn cancel_operation(id:u64)->Result<(),String>{
     let phase=job.control.progress.lock().unwrap_or_else(|e|e.into_inner());
     if phase.phase=="recycling" {return Err("原包正在移入回收站，此阶段不可取消".into());}
     job.control.cancel(); crate::verification::revoke(); Ok(())
+}
+
+// Only startup speculation owns an unclaimed ID and may drop its registry
+// entry before completion. The worker still holds its control and source pin.
+pub(crate) fn discard_prepared_listing(id: u64) {
+    let job = registry().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    if let Some(job) = job {
+        job.control.cancel();
+    }
 }
 
 #[tauri::command]

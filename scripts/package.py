@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from audit_pe_security import hardened_issues, imports, inspect, needs_private_runtime
+from x64_runtime import x64_runtime_files
 
 
 # Historical notice collection also matched compressed LICENSE fixtures and
@@ -40,7 +41,10 @@ def main():
                (binaries / "obz.exe", "obz.exe"),
                (binaries / "obz-worker.exe", "obz-worker.exe"),
                (root / "README.md", "README.md"),
-               (root / "LICENSE", "LICENSE")]
+               (root / "CONTRIBUTING.md", "CONTRIBUTING.md"),
+               (root / "SECURITY.md", "SECURITY.md"),
+               (root / "LICENSE", "LICENSE"),
+               (root / "docs/deep-extraction.md", "docs/deep-extraction.md")]
     for source, _ in sources:
         if not source.is_file():
             raise SystemExit(f"Missing package input: {source}")
@@ -61,6 +65,11 @@ def main():
         from arm64_package_runtime import verify_layout
         runtime_source = args.runtime_directory.resolve(strict=True)
         verify_layout(runtime_source)
+    else:
+        try:
+            x64_files = x64_runtime_files(root)
+        except (KeyError, OSError, ValueError) as error:
+            raise SystemExit(str(error)) from error
     if args.check_inputs:
         print(f"Package inputs verified: {binaries}")
         return
@@ -72,24 +81,29 @@ def main():
     suffix = "-arm64" if args.architecture == "arm64" else ""
     stage = output_directory / f"qing-zip-{version}{suffix}-portable"
     archive = output_directory / f"qing-zip-{version}{suffix}-portable.zip"
-    for output in (stage, archive):
+    uninstall_manifest = stage.with_name(f"{stage.name}.uninstall-files.nsh")
+    for output in (stage, archive, uninstall_manifest):
         if output.exists():
             raise SystemExit(f"Package output already exists; use a fresh dist directory: {output}")
     stage.mkdir(parents=True)
     for source, destination in sources:
-        shutil.copy2(source, stage / destination)
+        target = stage / destination
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     def ignore_resources(directory, names):
         ignored = set(shutil.ignore_patterns("__pycache__", "*.pyc", "generate.py")(directory, names))
-        if Path(directory) == root / "runtime":
-            ignored.add("nanazip-arm64")  # Validation runtime; this packager produces x64 distributions.
         ignored.update(name for name in names
                        if (Path(directory) / name).relative_to(root).as_posix() in NON_NOTICE_TREES)
         return ignored
-    for name in ("runtime", "licenses", "assets"):
-        if name == "runtime" and args.runtime_directory:
-            shutil.copytree(runtime_source, stage / name)
-        else:
-            shutil.copytree(root / name, stage / name, ignore=ignore_resources)
+    if args.architecture == "arm64":
+        shutil.copytree(runtime_source, stage / "runtime")
+    else:
+        for relative in x64_files:
+            target = stage / "runtime" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(runtime_source / relative, target)
+    for name in ("licenses", "assets"):
+        shutil.copytree(root / name, stage / name, ignore=ignore_resources)
     # This dependency has a local owned-output extension. Ship the original
     # license and modification provenance without touching generated user notices.
     modified_crate = root / "obz-rs/vendor/lzma-rust2"
@@ -103,8 +117,8 @@ def main():
         # The common notice tree ships x64 build descriptions. Keep the legal
         # texts, and replace just the architecture-specific build records.
         shutil.copyfile(runtime_source / "zpaq/SOURCE.json", stage / "licenses/zpaq-7.15/SOURCE.json")
-        seven_notes = stage / "licenses/7zip-26.05/README.txt"
-        seven_notes.write_text("7-Zip 26.05 for Windows ARM64\n"
+        seven_notes = stage / "licenses/7zip-26.06/README.txt"
+        seven_notes.write_text("7-Zip 26.06 for Windows ARM64\n"
             "7z.exe and 7z.dll are the official ARM64 binaries; 7z.sfx is built from the official SFXWin source.\n"
             "See License.txt and runtime/7zip/provenance.json for licenses, exact sources, hashes and build command.\n",
             encoding="utf-8")
@@ -123,7 +137,7 @@ def main():
     for path in sorted((p for p in stage.rglob("*") if p.is_dir()),
                        key=lambda p: len(p.parts), reverse=True):
         lines.append('RMDir "$INSTDIR\\' + str(path.relative_to(stage)).replace("$", "$$") + '"')
-    (root / "scripts/uninstall-files.nsh").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    uninstall_manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as output:
         for path in files:
             output.write(path, path.relative_to(stage).as_posix())

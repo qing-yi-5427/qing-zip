@@ -17,9 +17,10 @@ int wmain(int argc, wchar_t** argv) {
     const auto can_unload = reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(module, "DllCanUnloadNow"));
     assert(get_class && can_unload && can_unload() == S_OK);
     const wchar_t* ids[] = {L"{9A406E20-1F79-49F3-94F9-179D18761D4A}", L"{A65CB9C7-E692-4D0B-A5A1-4F19530EE312}",
-        L"{8148C339-AF9A-4E1E-8BE9-469F28DA1B75}", L"{0C0C73E7-2D76-4823-AB70-F9BE332B1360}"};
-    const wchar_t* titles[] = {L"用 qing-zip 打开", L"用 qing-zip 压缩…", L"智能解压", L"解压到此处"};
-    for (size_t index = 0; index < 4; ++index) {
+        L"{182148F9-276F-4DB8-8136-A181FB81353F}", L"{8148C339-AF9A-4E1E-8BE9-469F28DA1B75}",
+        L"{0C0C73E7-2D76-4823-AB70-F9BE332B1360}"};
+    const wchar_t* titles[] = {L"用 qing-zip 打开", L"用 qing-zip 压缩…", L"用 qing-zip 压缩…", L"智能解压", L"解压到此处"};
+    for (size_t index = 0; index < 5; ++index) {
         CLSID id{}; assert(SUCCEEDED(CLSIDFromString(ids[index], &id)));
         ComPtr<IClassFactory> factory;
         assert(SUCCEEDED(get_class(id, IID_PPV_ARGS(&factory))));

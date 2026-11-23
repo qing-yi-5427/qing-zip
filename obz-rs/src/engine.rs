@@ -3,6 +3,10 @@
 mod compressed_tar;
 #[cfg(nana_selected_worker)]
 pub mod selected_worker;
+#[cfg(nana_selected_worker)]
+mod rar15_stored;
+#[cfg(nana_selected_worker)]
+mod owned_update;
 #[cfg(windows)]
 pub mod verification_lease;
 #[cfg(windows)]
@@ -397,6 +401,38 @@ pub fn executable() -> Result<PathBuf, String> {
     unrestricted_executable()
 }
 
+fn runtime_root(app: &Path, workspace: &Path, debug_build: bool) -> PathBuf {
+    let adjacent = app.join("runtime");
+    if adjacent.exists() || (!debug_build && !app.starts_with(workspace)) {
+        adjacent
+    } else {
+        workspace.join("runtime")
+    }
+}
+
+pub(crate) fn bundled_runtime() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let app = executable.parent().ok_or("application directory unavailable")?;
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("build source directory unavailable")?;
+    Ok(runtime_root(app, workspace, cfg!(debug_assertions)))
+}
+
+#[cfg(test)]
+#[test]
+fn release_helpers_use_only_the_bundled_runtime() {
+    let scratch = tempfile::tempdir().unwrap();
+    let workspace = scratch.path().join("checkout");
+    let target = workspace.join("target/release");
+    let package = scratch.path().join("portable");
+    assert_eq!(runtime_root(&package, &workspace, false), package.join("runtime"));
+    assert_eq!(runtime_root(&target, &workspace, false), workspace.join("runtime"));
+
+    fs::create_dir_all(target.join("runtime")).unwrap();
+    assert_eq!(runtime_root(&target, &workspace, true), target.join("runtime"));
+}
+
 fn unrestricted_executable() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -467,7 +503,7 @@ pub fn capabilities() -> Capabilities {
     } else { &[] };
     Capabilities { engine:executable.as_ref().map(|p|p.display().to_string()).unwrap_or_default(), available:executable.is_ok(),
       backend:if extended {"NanaZip"} else {"7-Zip"}.into(),
-      version:if extended {"7.0.1882.0 (core 26.05)"} else {"bundled 26.05 or installed fallback"}.into(),
+      version:if extended {"7.0.1882.0 (core 26.05)"} else {"bundled 26.06 or installed fallback"}.into(),
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),
@@ -557,6 +593,18 @@ pub fn wait_for_process(child: &std::process::Child, timeout: Duration) -> std::
     { let _ = child; thread::sleep(timeout); Ok(()) }
 }
 
+#[cfg(nana_selected_worker)]
+static ARCHIVE_SPAWN: Mutex<()> = Mutex::new(());
+
+/// Keep first-party archive launches out of the temporary ZIP engine stdio
+/// inheritance window. This lock is released before any process I/O or wait.
+#[doc(hidden)]
+pub fn spawn_archive_process(command: &mut Command) -> std::io::Result<std::process::Child> {
+    #[cfg(nana_selected_worker)]
+    let _guard = ARCHIVE_SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.spawn()
+}
+
 fn run_program(
     program: PathBuf,
     args: &[String],
@@ -585,7 +633,7 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None)
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, EngineLifetime::Ordinary)
         .map(|(log, _)| log)
 }
 fn run_staged_decode(
@@ -596,11 +644,58 @@ fn run_staged_decode(
     output_size: Option<u64>,
 ) -> Result<(), String> {
     let (log, _) = run_program_log_with_directory(
-        executable()?, args, None, opts, output, allow_zealfs, false, output_size, None,
+        executable()?, args, None, opts, output, allow_zealfs, false, output_size, None, EngineLifetime::Ordinary,
     )?;
     // Match the regular runner's output validation.
     read_engine_output(log)?;
     Ok(())
+}
+
+enum EngineLifetime {
+    Ordinary,
+    #[cfg(nana_selected_worker)]
+    OwnedZipUpdate,
+}
+
+enum EngineProcess {
+    Standard(std::process::Child),
+    #[cfg(nana_selected_worker)]
+    OwnedUpdate(owned_update::Process),
+}
+
+impl EngineProcess {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Standard(child) => child.try_wait(),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => child.try_wait(),
+        }
+    }
+
+    fn wait_ready(&self, timeout: Duration) -> std::io::Result<()> {
+        match self {
+            Self::Standard(child) => wait_for_process(child, timeout),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => child.wait_ready(timeout),
+        }
+    }
+
+    fn stop(&mut self) {
+        match self {
+            Self::Standard(child) => { let _ = child.kill(); let _ = child.wait(); }
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => { let _ = child.kill(); let _ = child.wait(); }
+        }
+    }
+
+    fn send_password(&mut self, password: &str) -> Result<crate::engine_password::PasswordInput, String> {
+        use crate::engine_password::PasswordInput;
+        match self {
+            Self::Standard(child) => PasswordInput::spawn(child, password),
+            #[cfg(nana_selected_worker)]
+            Self::OwnedUpdate(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -614,6 +709,7 @@ fn run_program_log_with_directory(
     collect_directory: bool,
     output_size: Option<u64>,
     stream_input: Option<File>,
+    lifetime: EngineLifetime,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
     let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
@@ -653,13 +749,8 @@ fn run_program_log_with_directory(
     if stream_input.is_some() && opts.password.is_some() {
         return Err("archive stream input cannot carry password prompts".into());
     }
-    let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
-        if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
-    });
-    cmd.args(&guarded_args)
-        .stdin(stdin)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(errors.as_file().try_clone().map_err(|e| e.to_string())?));
+    let stderr = errors.as_file().try_clone().map_err(|e| e.to_string())?;
+    cmd.args(&guarded_args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -676,9 +767,21 @@ fn run_program_log_with_directory(
             && policy.as_ref().is_some_and(|policy| !policy.restricted());
         cmd.creation_flags(if detached_listing { DETACHED_PROCESS } else { CREATE_NO_WINDOW });
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("cannot launch archive engine: {e}"))?;
+    let mut child = match lifetime {
+        EngineLifetime::Ordinary => {
+            let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
+                if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
+            });
+            EngineProcess::Standard(spawn_archive_process(cmd.stdin(stdin).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)))
+                .map_err(|e| format!("cannot launch archive engine: {e}"))?)
+        }
+        #[cfg(nana_selected_worker)]
+        EngineLifetime::OwnedZipUpdate => {
+            if stream_input.is_some() { return Err("ZIP update cannot carry archive stream input".into()); }
+            EngineProcess::OwnedUpdate(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
+                .map_err(|e| format!("无法启动受本次 ZIP 更新控制的归档引擎：{e}"))?)
+        }
+    };
     #[cfg(test)]
     crate::machine_policy::child_started(cmd.get_program(), args.first().map(String::as_str).unwrap_or(""));
     // Retain the normal exclusive, delete-on-close diagnostic spool. No
@@ -688,18 +791,16 @@ fn run_program_log_with_directory(
         match DirectoryCapture::start(pipe, spool, ctl.clone()) {
             Ok(capture) => Some(capture),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 return Err(error);
             }
         }
     } else { None };
     let password_input = match opts.password.as_deref() {
-        Some(password) => match crate::engine_password::PasswordInput::spawn(&mut child, password) {
+        Some(password) => match child.send_password(password) {
             Ok(input) => Some(input),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 return Err(error);
             }
         },
@@ -707,14 +808,12 @@ fn run_program_log_with_directory(
     };
     let status = loop {
         if ctl.check().is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
             if let Some(input) = password_input { let _ = input.finish(); }
             return Err("operation cancelled".into());
         }
         if let Some(reader) = capture.as_mut().filter(|reader| reader.ended()) {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.stop();
             return Err(reader.finish().err()
                 .unwrap_or_else(|| "archive directory reader stopped unexpectedly".into()));
         }
@@ -724,16 +823,14 @@ fn run_program_log_with_directory(
                 if let Some(progress) = &mut live_progress {
                     progress.sample(&ctl);
                 }
-                if let Err(e) = wait_for_process(&child, Duration::from_millis(40)) {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                if let Err(e) = child.wait_ready(Duration::from_millis(40)) {
+                    child.stop();
                     if let Some(input) = password_input { let _ = input.finish(); }
                     return Err(e.to_string());
                 }
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                child.stop();
                 if let Some(input) = password_input { let _ = input.finish(); }
                 return Err(e.to_string());
             }
@@ -1172,7 +1269,7 @@ fn run_technical_listing_with_directory(
     args: &mut Vec<String>, opts: &EngineOptions, allow_zealfs: bool, collect_directory: bool,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let execute = |args: &[String]| run_program_log_with_directory(
-        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None, None,
+        executable()?, args, None, opts, None, allow_zealfs, collect_directory, None, None, EngineLifetime::Ordinary,
     );
     match execute(args) {
         Err(error) if unsupported_utc_listing_switch(&error) => {
@@ -1669,6 +1766,14 @@ fn choose_target_checked(
     policy: &str,
     check: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<Option<PathBuf>, String> {
+    choose_target_reserving(path, policy, check, |_| false)
+}
+fn choose_target_reserving(
+    path: PathBuf,
+    policy: &str,
+    check: &mut impl FnMut(&Path) -> Result<(), String>,
+    reserved: impl Fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, String> {
     check(&path)?;
     if !path.exists() {
         return Ok(Some(path));
@@ -1690,7 +1795,7 @@ fn choose_target_checked(
                 .unwrap_or_default();
             for i in 1..10000 {
                 let p = path.with_file_name(format!("{stem} ({i}){ext}"));
-                if !p.exists() {
+                if !reserved(&p) && !p.exists() {
                     check(&p)?;
                     return Ok(Some(p));
                 }
@@ -1706,7 +1811,9 @@ fn path_key(path: &Path) -> String {
 
 // Include implicit directories and reject file/directory aliases before allowing
 // the decoder to create anything, even when the conflicting entry is unselected.
-fn expected_tree(entries: &[Entry]) -> Result<BTreeMap<String, (bool, u64)>, String> {
+fn expected_tree<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+) -> Result<BTreeMap<String, (bool, u64)>, String> {
     let mut tree = BTreeMap::new();
     for e in entries {
         let rel = validate_name(&e.name)?;
@@ -2809,8 +2916,16 @@ fn preflight_output_targets(
     for e in entries {
         let target = dest.join(validate_name(&e.name)?);
         output_guards.check(&target)?;
-        if target.exists() && (e.is_dir != target.is_dir() || (!e.is_dir && overwrite == "error")) {
-            return Err(format!("destination conflict: {}", target.display()));
+        if target.exists() {
+            let conflict = match (e.is_dir, overwrite) {
+                (true, _) => !target.is_dir(),
+                (false, "rename" | "skip") => false,
+                (false, "error") => true,
+                (false, _) => target.is_dir(),
+            };
+            if conflict {
+                return Err(format!("destination conflict: {}", target.display()));
+            }
         }
         for parent in target.ancestors().skip(1) {
             if !output_guards.pinned(parent) && parent.exists() && !parent.is_dir() {
@@ -2912,6 +3027,7 @@ fn extract_raw_to(
     recovery_reserve: Option<u64>,
     destination: impl FnOnce(&[Entry]) -> Result<PathBuf, String>,
 ) -> Result<usize, String> {
+    let _extraction_timer = PhaseTimer::new("extract-engine-total");
     #[cfg(windows)]
     let _reuse_scope=opts.verification_capture.as_ref().map(verification_lease::Capture::scope);
     let policy = crate::machine_policy::scope();
@@ -2921,6 +3037,10 @@ fn extract_raw_to(
     // listing/format guard through decoding and publication.
     let source_path = absolute(path)?;
     let mut source_guard = crate::engine_stream::pin(&source_path)?;
+    #[cfg(nana_selected_worker)]
+    let stored_rar = if opts.verification_reuse.is_none() {
+        rar15_stored::Plan::prepare(&source_path, &mut source_guard, opts, &ctl)?
+    } else { None };
     #[cfg(windows)]
     let _volume_guards = crate::engine_stream::pin_numbered_7z_parts(&source_path)?;
     let mut memory_source = if policy.restricted() { None } else { memory_archive_source(path, opts) };
@@ -2934,13 +3054,13 @@ fn extract_raw_to(
         None
     };
     #[cfg(nana_selected_worker)]
-    let direct = if _volume_guards.is_empty() && opts.verification_reuse.is_none()
+    let direct = if stored_rar.is_none() && _volume_guards.is_empty() && opts.verification_reuse.is_none()
         && crate::stream_formats::raw_format(path).is_none()
     {
         selected_worker::direct_worker::prepare(&source_path, &mut source_guard, opts, &ctl)?
     } else { None };
     #[cfg(nana_selected_worker)]
-    let prefetched = if direct.is_none() && _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
+    let prefetched = if stored_rar.is_none() && direct.is_none() && _volume_guards.is_empty() {selected_worker::full_worker::prepare(path,&source_guard,opts,&ctl)?}else{None};
     #[cfg(nana_selected_worker)]
     let (all_entries,mut payload_source,mut full_worker,mut direct_worker)=match (direct,prefetched) {
         (Some((entries,pending)), _) => (entries,PayloadSource::Engine,None,Some(pending)),
@@ -2949,6 +3069,8 @@ fn extract_raw_to(
     };
     #[cfg(not(nana_selected_worker))]
     let (all_entries, payload_source) = list_raw_with_source(path, opts, &mut source_guard)?;
+    #[cfg(nana_selected_worker)]
+    if let Some(plan) = &stored_rar { plan.verify_manifest(&all_entries)?; }
     let rar = has_rar_signature(&mut source_guard);
     ctl.set("preparing-extraction", None, "");
     #[cfg(windows)]
@@ -2975,7 +3097,11 @@ fn extract_raw_to(
             selected_source = None;
         }
     }
-    let expected = expected_tree(&all_entries)?;
+    let expected = {
+        let _timer = PhaseTimer::new("extract-expected-tree");
+        expected_tree(&all_entries)?
+    };
+    let selection_timer = PhaseTimer::new("extract-selection-plan");
     let dest = destination(&all_entries)?;
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
@@ -3009,11 +3135,19 @@ fn extract_raw_to(
     // on early errors (the output may share TEMP ancestors).
     let mut stage;
     let mut output_guards = CheckedDirectories::default();
-    output_guards.check(&dest)?;
+    drop(selection_timer);
+    {
+        let _timer = PhaseTimer::new("extract-output-check");
+        output_guards.check(&dest)?;
+    }
     #[cfg(nana_selected_worker)]
     if let Some(mut pending) = direct_worker.take() {
         if !unencrypted_projection {
-            if let Some(claim) = selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)? {
+            let claim = {
+                let _timer = PhaseTimer::new("direct-extract-destination");
+                selected_worker::direct_worker::eligible_destination(&dest, &entries, &mut output_guards, &ctl)?
+            };
+            if let Some(claim) = claim {
                 if let Some(reserve) = recovery_reserve {
                     ensure_archive_space(&dest, &entries, None, reserve)?;
                 }
@@ -3224,7 +3358,14 @@ fn extract_raw_to(
         let full_streamed = if let Some(pending)=full_worker.take() {pending.decode(&all_entries,opts,stage.path(),stage_guards,&ctl)?;true}else{false};
         #[cfg(not(nana_selected_worker))]
         let full_streamed = false;
-        let streamed = full_streamed || split_streamed || (!unencrypted_projection && memory.is_none() && decode_selected_zip(
+        #[cfg(nana_selected_worker)]
+        let stored_rar_streamed = if let Some(plan) = &stored_rar {
+            plan.stage(&source_guard, &entries, stage.path(), stage_guards, &ctl)?;
+            true
+        } else { false };
+        #[cfg(not(nana_selected_worker))]
+        let stored_rar_streamed = false;
+        let streamed = stored_rar_streamed || full_streamed || split_streamed || (!unencrypted_projection && memory.is_none() && decode_selected_zip(
             selected_source.take(),
             &all_entries,
             opts,
@@ -3454,6 +3595,19 @@ fn extract_raw_to(
     } else {
         let mut count = 0;
         let mut buffer = Vec::new();
+        // Renamed files must leave the original names of the other outputs
+        // available, including parent directories that have no explicit entry.
+        let selected_outputs = if conflict_policy == "rename" && !opts.selected.is_empty() {
+            Some(expected_tree(entries.iter().copied())?)
+        } else {
+            None
+        };
+        let output_names = selected_outputs.as_ref().unwrap_or(&expected);
+        let reserved = |candidate: &Path| {
+            candidate
+                .strip_prefix(&dest)
+                .is_ok_and(|relative| output_names.contains_key(&path_key(relative)))
+        };
         for (i, e) in entries.iter().enumerate() {
             ctl.check()?;
             ctl.set(
@@ -3468,8 +3622,9 @@ fn extract_raw_to(
                 output_guards.create_dirs(&target)?;
                 continue;
             }
-            let Some(target) =
-                choose_target_checked(target, conflict_policy, &mut |p| output_guards.check(p))?
+            let Some(target) = choose_target_reserving(
+                target, conflict_policy, &mut |p| output_guards.check(p), reserved,
+            )?
             else {
                 continue;
             };
@@ -4923,7 +5078,18 @@ fn test_raw(path: &str, opts: &EngineOptions) -> Result<(), String> {
     ctl.check()?;
     ctl.set("testing", None, "Checking archive integrity");
     let mut a = base("t", opts)?;
-    let mut source_guard = crate::engine_stream::pin(&absolute(path)?)?;
+    let source_path = absolute(path)?;
+    let mut source_guard = crate::engine_stream::pin(&source_path)?;
+    #[cfg(nana_selected_worker)]
+    if let Some(plan) = rar15_stored::Plan::prepare(&source_path, &mut source_guard, opts, &ctl)? {
+        let (entries, _) = list_raw_with_source(path, opts, &mut source_guard)?;
+        plan.verify_manifest(&entries)?;
+        ctl.set("testing", None, "Checking archive integrity");
+        plan.test(&source_guard, &ctl)?;
+        policy.unchanged()?;
+        ctl.set("complete", Some(100), "Archive integrity verified");
+        return Ok(());
+    }
     if verified_empty_zip(path, opts, &mut source_guard, &ctl)? {
         ctl.set("complete", Some(100), "Archive integrity verified");
         return Ok(());
@@ -5739,7 +5905,14 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     let cwd = prepared.as_ref().map(|p| p.cwd.as_path());
     #[cfg(not(windows))]
     let cwd = None;
-    if !move_noop { run(&a, cwd, opts, None)?; }
+    if !move_noop {
+        #[cfg(nana_selected_worker)]
+        let lifetime = if direct { EngineLifetime::OwnedZipUpdate } else { EngineLifetime::Ordinary };
+        #[cfg(not(nana_selected_worker))]
+        let lifetime = EngineLifetime::Ordinary;
+        let (log, _) = run_program_log_with_directory(executable()?, &a, cwd, opts, None, false, false, None, None, lifetime)?;
+        read_engine_output(log)?;
+    }
     #[cfg(test)]
     update_modes_tests::AFTER_ENGINE.with(|hook| {
         if let Some(run) = hook.borrow_mut().take() { run(&staged); }
@@ -6087,6 +6260,12 @@ fn unpack_tar(path: &str, opts: &EngineOptions) -> Result<(tempfile::TempDir, St
     )?;
     Ok((temp, inner.display().to_string()))
 }
+/// Pin a validated archive and its ancestor names while preparing a desktop listing.
+#[cfg(windows)]
+pub fn pin_archive_for_listing(path: &Path) -> Result<impl std::ops::Deref<Target = File>, String> {
+    crate::engine_stream::pin(path)
+}
+
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
     let read = || with_zip_source(path, opts, |path| {
@@ -6134,18 +6313,20 @@ pub(crate) fn extract_smart_engine(
     base: &str,
     opts: &EngineOptions,
     allow_unencrypted_projection: bool,
-) -> Result<(usize, String), String> {
+) -> Result<(usize, crate::smart_extract::Layout), String> {
     let mut options = opts.clone();
     if options.zone_identifier.is_none() {
         options.zone_identifier = Some(crate::motw::archive_context(Path::new(path))?);
     }
     with_zip_source(path, &options, |source| {
-        let mut destination = String::new();
+        let mut layout = None;
         let files = extract_raw_to(source, &options, allow_unencrypted_projection, None, |entries| {
-            destination = crate::smart_extract::destination(path, base, entries, &options)?;
-            absolute(&destination)
+            let planned = crate::smart_extract::layout(path, base, entries, &options)?;
+            let directory = absolute(&planned.directory)?;
+            layout = Some(planned);
+            Ok(directory)
         })?;
-        Ok((files, destination))
+        Ok((files, layout.ok_or("missing smart extraction layout")?))
     })
 }
 

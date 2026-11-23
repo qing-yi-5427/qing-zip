@@ -1487,8 +1487,7 @@ pub fn create_iso_with_cancel(
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let mut cmd = Command::new(powershell);
     hidden(&mut cmd);
-    let mut child = cmd
-        .args([
+    cmd.args([
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
@@ -1501,8 +1500,8 @@ pub fn create_iso_with_cancel(
         .arg("-Output")
         .arg(fs::canonicalize(&image).map_err(|e| e.to_string())?)
         .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
-        .stderr(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
-        .spawn()
+        .stderr(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?));
+    let mut child = crate::engine::spawn_archive_process(&mut cmd)
         .map_err(|e| e.to_string())?;
     let started = Instant::now();
     let status = loop {

@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "obz-rs"
-version = "0.12.20"
+version = "0.12.23"
 dependencies = [
  "aescrypt-rs",
  "brotli",
@@ -866,6 +866,7 @@ dependencies = [
  "md-5",
  "miniz_oxide 0.8.9",
  "oxiarc-lzhuf",
+ "rars",
  "serde",
  "serde_json",
  "sha1",
@@ -1039,9 +1040,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",

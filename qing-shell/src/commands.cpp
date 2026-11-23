@@ -12,12 +12,14 @@ std::atomic<long> objects{0}, server_locks{0};
 // Stable product-owned CLSIDs; the sparse manifest must match these exactly.
 const CLSID open_id = {0x9a406e20,0x1f79,0x49f3,{0x94,0xf9,0x17,0x9d,0x18,0x76,0x1d,0x4a}};
 const CLSID compress_id = {0xa65cb9c7,0xe692,0x4d0b,{0xa5,0xa1,0x4f,0x19,0x53,0x0e,0xe3,0x12}};
+const CLSID compress_files_id = {0x182148f9,0x276f,0x4db8,{0x81,0x36,0xa1,0x81,0xfb,0x81,0x35,0x3f}};
 
 const CLSID smart_id = {0x8148c339,0xaf9a,0x4e1e,{0x8b,0xe9,0x46,0x9f,0x28,0xda,0x1b,0x75}};
 const CLSID here_id = {0x0c0c73e7,0x2d76,0x4823,{0xab,0x70,0xf9,0xbe,0x33,0x2b,0x13,0x60}};
 const CLSID& action_id(qing::Action action) {
     switch (action) {
-    case qing::Action::Compress: return compress_id;
+    case qing::Action::CompressFolder: return compress_id;
+    case qing::Action::CompressFiles: return compress_files_id;
     case qing::Action::SmartExtract: return smart_id;
     case qing::Action::ExtractHere: return here_id;
     default: return open_id;
@@ -27,22 +29,42 @@ struct TaskString {
     PWSTR value{};
     ~TaskString() { CoTaskMemFree(value); }
 };
-bool setting_enabled(bool compress, const std::wstring& executable) {
-    const wchar_t* key = compress
-        ? L"Software\\Classes\\Directory\\shell\\qing-zip-compress\\command"
-        : L"Software\\Classes\\*\\shell\\qing-zip\\command";
+bool registry_string_equals(const wchar_t* key, const wchar_t* name, const std::wstring& expected, BOOL ignore_case) {
     DWORD length = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, nullptr, &length)
+    if (RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_SZ, nullptr, nullptr, &length)
         != ERROR_SUCCESS || length < sizeof(wchar_t) || length > 65536) { return false; }
     std::vector<wchar_t> value(length / sizeof(wchar_t) + 1, 0);
-    if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, value.data(), &length)
+    if (RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_SZ, nullptr, value.data(), &length)
         != ERROR_SUCCESS) { return false; }
-    const auto expected = qing::quote(executable)
-        + (compress ? L" --compress-folder \"%1\"" : L" \"%1\"");
-    return CompareStringOrdinal(value.data(), -1, expected.c_str(), -1, TRUE) == CSTR_EQUAL;
+    if (!ignore_case && length != (expected.size() + 1) * sizeof(wchar_t)) { return false; }
+    return CompareStringOrdinal(value.data(), -1, expected.c_str(), -1, ignore_case) == CSTR_EQUAL;
+}
+template <typename Match>
+bool file_compression_enabled(const std::wstring& executable, const Match& matches) {
+    // Match the existing setting in obz-gui/src/associations/file_menu.rs.
+    const wchar_t* owner = L"QingZipExecutable";
+    const wchar_t* classic_id = L"{B1031E9C-F2AA-4658-8932-E2596415A942}";
+    return matches(L"Software\\Classes\\CLSID\\{B1031E9C-F2AA-4658-8932-E2596415A942}", owner, executable)
+        && matches(L"Software\\Classes\\*\\shell\\qing-zip-compress-files", owner, executable)
+        && matches(L"Software\\Classes\\CLSID\\{B1031E9C-F2AA-4658-8932-E2596415A942}\\LocalServer32",
+            nullptr, qing::quote(executable) + L" --shell-compress-server")
+        && matches(L"Software\\Classes\\*\\shell\\qing-zip-compress-files\\command", L"DelegateExecute", classic_id);
+}
+bool setting_enabled(qing::Action action, const std::wstring& executable) {
+    if (action == qing::Action::CompressFiles) {
+        return file_compression_enabled(executable, [](const wchar_t* key, const wchar_t* name, const std::wstring& value) {
+            return registry_string_equals(key, name, value, FALSE);
+        });
+    }
+    const bool folder = action == qing::Action::CompressFolder;
+    const wchar_t* key = folder
+        ? L"Software\\Classes\\Directory\\shell\\qing-zip-compress\\command"
+        : L"Software\\Classes\\*\\shell\\qing-zip\\command";
+    const auto expected = qing::quote(executable) + (folder ? L" --compress-folder \"%1\"" : L" \"%1\"");
+    return registry_string_equals(key, nullptr, expected, TRUE);
 }
 HRESULT selection(IShellItemArray* items, qing::Action action, std::vector<std::wstring>* paths) {
-    const bool compress = action == qing::Action::Compress;
+    const bool folders = action == qing::Action::CompressFolder;
     if (!items) { return E_INVALIDARG; }
     DWORD count = 0;
     HRESULT hr = items->GetCount(&count);
@@ -64,7 +86,7 @@ HRESULT selection(IShellItemArray* items, qing::Action action, std::vector<std::
         // folder provider. Use the actual filesystem kind, not that shell flag.
         const DWORD file_attributes = GetFileAttributesW(path.value);
         if (file_attributes == INVALID_FILE_ATTRIBUTES || (file_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
-            || ((file_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != compress) {
+            || ((file_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != folders) {
             return E_INVALIDARG;
         }
         if ((action == qing::Action::SmartExtract || action == qing::Action::ExtractHere)
@@ -95,7 +117,8 @@ public:
         if (!text) { return E_POINTER; }
         const wchar_t* title = L"用 qing-zip 打开";
         switch (action_) {
-        case qing::Action::Compress: title = L"用 qing-zip 压缩…"; break;
+        case qing::Action::CompressFolder:
+        case qing::Action::CompressFiles: title = L"用 qing-zip 压缩…"; break;
         case qing::Action::SmartExtract: title = L"智能解压"; break;
         case qing::Action::ExtractHere: title = L"解压到此处"; break;
         default: break;
@@ -114,7 +137,8 @@ public:
         if (!text) { return E_POINTER; }
         const wchar_t* tooltip = L"在 qing-zip 中浏览文件";
         switch (action_) {
-        case qing::Action::Compress: tooltip = L"选择格式和保存位置"; break;
+        case qing::Action::CompressFolder:
+        case qing::Action::CompressFiles: tooltip = L"选择格式和保存位置"; break;
         case qing::Action::SmartExtract: tooltip = L"按首级文件夹结构智能选择目标位置"; break;
         case qing::Action::ExtractHere: tooltip = L"解压到压缩包所在文件夹"; break;
         default: break;
@@ -131,7 +155,7 @@ public:
         if (!ok_to_be_slow) { *state = ECS_DISABLED; return E_PENDING; }
         try {
             std::wstring executable;
-            if (SUCCEEDED(qing::app_path(module_handle, executable)) && setting_enabled(action_ == qing::Action::Compress, executable)
+            if (SUCCEEDED(qing::app_path(module_handle, executable)) && setting_enabled(action_, executable)
                 && SUCCEEDED(selection(items, action_, nullptr))) { *state = ECS_ENABLED; }
             return S_OK;
         } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; } catch (...) { return E_FAIL; }
@@ -140,7 +164,7 @@ public:
         try {
             std::wstring executable; HRESULT hr = qing::app_path(module_handle, executable);
             if (FAILED(hr)) { return hr; }
-            if (!setting_enabled(action_ == qing::Action::Compress, executable)) { return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
+            if (!setting_enabled(action_, executable)) { return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
             std::vector<std::wstring> paths;
             hr = selection(items, action_, &paths);
             return FAILED(hr) ? hr : qing::launch(executable, action_, paths);
@@ -192,8 +216,9 @@ extern "C" HRESULT WINAPI DllCanUnloadNow() {
 }
 extern "C" HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** value) {
     if (!value) { return E_POINTER; } *value = nullptr;
-    if (clsid != open_id && clsid != compress_id && clsid != smart_id && clsid != here_id) { return CLASS_E_CLASSNOTAVAILABLE; }
-    const qing::Action action = clsid == compress_id ? qing::Action::Compress
+    if (clsid != open_id && clsid != compress_id && clsid != compress_files_id && clsid != smart_id && clsid != here_id) { return CLASS_E_CLASSNOTAVAILABLE; }
+    const qing::Action action = clsid == compress_id ? qing::Action::CompressFolder
+        : clsid == compress_files_id ? qing::Action::CompressFiles
         : clsid == smart_id ? qing::Action::SmartExtract
         : clsid == here_id ? qing::Action::ExtractHere : qing::Action::Open;
     auto* factory = new (std::nothrow) Factory(action);

@@ -4,14 +4,14 @@ function fixture(){
  const frames=[],calls=[],nodes=[];
  const document={activeElement:null,body:{isConnected:true}};
  function node(name,dataset={},tab=false){const n={name,dataset,isConnected:true,closest:selector=>tab&&selector==='[data-tab-container]'?n:null,focus(options){document.activeElement=n;calls.push(['focus',name,options]);},scrollIntoView(){calls.push(['scroll-tab',name]);}};nodes.push(n);return n;}
- const main=node('main');main.scrollTop=110;
+ const main=node('main'),viewport={scrollTop:110,scrollLeft:35};
  const tree={scrollTop:19},menu={hidden:true,contains:n=>n?.menu===true};
  let rows=[],buttons=new Map();
  const context={document,main,s:{page:'files',view:'archive',archive:'a.zip',cursor:'a-row',anchor:'a-row',search:'a-query',selected:new Set(['a-row'])},
   archiveTabs:[{id:'a',archive:'a.zip',cursor:'a-row',anchor:'a-row',search:'a-query',selected:new Set(['a-row']),scrollTop:110,treeScroll:19},{id:'b',archive:'b.zip',cursor:'b-row',anchor:'b-row',search:'b-query',selected:new Set(['b-row']),scrollTop:220,treeScroll:29}],
   currentTabId:'a',renderedPage:'archive:a',TAB_FIELDS:['archive','cursor','anchor','search','selected'],pref:{},overlay:{hidden:true,firstElementChild:null},menuReturnFocus:null,
   root:{querySelector(selector){if(selector==='.oa-tree-section')return tree;return buttons.get(selector.match(/data-archive-tab="([^"]+)"/)?.[1])||null;}},
-  $:()=>menu,rowButtons:()=>rows,requestAnimationFrame:fn=>frames.push(fn),tabBusy:()=>false,toast(){},
+  $:()=>menu,archiveViewport:()=>viewport,rowButtons:()=>rows,requestAnimationFrame:fn=>frames.push(fn),tabBusy:()=>false,toast(){},
   invoke:async name=>{calls.push(['invoke',name]);},resetPreviewState:()=>calls.push(['reset-preview']),
   close(){calls.push(['close']);context.overlay.hidden=true;main.focus({preventScroll:true});},
   esc:x=>x,filename:x=>x,btn:()=>'',dialog(){context.overlay.hidden=false;context.overlay.firstElementChild=node('own-confirmation');document.activeElement=node('confirm-button');}
@@ -24,11 +24,12 @@ function fixture(){
  for(const name of ['saveCurrentTab','applyTab','emptyArchiveState','showNestedClose'])vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'(')),context);
  vm.runInContext(source.slice(source.indexOf('let archiveTabFocusGeneration='),source.indexOf('function discardArchiveTab(')),context);
  context.render();document.activeElement=rows[0];calls.length=0;
- return {context,document,main,tree,menu,calls,node,frames,flush(){while(frames.length)frames.shift()();},row:()=>rows[0],tab:id=>buttons.get(id)};
+ return {context,document,main,viewport,tree,menu,calls,node,frames,flush(){while(frames.length)frames.shift()();},row:()=>rows[0],tab:id=>buttons.get(id)};
 }
 test('switch rebuilds file focus without changing selection, query, anchor or saved scroll',()=>{
  const f=fixture(),c=f.context;c.switchArchiveTab('b');f.flush();
- assert.equal(f.document.activeElement.name,'b-row');assert.deepEqual([...c.s.selected],['b-row']);assert.equal(c.s.anchor,'b-row');assert.equal(c.s.search,'b-query');assert.equal(f.main.scrollTop,220);assert.equal(f.tree.scrollTop,29);
+ assert.equal(f.document.activeElement.name,'b-row');assert.deepEqual([...c.s.selected],['b-row']);assert.equal(c.s.anchor,'b-row');assert.equal(c.s.search,'b-query');assert.equal(f.viewport.scrollTop,220);assert.equal(f.tree.scrollTop,29);
+ assert.equal(c.archiveTabs[0].scrollLeft,35);
  assert.ok(f.calls.some(x=>x[0]==='focus'&&x[2].preventScroll===true));
 });
 test('tab buttons and tab menu retain the tab focus surface after replacement',()=>{
@@ -39,7 +40,7 @@ test('tab buttons and tab menu retain the tab focus surface after replacement',(
 });
 test('rapid A-B-A switches discard stale frames even when the final id matches',()=>{
  const f=fixture(),c=f.context;c.switchArchiveTab('b');c.switchArchiveTab('a');f.flush();
- assert.equal(f.document.activeElement.name,'a-row');assert.equal(f.calls.filter(x=>x[0]==='scroll-tab').length,1);assert.equal(f.main.scrollTop,110);
+ assert.equal(f.document.activeElement.name,'a-row');assert.equal(f.calls.filter(x=>x[0]==='scroll-tab').length,1);assert.equal(f.viewport.scrollTop,110);
 });
 test('scheduled restoration does not take focus from a newer modal, page, tab or input',()=>{
  for(const change of ['modal','page','tab','input']){
@@ -49,7 +50,7 @@ test('scheduled restoration does not take focus from a newer modal, page, tab or
  }
 });
 test('closing current tab restores the adjacent cursor; last tab falls back to main',async()=>{
- const f=fixture(),c=f.context;await c.removeArchiveTabs([c.archiveTabs[0]]);f.flush();assert.equal(c.currentTabId,'b');assert.equal(f.document.activeElement.name,'b-row');assert.equal(f.main.scrollTop,220);
+ const f=fixture(),c=f.context;await c.removeArchiveTabs([c.archiveTabs[0]]);f.flush();assert.equal(c.currentTabId,'b');assert.equal(f.document.activeElement.name,'b-row');assert.equal(f.viewport.scrollTop,220);
  await c.removeArchiveTabs([c.archiveTabs[0]]);f.flush();assert.equal(c.currentTabId,null);assert.equal(f.document.activeElement,f.main);assert.equal(f.main.tabIndex,-1);
  assert.deepEqual(f.calls.filter(x=>x[0]==='invoke').map(x=>x[1]),['revoke_archive_verification','clear_preview_cache','revoke_archive_verification','clear_preview_cache']);
 });

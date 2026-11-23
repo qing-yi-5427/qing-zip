@@ -34,7 +34,9 @@ int wmain(int argc, wchar_t** argv) {
     assert(!std::filesystem::exists(output));
     assert(SetEnvironmentVariableW(L"QING_SHELL_TEST_OUTPUT", output.c_str()));
     const std::vector<std::wstring> launch_paths = {L"C:\\中文目录\\a & b;$(test).zip", L"C:\\trailing slash\\", L"\\\\server\\share\\b.7z"};
-    for (const auto action : {qing::Action::Open, qing::Action::Compress, qing::Action::SmartExtract, qing::Action::ExtractHere}) {
+    assert(std::wstring(qing::argument(qing::Action::CompressFiles)) == L" --compress-files");
+    for (const auto action : {qing::Action::Open, qing::Action::CompressFolder, qing::Action::CompressFiles,
+                              qing::Action::SmartExtract, qing::Action::ExtractHere}) {
         assert(qing::launch(argv[1], action, launch_paths) == S_OK);
         for (int attempt = 0; attempt < 500 && !std::filesystem::exists(output); ++attempt) { Sleep(10); }
         assert(std::filesystem::exists(output));

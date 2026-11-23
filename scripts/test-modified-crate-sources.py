@@ -28,7 +28,7 @@ class SourcePackageTests(unittest.TestCase):
             (root / "obz-gui/tauri.conf.json").write_text('{"version":"test"}')
             for component, relative, url in (
                 ("nanazip", "nanazip-7.0.1882.0/NanaZip-7.0.1882.0-source.zip", "https://api.github.com/repos/M2Team/NanaZip/fixture"),
-                ("7zip", "7zip-26.05/7z2605-src.7z", "https://github.com/ip7z/7zip/fixture"),
+                ("7zip", "7zip-26.06/7z2606-src.7z", "https://github.com/ip7z/7zip/fixture"),
             ):
                 cached = root / "tools" / relative
                 cached.parent.mkdir(parents=True, exist_ok=True)

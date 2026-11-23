@@ -93,6 +93,102 @@ button {
 :is(#qing-archive, .qa-tools) button:disabled { opacity: .55; }
 :is(#qing-archive, .qa-tools) .qa-button[aria-busy=true] { cursor: progress; }
 
+.oa-password-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 6px var(--qa-space-2);
+  margin-block: var(--qa-space-2);
+  min-width: 0;
+}
+
+.oa-password-field:has(> label[hidden]) { display: none; }
+.oa-password-field > label { margin: 0; min-width: 0; }
+.oa-password-field input { width: 100%; min-width: 0; }
+
+:is(#qing-archive, .qa-tools) .oa-password-command {
+  min-height: 36px;
+  padding-inline: 9px;
+  gap: 6px;
+  color: var(--qa-accent);
+}
+
+:is(#qing-archive, .qa-tools) :is(.oa-password-command,.oa-password-choice) svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+  flex: none;
+}
+
+.oa-password-command::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.oa-password-command[aria-expanded="true"]::after { transform: translateY(1px) rotate(225deg); }
+:is(#qing-archive, .qa-tools) .oa-password-command[aria-expanded="true"] {
+  color: var(--qa-accent);
+  background: var(--qa-tint);
+}
+
+.oa-password-choices:not([hidden]) {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--qa-control-border);
+  border-radius: var(--qa-radius-control);
+  background: var(--qa-card);
+}
+
+.oa-password-choice-title {
+  padding-inline: 5px;
+  font-size: var(--qa-font-caption);
+}
+
+.oa-password-choice-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(165px, 27vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+:is(#qing-archive, .qa-tools) .oa-password-choice {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: 33px;
+  padding: 4px 6px;
+  text-align: start;
+}
+
+.oa-password-choice svg { color: var(--qa-accent); }
+.oa-password-choice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-password-choice:focus-visible { outline-offset: -2px; }
+:is(#qing-archive, .qa-tools) .oa-password-choice-status {
+  margin: 0;
+  color: var(--qa-sub);
+}
+.oa-password-choice-status:not(:empty) { padding: 3px 5px; }
+
+@media (max-width: 390px) {
+  .oa-password-field { grid-template-columns: minmax(0, 1fr); }
+  .oa-password-command { justify-self: start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;

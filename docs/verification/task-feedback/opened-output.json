@@ -1,0 +1,30 @@
+{
+  "mode": "candidate",
+  "gui_sha256": "ef6afa4fe7d0c5762fcd4f573058fa97d5e53ebf8067c66f3aa52f6698cb31e4",
+  "archive_sha256": "ff867247d7468906c0d0264339452d8e71e6e518a6f37cd2a776fbe82e16c1a1",
+  "observed_during": {
+    "id": 2,
+    "phase": "decompressing",
+    "status": "running",
+    "compact": "\u89e3\u538b\u538b\u7f29\u6d41 \u00b7 \u8fdb\u5ea6\u5f85\u5b9a",
+    "expanded": "\u89e3\u538b\u538b\u7f29\u6d41"
+  },
+  "observed_after_screenshot": {
+    "phase": "decompressing",
+    "status": "running",
+    "compact": "\u89e3\u538b\u538b\u7f29\u6d41 \u00b7 \u8fdb\u5ea6\u5f85\u5b9a",
+    "expanded": "\u89e3\u538b\u538b\u7f29\u6d41"
+  },
+  "elapsed_to_capture_seconds": 0.337,
+  "output_sha256": "92db0561375b04ee09d868c8ec34b37c3e46ffec47fe83bb55bfad1184c41aff",
+  "completed": true,
+  "output_action_visible": true,
+  "not_observed": [
+    "physical_cancel",
+    "unknown_file_total_with_byte_progress"
+  ],
+  "explorer": {
+    "opened_matching_directory": true,
+    "output_file": "sample.bin"
+  }
+}

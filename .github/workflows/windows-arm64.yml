@@ -90,6 +90,7 @@ jobs:
             'engine::selected_worker::zip_listing::tests::zip_member_times_reject_wrong_types_counts_and_existing_unsafe_metadata',
             'engine::selected_worker::zip_listing::tests::zip_member_times_protocol_v2_is_synchronized_and_rejects_v1',
             'engine::parent_round_robin_preserves_every_index_and_parent_order',
+            'engine::rar15_stored::tests::ordinary_volume_headers_share_one_metadata_budget',
             'engine::parent_round_robin_requires_owned_direct_memory_error_publication'
           )
           foreach ($testName in $tests) {
@@ -99,6 +100,24 @@ jobs:
             if ($code) { exit $code }
             if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing pure test: $testName" }
           }
+      - name: Classic stored RAR volume verification and extraction
+        shell: pwsh
+        run: |
+          $testName = 'cli_classic_stored_rar_volumes_are_verified_before_publication'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test operations_integration $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing RAR test: $testName" }
+      - name: Cancel and retry an ordinary ZIP update
+        shell: pwsh
+        run: |
+          $testName = 'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing ZIP update test: $testName" }
       - name: Native CLI, policy and verified split extraction
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
@@ -168,6 +187,13 @@ jobs:
           $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
           python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
           exit $LASTEXITCODE
+      - name: Verify packaged native ZIP cache and cancellation
+        shell: pwsh
+        run: |
+          $portable = @(Get-ChildItem -LiteralPath dist/arm64 -Filter '*-portable.zip' -File)
+          if ($portable.Count -ne 1) { throw 'Expected exactly one ARM64 portable archive' }
+          ./scripts/check-selected-zip-cache.ps1 -Portable $portable[0].FullName -Target aarch64-pc-windows-msvc `
+            -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
       - name: Invoke the classic Explorer action on native ARM64
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh

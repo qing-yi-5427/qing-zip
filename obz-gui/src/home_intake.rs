@@ -1,15 +1,39 @@
 use obz_core::{
-    engine::{deep_extract, EngineOptions, Entry},
+    engine::{self, deep_extract, EngineOptions, Entry},
     operations,
 };
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CompressionSource {
+    File,
+    Directory,
+}
 
 #[derive(Debug)]
-pub enum Intake {
-    Browse { path: String, entries: Vec<Entry> },
-    Deep { path: String },
-    Review { path: String, reason: String },
+enum Intake {
+    Browse {
+        path: String,
+        entries: Vec<Entry>,
+    },
+    Deep {
+        path: String,
+    },
+    Review {
+        path: String,
+        reason: String,
+        compression_source: Option<CompressionSource>,
+    },
+}
+
+fn review(path: String, reason: impl Into<String>) -> Intake {
+    Intake::Review {
+        path,
+        reason: reason.into(),
+        compression_source: None,
+    }
 }
 
 #[tauri::command]
@@ -17,19 +41,38 @@ pub async fn inspect_home_archive(path: String) -> Result<tauri::ipc::Response, 
     #[derive(Serialize)]
     #[serde(tag = "route", rename_all = "snake_case")]
     enum Payload<'a> {
-        Browse { path: &'a str, rows: crate::archive_listing::Listing<'a> },
-        Deep { path: &'a str },
-        Review { path: &'a str, reason: &'a str },
+        Browse {
+            path: &'a str,
+            rows: crate::archive_listing::Listing<'a>,
+        },
+        Deep {
+            path: &'a str,
+        },
+        Review {
+            path: &'a str,
+            reason: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            compression_source: Option<CompressionSource>,
+        },
     }
 
     tauri::async_runtime::spawn_blocking(move || {
         let result = inspect(path);
         let payload = match &result {
             Intake::Browse { path, entries } => Payload::Browse {
-                path, rows: crate::archive_listing::Listing(entries),
+                path,
+                rows: crate::archive_listing::Listing(entries),
             },
             Intake::Deep { path } => Payload::Deep { path },
-            Intake::Review { path, reason } => Payload::Review { path, reason },
+            Intake::Review {
+                path,
+                reason,
+                compression_source,
+            } => Payload::Review {
+                path,
+                reason,
+                compression_source: *compression_source,
+            },
         };
         crate::archive_listing::response(payload)
     })
@@ -40,7 +83,7 @@ pub async fn inspect_home_archive(path: String) -> Result<tauri::ipc::Response, 
 #[tauri::command]
 pub fn pick_home_files() -> Vec<String> {
     rfd::FileDialog::new()
-        .set_title("选择要打开或解压的文件")
+        .set_title("选择要识别的文件")
         .add_filter("所有文件", &["*"])
         .pick_files()
         .map(|paths| {
@@ -52,10 +95,40 @@ pub fn pick_home_files() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn compression_source_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| engine::validate_name(name).is_ok())
+}
+
 fn inspect(path: String) -> Intake {
+    let source = Path::new(&path);
+    let ordinary_prefix = !matches!(source.components().next(),
+        Some(Component::Prefix(prefix)) if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _)));
+    if path.is_empty()
+        || path.contains(['\0', '\r', '\n'])
+        || path.contains("://")
+        || !ordinary_prefix
+    {
+        return review(path, "无效的归档路径");
+    }
     let path = match crate::instance::canonical_archive_path(path.clone()) {
-        Ok(path) => path,
-        Err(reason) => return Intake::Review { path, reason },
+        Ok(file) => file,
+        Err(reason) => {
+            if let Ok(directory) = crate::desktop::canonical_spelling(source, true) {
+                if compression_source_name(Path::new(&directory)) {
+                    return match std::fs::read_dir(&directory) {
+                        Ok(_) => Intake::Review {
+                            path: directory,
+                            reason: "文件夹可以作为压缩来源。".into(),
+                            compression_source: Some(CompressionSource::Directory),
+                        },
+                        Err(error) => review(directory, error.to_string()),
+                    };
+                }
+            }
+            return review(path, reason);
+        }
     };
     let source = Path::new(&path);
     let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -69,7 +142,7 @@ fn inspect(path: String) -> Intake {
         && !volume
         && match deep_extract::home_deep_candidate(source) {
             Ok(candidate) => candidate,
-            Err(reason) => return Intake::Review { path, reason },
+            Err(reason) => return review(path, reason),
         };
     let options = EngineOptions::default();
     match operations::list_archive_once(&path, &options) {
@@ -86,11 +159,16 @@ fn inspect(path: String) -> Intake {
         }
         Ok(entries) => Intake::Browse { path, entries },
         Err(reason) if volume || (disguised && requires_password(&reason)) => Intake::Deep { path },
-        Err(_) if !named && !disguised => Intake::Review {
-            path,
-            reason: "未识别为支持的压缩包。".into(),
-        },
-        Err(reason) => Intake::Review { path, reason },
+        Err(_) if !named && !disguised => {
+            let compression_source =
+                compression_source_name(source).then_some(CompressionSource::File);
+            Intake::Review {
+                path,
+                reason: "未识别为支持的压缩包。".into(),
+                compression_source,
+            }
+        }
+        Err(reason) => review(path, reason),
     }
 }
 
@@ -110,7 +188,6 @@ fn requires_password(reason: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obz_core::engine;
     use std::{fs, path::PathBuf};
 
     fn archive(
@@ -171,11 +248,15 @@ mod tests {
             let result = inspect(file.to_str().unwrap().into());
             match (i, result) {
                 (0 | 5 | 6, Intake::Browse { entries, .. }) => assert_eq!(entries.len(), 1),
-                (1..=4, Intake::Deep { .. }) | (7 | 8, Intake::Review { .. }) => {}
-                (_, unexpected) => panic!(
-                    "{}: {unexpected:?}",
-                    file.display()
-                ),
+                (1..=4, Intake::Deep { .. })
+                | (
+                    7 | 8,
+                    Intake::Review {
+                        compression_source: Some(CompressionSource::File),
+                        ..
+                    },
+                ) => {}
+                (_, unexpected) => panic!("{}: {unexpected:?}", file.display()),
             }
         }
         assert_eq!(
@@ -187,6 +268,42 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(fs::read_dir(root).unwrap().count(), files.len());
+    }
+
+    #[test]
+    fn only_valid_plain_inputs_offer_compression() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let plain = root.join("笔记.txt");
+        let directory = root.join("资料 文件夹");
+        let broken = root.join("broken.zip");
+        let missing = root.join("missing.txt");
+        let payload = b"plain test payload";
+        fs::write(&plain, payload).unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::write(&broken, payload).unwrap();
+        for (path, expected) in [
+            (&plain, Some(CompressionSource::File)),
+            (&directory, Some(CompressionSource::Directory)),
+            (&broken, None),
+            (&missing, None),
+        ] {
+            match inspect(path.display().to_string()) {
+                Intake::Review {
+                    compression_source,
+                    reason,
+                    ..
+                } => {
+                    assert_eq!(compression_source, expected, "{}", path.display());
+                    assert!(!reason.is_empty());
+                }
+                other => panic!("{}: {other:?}", path.display()),
+            }
+        }
+        assert_eq!(fs::read(plain).unwrap(), payload);
+        assert_eq!(fs::read(broken).unwrap(), payload);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root).unwrap().count(), 3);
     }
 
     #[test]
