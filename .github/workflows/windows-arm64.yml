@@ -356,7 +356,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Settings probe process failed' }
           & ./scripts/probe-custom-scale.ps1 -Receipt evidence/custom-page.json
           $result=Get-Content evidence/settings.json -Raw | ConvertFrom-Json
-          if ($result.error) { throw 'Native settings not observable; inspect receipt' }
+          $custom=Get-Content evidence/custom-page.json -Raw | ConvertFrom-Json
+          if ($result.error -or $custom.status -cne 'observed' -or !$custom.navigation_invoked -or !$custom.custom_page_observed) { throw 'Native settings or custom page not observable; inspect receipt' }
       - name: Preserve read-only host findings
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

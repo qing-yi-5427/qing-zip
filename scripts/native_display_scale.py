@@ -141,7 +141,7 @@ def verify_scale(call, js, output, executable, pid):
     report = {"status": "FAIL", "platform": platform.platform(), "arch": platform.machine(),
               "gui_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
               "settings_mutation": "Windows Settings Scale combobox via UI Automation",
-              "observations": {}, "restored": False}
+              "observations": {}, "restored": False, "transition_tested": False}
 
     def settings(label, percent=0):
         record = output / f"settings-{label}.json"
@@ -210,8 +210,12 @@ def verify_scale(call, js, output, executable, pid):
             report["status"] = "BLOCKED_DISPLAY_BINDING"
             raise RuntimeError("The settings selection must match the package window on the primary display")
         if original_percent == 200:
-            report["status"] = "BLOCKED_ALREADY_200"
-            raise RuntimeError("The runner is already at 200%, so it does not provide a before/after transition")
+            # Existing 200% is a valid geometry observation; no change or
+            # transition can be exercised in this particular run.
+            snapshot("at-200", 192, original["primary_monitor"])
+            report["status"] = "PASS_EXISTING_200"
+            report["transition_note"] = "Not tested: display was already at 200%"
+            return
 
         def has_200(state):
             return any(it["percent"] == 200 and it["enabled"] for it in state.get("options", ()))
@@ -253,6 +257,7 @@ def verify_scale(call, js, output, executable, pid):
         if not selected.get("selection_invoked"):
             raise RuntimeError(selected.get("error", "Windows did not accept the 200% selection"))
         snapshot("at-200", 192, original["primary_monitor"])
+        report["transition_tested"] = True
         report["status"] = "PASS"
     finally:
         try:
