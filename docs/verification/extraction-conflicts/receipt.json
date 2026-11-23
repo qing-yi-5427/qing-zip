@@ -1,0 +1,41 @@
+{
+  "source_commit": "a1100d4f27289e5f1e75b96200c88b916d0c4094",
+  "package": "qing-zip 0.12.23 Windows x64 portable",
+  "environment": "Windows 11 Pro x64, build 26300",
+  "binary_sha256": {
+    "qing-zip.exe": "2f7aaf1ce11bb6cc4e7770bc3e5b0db1ce28abd12ab1abf60be8605c4cf5d683",
+    "obz.exe": "66c3c13f9ff4e434a08274283e3b753057b92b47b33e6bcf3810bb611a33adee",
+    "obz-worker.exe": "b18e8ed26beeae3acccbeca5b8c4917426c2a4ea7de917d0692d68cc98a1b503"
+  },
+  "checks": [
+    {
+      "name": "auto-rename",
+      "summary": "已提取 3 个文件至 <fixture>\\rename",
+      "outputs": {
+        "PHOTO (1).txt": "dbae1e96dc88df9fef509a51923f01a8323842ac0dba7b58f86d78aaaaea5242",
+        "photo (3).txt": "dfffd9d489dcf31909cd8c920aeb0fcbc311a7e7bb8c1170e07a06dc3baa91be",
+        "photo.txt": "06a5ad9bc929f80a5985b12f2996c579d478812e8630f7d9e64e58eab6a0bfa5",
+        "photo (2).txt/cover.txt": "3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6"
+      }
+    },
+    {
+      "name": "stop-on-conflict",
+      "summary": "目标位置已有同名项目。\n<fixture>\\blocked\\photo.txt",
+      "outputs": {
+        "photo.txt/local.txt": "06a5ad9bc929f80a5985b12f2996c579d478812e8630f7d9e64e58eab6a0bfa5"
+      }
+    },
+    {
+      "name": "retry-with-skip",
+      "summary": "已提取 2 个文件至 <fixture>\\blocked",
+      "outputs": {
+        "PHOTO (1).txt": "dbae1e96dc88df9fef509a51923f01a8323842ac0dba7b58f86d78aaaaea5242",
+        "photo (2).txt/cover.txt": "3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6",
+        "photo.txt/local.txt": "06a5ad9bc929f80a5985b12f2996c579d478812e8630f7d9e64e58eab6a0bfa5"
+      }
+    }
+  ],
+  "passed": true,
+  "source_sha256": "2855d7b1c0378dd7ba7380012e4112605dff42120586a1daa7b053909c1d05fb",
+  "gui_process_closed": true
+}

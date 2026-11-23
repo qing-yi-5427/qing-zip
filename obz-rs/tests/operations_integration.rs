@@ -38,6 +38,103 @@ fn cli_smart_and_selected_extraction_are_real() {
     assert_eq!(fs::read(selected.join("b.txt")).unwrap(),b"b"); assert!(!selected.join("a.txt").exists());
 }
 
+fn write_zip(path: &Path, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut archive = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    for &(name, content) in files {
+        archive.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        archive.write_all(content).unwrap();
+    }
+    archive.finish().unwrap();
+    fs::read(path).unwrap()
+}
+
+#[test]
+fn cli_auto_rename_reserves_actual_extraction_paths() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let archive = root.join("album.zip");
+    let original = write_zip(&archive, &[
+        ("photo.txt", b"base photo"),
+        ("PHOTO (1).txt", b"numbered photo"),
+        ("photo (2).txt/cover.txt", b"cover"),
+    ]);
+
+    for (label, selected, renamed, count) in [
+        ("whole", Vec::new(), "photo (3).txt", 3),
+        ("selected", vec!["photo.txt", "photo (2).txt"], "photo (1).txt", 2),
+    ] {
+        let output = root.join(label);
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("photo.txt"), b"local photo").unwrap();
+        let response = call(root, json!({
+            "operation": "extract", "path": archive, "dest": output,
+            "options": {"overwrite": "rename", "selected": selected},
+        })).unwrap();
+        assert_eq!(response["files"], count);
+        assert_eq!(fs::read(output.join("photo.txt")).unwrap(), b"local photo");
+        assert_eq!(fs::read(output.join(renamed)).unwrap(), b"base photo");
+        assert_eq!(fs::read(output.join("photo (2).txt/cover.txt")).unwrap(), b"cover");
+        if label == "whole" {
+            assert_eq!(fs::read(output.join("PHOTO (1).txt")).unwrap(), b"numbered photo");
+        }
+        assert_eq!(fs::read_dir(&output).unwrap().count(), count as usize + 1);
+    }
+    assert_eq!(fs::read(&archive).unwrap(), original);
+}
+
+#[test]
+fn cli_file_colliding_with_directory_honors_safe_conflict_policies() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let archive = root.join("album.zip");
+    let original = write_zip(&archive, &[("photo.txt", b"photo"), ("notes.txt", b"notes")]);
+
+    for policy in ["error", "overwrite", "rename", "skip"] {
+        let output = root.join(policy);
+        let occupied = output.join("photo.txt");
+        fs::create_dir_all(&occupied).unwrap();
+        fs::write(occupied.join("local.txt"), b"local").unwrap();
+        let response = call(root, json!({
+            "operation": "extract", "path": archive, "dest": output,
+            "options": {"overwrite": policy},
+        }));
+        match policy {
+            "rename" => {
+                assert_eq!(response.unwrap()["files"], 2);
+                assert_eq!(fs::read(output.join("photo (1).txt")).unwrap(), b"photo");
+                assert_eq!(fs::read(output.join("notes.txt")).unwrap(), b"notes");
+            }
+            "skip" => {
+                assert_eq!(response.unwrap()["files"], 1);
+                assert!(!output.join("photo (1).txt").exists());
+                assert_eq!(fs::read(output.join("notes.txt")).unwrap(), b"notes");
+            }
+            _ => {
+                assert!(response.unwrap_err().contains("destination conflict"));
+                assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
+            }
+        }
+        assert_eq!(fs::read(occupied.join("local.txt")).unwrap(), b"local");
+    }
+    assert_eq!(fs::read(&archive).unwrap(), original);
+
+    let nested = root.join("nested.zip");
+    let original = write_zip(&nested, &[("notes.txt", b"notes"), ("folder/photo.txt", b"photo")]);
+    let output = root.join("blocked-parent");
+    fs::create_dir(&output).unwrap();
+    fs::write(output.join("folder"), b"local file").unwrap();
+    for policy in ["rename", "skip"] {
+        let error = call(root, json!({
+            "operation": "extract", "path": nested, "dest": output,
+            "options": {"overwrite": policy},
+        })).unwrap_err();
+        assert!(error.contains("output parent is a file") || error.contains("create output directory"), "{error}");
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
+        assert_eq!(fs::read(output.join("folder")).unwrap(), b"local file");
+        assert_eq!(fs::read(&nested).unwrap(), original);
+    }
+}
+
 #[test]
 fn cli_preview_returns_images_but_not_active_content() {
     let t=tempfile::tempdir().unwrap(); let p=t.path(); let image=p.join("pixel.gif"); let active=p.join("active.svg");
