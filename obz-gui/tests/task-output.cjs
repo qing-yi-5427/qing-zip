@@ -26,6 +26,9 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   assert.equal(context.taskError('incorrect password or damaged encrypted archive'), '密码不正确，或加密压缩包已损坏。');
   assert.equal(context.taskError(Error('incorrect password or damaged encrypted archive')), '密码不正确，或加密压缩包已损坏。');
   assert.equal(context.taskError('incorrect password or damaged encrypted archive: detail'), 'incorrect password or damaged encrypted archive: detail');
+  const singleStream='single-stream format requires exactly one regular file; create a TAR first for multiple files';
+  assert.match(context.taskError(Error(singleStream)), /^所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR\.GZ/);
+  assert.equal(context.taskError(singleStream+': detail'), singleStream+': detail');
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
   context.overlay.hidden=true;
   context.error(Error('incorrect password or damaged encrypted archive'));

@@ -717,6 +717,9 @@ function taskError(e){
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);
  if(conflict)return '目标位置已有同名项目。\n'+conflict[1];
  if(/^(?:Error:\s*)?incorrect password or damaged encrypted archive[.!。]?$/i.test(text))return '密码不正确，或加密压缩包已损坏。';
+ if(/^(?:Error:\s*)?single-stream format requires exactly one regular file; create a TAR first for multiple files$/i.test(text)){
+  return '所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR.GZ、ZIP 或 7z 等格式，或只保留文件来源。';
+ }
  if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';
  if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：create private stage: [^\r\n]* \(os error (?:39|112)\)$/i.test(text)){
   return '磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
