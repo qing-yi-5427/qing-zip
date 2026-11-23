@@ -226,6 +226,17 @@ def main():
                     entry['after_stop_outer'] = inspect_outer(outer)
                     entry['after_stop_neighbour_unchanged'] = digest(root / 'neighbour.txt') == neighbour_hash
                     entry['after_stop_working_copies'] = [{'sha256': digest(path), 'members': members(path.read_bytes())} for path in workcopies(temp)]
+                    if not entry['outer_unchanged_after_edit'] or not entry['after_stop_neighbour_unchanged']:
+                        raise RuntimeError('Original data changed while editing the private copy')
+                    actual_outer = entry['after_stop_outer']
+                    if case in ('cancel-discard', 'terminate') and actual_outer != before:
+                        raise RuntimeError('Uncommitted nested edit changed the outer archive')
+                    if case == 'cancel-discard' and (not entry['cancel_kept_working_copy'] or entry['after_close_working_exists']):
+                        raise RuntimeError('Cancel or explicit discard did not preserve its expected result')
+                    if case == 'save-close' and (actual_outer['inner'] != entry['edited_members'] or
+                            actual_outer['sibling_sha256'] != before['sibling_sha256'] or
+                            actual_outer['outer_only_sha256'] != before['outer_only_sha256']):
+                        raise RuntimeError('Saved nested archive or unchanged siblings do not match')
                     app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
                     entry['reopened_gui_pid'] = app.pid
                     page.screenshot(path=str(evidence / f'{case}-reopened.png'))
@@ -234,6 +245,9 @@ def main():
                     expect(page.locator('[data-entry="unchanged.txt"]')).to_be_visible(timeout=60000)
                     entry['reopened_inner_entries'] = page.locator('[data-entry]').evaluate_all('(els)=>els.map(e=>e.getAttribute("data-entry"))')
                     page.screenshot(path=str(evidence / f'{case}-reopened-inner.png'))
+                    expected_name = 'after.txt' if case == 'save-close' else 'before.txt'
+                    if sorted(entry['reopened_inner_entries']) != sorted([expected_name, 'unchanged.txt']):
+                        raise RuntimeError('Reopened inner archive entries differ from expected')
                     entry['retained_menu'] = retained_dialog(page, evidence, case)
                     entry['retained_options_first'] = page.locator('#oa-retained-edit option').count()
                     if case == 'terminate' and options.expect_recovery:
