@@ -1,0 +1,15 @@
+{
+  "test_settings": "product CLI shell-enable and GUI file compression switch",
+  "portable_sha256": "39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e",
+  "settings_removed": true,
+  "thumbprint": "CB280C7F3F12053C66BBFC4EE03F2B73E9EF6DAB",
+  "product_source": "b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b",
+  "error": "Explorer observation did not pass; inspect evidence",
+  "unregistered": true,
+  "source": "78183289314b20da205ad2bbffd643519154cd65",
+  "certificates_removed": true,
+  "stage": "explorer",
+  "msix_sha256": "d69dc97a4fab393ae121271ba41c62143dda241bb000eda4cf4c4112ae2b69cb",
+  "package_full_name": "QingYi.QingZip.Shell_0.12.23.0_arm64__akcd4eewvgq7r",
+  "registration": "passed"
+}

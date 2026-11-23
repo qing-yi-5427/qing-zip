@@ -1,0 +1,586 @@
+"""Inspect and activate the real Windows 11 Explorer menu on a disposable runner."""
+
+import argparse, hashlib, json, os, subprocess, time, zipfile
+from pathlib import Path
+
+assert (
+    os.environ.get("GITHUB_ACTIONS") == "true"
+    and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+)
+from PIL import ImageGrab
+from pywinauto import Desktop, mouse, keyboard
+from win32com.client import Dispatch
+import psutil
+
+p = argparse.ArgumentParser()
+p.add_argument("--root", type=Path, required=True)
+p.add_argument("--app", type=Path, required=True)
+p.add_argument("--lifecycle-phase", choices=("stale", "relocated", "unregistered"))
+a = p.parse_args()
+out = Path("explorer-evidence")
+out.mkdir(exist_ok=True)
+report = {
+    "stage": "initialize",
+    "scenarios": {},
+    "passed": False,
+    "not_observed": ["portable_move", "unregistration_menu"],
+}
+
+
+def save():
+    (out / "explorer.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf8"
+    )
+
+
+def wait(fn, seconds=25):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            value = fn()
+            if value:
+                return value
+        except Exception:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("Timed out waiting for Explorer UI")
+
+
+def snapshot(name):
+    ImageGrab.grab().save(out / (name + ".png"))
+
+
+def text_controls():
+    items = []
+    for w in desktop.windows():
+        try:
+            if w.is_visible():
+                for x in [w, *w.descendants()]:
+                    n = x.element_info.name
+                    if n and ("qing" in n.lower() or n in ("智能解压", "解压到此处")):
+                        items.append(
+                            {
+                                "name": n,
+                                "type": x.element_info.control_type,
+                                "class": x.element_info.class_name,
+                                "handle": x.handle,
+                            }
+                        )
+        except Exception:
+            pass
+    return items
+
+
+def finish_first_run(desktop, prefix):
+    # Hosted Windows 11 ARM images can start behind first-run privacy setup.
+    # Complete it only on this disposable machine before interacting with Explorer.
+    actions = []
+    for _ in range(12):
+        candidates = []
+        for top in desktop.windows():
+            try:
+                if top.is_visible():
+                    for button in top.descendants(control_type="Button"):
+                        if button.is_visible() and button.element_info.name in (
+                            "Next",
+                            "Accept",
+                        ):
+                            candidates.append(button)
+            except Exception:
+                pass
+        if not candidates:
+            break
+        button = candidates[0]
+        actions.append(button.element_info.name)
+        button.click_input()
+        time.sleep(2)
+    # The first-run surface is not exposed through UI Automation on these
+    # images. Recognize its fixed 1024x768 blue Next/Accept button and use
+    # physical input only on the disposable runner; preserve each screenshot.
+    for step in range(3):
+        image = ImageGrab.grab()
+        image.save(out / (prefix + "first-run-" + str(step) + ".png"))
+        if image.size != (1024, 768):
+            break
+        r, g, b = image.convert("RGB").getpixel((810, 650))
+        if not (b > 120 and b > g and g > r + 30):
+            break
+        mouse.click(coords=(867, 656))
+        actions.append("physical first-run button")
+        time.sleep(3)
+    return actions
+
+
+def lifecycle():
+    phase = a.lifecycle_phase
+    result = {"phase": phase, "passed": False, "menu_samples": []}
+    target = None
+    owned_processes = {}
+    data = {
+        "first.txt": b"portable lifecycle member one\n",
+        "second.txt": b"portable lifecycle member two\n",
+    }
+
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def observe_processes():
+        for proc in psutil.process_iter(["pid", "exe"]):
+            try:
+                if (
+                    proc.info["exe"]
+                    and Path(proc.info["exe"]).resolve() == a.app.resolve()
+                ):
+                    owned_processes[proc.pid] = proc
+            except (psutil.Error, OSError):
+                pass
+
+    try:
+        folder = a.root / ("lifecycle-" + phase)
+        folder.mkdir()
+        archive = folder / "archive.zip"
+        sentinel = folder / "keep.txt"
+        sentinel.write_bytes(b"ordinary adjacent sentinel\n")
+        with zipfile.ZipFile(archive, "w") as writer:
+            for name, contents in data.items():
+                writer.writestr(zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0)), contents)
+        result["input_sha256"] = {file.name: sha(file) for file in (archive, sentinel)}
+        desktop = Desktop(backend="uia")
+        result["first_run_actions"] = finish_first_run(desktop, phase + "-")
+        shell = Dispatch("Shell.Application")
+        old_handles = {int(w.HWND) for w in shell.Windows()}
+        shell.Open(str(folder))
+
+        def new_window():
+            for window in shell.Windows():
+                try:
+                    if (
+                        int(window.HWND) not in old_handles
+                        and Path(window.Document.Folder.Self.Path) == folder
+                    ):
+                        return window
+                except Exception:
+                    pass
+
+        target = wait(new_window)
+        result["fresh_explorer_window"] = True
+        window = desktop.window(handle=int(target.HWND)).wrapper_object()
+        item = wait(
+            lambda: next(
+                (
+                    x
+                    for x in window.descendants(control_type="ListItem")
+                    if x.element_info.name in ("archive", "archive.zip")
+                ),
+                None,
+            )
+        )
+
+        def menu_items():
+            return [
+                x
+                for w in desktop.windows()
+                if w.is_visible()
+                for x in w.descendants(control_type="MenuItem")
+                if x.is_visible() and x.element_info.name
+            ]
+
+        group = None
+        for _ in range(3):
+            window.set_focus()
+            time.sleep(0.5)
+            item.click_input(button="right")
+            time.sleep(3)
+            entries = menu_items()
+            names = [x.element_info.name for x in entries]
+            modern = any(
+                name.casefold().startswith("show more options") for name in names
+            )
+            group = next(
+                (x for x in entries if x.element_info.name == "qing-zip"), None
+            )
+            result["menu_samples"].append(
+                {"modern_popup_present": modern, "qing_zip_group_present": bool(group)}
+            )
+            if modern and (group or phase != "relocated"):
+                snapshot("lifecycle-" + phase + "-menu")
+                break
+            keyboard.send_keys("{ESC}")
+        else:
+            raise RuntimeError(
+                "No verified modern menu with the expected lifecycle controls"
+            )
+
+        expected_names = {"archive.zip", "keep.txt"}
+        if phase == "relocated":
+            if not group:
+                raise RuntimeError("Relocated modern qing-zip group missing")
+            group.click_input()
+            command = wait(
+                lambda: next(
+                    (x for x in menu_items() if x.element_info.name == "解压到此处"),
+                    None,
+                )
+            )
+            snapshot("lifecycle-relocated-submenu")
+            command.click_input()
+            result["extract_here_clicked"] = True
+            for _ in range(120):
+                observe_processes()
+                if owned_processes and all(
+                    (folder / name).is_file()
+                    and (folder / name).read_bytes() == contents
+                    for name, contents in data.items()
+                ):
+                    break
+                time.sleep(0.25)
+            else:
+                raise RuntimeError(
+                    "Exact extract output and the relocated executable were not both observed"
+                )
+            result["relocated_executable_launched"] = True
+            result["output_sha256"] = {name: sha(folder / name) for name in data}
+            expected_names.update(data)
+            snapshot("lifecycle-relocated-extracted")
+        else:
+            keyboard.send_keys("{ESC}")
+            if phase == "unregistered" and group:
+                raise RuntimeError(
+                    "The qing-zip primary context menu persists after unregistration"
+                )
+
+        if {file.name: sha(file) for file in (archive, sentinel)} != result[
+            "input_sha256"
+        ] or {path.name for path in folder.iterdir()} != expected_names:
+            raise RuntimeError("Input, sentinel or exact output set differs")
+        result["inputs_preserved"] = True
+        result["output_directory_exact"] = True
+        result["passed"] = True
+    except Exception as error:
+        result["error"] = str(error).replace(str(a.root), "<test-root>")
+    finally:
+        try:
+            keyboard.send_keys("{ESC}")
+            if target is not None:
+                target.Quit()
+            for proc in owned_processes.values():
+                try:
+                    proc.terminate()
+                    proc.wait(10)
+                except psutil.NoSuchProcess:
+                    pass
+        except Exception as error:
+            result["passed"] = False
+            result["cleanup_error"] = str(error).replace(str(a.root), "<test-root>")
+        finally:
+            (out / ("lifecycle-ui-" + phase + ".json")).write_text(
+                json.dumps(result, indent=2), encoding="utf8"
+            )
+    return result["passed"]
+
+
+if a.lifecycle_phase:
+    raise SystemExit(0 if lifecycle() else 1)
+
+try:
+    root = a.root / "ui-fixtures"
+    root.mkdir()
+    data = {
+        "first.txt": b"first synthetic member\n",
+        "second.txt": b"second synthetic member\n",
+    }
+    expected = {name: hashlib.sha256(value).hexdigest() for name, value in data.items()}
+    report["expected_member_sha256"] = expected
+    desktop = Desktop(backend="uia")
+    report["first_run_actions"] = finish_first_run(desktop, "")
+    snapshot("desktop-after-first-run")
+    save()
+    shell = Dispatch("Shell.Application")
+    for key, label in [
+        ("here", "解压到此处"),
+        ("smart", "智能解压"),
+        ("compress", "用 qing-zip 压缩…"),
+    ]:
+        folder = root / key
+        folder.mkdir()
+        archive = folder / "archive.zip"
+        plain = folder / "plain.txt"
+        plain.write_bytes(b"ordinary compression source\n")
+        sentinel = folder / "keep.txt"
+        sentinel.write_bytes(b"keep unrelated sentinel\n")
+        sentinel_hash = hashlib.sha256(sentinel.read_bytes()).hexdigest()
+        with zipfile.ZipFile(archive, "w") as z:
+            for name, contents in data.items():
+                z.writestr(name, contents)
+        archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
+        plain_hash = hashlib.sha256(plain.read_bytes()).hexdigest()
+        shell.Open(str(folder))
+
+        def explorer():
+            for w in shell.Windows():
+                try:
+                    if os.path.normcase(
+                        w.Document.Folder.Self.Path
+                    ) == os.path.normcase(str(folder)):
+                        return w
+                except Exception:
+                    pass
+
+        target = wait(explorer)
+        window = desktop.window(handle=int(target.HWND)).wrapper_object()
+        window.set_focus()
+        report["stage"] = "explorer_opened"
+        save()
+        filename = "plain" if key == "compress" else "archive"
+        entry = report["scenarios"][key] = {
+            "menu_visible": False,
+            "activated": False,
+            "handoff_observed": False,
+            "archive_sha256_before": archive_hash,
+            "plain_sha256_before": plain_hash,
+        }
+        save()
+        item = wait(
+            lambda: next(
+                (
+                    x
+                    for x in window.descendants(control_type="ListItem")
+                    if x.element_info.name == filename
+                ),
+                None,
+            )
+        )
+        group = None
+        for attempt in range(3):
+            window.set_focus()
+            time.sleep(0.5)
+            item.click_input(button="right")
+            time.sleep(3)
+            group = next(
+                (
+                    x
+                    for w in desktop.windows()
+                    if w.is_visible()
+                    for x in w.descendants()
+                    if x.element_info.name == "qing-zip"
+                    and x.element_info.control_type == "MenuItem"
+                    and x.is_visible()
+                ),
+                None,
+            )
+            if group:
+                break
+            keyboard.send_keys("{ESC}")
+            time.sleep(1)
+        snapshot(key + "-menu")
+        entry["menu_controls"] = text_controls()
+        entry["menu_attempts"] = attempt + 1
+        if group:
+            entry["top_level_visible"] = True
+            rect = group.rectangle()
+            entry["group_rect"] = str(rect)
+            group.click_input()
+            time.sleep(2)
+            snapshot(key + "-submenu")
+        menu = next(
+            (
+                x
+                for w in desktop.windows()
+                if w.is_visible()
+                for x in w.descendants()
+                if x.element_info.name == label and x.is_visible()
+            ),
+            None,
+        )
+        if not menu:
+            entry["error"] = "Command not observed after opening qing-zip submenu"
+            keyboard.send_keys("{ESC}")
+            save()
+            continue
+        entry["menu_visible"] = True
+        menu.click_input()
+        entry["activated"] = True
+        destination = folder / ("archive" if key == "smart" else "")
+
+        def valid_outputs():
+            return all(
+                (destination / name).is_file()
+                and hashlib.sha256((destination / name).read_bytes()).hexdigest()
+                == digest
+                for name, digest in expected.items()
+            )
+
+        if key != "compress":
+            for _ in range(100):
+                if valid_outputs():
+                    break
+                time.sleep(0.2)
+        if key == "compress":
+            app_procs = []
+            for proc in psutil.process_iter(["pid", "exe"]):
+                try:
+                    if proc.info["exe"] and os.path.normcase(
+                        proc.info["exe"]
+                    ) == os.path.normcase(str(a.app.resolve())):
+                        app_procs.append(proc.pid)
+                except (psutil.Error, OSError):
+                    pass
+            try:
+                app_window = wait(
+                    lambda: next(
+                        (
+                            w
+                            for w in desktop.windows()
+                            if w.is_visible() and w.process_id() in app_procs
+                        ),
+                        None,
+                    ),
+                    10,
+                )
+                # Dismiss only the runner's unrelated first-launch WSL prompt; Escape
+                # explicitly cancels it rather than installing or changing WSL.
+                for overlay in desktop.windows():
+                    try:
+                        if (
+                            overlay.is_visible()
+                            and "wsl.exe" in overlay.element_info.name.lower()
+                        ):
+                            overlay.set_focus()
+                            keyboard.send_keys("{ESC}")
+                            time.sleep(2)
+                    except Exception:
+                        pass
+                app_window.set_focus()
+                time.sleep(2)
+                entry["visible_controls"] = [
+                    {"name": x.element_info.name, "type": x.element_info.control_type}
+                    for x in app_window.descendants()
+                    if x.is_visible() and x.element_info.name
+                ][:150]
+            except Exception as e:
+                entry["window_error"] = repr(e)
+        snapshot(key + "-after")
+        if key == "compress" and "window_error" not in entry:
+            image = ImageGrab.grab()
+            rgb = image.convert("RGB")
+            if image.size == (1024, 768):
+                samples = [
+                    rgb.getpixel(pt) for pt in ((745, 595), (775, 590), (815, 615))
+                ]
+                entry["create_button_color_samples"] = samples
+                if all(b > 120 and b > g and g > r + 15 for r, g, b in samples):
+                    mouse.click(coords=(780, 604))
+                    entry["create_clicked"] = True
+                    created = folder / "plain.txt.zip"
+                    for _ in range(150):
+                        if created.is_file():
+                            try:
+                                with zipfile.ZipFile(created) as z:
+                                    if (
+                                        z.namelist() == ["plain.txt"]
+                                        and hashlib.sha256(
+                                            z.read("plain.txt")
+                                        ).hexdigest()
+                                        == plain_hash
+                                    ):
+                                        break
+                            except (OSError, zipfile.BadZipFile):
+                                pass
+                        time.sleep(0.2)
+                    else:
+                        created = None
+                    if created:
+                        entry["created_zip_sha256"] = hashlib.sha256(
+                            created.read_bytes()
+                        ).hexdigest()
+                        entry["created_member_sha256"] = plain_hash
+                        entry["created_output"] = "plain.txt.zip"
+                    entry["compression_verified"] = created is not None
+                    snapshot("compress-created")
+        entry["output_matches_expected"] = (
+            valid_outputs() if key != "compress" else None
+        )
+        entry["relative_output_directory"] = (
+            "archive" if key == "smart" else ("." if key == "here" else None)
+        )
+        entry["archive_preserved"] = (
+            hashlib.sha256(archive.read_bytes()).hexdigest() == archive_hash
+        )
+        entry["plain_preserved"] = (
+            hashlib.sha256(plain.read_bytes()).hexdigest() == plain_hash
+        )
+        entry["sentinel_sha256"] = sentinel_hash
+        entry["sentinel_preserved"] = (
+            hashlib.sha256(sentinel.read_bytes()).hexdigest() == sentinel_hash
+        )
+        expected_names = {"archive.zip", "plain.txt", "keep.txt"} | (
+            {"first.txt", "second.txt"}
+            if key == "here"
+            else ({"archive"} if key == "smart" else {"plain.txt.zip"})
+        )
+        entry["output_directory_exact"] = {
+            p.name for p in folder.iterdir()
+        } == expected_names
+        if key == "smart" and (folder / "archive").is_dir():
+            entry["output_directory_exact"] = entry["output_directory_exact"] and {
+                p.name for p in (folder / "archive").iterdir()
+            } == set(expected)
+        entry["gui_windows"] = [
+            w.element_info.name
+            for w in desktop.windows()
+            if w.is_visible() and "qing" in w.element_info.name.lower()
+        ]
+        entry["handoff_observed"] = (
+            entry["output_matches_expected"]
+            if key != "compress"
+            else entry.get("compression_verified", False)
+        )
+        if key == "compress" and not entry["handoff_observed"]:
+            entry["error"] = "Compression output not verified"
+        save()
+        for proc in psutil.process_iter(["pid", "exe", "name"]):
+            try:
+                if proc.info["exe"] and os.path.normcase(
+                    proc.info["exe"]
+                ) == os.path.normcase(str(a.app.resolve())):
+                    proc.terminate()
+                    proc.wait(10)
+            except (psutil.Error, OSError):
+                pass
+        target.Quit()
+        if key == "compress" and entry.get("compression_verified"):
+            with zipfile.ZipFile(folder / "plain.txt.zip") as verify:
+                entry["after_window_exit_member_matches"] = (
+                    verify.namelist() == ["plain.txt"]
+                    and hashlib.sha256(verify.read("plain.txt")).hexdigest()
+                    == plain_hash
+                )
+            entry["after_window_exit_zip_sha256"] = hashlib.sha256(
+                (folder / "plain.txt.zip").read_bytes()
+            ).hexdigest()
+            entry["after_window_exit_matches"] = (
+                entry["after_window_exit_member_matches"]
+                and entry["after_window_exit_zip_sha256"] == entry["created_zip_sha256"]
+            )
+            save()
+    report["stage"] = "finished"
+    report["passed"] = len(report["scenarios"]) == 3 and all(
+        v.get("menu_visible")
+        and v.get("handoff_observed")
+        and v.get("archive_preserved")
+        and v.get("plain_preserved")
+        and v.get("sentinel_preserved")
+        and v.get("output_directory_exact")
+        and (k != "compress" or v.get("after_window_exit_matches"))
+        for k, v in report["scenarios"].items()
+    )
+except Exception as e:
+    report["error"] = repr(e)
+    try:
+        snapshot("failure")
+    except Exception:
+        pass
+finally:
+    save()
+if not report["passed"]:
+    raise SystemExit("Explorer actions not all observed; inspect receipt")
