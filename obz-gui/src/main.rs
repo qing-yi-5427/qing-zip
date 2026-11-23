@@ -75,8 +75,8 @@ async fn probe_local_directory(path:String,names:Vec<String>)->Result<obz_core::
 }
 
 #[tauri::command]
-async fn plan_compression_outputs(paths: Vec<String>, format: String, volume_bytes: Option<u64>) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || engine::plan_compression_outputs(&paths, &format, volume_bytes))
+async fn plan_compression_outputs(paths: Vec<String>, format: String, volume_bytes: Option<u64>, sources: Vec<Vec<String>>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || engine::plan_compression_outputs(&paths, &format, volume_bytes, &sources))
         .await.map_err(|e| e.to_string())?
 }
 

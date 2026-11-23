@@ -6,6 +6,7 @@ const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`f
 assert.equal(functions.split('\n').length,names.length);
 const finish=source.slice(source.indexOf('async function finishExtraction('),source.indexOf('async function runSecondaryListing('));
 const recyclePolicy=source.slice(source.indexOf('function recycleBlockReason('),source.indexOf('function canRecycleArchive('));
+const errorText=source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('))+source.slice(source.indexOf('function taskError('),source.indexOf('function showPreservationNotice('));
 function fixture(options={}){
  const timers=[],calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
  const context={
@@ -27,7 +28,7 @@ function fixture(options={}){
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
  const naming=source.slice(source.indexOf('const compressionExtensions='),source.indexOf('function sourceFields('));
- vm.createContext(context);vm.runInContext(naming+'\n'+compression+'\n'+recyclePolicy+finish+functions,context);
+ vm.createContext(context);vm.runInContext(errorText+'\n'+naming+'\n'+compression+'\n'+recyclePolicy+finish+functions,context);
  const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
@@ -106,6 +107,7 @@ test('failure pauses remaining queue and never runs completion actions',async()=
  assert.equal(f.context.pendingShellExtractions[0].path,'C:\\archives\\first.zip');assert.equal(f.context.pendingShellExtractions[0].state,'failed');
  assert.equal(f.calls.some(c=>['reveal_path','window_action'].includes(c[0])),false);
  assert.match(f.errors[0],/existing destination/);assert.match(f.context.shellQueueStatus(),/shell-continue/);
+ assert.equal(f.context.pendingShellExtractions[0].error,'existing destination file');
 });
 test('cancellation stops the batch and leaves next request pending',async()=>{
  const f=fixture({closeAfter:true});f.queue('C:\\archives\\first.zip');f.queue('C:\\archives\\next.zip');

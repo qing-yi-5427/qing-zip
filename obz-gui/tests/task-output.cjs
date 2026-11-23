@@ -26,6 +26,20 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   assert.equal(context.taskError('incorrect password or damaged encrypted archive'), '密码不正确，或加密压缩包已损坏。');
   assert.equal(context.taskError(Error('incorrect password or damaged encrypted archive')), '密码不正确，或加密压缩包已损坏。');
   assert.equal(context.taskError('incorrect password or damaged encrypted archive: detail'), 'incorrect password or damaged encrypted archive: detail');
+  const singleStream='single-stream format requires exactly one regular file; create a TAR first for multiple files';
+  assert.match(context.taskError(Error(singleStream)), /^所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR\.GZ/);
+  assert.equal(context.taskError(singleStream+': detail'), singleStream+': detail');
+  const locked='C:\\Users\\a\\src\\locked.txt';
+  const dump=`archive engine failed (2): \nNanaZip 7.0 , version 2610.2 (x64) : (c) M2-Team and Contributors. All rights reserved.\n\nScanning the drive:\n1 folder, 2 files, 13000 bytes (13 KiB)\n\nCreating archive: C:\\Users\\a\\.tmpo34LoX\\out.7z\n\n  0%\n\nWARNING: 另一个程序正在使用此文件，进程无法访问。\n${locked}\n\n\n\nSystem ERROR:\n另一个程序正在使用此文件，进程无法访问。\n `;
+  assert.equal(context.taskError(Error(dump)), `归档引擎未能完成（代码 2）：\n另一个程序正在使用此文件，进程无法访问。\n${locked}\n请关闭正在使用该文件的程序后重试。`);
+  assert.equal(context.taskError('archive engine failed (2): ERROR: Data Error : a.bin'), '归档引擎未能完成（代码 2）：\nData Error : a.bin');
+  const broken='C:\\t\\.qing-zip-stage-3af6\\broken.zip';
+  assert.equal(context.taskError(Error(`archive engine failed (2):    0M Scan C:\\t\\\n          \n\nERROR: ${broken} : ${broken}\nOpen ERROR: Cannot open the file as [zip] archive\n\n\nERRORS:\nIs not archive\n\nErrors: 1\n`)),
+    `归档引擎未能完成（代码 2）：\n${broken} : ${broken}\nCannot open the file as [zip] archive\nIs not archive`);
+  const opaque='archive engine failed (255): Enter password (will not be echoed): Break signaled';
+  assert.equal(context.taskError(opaque), opaque);
+  assert.match(context.taskError('output archive already exists; use update to modify it'), /^目标位置已出现同名文件.*未覆盖。\n重试时会重新检查/);
+  assert.match(context.taskError('output exists: D:\\out\\b.zip.002'), /未覆盖。\nD:\\out\\b\.zip\.002\n重试时/);
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
   context.overlay.hidden=true;
   context.error(Error('incorrect password or damaged encrypted archive'));
@@ -45,8 +59,48 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   const detail='CRC failed: operation cancelled.txt';
   context.s.jobs[0]={label:'解压',status:'failed',error:detail};
   assert.ok(context.jobs().includes(detail));
-  context.error(Error(detail));assert.equal(field.textContent,'Error: '+detail);
+  context.error(Error(detail));assert.equal(field.textContent,detail);
+  context.error(Error('请输入有效的压缩包文件名。'));assert.equal(field.textContent,'请输入有效的压缩包文件名。');
+  context.error('Error: backend text');assert.equal(field.textContent,'backend text');
   assert.equal(context.s.jobs[0].error,detail);
+});
+
+test('restoring the compression draft shows the same actionable failure as the task card', () => {
+  const source = fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const lockedPath = String.raw`D:\source\locked.txt`;
+  const collisionPath = String.raw`D:\destination\archive.zip`;
+  const locked = `archive engine failed (2):\nNanaZip console banner\nScanning the drive\nWARNING: 另一个程序正在使用此文件，进程无法访问。\n${lockedPath}\n\nSystem ERROR:\n另一个程序正在使用此文件，进程无法访问。`;
+  const conflict = `output exists: ${collisionPath}`;
+  const opaque = 'archive engine failed (255): Enter password (will not be echoed): Break signaled';
+  const field = {textContent:''};
+  const inputs = {value:''};
+  const focused = [];
+  const draft = {dataset:{},querySelector:selector=>selector==='#qa-formerror'?field:{focus:()=>focused.push(selector)}};
+  const restored = [];
+  const context = makeContext({
+    compressionDrafts:new WeakMap(),s:{},dialog(){},overlay:{replaceChildren:node=>restored.push(node)},
+    $:()=>inputs,refreshSources(){},syncCompressionPassword(){},renderInlineTask(){},archiveDirectoryError(){return '';},
+  });
+  vm.runInContext(source.slice(source.indexOf('function taskError('), source.indexOf('function showPreservationNotice(')), context);
+  vm.runInContext(source.slice(source.indexOf('function restoreCompressionDraft('), source.indexOf('async function recheckCompressionOutput(')), context);
+
+  for (const [error,hadPassword,expected] of [
+    [locked,false,`归档引擎未能完成（代码 2）：\n另一个程序正在使用此文件，进程无法访问。\n${lockedPath}\n请关闭正在使用该文件的程序后重试。`],
+    [conflict,false,`目标位置已出现同名文件（可能在检查名称后由其他程序创建），已保留该文件，未覆盖。\n${collisionPath}\n重试时会重新检查并选用其他名称，也可更改保存位置。`],
+    [opaque,false,opaque],
+    [undefined,false,''],
+    [undefined,true,'请重新输入密码。'],
+  ]) {
+    const job = {archives:[{state:error ? 'createFailed' : 'createCancelled',error}]};
+    context.compressionDrafts.set(job,{draft,hadPassword,inputs:[lockedPath]});
+    context.restoreCompressionDraft(job);
+    assert.equal(field.textContent,expected);
+    assert.equal(job.archives[0].error,error);
+    assert.equal(inputs.value,lockedPath);
+    assert.equal(restored.at(-1),draft);
+    assert.equal(focused.at(-1),hadPassword?'#qa-new-password':'#qa-save');
+    assert.equal(draft.dataset.retryPasswordRequired,String(hadPassword));
+  }
 });
 
 test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {

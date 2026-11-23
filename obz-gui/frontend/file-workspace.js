@@ -356,7 +356,7 @@ function create(ui){
    }
    const token=++state.streamRequest;state.streams={path,index:source,pending:true,error:'',entries:[]};render();
    try{const value=await ui.invoke('local_streams',{path});if(token!==state.streamRequest)return;state.streams={path,index:source,pending:false,error:'',entries:value.streams,revision:value.revision,selected:new Set(),dest:state.panes[1-source].kind==='local'&&state.panes[1-source].path?state.panes[1-source].path:state.panes[source].path,outputNames:new Map(value.streams.map(e=>[e.name,e.export_name||e.name])),exportError:'',notice:''};}
-   catch(e){if(token!==state.streamRequest)return;state.streams={path,index:source,pending:false,error:String(e),entries:[]};}
+   catch(e){if(token!==state.streamRequest)return;state.streams={path,index:source,pending:false,error:String(e).replace(/^Error:\s*/,''),entries:[]};}
    render();return;
   }
 
