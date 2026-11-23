@@ -108,7 +108,16 @@ button {
 
 :is(#qing-archive, .qa-tools) .oa-password-command {
   min-height: 36px;
-  padding-inline: 10px;
+  padding-inline: 9px;
+  gap: 6px;
+  color: var(--qa-accent);
+}
+
+:is(#qing-archive, .qa-tools) :is(.oa-password-command,.oa-password-choice) svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+  flex: none;
 }
 
 .oa-password-command::after {
@@ -129,28 +138,56 @@ button {
 .oa-password-choices:not([hidden]) {
   display: grid;
   grid-column: 1 / -1;
-  gap: 2px;
-  max-height: 150px;
-  overflow: auto;
-  padding: 4px;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px;
   border: 1px solid var(--qa-control-border);
   border-radius: var(--qa-radius-control);
   background: var(--qa-card);
 }
 
-:is(#qing-archive, .qa-tools) .oa-password-choices > .qa-button {
-  display: block;
+.oa-password-choice-title {
+  padding-inline: 5px;
+  font-size: var(--qa-font-caption);
+}
+
+.oa-password-choice-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(165px, 27vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+:is(#qing-archive, .qa-tools) .oa-password-choice {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
   min-width: 0;
-  min-height: 30px;
-  padding: 4px 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-height: 33px;
+  padding: 4px 6px;
   text-align: start;
 }
 
-.oa-password-choices > button:focus-visible { outline-offset: -2px; }
-.oa-password-choices > p { margin: 0; padding: 4px 8px; color: var(--qa-sub); }
-.oa-password-choices > p:empty { display: none; }
+.oa-password-choice svg { color: var(--qa-accent); }
+.oa-password-choice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-password-choice:focus-visible { outline-offset: -2px; }
+:is(#qing-archive, .qa-tools) .oa-password-choice-status {
+  margin: 0;
+  color: var(--qa-sub);
+}
+.oa-password-choice-status:not(:empty) { padding: 3px 5px; }
+
+@media (max-width: 390px) {
+  .oa-password-field { grid-template-columns: minmax(0, 1fr); }
+  .oa-password-command { justify-self: start; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

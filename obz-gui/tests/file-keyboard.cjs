@@ -8,19 +8,20 @@ function fixture(count=8,columns=1){
  const calls=[],document={activeElement:null},buttons=[];
  const state={selected:new Set(),cursor:null,anchor:null,listStyle:columns>1?'icons':'details'};
  for(let i=0;i<count;i++){
-  const row={dataset:{row:'file'+i},scrollIntoView(){},getBoundingClientRect:()=>({left:(i%columns)*100,top:Math.floor(i/columns)*50,bottom:Math.floor(i/columns)*50+50,height:50})};
+  const row={dataset:{row:'file'+i},scrollIntoView(){},getBoundingClientRect:()=>({left:(i%columns)*100,right:(i%columns+1)*100,top:Math.floor(i/columns)*50,bottom:Math.floor(i/columns)*50+50,height:50})};
   const button={dataset:{entry:row.dataset.row},tabIndex:-1,closest:()=>row,focus(){document.activeElement=button;},getBoundingClientRect:row.getBoundingClientRect};
   buttons.push(button);
  }
  const menu={hidden:true,contains:node=>menu.items.includes(node),items:[],querySelectorAll:()=>menu.items,querySelector:()=>null};
- const context={s:state,root:{querySelectorAll:()=>buttons},main:{clientHeight:200},overlay:{hidden:true},document,
+ const viewport={scrollTop:0,scrollLeft:120,clientHeight:200,querySelector:()=>null,getBoundingClientRect:()=>({left:0,top:0})};
+ const context={s:state,root:{querySelectorAll:()=>buttons},archiveViewport:()=>viewport,overlay:{hidden:true},document,
   window:{getSelection:()=>({removeAllRanges(){}})},visibleEntries:()=>buttons.map(b=>({name:b.dataset.entry})),refreshSelection(){},
   entry:async name=>calls.push(['open',name]),error:message=>calls.push(['error',message]),showMenu:(group,row)=>calls.push(['menu',group,row.dataset.row]),showMore:()=>calls.push(['more']),
-  $:()=>menu,menuReturnFocus:null};
+  $:()=>menu,menuReturnFocus:null,locateSearchResult:name=>calls.push(['locate',name])};
  context.root.querySelector=()=>null;
  vm.createContext(context);vm.runInContext([keyboard,select,compositionGuard,source.slice(source.indexOf('function hideMenu('),source.indexOf('function rememberMenuFocus('))].join('\n'),context);
  const press=(index,key,modifiers={})=>{let prevented=false,stopped=false;const e={target:buttons[index],key,preventDefault(){prevented=true;},stopPropagation(){stopped=true;},...modifiers};context.handleFileKeydown(e);return {prevented,stopped};};
- return {context,state,buttons,calls,menu,document,press};
+ return {context,state,buttons,calls,menu,document,press,viewport};
 }
 test('direction, page and boundary movement work in details and icon grids',()=>{
  const f=fixture(),index=f.context.fileKeyIndex;
@@ -36,6 +37,7 @@ test('Shift expands and contracts from a stable anchor; Ctrl movement keeps sele
  f.press(4,'ArrowUp',{shiftKey:true});assert.deepEqual([...f.state.selected],['file2','file3']);
  f.press(3,'ArrowDown',{ctrlKey:true});assert.deepEqual([...f.state.selected],['file2','file3']);assert.equal(f.state.cursor,'file4');
  assert.equal(f.buttons.filter(b=>b.tabIndex===0).length,1);assert.equal(f.document.activeElement,f.buttons[4]);
+ assert.equal(f.viewport.scrollLeft,120);
 });
 test('first Shift movement anchors the focused file, not a stale hidden entry',()=>{
  const f=fixture();f.state.anchor='hidden';f.press(3,'ArrowDown',{shiftKey:true});
@@ -51,6 +53,11 @@ test('space toggles without opening; Enter opens focused entry once',()=>{
  f.press(1,' ');assert.deepEqual([...f.state.selected],['file1']);assert.equal(f.calls.length,0);
  assert.equal(f.press(1,'Enter').prevented,true);assert.deepEqual(f.calls,[['open','file1']]);
  f.press(1,'Enter',{ctrlKey:true});assert.equal(f.calls.length,1);
+});
+test('Ctrl+Enter in search locates the focused result without opening it',()=>{
+ const f=fixture();f.state.search='file';
+ assert.equal(f.press(1,'Enter',{ctrlKey:true}).prevented,true);
+ assert.deepEqual(f.calls,[['locate','file1']]);
 });
 test('keyboard context menu keeps existing multiple selection and anchors to row',()=>{
  const f=fixture();f.state.selected=new Set(['file1','file2']);f.press(1,'F10',{shiftKey:true});

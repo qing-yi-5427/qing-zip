@@ -47,3 +47,28 @@ fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 #runbar:not(:has(button:not(.hidden), #status:not(:empty))), #result:empty { display: none; }
 #password-group .oa-password-field { margin: 0; }
 #password-group .oa-password-field input { display: block; margin-top: var(--qa-space-1); }
+
+.hash-head, .hash-list dd { display:flex; align-items:center; gap:10px; }
+.hash-head { justify-content:space-between; }
+.hash-head h3 { margin:0; font-size:var(--qa-font-body); }
+.hash-label { font-size:var(--qa-font-control); color:var(--qa-text); font-weight:600; }
+.hash-label input { display:block; margin-top:5px; font-weight:normal; }
+.hash-source { font-size:var(--qa-font-caption); margin:12px 0 6px; }
+.hash-list { margin:0; }
+.hash-list > div {
+  display:grid; grid-template-columns:minmax(70px,auto) minmax(0,1fr); align-items:start; gap:12px;
+  padding:6px 0; border-top:1px solid var(--qa-line);
+}
+.hash-list dt { padding-top:5px; font-weight:600; }
+.hash-list dd { margin:0; justify-content:space-between; }
+.hash-list code { overflow-wrap:anywhere; user-select:all; }
+.hash-list .qa-button { flex:none; min-height:28px; padding:3px 8px; color:var(--qa-accent); }
+.hash-feedback, .hash-verdict { font-size:var(--qa-font-control); }
+.hash-feedback:empty, .hash-verdict:empty { margin:0; }
+.hash-verdict:not(:empty) { margin:6px 0 10px; border-inline-start:3px solid currentColor; padding-inline-start:8px; }
+.hash-verdict[data-state=match] { color:light-dark(#166758,#91d7c4); }
+.hash-verdict[data-state=different] { color:var(--qa-danger); }
+@media(max-width:500px){
+  .hash-list > div { grid-template-columns:minmax(0,1fr); gap:0; }
+  #runbar { flex-wrap:wrap; }
+}

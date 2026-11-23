@@ -10,6 +10,7 @@ const makeContext=value=>vm.createContext({
 });
 const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('function pageHeading(')) + source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('));
 const runSource=source=>source.slice(source.indexOf('async function run('),source.indexOf('function forgetRecycledArchives('));
+const historySource=source=>source.slice(source.indexOf('function historyPage()'),source.indexOf('function hideMenu()'));
 
 
 test('cancelled tasks use a neutral message without hiding real failure details', () => {
@@ -17,10 +18,11 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   const field={textContent:''};const notices=[];
   const context=makeContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
   vm.runInContext(source.slice(source.indexOf('function archiveOpenMessage('),source.indexOf('function openDialog(')),context);
-  for(const prefix of ['function taskError(', 'function error(', 'function historyPage()'])
-    vm.runInContext(source.split('\n').find(line=>line.startsWith(prefix)),context);
+  vm.runInContext(historySource(source),context);
+  vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
   vm.runInContext(taskSource(source),context);
   context.error(Error('operation cancelled'));
+  assert.equal(context.taskError(Error('destination conflict: D:/中文/既有内容.txt')), '目标位置已有同名项目。\nD:/中文/既有内容.txt');
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
   const nested='写回失败，内层工作副本已保留，可重试或另存为：operation cancelled';
   context.error(Error(nested));
@@ -193,6 +195,171 @@ test('deep extraction with recycling reflects the actual report in task completi
   }
 });
 
+function recoveryFixture() {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const deepSource = fs.readFileSync(path.join(__dirname, '../frontend/deep-extract.js'), 'utf8');
+  const s = {jobs: [], entries: [], page: 'history', view: 'history'};
+  const fields = {
+    'oa-retry-id': {value: ''}, 'oa-retry-dest': {value: 'C:/second'},
+    'oa-retry-conflict': {value: 'rename'},
+  };
+  let id = 0, reply, startError;
+  const context = makeContext({
+    s, window: {}, esc: String, taskError: String, btn: (label,action)=>`<button data-action="${action}">${label}</button>`,
+    $: key=>fields[key], close() {}, renderInlineTask() {}, finishExtraction: async()=>{},
+    archivePasswordError: () => false, extractionLocation: () => ({relative: 'source'}),
+    setTimeout: () => 1, clearTimeout() {},
+    invoke: async command => {
+      if (command === 'start_operation') {
+        if (startError) throw Error(startError);
+        return ++id;
+      }
+      if (command === 'wait_operation') return {progress: {}, ...reply};
+      assert.equal(command,'forget_operation');
+    },
+  });
+  const workflows = source.slice(source.indexOf('async function runExtraction('),source.indexOf('async function quickExtract('));
+  vm.runInContext(taskSource(source)+runSource(source)+workflows+deepSource,context);
+  context.deepExtract = context.window.QingDeepExtract({
+    root: {addEventListener() {}}, s, pref: {}, esc: String,
+    currentReport: context.currentDeepReport, canContinue: vm.runInContext('deepCanContinue',context),
+  });
+  return {
+    context, s, retries: vm.runInContext('ordinaryRetries',context),
+    setReply(value) {reply=value;},
+    failStart(message) {startError=message;},
+    retryFrom(job) {fields['oa-retry-id'].value=String(job.id);return context.submitExtractionRetry();},
+  };
+}
+
+test('ordinary retry hands off only after a native job starts and leaves the latest unresolved attempt retryable', async () => {
+  const f = recoveryFixture(), {context,s,retries} = f;
+  const request = {source:'C:/source.zip',dest:'C:/first',selected:[],sameFolder:true,overwrite:'error',password:'fixture'};
+  f.setReply({status:'failed',error:'first conflict'});
+  await assert.rejects(context.runExtraction(request),/first conflict/);
+  const original=s.jobs[0];
+  assert.equal(retries.get(original.id).password,undefined);
+
+  f.failStart('native start failed');
+  await assert.rejects(f.retryFrom(original),/native start failed/);
+  assert.equal(s.jobs.length,1);
+  assert.equal(original.followedBy,undefined);
+  assert.equal(context.needsAttention(original),true);
+  assert.match(context.jobCard(original),/data-action="extract-retry-1"/);
+
+  f.failStart(null);
+  f.setReply({status:'failed',error:'second conflict'});
+  await assert.rejects(f.retryFrom(original),/second conflict/);
+  const second=s.jobs[1];
+  assert.equal(original.followedBy,second.id);
+  assert.equal(original.status,'failed');
+  assert.match(context.jobCard(original),/data-attention="false".*?[\s\S]*first conflict/);
+  assert.doesNotMatch(context.jobCard(original),/data-action="extract-retry-/);
+  assert.equal(context.needsAttention(second),true);
+  assert.deepEqual([...retries.keys()],[second.id]);
+
+  f.setReply({status:'cancelled',error:'operation cancelled'});
+  await assert.rejects(f.retryFrom(second),/operation cancelled/);
+  const cancelled=s.jobs[2];
+  assert.equal(context.needsAttention(second),false);
+  assert.equal(context.needsAttention(cancelled),true);
+  assert.deepEqual([...retries.keys()],[cancelled.id]);
+
+  f.setReply({status:'complete',result:{files:1,destination:'C:/second/source'}});
+  await f.retryFrom(cancelled);
+  assert.equal(s.jobs[3].outputPath,'C:/second/source');
+  assert.ok(s.jobs.every(job=>!context.needsAttention(job)));
+  assert.equal(retries.size,0);
+});
+
+test('deep recovery follows the latest attempt and preserves historical paths after completion or end of session', async () => {
+  for(const endSession of [false,true]){
+    const f=recoveryFixture(),{context:c,s}=f;
+    const pending={deep_session:19,finished:false,partial:true,outputs:['C:/saved'],recovery_path:'C:/recovery',
+      pending:[{node:3,name:'inner.zip',reason:'需要密码'}]};
+    const start={operation:'deep-extract',path:'C:/outmost.zip'};
+    const resume={operation:'deep-resume',deep_session:19};
+    f.setReply({status:'complete',result:pending});
+    await c.run(start,'深度解压');
+    const original=s.jobs[0];
+    assert.equal(c.currentDeepReport(19),pending);
+    assert.match(c.jobCard(original),/输入密码并继续/);
+
+    f.failStart('backend unavailable');
+    await assert.rejects(c.run(resume,'继续深度解压'),/backend unavailable/);
+    assert.equal(original.followedBy,undefined);
+    assert.equal(c.currentDeepReport(19),pending);
+    assert.equal(c.needsAttention(original),true);
+
+    f.failStart(null);
+    f.setReply({status:'failed',error:'请先提高限制'});
+    await assert.rejects(c.run(resume,'继续深度解压'),/请先提高限制/);
+    const failed=s.jobs[1];
+    assert.equal(failed.deep,undefined);
+    assert.equal(c.currentDeepReport(19),pending);
+    assert.equal(c.needsAttention(original),false);
+    assert.equal(c.needsAttention(failed),true);
+    const failedCard=c.jobCard(failed),previousCard=c.jobCard(original);
+    assert.match(failedCard,/data-state="failed">失败/);
+    assert.match(failedCard,/data-deep-action="manage"/);
+    assert.doesNotMatch(previousCard,/data-deep-action="manage"/);
+    assert.match(previousCard,/部分完成/);
+    assert.match(previousCard,/C:\/saved/);
+    assert.match(previousCard,/C:\/recovery/);
+
+    const updated={...pending,pending:[],publish_error:'已有同名文件'};
+    f.setReply({status:'complete',result:updated});
+    await c.run(resume,'继续深度解压');
+    const latest=s.jobs[2];
+    assert.equal(c.currentDeepReport(19),updated);
+    assert.equal(c.needsAttention(failed),false);
+    assert.match(c.jobCard(latest),/处理保存冲突/);
+    assert.match(c.jobCard(latest),/data-deep-action="recovery"/);
+    assert.doesNotMatch(c.jobCard(failed),/data-deep-action="manage"/);
+
+    const final=endSession?{...updated,session_closed:true}:{deep_session:19,finished:true,outputs:['C:/saved']};
+    f.setReply({status:'complete',result:final});
+    await c.run({operation:endSession?'deep-discard':'deep-resume',deep_session:19},'完成深度解压');
+    assert.equal(c.currentDeepReport(19),undefined);
+    assert.ok(s.jobs.every(job=>!c.needsAttention(job)));
+    assert.ok(s.jobs.every(job=>!c.jobCard(job).includes('data-deep-action="manage"')));
+    if(endSession){
+      assert.match(c.jobCard(s.jobs.at(-1)),/会话已结束/);
+      assert.match(c.jobCard(s.jobs.at(-1)),/data-deep-action="recovery"/);
+    }
+  }
+});
+
+test('an updated history row preserves focus in the original card or on the filter when it becomes hidden', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const update=source.slice(source.indexOf('function renderHistoryJob('),source.indexOf('function renderProgress('));
+  for(const attentionOnly of [false,true]){
+    const focused=[],active={tagName:'BUTTON',dataset:{deepAction:'manage',session:'19'}};
+    const node={dataset:{attention:'false'},querySelector:()=>null,childNodes:[]};
+    const card={
+      dataset:{attention:'true'},contains:value=>value===active,
+      querySelector:()=>null,querySelectorAll:()=>[],replaceChildren(){},
+      getClientRects(){return attentionOnly&&this.dataset.attention==='false'?[]:[{}];},
+      focus:()=>focused.push('card'),
+    };
+    const filter={focus:()=>focused.push('filter')},inserted=[];
+    const list={insertAdjacentHTML:(where,html)=>inserted.push([where,html])};
+    const context=makeContext({
+      s:{page:'history'},overlay:{hidden:true},jobCard:job=>`<div>${job.id}</div>`,
+      $:id=>id==='oa-history-attention'?filter:list,
+      main:{querySelector:selector=>selector.includes('"1"')?card:null},
+      document:{activeElement:active,createElement:()=>({content:{firstElementChild:node}})},
+      render:()=>assert.fail('should not recreate existing history'),
+    });
+    vm.runInContext(update,context);
+    context.renderHistoryJob({id:1});
+    assert.deepEqual(focused,[attentionOnly?'filter':'card']);
+    context.renderHistoryJob({id:2});
+    assert.deepEqual(inserted,[['afterbegin','<div>2</div>']]);
+    assert.equal(focused.length,1);
+  }
+});
+
 test('partial moves retain counts and the backend reason in task history', async () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const run=taskSource(source)+runSource(source);
@@ -215,7 +382,7 @@ test('partial moves retain counts and the backend reason in task history', async
     vm.runInContext(source.split('\n').find(line=>line.startsWith('function jobs()')),context);
     const card=context.jobs();assert.match(card,/部分完成/);assert.ok(!card.includes('已完成'));
     if(reason)assert.ok(card.includes(reason));
-    vm.runInContext(source.split('\n').find(line=>line.startsWith('function historyPage()')),context);
+    vm.runInContext(historySource(source),context);
     const history=context.historyPage();assert.match(history,/部分完成/);assert.ok(!history.includes('已完成'));
     if(reason)assert.ok(history.includes(reason));
   }
@@ -228,8 +395,8 @@ test('directory content merge shows retained metadata in both task presentations
  const context=makeContext({s:state,esc:String,shellQueueStatus:()=>'',btn:()=>'',invoke:async command=>command==='wait_operation'?{status:'complete',progress:{},result}:1});
  vm.runInContext(taskSource(source)+runSource(source),context);
  assert.equal(await context.run({operation:'fs-copy'},'复制文件',{silent:true}),result);
+ vm.runInContext(historySource(source),context);
  for(const name of ['jobs','historyPage']){
-  vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'()')),context);
   const html=context[name]();assert.match(html,/部分完成/);assert.match(html,/已复制 3 个文件/);assert.match(html,/附加数据未合并/);assert.ok(html.includes('C:/source/folder'));
  }
 });
@@ -243,8 +410,8 @@ test('access-time warnings survive task cleanup without marking archive data fai
   vm.runInContext(taskSource(source)+runSource(source),context);
   await context.run({operation:'create'},'新建压缩文件',{silent:true});
   assert.equal(state.jobs[0].partial,false);
+  vm.runInContext(historySource(source),context);
   for(const name of ['jobs','historyPage']){
-   vm.runInContext(source.split('\n').find(line=>line.startsWith('function '+name+'()')),context);
    const html=context[name]();assert.match(html,/已完成/);assert.ok(!html.includes('部分完成'));
    assert.equal(html.includes('部分来源文件的访问时间保护无法逐项确认。'),uncertain);
    assert.equal(html.includes('C:/input.txt'),uncertain);

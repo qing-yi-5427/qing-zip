@@ -10,5 +10,8 @@ function wordRange(format,method=''){
  return null;
 }
 function timeSupported(format){return ['zip','7z','sfx'].includes(format);}
-window.qingCompression=Object.freeze({levels:compressionLevels,wordRange,timeSupported});
+const rawFormats=['zstd','brotli','lz4','lz5','lizard'];
+function singleFile(format){return ['gzip','bzip2','xz',...rawFormats].includes(format);}
+function volumeSupported(format){return !['tgz','tbz2','txz','iso','lzh',...rawFormats].includes(format);}
+window.qingCompression=Object.freeze({levels:compressionLevels,wordRange,timeSupported,singleFile,volumeSupported});
 })();

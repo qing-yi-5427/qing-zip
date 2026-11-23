@@ -119,12 +119,7 @@ function render(op,result){
 if(op==='file-split'||op==='file-combine'){text(op==='file-split'?'分割完成':'合并完成','h3');text('保存位置：'+result.output);text('大小：'+result.bytes+' 字节');text('SHA256：'+result.sha256,'pre');if(op==='file-combine')text(result.verified_manifest?'已验证所有分块与完整文件校验值':'无校验清单，已按卷序合并');return;}if(result.data_url){const img=document.createElement('img');img.id='preview';img.src=result.data_url;img.alt=result.name;$('result').append(img);return;}
 if(Array.isArray(result.entries)){text(`${result.entries.length} 个条目`);const table=document.createElement('table');const head=document.createElement('tr');for(const s of ['名称','字节','加密','修改时间']){const h=document.createElement('th');h.textContent=s;head.append(h);}table.append(head);for(const e of result.entries){const tr=document.createElement('tr');for(const v of [e.name,e.is_dir?'目录':e.size_known===false?'未知':e.size,e.encrypted?'是':'否',e.modified]){const td=document.createElement('td');td.textContent=v;tr.append(td);}table.append(tr);}$('result').append(table);return;}
 if(Array.isArray(result.checksums)||(op==='checksum'&&(result.hashes||result.sha256))){
- if(Array.isArray(result.checksums)&&!result.checksums.length){text('文件夹中没有可校验的文件。');return;}
- const output=(result.checksums||[result]).map(file=>{
-   const hashes=file.hashes||Object.fromEntries(['crc32','md5','sha1','sha256'].map(k=>[k.toUpperCase(),file[k]]));
-   return [file.path,...Object.entries(hashes).map(([name,value])=>name+': '+value)].join('\n');
- });
- text(output.join('\n\n'),'pre').className='checksum-results';
+ window.QingChecksumView.render($('result'),result);
  return;
 }
 if(result.hashes){for(const [name,value] of Object.entries(result.hashes))text(name+': '+value);}else if(result.sha256){for(const k of ['crc32','md5','sha1','sha256'])text(k.toUpperCase()+': '+result[k]);}else if(typeof result.valid==='boolean')text(result.valid?'完整性检查通过。':'完整性检查未通过。');else if(result.files!==undefined)text(`已解压 ${result.files} 个文件 → ${result.destination}`);else if(result.outputs)result.outputs.forEach(p=>text('已创建：'+p));else if(result.updated)text('已更新：'+result.updated);else if(result.recovered){text(`恢复 ${result.recovered.length} 项 → ${result.output}`);text(result.complete?'恢复完成。':'部分恢复；原包中的其他内容可能无法恢复。');result.skipped.forEach(s=>text('未恢复：'+s));}else if(op==='recover'){text(`已尝试 ${result.attempts} 次 · ${{found:'找到密码',exhausted:'候选已用尽',limit_reached:'达到尝试上限',cancelled:'已取消'}[result.status]||result.status}`);if(result.password!==null){const input=document.createElement('input');input.type='password';input.readOnly=true;input.value=result.password;input.className='secret';$('result').append(input);const b=text('显示 / 隐藏密码','button');b.type='button';b.onclick=()=>input.type=input.type==='password'?'text':'password';}}else if(result.enabled!==undefined)text(result.enabled?'右键入口已启用。':'右键入口已移除。');else if(result.engine){text('可读取：'+result.engine.read_formats.join('、'));text('可创建：'+result.engine.write_formats.join('、'));text('引擎状态：'+(result.engine.available?'可用':'缺失'));result.engine.limitations.forEach(s=>text(s));}else text('操作完成。');}
@@ -249,13 +244,27 @@ if (window.parent !== window) {
 if(params.has('path')){$('path').value=params.get('path');$('checksum-paths').value=params.get('path');}if(params.has('codepage'))$('codepage').value=params.get('codepage');
 if(window.parent!==window){document.querySelector('h1').hidden=true;document.querySelector('body>p').hidden=true;document.body.style.padding='12px';}
 
+function invalidateChecksum(){
+ if($('operation').value!=='checksum'||window.obzBusy||!$('result').hasChildNodes())return;
+ $('result').replaceChildren();
+ $('status').textContent='';
+ $('status').className='';
+ show('progress',false);
+}
+$('checksum-paths').addEventListener('input',invalidateChecksum);
+$('hash-choices').addEventListener('change',invalidateChecksum);
 $('checksum-browse').onclick=async()=>{
  const picked=await invoke('pick_files_for_zip');
- if(picked.length)$('checksum-paths').value=[...new Set([...lines('checksum-paths'),...picked])].join('\n');
+ if(picked.length)addChecksumPaths(picked);
 };
-$('hash-algorithm').onchange=()=>show('hash-choices',$('hash-algorithm').value==='custom');
+$('hash-algorithm').onchange=()=>{invalidateChecksum();show('hash-choices',$('hash-algorithm').value==='custom');};
 
-$('checksum-folder').onclick=async()=>{const picked=await invoke('pick_folder');if(picked)$('checksum-paths').value=[...new Set([...lines('checksum-paths'),picked])].join('\n');};
+function addChecksumPaths(paths){
+ const input=$('checksum-paths');
+ const value=[...new Set([...lines('checksum-paths'),...paths])].join('\n');
+ if(input.value!==value){input.value=value;invalidateChecksum();}
+}
+$('checksum-folder').onclick=async()=>{const picked=await invoke('pick_folder');if(picked)addChecksumPaths([picked]);};
 
 if(initialOperation==='preview'&&params.has('name'))$('name').value=params.get('name');
 const defaultOperation=hasInitialOperation?initialOperation:'list';

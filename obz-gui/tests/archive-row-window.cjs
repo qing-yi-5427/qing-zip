@@ -53,15 +53,15 @@ test('50000 detail rows stay bounded through scrolling and logical End/Home focu
   f.setCursor(0);f.window.reveal(0);assert.ok(f.window.nodes.has(0));assert.ok(!f.window.nodes.has(last));
   f.viewport.listeners.get('scroll')();f.window.stop();assert.equal(f.frames.size,0);assert.equal(f.viewport.listeners.size,0);assert.equal(f.observer.watched.size,0);
 });
-test('keyboard navigation keeps the target row between the sticky controls',()=>{
+test('keyboard navigation keeps the target row below the pinned header',()=>{
   const f=viewFixture();
-  f.viewport.querySelector=selector=>selector==='.qa-path'
-    ? {getBoundingClientRect:()=>({bottom:45})}
-    : {getBoundingClientRect:()=>({top:260})};
+  f.viewport.querySelector=selector=>selector==='.qa-table:not(.oa-icons) thead th'
+    ? {getBoundingClientRect:()=>({bottom:32})}
+    : null;
   f.setCursor(49999);f.window.reveal(49999);
-  assert.equal(f.window.heights.before(50000)-f.window.visibleTop(),260);
+  assert.equal(f.window.heights.before(50000)-f.window.visibleTop(),320);
   f.setCursor(0);f.window.reveal(0);
-  assert.equal(f.window.heights.before(0)-f.window.visibleTop(),45);
+  assert.equal(f.window.heights.before(0)-f.window.visibleTop(),32);
 });
 test('wrapped rows change cumulative height and are remeasured after a width change',()=>{
   const f=viewFixture(1000);f.sizes.set(0,112);f.observer.fn();f.advance();
@@ -83,10 +83,11 @@ test('the archive view uses the window only for large details and keeps icon thu
   const app=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const excerpt=app.slice(app.indexOf('const windowThreshold'),app.indexOf('\n}',app.indexOf('function rows() {'))+2);
   const table={attributes:{},classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v}};
-  const body={closest:()=>table,innerHTML:''};
+  const body={closest:()=>table,innerHTML:''},empty={};
   const state={selected:new Set(),listStyle:'details',entries:[],search:''},calls=[];
   const env={ArchiveColumns:require('../frontend/archive-columns.js'),columns:require('../frontend/archive-columns.js').normalize(null),entryType:()=>'PNG',s:state,main:{},document:{activeElement:null},listingWindow:null,
-    $:()=>body,positionsFor:l=>new Map(l.map((e,i)=>[e.name,i])),visibleEntries:()=>env.list,
+    $:id=>id==='qa-rows'?body:empty,positionsFor:l=>new Map(l.map((e,i)=>[e.name,i])),visibleEntries:()=>env.list,
+    archiveViewport:()=>({}),memberDirectory:name=>name.slice(0,name.lastIndexOf('/')+1),syncArchiveSearch(){},updateColumnScroll(){},
     refreshSelection:()=>calls.push('selection'),stopThumbnailObserver:()=>calls.push('stop'),observeThumbnails:()=>calls.push('observe'),
     icon:()=>'',esc:s=>s,size:()=>'',entrySize:()=>'',displayModified:()=>'',isImage:()=>true,
     watchTile(){},unwatchTile(){},ArchiveIconWindow:class{constructor(b,m,l,row){Object.assign(this,{body:b,list:l,row,iconGrid:true});calls.push('icon mount')}stop(){calls.push('release icons')}},
@@ -101,8 +102,9 @@ test('the archive view uses the window only for large details and keeps icon thu
   state.listStyle='icons';env.rows();assert.ok(env.listingWindow.iconGrid);assert.ok(calls.includes('icon mount'));assert.match(env.listingWindow.row(env.list[256],256),/data-thumbnail=/);
   env.list=entries(64);env.rows();assert.equal(calls.at(-1),'observe');assert.equal(env.listingWindow,null);
   assert.equal((body.innerHTML.match(/data-thumbnail=/g)||[]).length,64);
-  state.listStyle='details';env.list=[];env.rows();assert.ok(body.innerHTML.includes('colspan="6"'));assert.equal(calls.at(-1),'stop');
-  assert.ok(body.innerHTML.includes('此压缩包为空'));
-  state.entries=entries(1);env.rows();assert.ok(body.innerHTML.includes('此文件夹为空'));
-  state.search='missing';env.rows();assert.ok(body.innerHTML.includes('没有匹配的文件'));
+  state.listStyle='details';env.list=[];env.rows();assert.equal(body.innerHTML,'');assert.equal(calls.at(-1),'stop');
+  assert.equal(empty.hidden,false);assert.equal(empty.textContent,'此压缩包为空');
+  state.entries=entries(1);env.rows();assert.equal(empty.textContent,'此文件夹为空');
+  state.search='missing';env.rows();assert.equal(empty.textContent,'没有匹配的文件或文件夹');
+  state.listStyle='icons';env.rows();assert.equal(empty.hidden,false);
 });

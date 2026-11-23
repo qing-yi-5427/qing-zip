@@ -96,12 +96,9 @@ class ArchiveIconWindow {
     this.paint();
     if (!this.columns || index < 0 || index >= this.list.length) return;
     const top = this.visibleTop(), band = Math.floor(index / this.columns) * this.stride;
-    const bounds = this.viewport.getBoundingClientRect();
-    const path = this.viewport.querySelector('.qa-path'), actions = this.viewport.querySelector('.oa-selection-actions:not([hidden])');
-    const start = top + (path ? Math.max(0, path.getBoundingClientRect().bottom - bounds.top) : 0);
-    const end = top + (actions ? Math.min(bounds.bottom, actions.getBoundingClientRect().top) : bounds.bottom) - bounds.top;
+    const end = top + this.viewport.clientHeight;
     const bottom = band + this.nodes.values().next().value.getBoundingClientRect().height;
-    if (band < start) this.viewport.scrollTop += band - start;
+    if (band < top) this.viewport.scrollTop += band - top;
     else if (bottom > end) this.viewport.scrollTop += bottom - end;
     this.paint();
   }

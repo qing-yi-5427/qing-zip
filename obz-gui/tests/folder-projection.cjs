@@ -12,6 +12,17 @@ test('implied folder metadata comes from neither the first nor a later child',()
  for(const entries of [children,[...children].reverse()])assert.deepEqual(project(entries),[neutral('a/')]);
 });
 
+test('archive totals count every browsable folder once, including implied parents and empty folders',()=>{
+ const entries=[{name:'a/b/one.txt'},{name:'a/b/two.txt'},{name:'a/',is_dir:true},{name:'empty/',is_dir:true},{name:'readme.txt'}];
+ for(const listing of [entries,[...entries].reverse()]){
+  const {files,directories}=context.archiveIndex(listing);
+  assert.equal(files,3);
+  assert.equal(directories,3);
+ }
+ assert.equal(context.archiveIndex([{name:'root.txt'}]).directories,0);
+ assert.equal(context.archiveIndex([]).directories,0);
+});
+
 test('explicit directory metadata wins before or after its descendants in both views',()=>{
  const directory={...rich,name:'a/',is_dir:true,comment:'directory',encrypted:false};
  const child={...rich,name:'a/child.txt'};

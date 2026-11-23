@@ -7,3 +7,10 @@ test('word range follows the actual encoder and ZIP PPMd limit',()=>{
  for(const f of ['tar','zipx','gzip','zstd'])assert.equal(range(f),null);
  for(const m of ['ZSTD','Copy','BZip2','Brotli'])assert.equal(range('7z',m),null);
 });
+test('single-file requirements and split availability are independent',()=>{
+ const {singleFile,volumeSupported}=ctx.window.qingCompression;
+ for(const format of ['gzip','bzip2','xz','zstd','brotli','lz4','lz5','lizard'])assert.equal(singleFile(format),true);
+ for(const format of ['zstd','brotli','lz4','lz5','lizard','tgz','tbz2','txz','iso','lzh'])assert.equal(volumeSupported(format),false);
+ for(const format of ['zip','zipx','7z','tar','gzip'])assert.equal(volumeSupported(format),true);
+ assert.equal(singleFile('tgz'),false);
+});
