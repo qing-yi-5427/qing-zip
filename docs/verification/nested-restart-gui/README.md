@@ -9,3 +9,7 @@
 逐项哈希、PID、退出方式及第二次重开见 [机器回执](baseline.json)，调试策略恢复见 [desktop-session.json](desktop-session.json)。运行成功表示观察完成，不能当作强退恢复通过。另存恢复副本、候选修复以及系统文件对话框尚未在本基线上通过。[三层外部写入冲突基线](three-layer.md) 单独记录正常用户操作期间的嵌套冲突。
 
 复跑：在 GitHub Actions 的 `Windows regression` workflow 选择本分支并设置 `nested_restart_capture=true`；该入口默认固定下载 R3 构建，不启用深度或特殊文件系统测试；可显式提供同仓库成功的 Windows regression 构建 run、源码提交及便携 ZIP SHA-256，以绑定候选。优先使用直接分支构建或手动运行，避免 PR 合并树与 head 不一致。候选测试脚本支持 `--expect-recovery`：要求恢复入口恰有一项，通过真正的 Windows 另存对话框写入全新独立目录，核验输出与编辑副本 SHA、成员及二次重开不新增副本；这一候选模式仍待产品实现及实跑，不能视为通过。
+
+## AES 外层控制组
+
+[托管 run 45141552609](https://github.com/qing-yi-5427/qing-zip/actions/runs/45141552609) 使用临时合成 AES256 加密外层 ZIP，正常输入密码并编辑普通内层，再只强制结束本次 GUI。冷启动后 [恢复菜单为空](encrypted-retained.png)，现有恢复索引不存在，因而未含合成密码；原包和旁边哨兵哈希不变，另用原密码解密并逐字节核对原始内包与外层成员。[回执](encrypted-baseline.json) 不含密码。该结果只约束恢复入口及索引，不表示临时目录中没有解密工作副本。候选包需重新执行此控制组。
