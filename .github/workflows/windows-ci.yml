@@ -144,6 +144,23 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
           python scripts/check-public-package.py $portable[0].FullName
           exit $LASTEXITCODE
+      - name: Drop an ordinary archive from Explorer into the home window
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pywinauto==0.6.9 websockets==15.0.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected the packaged x64 GUI' }
+          python scripts/check-hosted-home-drop.py --exe $exe[0].FullName --out target/home-drop
+          exit $LASTEXITCODE
+      - name: Save native Explorer drop screenshots and file receipt
+        if: always() && hashFiles('target/home-drop/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-home-explorer-drop
+          path: target/home-drop
+          retention-days: 21
+          if-no-files-found: error
       - name: Check native ZIP creation and real file symbolic links
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
