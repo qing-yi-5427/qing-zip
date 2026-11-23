@@ -15,6 +15,16 @@
 | x64 包常见格式 | qing-zip 10/10 PASS。另三款工具共 24 个适用组合有 22 次 PASS、2 次 FAIL，失败的是 7-Zip、Bandizip 处理同一组旧式 RAR 存储三卷，官方 UnRAR 与 qing-zip 的结果一致。ZIP/7z 双向互读另行通过。[逐项清单](verification/round3/format-comparison.jsonl) · [双向互读](verification/round3/interop.json) |
 | ARM64 包的真实菜单 | PASS。Windows 11 26200、实际 100% 缩放上切换普通、高对比度、减少动画并恢复。四种状态均显示 7 项。[配对截图与恢复回执](https://github.com/qing-yi-5427/qing-zip/pull/31) |
 
+**BLOCKED（真实 200% 缩放）。** Windows 11 ARM64 托管会话切换三种系统显示分辨率，1024 × 768、1600 × 1200 和 1920 × 1080 均只提供 100% 和 125%。原来的显示模式、Scale 和测试设置已恢复，应用窗口前后两张截图字节相同。[系统选项与实际窗口](https://github.com/qing-yi-5427/qing-zip/pull/32)
+
+## 独立安装候选与 Explorer 验收
+
+| 实际操作 | 结果 |
+| --- | --- |
+| 从 Windows 11 ARM64 一级菜单解压到此处、智能解压和创建普通 ZIP | PASS。提取位置、成员和源哈希通过，退出窗口后再读新 ZIP 通过。[三项操作](https://github.com/qing-yi-5427/qing-zip/pull/34) |
+| 移动已注册的便携目录、恢复菜单、单独注销 | PASS。仅移动时分组消失，旧位置注销并在新位置重新注册后实际解压成功。注销后分组消失，731 个文件哈希一致。[移动生命周期](https://github.com/qing-yi-5427/qing-zip/pull/33) |
+| 官方 v0.12.20 升级至独立 x64 安装候选 | PASS。无交互及取消时原样保留，选中的两项成功移入恢复目录，另两项因被占用或已更改而保留，重复升级和卸载后恢复通过。[安装候选](https://github.com/qing-yi-5427/qing-zip/pull/27) |
+
 ## 历史基线与各主题验证
 
 | 层级与入口 | 样本和断言 | 状态 |
@@ -41,7 +51,8 @@
 | 托管 x64 卸载后的旧版残留 | 卸载后仍有十个旧版独有文件，与初装和正式发行文件的哈希一致。候选发行文件全部移除。当前提案保守保留无逐文件归属记录的历史文件。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) · [补测结果](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) · [清单及迁移提案](https://github.com/qing-yi-5427/qing-zip/pull/21) | FAIL（严格残留断言） |
 | 默认安装目录、ARM64 安装和文件关联 | 普通 NSIS 用例仅覆盖托管 x64 的临时路径。默认路径、ARM64 安装、升级及卸载、真实用户数据、安装所设文件关联及升级后保留未验收。 | NOT RUN |
 | Windows 11 ARM64 菜单及系统无障碍 | 系统实际 100% 缩放、运行中切换高对比度和减少动画，7 项菜单一直可见，纯色/渐变及媒体查询符合系统，最后恢复系统原值。[四次截图与回执](https://github.com/qing-yi-5427/qing-zip/pull/13) | PASS |
-| Windows 11 现代右键 | 一次性 Windows 11 ARM64 以临时签名注册，真实点击「解压到此处」与「智能解压」，分别在同级和同名目录得到两个预期成员。原包和哨兵保全。[动作与截图](https://github.com/qing-yi-5427/qing-zip/actions/runs/45129913820) | PASS（两项解压）。正式发行签名及升级集成待验收。 |
+| Windows 11 现代右键 | 一次性 Windows 11 ARM64 以临时签名注册，真实点击「解压到此处」与「智能解压」，分别在同级和同名目录得到两个预期成员。普通文件的压缩入口保存了 ZIP，独立读取唯一成员与来源 SHA-256 相同。原包、来源和哨兵保全。[动作与截图](https://github.com/qing-yi-5427/qing-zip/actions/runs/45133376060) | PASS（三项操作）。正式发行签名及升级集成待验收。 |
+| Windows 11 ARM64 便携菜单生命周期 | 仅移动外置目录时注册仍指旧路径，一级分组消失。按顺序注销、移动、重注册后，实际点击从新路径解压。最终保留应用开关仅注销包，新 Explorer 窗口无 qing-zip 分组，注册和测试证书清理通过。[WinRT 路径和实际菜单](https://github.com/qing-yi-5427/qing-zip/actions/runs/45132964898) | PASS（临时测试签名包） |
 | Windows 10 与 Windows 11 ARM64 | Windows 11 ARM64 托管菜单及组件已见上方实测。Windows 10、实体 ARM64 设备及正式安装后 Explorer 的体验仍待验证。 | BLOCKED（所列未覆盖环境） |
 | 普通 ZIP 目标卷已满 | 托管 Windows x64 的独占 NTFS 卷可用空间为零。创建与覆盖解压报告空间不足。已有目标、无关文件、来源和原包均保全，释放空间后重试成功。[逐次回执](https://github.com/qing-yi-5427/qing-zip/pull/22) | PASS（普通 ZIP 两种操作） |
 | 覆盖解压写入期间耗尽空间 | 普通 32 MiB 存储 ZIP 的暂存文件实际增长至 29,327,360 字节，观测内容前缀与输入一致。当时还需写 4,227,072 字节，卷上仅余 24,576 字节。原生错误后原包、已有目标、无关文件与暂存目录清单保持，腾出空间后同命令成功，32 MiB 输出通过 SHA-256。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) | PASS（两台独立 runner） |

@@ -15,4 +15,6 @@
 - 在 10 个输入上分别比较工具实际输出，qing-zip 10/10。前九个输入与 7-Zip、Bandizip 均一致。旧式 RAR 存储三卷上，qing-zip 与官方 UnRAR 通过，另外两款工具退出码均为 2。另有普通 ZIP/7z 双向互读通过。[34 个工具与样本组合的原始状态](format-comparison.jsonl) · [双向互读](interop.json)
 - 用交付的同一 ARM64 包实际切换普通、高对比度、减少动画并恢复，菜单均有 7 项。[原生窗口验收](https://github.com/qing-yi-5427/qing-zip/pull/31)
 
+真实窗口的满盘保存计时、两档普通 ZIP 同进程并发更新，以及安装与 Explorer 技术验证分别保留了测试入口和逐轮结果。[性能报告](../../PERFORMANCE_REPORT.md) · [交互升级](https://github.com/qing-yi-5427/qing-zip/pull/27) · [移动外置目录](https://github.com/qing-yi-5427/qing-zip/pull/33) · [真实一级菜单动作](https://github.com/qing-yi-5427/qing-zip/pull/34)
+
 GitHub 运行的产物有保留期。可使用对应源码和普通 Windows 工作流重建，复测时记录新包的 SHA-256。
