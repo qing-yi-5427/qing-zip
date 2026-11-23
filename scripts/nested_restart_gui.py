@@ -148,7 +148,17 @@ def save_retained_copy(page, app, destination, evidence):
         raise RuntimeError("Unexpected native Save As filename")
     picker.capture_as_image().save(evidence / "recovered-save-as.png")
     picker.child_window(auto_id="1", control_type="Button").click_input()
-    expect(page.locator("#qa-toast")).to_contain_text(str(destination), timeout=30000)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if destination.is_file():
+            try:
+                with zipfile.ZipFile(destination) as archive:
+                    if archive.testzip() is None:
+                        return
+            except (OSError, zipfile.BadZipFile):
+                pass
+        time.sleep(.2)
+    raise RuntimeError("Native Save As did not produce a readable ZIP")
 
 
 def main():
