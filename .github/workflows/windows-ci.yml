@@ -238,6 +238,36 @@ jobs:
             target/batch-extract-acceptance/*-diagnostic.png
           retention-days: 21
           if-no-files-found: error
+      - name: Verify cross-session batch continuation in the packaged x64 desktop
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          $portable = @(Get-ChildItem -LiteralPath dist/x64 -Filter '*-portable.zip' -File)
+          if ($exe.Count -ne 1 -or $portable.Count -ne 1) { throw 'Expected one packaged x64 GUI and portable archive' }
+          $fixtures = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'BatchResumeFixtures')
+          $common = @('scripts/check-batch-resume-desktop.py', '--hosted', '--source', $env:GITHUB_SHA,
+            '--exe', $exe[0].FullName, '--package', $portable[0].FullName, '--fixtures-in', $fixtures.FullName,
+            '--hardening', 'target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json')
+          python @common --out target/batch-resume-acceptance/cold
+          if ($LASTEXITCODE) { throw 'Cold batch continuation failed' }
+          python @common --overwrite-review --out target/batch-resume-acceptance/overwrite
+          if ($LASTEXITCODE) { throw 'Replacement confirmation failed' }
+          python @common --write-failure --out target/batch-resume-acceptance/unwritable
+          if ($LASTEXITCODE) { throw 'Unwritable record behavior failed' }
+          python @common --record-recovery --out target/batch-resume-acceptance/damaged
+          if ($LASTEXITCODE) { throw 'Damaged record backup failed' }
+          python @common --exit-while-saving --out target/batch-resume-acceptance/closing
+          if ($LASTEXITCODE) { throw 'Close while sealing a queue failed' }
+      - name: Save batch continuation receipts and screenshots
+        if: always() && hashFiles('target/batch-resume-acceptance/**/*.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-batch-resume-acceptance
+          path: |
+            target/batch-resume-acceptance/**/*.json
+            target/batch-resume-acceptance/**/*.png
+          retention-days: 21
+          if-no-files-found: error
       - name: Verify extraction and restore a script-owned ZIP from the Windows Recycle Bin
         shell: pwsh
         run: |
