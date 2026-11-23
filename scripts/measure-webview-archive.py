@@ -117,6 +117,8 @@ class Window:
         if any(name in {"qing-zip.exe", "obz-gui.exe"} for _, name in process_entries().values()):
             raise RuntimeError("Another qing-zip instance is active; its windows were left untouched")
         self.socket = None
+        self.driver = None
+        self.cdp = None
         self.sequence = 0
         self.hwnd = None
         self.allow_unfocused = allow_unfocused
@@ -132,7 +134,28 @@ class Window:
         self.proc = subprocess.Popen([exe, archive], cwd=isolated, env=env)
         session["proc"] = self.proc
 
+    def check_attached_window(self):
+        bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
+                          awaitPromise=True, returnByValue=True)
+        if not bound["result"].get("value") or Path(bound["result"]["value"]).resolve() != self.exe:
+            raise RuntimeError("The attached page does not report the expected executable")
+        self.hwnd = self.native_window()
+        if self.hwnd and not self.allow_unfocused and not self.is_foreground():
+            try:
+                win32gui.SetForegroundWindow(self.hwnd)
+            except WindowError:
+                pass
+
     def connect(self):
+        if self.port:
+            from nested_restart_gui import connect as connect_hosted
+            from playwright.sync_api import sync_playwright
+            self.driver = sync_playwright().start()
+            browser, page = connect_hosted(self.proc, self.port, self.driver)
+            page.wait_for_function("Boolean(window.__TAURI__?.core)")
+            self.cdp = page.context.new_cdp_session(page)
+            self.check_attached_window()
+            return
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self.proc.poll() is None:
             port_file = None if self.port else next(self.profile.rglob("DevToolsActivePort"), None)
@@ -144,17 +167,7 @@ class Window:
                     page = next(p for p in pages if p.get("type") == "page" and "tauri.localhost" in p["url"])
                     self.socket = connect(page["webSocketDebuggerUrl"], max_size=2 * 1024 * 1024,
                                           open_timeout=2, close_timeout=1)
-                    bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
-                                      awaitPromise=True, returnByValue=True)
-                    actual = bound["result"].get("value")
-                    if not actual or Path(actual).resolve() != self.exe:
-                        raise RuntimeError("The attached page does not report the expected executable")
-                    self.hwnd = self.native_window()
-                    if self.hwnd and not self.allow_unfocused and not self.is_foreground():
-                        try:
-                            win32gui.SetForegroundWindow(self.hwnd)
-                        except WindowError:
-                            pass
+                    self.check_attached_window()
                     return
                 except (OSError, ValueError, IndexError, StopIteration):
                     pass
@@ -162,6 +175,8 @@ class Window:
         raise RuntimeError("Packaged WebView2 did not expose its Tauri document over loopback")
 
     def call(self, method, **params):
+        if self.cdp is not None:
+            return self.cdp.send(method, params)
         self.sequence += 1
         self.socket.send(json.dumps({"id": self.sequence, "method": method, "params": params}))
         while True:
@@ -244,6 +259,8 @@ class Window:
         screenshot.write_bytes(base64.b64decode(result["data"]))
 
     def close(self):
+        if self.driver is not None:
+            self.driver.stop()
         if self.socket is not None:
             self.socket.close()
         if self.proc.poll() is None:
@@ -315,8 +332,8 @@ def temporary_profiles():
             try:
                 profiles.cleanup()
                 break
-            except PermissionError:
-                if time.monotonic() >= deadline:
+            except OSError as error:
+                if getattr(error, "winerror", None) not in (5, 32, 145) or time.monotonic() >= deadline:
                     raise
                 time.sleep(.2)
 
