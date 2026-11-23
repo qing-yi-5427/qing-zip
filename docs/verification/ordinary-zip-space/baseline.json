@@ -1,0 +1,358 @@
+{
+  "status": "passed",
+  "product_source": "51a68cc32bafcd535eac6cef8eee5169a54adcbe",
+  "fixed_vhd_bytes": 100663296,
+  "cases": {
+    "create": {
+      "status": "passed",
+      "state_before": {
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_sha256": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "free_before_fill": 84774912,
+      "volume_bytes": 99545088,
+      "free_at_failure": 0,
+      "filler_bytes": 84774912,
+      "os_full_errors": [
+        {
+          "write_bytes": 1048576,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 65536,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 4096,
+          "errno": 28,
+          "winerror": null
+        }
+      ],
+      "full_attempt": {
+        "exit": 1,
+        "stderr": "error: archive engine failed (2): \nNanaZip 7.0 , version 2610.2 (x64) : (c) M2-Team and Contributors. All rights reserved.\n\nScanning the drive:\n1 file, 16777216 bytes (16 MiB)\n\nCreating archive: E:\\qa-1fa99d7dc2064a68acb9de3a5a473375\\create\\.tmpxG9zVq\\result.zip\n\nAdd new data to archive: 1 file, 16777216 bytes (16 MiB)\n\n   0M Scan  <qa-root>\\fixtures\\\n                                                                            \n  0%\n    \n\n\nSystem ERROR:\nThere is not enough space on the disk.",
+        "space_diagnostic": true
+      },
+      "free_after_full_attempt": 0,
+      "state_after_full_attempt": {
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_after_full_attempt": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "free_after_release": 84774912,
+      "retry": {
+        "exit": 0,
+        "stderr": "",
+        "space_diagnostic": false
+      },
+      "state_after_retry": {
+        "result.zip": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_after_retry": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "retry_payload_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+    },
+    "extract": {
+      "status": "passed",
+      "state_before": {
+        "payload.bin": "9980091e27ff213dcec301c8dc8229f69307e4ae506ebfd4273b4f3bd4556e13",
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_sha256": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "free_before_fill": 67993600,
+      "volume_bytes": 99545088,
+      "free_at_failure": 0,
+      "filler_bytes": 67993600,
+      "os_full_errors": [
+        {
+          "write_bytes": 1048576,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 65536,
+          "errno": 28,
+          "winerror": null
+        },
+        {
+          "write_bytes": 4096,
+          "errno": 28,
+          "winerror": null
+        }
+      ],
+      "full_attempt": {
+        "exit": 1,
+        "stderr": "error: There is not enough space on the disk. (os error 112)",
+        "space_diagnostic": true
+      },
+      "free_after_full_attempt": 0,
+      "state_after_full_attempt": {
+        "payload.bin": "9980091e27ff213dcec301c8dc8229f69307e4ae506ebfd4273b4f3bd4556e13",
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_after_full_attempt": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "free_after_release": 67993600,
+      "retry": {
+        "exit": 0,
+        "stderr": "",
+        "space_diagnostic": false
+      },
+      "state_after_retry": {
+        "payload.bin": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "unrelated.txt": "9ab484717fa53102176268da865a8be8d330d36370294a4978a6837be477daa4"
+      },
+      "input_after_retry": {
+        "source": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+        "archive": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08"
+      },
+      "retry_payload_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+    }
+  },
+  "cli_sha256": "738b2917a84da07d00caeb0e5292ed599c6b2ae8980b6eab8c3eb00add2cd44c",
+  "worker_sha256": "1033cefd2a0821b5d8776edc0b16a07b2ce668dccb9adc3ccbefc226acd02e9f",
+  "ordinary_working_space": {
+    "status": "passed",
+    "windows": "10.0.26100",
+    "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+    "logical_cpus": 4,
+    "python": "3.12.10",
+    "volume_bytes": 99545088,
+    "payload_bytes": 16777216,
+    "source_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+    "archive_sha256": "0a01509a3c7308759e2ed4e4f42a2d70daaa43437562e91f6c7c1590466b3c08",
+    "cases": {
+      "create": {
+        "warmup": {
+          "samples": 9,
+          "largest_sample_gap_ms": 16.515,
+          "free_bytes_before": 84774912,
+          "free_bytes_minimum": 67993600,
+          "free_bytes_after": 67993600,
+          "peak_growth_bytes": 16781312,
+          "net_growth_bytes": 16781312,
+          "peak_above_final_bytes": 0,
+          "scratch_files_after": 0,
+          "scratch_logical_bytes_after": 0,
+          "previous_target_sha256": null,
+          "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+          "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+          "published_bytes": 16777372,
+          "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+        },
+        "rounds": [
+          {
+            "samples": 6,
+            "largest_sample_gap_ms": 15.852,
+            "free_bytes_before": 84774912,
+            "free_bytes_minimum": 67993600,
+            "free_bytes_after": 67993600,
+            "peak_growth_bytes": 16781312,
+            "net_growth_bytes": 16781312,
+            "peak_above_final_bytes": 0,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": null,
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+            "published_bytes": 16777372,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 7,
+            "largest_sample_gap_ms": 15.886,
+            "free_bytes_before": 84774912,
+            "free_bytes_minimum": 67993600,
+            "free_bytes_after": 67993600,
+            "peak_growth_bytes": 16781312,
+            "net_growth_bytes": 16781312,
+            "peak_above_final_bytes": 0,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": null,
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+            "published_bytes": 16777372,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 7,
+            "largest_sample_gap_ms": 14.178,
+            "free_bytes_before": 84774912,
+            "free_bytes_minimum": 67993600,
+            "free_bytes_after": 67993600,
+            "peak_growth_bytes": 16781312,
+            "net_growth_bytes": 16781312,
+            "peak_above_final_bytes": 0,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": null,
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+            "published_bytes": 16777372,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 8,
+            "largest_sample_gap_ms": 16.071,
+            "free_bytes_before": 84774912,
+            "free_bytes_minimum": 67993600,
+            "free_bytes_after": 67993600,
+            "peak_growth_bytes": 16781312,
+            "net_growth_bytes": 16781312,
+            "peak_above_final_bytes": 0,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": null,
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+            "published_bytes": 16777372,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 8,
+            "largest_sample_gap_ms": 15.875,
+            "free_bytes_before": 84774912,
+            "free_bytes_minimum": 67993600,
+            "free_bytes_after": 67993600,
+            "peak_growth_bytes": 16781312,
+            "net_growth_bytes": 16781312,
+            "peak_above_final_bytes": 0,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": null,
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "80631a029f722116ec39e8399761d4d03295706f21c67d159c81a50077a6fc12",
+            "published_bytes": 16777372,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          }
+        ],
+        "median_peak_growth_bytes": 16781312,
+        "median_peak_above_final_bytes": 0
+      },
+      "extract": {
+        "warmup": {
+          "samples": 12,
+          "largest_sample_gap_ms": 15.924,
+          "free_bytes_before": 67997696,
+          "free_bytes_minimum": 53395456,
+          "free_bytes_after": 67997696,
+          "peak_growth_bytes": 14602240,
+          "net_growth_bytes": 0,
+          "peak_above_final_bytes": 14602240,
+          "scratch_files_after": 0,
+          "scratch_logical_bytes_after": 0,
+          "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+          "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+          "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+          "published_bytes": 16777216,
+          "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+        },
+        "rounds": [
+          {
+            "samples": 11,
+            "largest_sample_gap_ms": 19.225,
+            "free_bytes_before": 67997696,
+            "free_bytes_minimum": 51220480,
+            "free_bytes_after": 67997696,
+            "peak_growth_bytes": 16777216,
+            "net_growth_bytes": 0,
+            "peak_above_final_bytes": 16777216,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+            "published_bytes": 16777216,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 11,
+            "largest_sample_gap_ms": 15.914,
+            "free_bytes_before": 67997696,
+            "free_bytes_minimum": 48025600,
+            "free_bytes_after": 67997696,
+            "peak_growth_bytes": 19972096,
+            "net_growth_bytes": 0,
+            "peak_above_final_bytes": 19972096,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+            "published_bytes": 16777216,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 11,
+            "largest_sample_gap_ms": 16.217,
+            "free_bytes_before": 67997696,
+            "free_bytes_minimum": 46977024,
+            "free_bytes_after": 67997696,
+            "peak_growth_bytes": 21020672,
+            "net_growth_bytes": 0,
+            "peak_above_final_bytes": 21020672,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+            "published_bytes": 16777216,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 10,
+            "largest_sample_gap_ms": 15.932,
+            "free_bytes_before": 67997696,
+            "free_bytes_minimum": 46977024,
+            "free_bytes_after": 67997696,
+            "peak_growth_bytes": 21020672,
+            "net_growth_bytes": 0,
+            "peak_above_final_bytes": 21020672,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+            "published_bytes": 16777216,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          },
+          {
+            "samples": 10,
+            "largest_sample_gap_ms": 16.186,
+            "free_bytes_before": 67997696,
+            "free_bytes_minimum": 40693760,
+            "free_bytes_after": 67997696,
+            "peak_growth_bytes": 27303936,
+            "net_growth_bytes": 0,
+            "peak_above_final_bytes": 27303936,
+            "scratch_files_after": 0,
+            "scratch_logical_bytes_after": 0,
+            "previous_target_sha256": "ba29bc6e972e5c2870fd5470d9fa02766b4c51ebfff88982f8452c61ec655292",
+            "sentinel_sha256": "f660a7996deacfbc7560e4240054a8ad82eb02fe25a95064257e07084bcacb85",
+            "published_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc",
+            "published_bytes": 16777216,
+            "published_member_sha256": "81818ebdf3203b0b00b696956b856a581de23535a6d54eb66095008897fa96bc"
+          }
+        ],
+        "median_peak_growth_bytes": 21020672,
+        "median_peak_above_final_bytes": 21020672
+      }
+    }
+  }
+}

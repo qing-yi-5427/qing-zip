@@ -5,6 +5,23 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      round2_fluent_capture:
+        description: 'Capture native accessibility states against a verified ARM64 portable package'
+        type: boolean
+        required: false
+        default: false
+      capture_build_run:
+        description: 'Optional successful same-repository ARM64 workflow run'
+        type: string
+        required: false
+      capture_source:
+        description: 'Exact revision for the optional build'
+        type: string
+        required: false
+      capture_package_sha:
+        description: 'SHA-256 of the expected ARM64 portable ZIP for the optional build'
+        type: string
+        required: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -14,6 +31,7 @@ permissions:
   contents: read
 jobs:
   native:
+    if: github.event_name != 'workflow_dispatch' || !inputs.round2_fluent_capture
     runs-on: windows-11-arm
     timeout-minutes: 55
     env:
@@ -194,6 +212,23 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one ARM64 portable archive' }
           ./scripts/check-selected-zip-cache.ps1 -Portable $portable[0].FullName -Target aarch64-pc-windows-msvc `
             -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
+      - name: Verify the running ARM64 menu against native desktop accessibility settings
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check websockets==15.0.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = @(Get-ChildItem -LiteralPath dist/arm64 -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected one packaged ARM64 GUI' }
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu --native-accessibility
+          exit $LASTEXITCODE
+      - name: Preserve native settings, menu screenshots and observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-arm64-menu
+          path: evidence/native-menu/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Invoke the classic Explorer action on native ARM64
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
@@ -233,3 +268,57 @@ jobs:
             dist/arm64/*.sha256
             dist/arm64/*-verification.json
             dist/arm64/*-package-build.json
+
+  round2-fluent-capture:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.round2_fluent_capture
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify pinned package and capture native accessibility states
+        shell: pwsh
+        env:
+          CAPTURE_BUILD: ${{ inputs.capture_build_run }}
+          CAPTURE_SOURCE: ${{ inputs.capture_source }}
+          CAPTURE_PACKAGE: ${{ inputs.capture_package_sha }}
+        run: |
+          if ($env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Native ARM64 required' }
+          $specified = @(@($env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE) | Where-Object { $_ })
+          $build = '45119972417'
+          $source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b'
+          $expectedPackage = '39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e'
+          if ($specified.Count) {
+            if ($env:CAPTURE_BUILD -cnotmatch '^[1-9][0-9]*$' -or $env:CAPTURE_SOURCE -cnotmatch '^[0-9a-f]{40}$' -or $env:CAPTURE_PACKAGE -cnotmatch '^[0-9a-f]{64}$') { throw 'Supply the build run, exact source SHA and portable SHA-256 together' }
+            $build, $source, $expectedPackage = $env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE
+          }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$build" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_repository.full_name -cne $env:GITHUB_REPOSITORY -or $run.head_sha -cne $source -or $run.conclusion -cne 'success' -or $run.path -cne '.github/workflows/windows-arm64.yml' -or $run.event -notin @('push','workflow_dispatch')) { throw 'Pinned build provenance mismatch' }
+          $artifact = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$build/artifacts" | ConvertFrom-Json | ForEach-Object artifacts | Where-Object { $_.name -cmatch '^qing-zip-[0-9]+\.[0-9]+\.[0-9]+-windows-arm64-trial$' -and !$_.expired })
+          if ($LASTEXITCODE -or $artifact.Count -ne 1 -or $artifact[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'Missing single source-bound ARM64 artifact' }
+          if (!$specified.Count -and $artifact[0].digest -cne 'sha256:eaa7d974800ae0e37204ea2d3d98c4c000d98a95fe33e7435d4eaf75a77a8ad4') { throw 'Historical artifact mismatch' }
+          gh run download $build --repo $env:GITHUB_REPOSITORY --name $artifact[0].name --dir downloaded
+          if ($LASTEXITCODE) { throw 'Artifact download failed' }
+          $package = @(Get-ChildItem downloaded -Recurse -File -Filter '*-arm64-portable.zip')
+          if ($package.Count -ne 1 -or (Get-FileHash -LiteralPath $package[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedPackage) { throw 'Pinned portable SHA-256 mismatch' }
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          @{ source = $run.head_sha; run = $run.id; artifact_id = $artifact[0].id; artifact_digest = $artifact[0].digest; package_sha256 = (Get-FileHash -LiteralPath $package[0].FullName).Hash.ToLowerInvariant(); harness = (git rev-parse HEAD).Trim(); runner_arch = $env:RUNNER_ARCH } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/package.json
+          Expand-Archive -LiteralPath $package[0].FullName -DestinationPath staged
+          $exe = @(Get-ChildItem staged -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected exactly one GUI' }
+          python -m pip install --disable-pip-version-check websockets==15.0.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu --native-accessibility
+          exit $LASTEXITCODE
+      - name: Preserve package binding and native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: round2-arm64-fluent-evidence
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30

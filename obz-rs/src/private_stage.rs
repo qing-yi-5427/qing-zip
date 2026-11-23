@@ -395,7 +395,27 @@ pub(crate) fn open_checksum_child(parent: &File, leaf: &OsStr, directory: bool) 
     open_private_child(parent, leaf, mode)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn open_retired_rename_source(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    open_private_child(parent, leaf, ChildAccess::RetiredRenameSource)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn open_retired_destination(parent: &File, leaf: &OsStr) -> Result<File, String> {
+    open_private_child(parent, leaf, ChildAccess::RetiredDestination)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn move_retired_noclobber(file: &File, parent: &File, leaf: &OsStr) -> Result<(), String> {
+    let name: Vec<_> = leaf.encode_wide().collect();
+    output::rename(file, parent, &name, false)
+}
+
 enum ChildAccess {
+    #[cfg(target_arch = "x86_64")]
+    RetiredRenameSource,
+    #[cfg(target_arch = "x86_64")]
+    RetiredDestination,
     ChecksumDirectory,
     ChecksumFile,
     ArchiveReference,
@@ -439,6 +459,12 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
     let (access, file_attributes, sharing, disposition, options, operation) = match mode {
         // Never follow reparse leafs or admit writers/renames. For files ask
         // for GENERIC_READ, just as File::options().read(true) does.
+        #[cfg(target_arch = "x86_64")]
+        ChildAccess::RetiredRenameSource => (0x80110000, 0, 1, 1, 0x200060, "pin selected retired file"),
+        // As in ordinary publication, NTFS internally opens the target parent
+        // with write access for the rename. Keep deny-delete and retain identity.
+        #[cfg(target_arch = "x86_64")]
+        ChildAccess::RetiredDestination => (0x1000a1, 0, 3, 1, 0x200021, "pin recovery directory"),
         ChildAccess::ChecksumDirectory => (0x100081, 0, 1, 1, 0x200021, "pin checksum directory"),
         ChildAccess::ChecksumFile => (0x80100000, 0, 1, 1, 0x200060, "open checksum file"),
         ChildAccess::ArchiveReference => (0x130080,0x80,0,2,0x201060,"create ordinary ZIP ACL reference"),

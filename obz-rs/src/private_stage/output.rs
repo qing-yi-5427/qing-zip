@@ -403,7 +403,7 @@ struct RenameInformation {
     length: u32,
     name: [u16; 1],
 }
-fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
+pub(super) fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("rename");
     let offset = std::mem::offset_of!(RenameInformation, name);

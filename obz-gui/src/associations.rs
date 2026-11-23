@@ -1,6 +1,8 @@
 //! Per-user candidate registration. Windows owns the final default selection.
 //! Never writes Explorer FileExts/UserChoice or any extension's default value.
 pub(crate) mod shortcuts;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod retired_install;
 use serde::Serialize;
 use std::{collections::BTreeSet, path::Path};
 use windows::{core::PCWSTR, Win32::{

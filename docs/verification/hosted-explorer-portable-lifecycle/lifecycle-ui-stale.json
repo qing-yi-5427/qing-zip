@@ -1,0 +1,21 @@
+{
+  "phase": "stale",
+  "passed": true,
+  "menu_samples": [
+    {
+      "modern_popup_present": true,
+      "qing_zip_group_present": false
+    }
+  ],
+  "input_sha256": {
+    "archive.zip": "fb3bfc687142d49532bc1979fce80e5fd409533a640bd9617625e493d0558fc9",
+    "keep.txt": "95a80968d5138e1e8e3bea4d0181a1959903c5cb544f4ebb68a838abccd5b140"
+  },
+  "first_run_actions": [
+    "physical first-run button",
+    "physical first-run button"
+  ],
+  "fresh_explorer_window": true,
+  "inputs_preserved": true,
+  "output_directory_exact": true
+}
