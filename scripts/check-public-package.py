@@ -13,8 +13,8 @@ def run_archive(cli, work, *args, returns_error=False):
         encoding="utf-8", errors="replace", timeout=60,
     )
     if returns_error:
-        if result.returncode == 0:
-            raise RuntimeError(f"Expected {args[0]} to refuse an existing file")
+        if result.returncode != 1 or not result.stderr.strip():
+            raise RuntimeError(f"Expected {args[0]} to report a handled error, got {result.returncode}")
         return
     if result.returncode:
         raise RuntimeError(f"{args[0]} failed ({result.returncode}): {result.stderr}")
@@ -60,7 +60,17 @@ def smoke(portable):
             run_archive(cli, work, "create", archive, sample, "--format", suffix, returns_error=True)
             if output.read_bytes() != b"existing destination" or archive.read_bytes() != source_bytes:
                 raise RuntimeError(f"{suffix} conflict changed existing data")
-            print(f"{suffix.upper()}: create, list, test, extract and conflict handling passed")
+            # An interrupted download must leave both the incomplete source and
+            # the user's existing output intact, even when overwrite is selected.
+            partial = work / f"incomplete.{suffix}"
+            prefix = source_bytes[:len(source_bytes) // 2]
+            partial.write_bytes(prefix)
+            run_archive(cli, work, "test", partial, returns_error=True)
+            run_archive(cli, work, "extract", partial, target, "--overwrite", "overwrite", returns_error=True)
+            if (list(target.iterdir()) != [output] or output.read_bytes() != b"existing destination"
+                    or partial.read_bytes() != prefix or archive.read_bytes() != source_bytes):
+                raise RuntimeError(f"Incomplete {suffix} extraction changed files")
+            print(f"{suffix.upper()}: round trip, conflicts and incomplete download handling passed")
 
 
 if __name__ == "__main__":
