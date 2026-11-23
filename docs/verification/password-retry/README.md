@@ -15,4 +15,4 @@ $env:PYTHONPATH = '<包含 playwright 的目录>'
 python scripts/check-password-retry-gui.py --exe '<便携包目录>/qing-zip.exe' --fixtures-in '<独立测试根>' --out '<证据输出目录>' --expect localized
 ```
 
-对未经修复的基线使用 `--expect baseline`。脚本使用临时 profile，并在退出时尝试清理；WebView2 短暂持有文件时临时缓存可能留待系统释放。不要将测试根或输出目录指向真实用户数据。
+对未经修复的基线使用 `--expect baseline`。脚本等待 WebView2 释放本轮独占的临时目录，移除后才写入成功收据。候选已复测了完整的密码重试流程和临时目录清理。[清理复测](cleanup-retry.json)
