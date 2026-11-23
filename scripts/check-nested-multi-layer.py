@@ -141,12 +141,54 @@ def sessions(page, fixture):
     return result
 
 
-def wait_for_conflict(page):
+def wait_for_conflict(page, feedback):
     task = page.locator('[data-job-card]').filter(has_text="保存至外层压缩包").last
-    expect(task).to_contain_text("写回失败", timeout=35000)
+    if feedback:
+        expect(task).to_contain_text("外层压缩包或其中的文件已被修改", timeout=35000)
+        expect(task).to_contain_text("请从有未保存更改的标签另存为")
+    else:
+        expect(task).to_contain_text("写回失败", timeout=35000)
+        expect(task).to_contain_text("parent archive or its member changed since opening")
     failure = task.inner_text()
-    assert "parent archive or its member changed since opening" in failure or "外层压缩包已" in failure, failure
     return failure
+
+
+def arm_click_timing(page, feedback):
+    detail = ("外层压缩包或其中的文件已被修改" if feedback else
+              "parent archive or its member changed since opening")
+    page.evaluate("""detail => {
+        const timing = { start: null, failure_card_ms: null, correct_middle_tab_ms: null };
+        const visible = el => el.getClientRects().length && getComputedStyle(el).visibility === 'visible';
+        const observer = new MutationObserver(() => {
+            if (timing.start === null) return;
+            const now = performance.now() - timing.start;
+            if (timing.failure_card_ms === null) {
+                for (const card of document.querySelectorAll('[data-job-card]')) {
+                    if (card.querySelector('[data-state="failed"]') && visible(card) &&
+                        card.textContent.includes('保存至外层压缩包') && card.textContent.includes(detail)) {
+                        timing.failure_card_ms = now;
+                        break;
+                    }
+                }
+            }
+            if (timing.correct_middle_tab_ms === null) {
+                const labels = [...document.querySelectorAll('[data-archive-tab]')]
+                    .filter(visible).map(tab => tab.textContent.trim());
+                if (labels.some(label => label.startsWith('● middle.zip')) &&
+                    !labels.some(label => label.startsWith('● inner.zip'))) timing.correct_middle_tab_ms = now;
+            }
+        });
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+        document.addEventListener('click', event => {
+            if (timing.start === null && event.target.closest('[data-action="save-nested"]')) {
+                timing.start = performance.now();
+            }
+        }, { capture: true });
+        window.qzNestedTiming = () => {
+            observer.disconnect();
+            return { failure_card_ms: timing.failure_card_ms, correct_middle_tab_ms: timing.correct_middle_tab_ms };
+        };
+    }""", detail)
 
 
 def close_baseline(page, process):
@@ -208,8 +250,9 @@ def exercise(args, fixture, report):
         report["same_outer_file_id_after_external_write"] = True
         assert expected_outer != report["initial_outer_sha256"] and digest(initial) == expected_outer
 
+        arm_click_timing(page, args.expect_feedback)
         page.locator('[data-action="save-nested"]').click()
-        failure = wait_for_conflict(page)
+        failure = wait_for_conflict(page, args.expect_feedback)
         after = sessions(page, fixture)
         newest = checked_members(middle_copy)
         assert newest.keys() == {"inner.zip", "middle-peer.txt"}
@@ -219,6 +262,14 @@ def exercise(args, fixture, report):
         assert digest(initial) == expected_outer and checked_members(initial) == external_outer
         assert digest(sibling) == report["filesystem_peer_sha256"]
         assert checked_members(checked_members(initial)["middle.zip"])["inner.zip"] == inner_original
+        if args.expect_feedback:
+            expect(page.locator('[data-archive-tab]').filter(has_text="middle.zip")).to_contain_text("● middle.zip")
+            expect(page.locator('[data-archive-tab]').filter(has_text="inner.zip")).not_to_contain_text("●")
+        timing = page.evaluate("window.qzNestedTiming()")
+        assert isinstance(timing["failure_card_ms"], (float, int)) and timing["failure_card_ms"] >= 0
+        if args.expect_feedback:
+            assert isinstance(timing["correct_middle_tab_ms"], (float, int)) and timing["correct_middle_tab_ms"] >= 0
+        report["timing"] = timing
         report.update({"external_outer_sha256": expected_outer, "outer_untouched_by_conflicting_save": True,
                        "after_save_dirty": {name: row["dirty"] for name, row in after.items()},
                        "immediate_dirty_tab_labels": [text.strip() for text in
@@ -260,12 +311,15 @@ def main():
     for label in ("exe", "hardening", "package", "out"):
         parser.add_argument("--" + label, required=True, type=Path)
     parser.add_argument("--source", required=True)
+    parser.add_argument("--expect-feedback", action="store_true",
+                        help="Require localized conflict guidance and exactly the backend's dirty middle tab")
     args = parser.parse_args()
     for label in ("exe", "hardening", "package"):
         setattr(args, label, getattr(args, label).resolve(strict=True))
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=False)
     report = {"status": "failed", "source": args.source,
+              "windows_build": sys.getwindowsversion().build, "expect_feedback": args.expect_feedback,
               "desktop": "private Win32 non-input desktop, real Tauri/WebView2 product"}
     report.update(verify_package(args.exe, args.hardening, args.package))
     try:
