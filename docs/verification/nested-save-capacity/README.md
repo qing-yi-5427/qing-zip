@@ -8,6 +8,14 @@
 | 在同一标签重试成功 | [原版窗口](before/nested-save-retried.png) | [候选窗口](after/nested-save-retried.png) |
 | 输入、工作副本、最终归档的 SHA-256 | [原版](before/zip-space-receipt.json) | [候选](after/zip-space-receipt.json) |
 
-两版均保留了原包和内层工作副本。候选失败窗口显示实际的 outer.zip › inner.zip，提示空间不足、更改已保留、可重试或另存为。释放 80,580,608 字节后，保存进外层的内层 ZIP 与此前的编辑副本逐字节一致。此流程验证一次内层改名和原位重试。点击「另存为」和更多嵌套层级留给独立用例。
+两版均保留了原包和内层工作副本。候选失败窗口显示实际的 outer.zip › inner.zip，提示空间不足、更改已保留、可重试或另存为。释放 80,580,608 字节后，保存进外层的内层 ZIP 与此前的编辑副本逐字节一致。此流程验证一次内层改名和原位重试。本组覆盖一层内包。
 
 [原版实测](https://github.com/qing-yi-5427/qing-zip/actions/runs/45125468779) · [带界面断言的候选实测](https://github.com/qing-yi-5427/qing-zip/actions/runs/45127164577) · [候选加固构建](https://github.com/qing-yi-5427/qing-zip/actions/runs/45126120466) · [产品修改](https://github.com/qing-yi-5427/qing-zip/pull/29)
+
+## 原盘仍满时另存至另一卷
+
+在同一真实会话中，原盘仍为 0 可用字节，打开 Windows 原生「另存为」，选择测试盘以外的独立目录，用键盘输入 saved-inner.zip 并点击保存。副本的成员和整个文件 SHA-256 都与改名后的内包一致。外层 ZIP、相邻文件及当前工作副本保全，原标签仍可保存至外层。释放 82,984,960 字节后，原标签再次保存，写入的内包与另存副本逐字节一致。
+
+[原生文件选择器](integrated/nested-save-as-dialog.png) · [另存成功窗口](integrated/nested-save-as-complete.png) · [重试成功窗口](integrated/nested-save-retried.png) · [工作副本、另存与最终写回哈希](integrated/zip-space-receipt.json) · [合并候选实测](https://github.com/qing-yi-5427/qing-zip/actions/runs/45130104050) · [独立产品分支复测](https://github.com/qing-yi-5427/qing-zip/actions/runs/45129576104)
+
+复跑时选择 zip-disk-capacity.yml 的 nested-feedback，提供同一仓库 Windows regression 构建的 candidate_build_run 和完整 candidate_source。也可用 update 选择直接 ZIP 更新的 0 字节和 6 MiB 两组测试。

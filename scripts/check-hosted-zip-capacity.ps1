@@ -31,7 +31,7 @@ $mode = switch ($Trial) {
     'nested-feedback' { 'nested-feedback' }
 }
 if ($CandidateSource) {
-    if ($Trial -ne 'nested-feedback' -or !$BuildRun) { throw 'CandidateSource requires a nested-feedback build run' }
+    if ($Trial -notin @('update', 'nested-feedback') -or !$BuildRun) { throw 'CandidateSource requires an update or nested-feedback build run' }
     $trialRun.source = $CandidateSource
 }
 if ($BuildRun) { $trialRun.id = $BuildRun }

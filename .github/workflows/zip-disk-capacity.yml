@@ -27,7 +27,7 @@ on:
         type: string
         required: false
       candidate_build_run:
-        description: Optional same-repository Windows regression run for nested-feedback
+        description: Optional same-repository Windows regression run for update or nested-feedback
         type: string
         required: false
       candidate_source:
@@ -82,7 +82,8 @@ jobs:
             'nested' { $env:ROUND2_RUN }
             'nested-feedback' { $env:CANDIDATE_RUN }
           }
-          if ($env:TRIAL -eq 'nested-feedback' -and ($env:CANDIDATE_RUN -or $env:CANDIDATE_SOURCE)) {
+          if ($env:TRIAL -in @('update', 'nested-feedback') -and ($env:CANDIDATE_RUN -or $env:CANDIDATE_SOURCE)) {
+            $buildRun = $env:CANDIDATE_RUN
             if (!$buildRun -or !$env:CANDIDATE_SOURCE) { throw 'Specify both the candidate run and its exact product commit' }
             ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun -CandidateSource $env:CANDIDATE_SOURCE
           }
