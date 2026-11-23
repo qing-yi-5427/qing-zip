@@ -1,4 +1,4 @@
-"""Compare the output of real Windows archivers on seven ordinary archive formats."""
+"""Compare the output of real Windows archivers, including classic split RAR volumes."""
 import argparse
 import bz2
 import gzip
@@ -46,25 +46,39 @@ def cases(root, sevenzip):
             archive.addfile(info, io.BytesIO(value))
     run([sevenzip, "a", "-t7z", root / "sample.7z", *files], sources)
     for ext in ("zip", "7z", "tar"):
-        yield root / f"sample.{ext}", expected
+        yield (root / f"sample.{ext}",), expected
     for ext, encoded in (("gz", gzip.compress(data, mtime=0)), ("bz2", bz2.compress(data)),
                          ("xz", lzma.compress(data))):
         archive = root / f"payload.txt.{ext}"
         archive.write_bytes(encoded)
-        yield archive, {"payload.txt": sha(data)}
+        yield (archive,), {"payload.txt": sha(data)}
     fixture = Path(__file__).resolve().parents[1] / "obz-rs/tests/fixtures/deep/rar5-m3.rar"
     provenance = json.loads(fixture.with_name("SOURCE.json").read_text(encoding="utf-8"))
     if sha(fixture.read_bytes()) != provenance["sha256"]:
         raise ValueError("Unexpected RAR5 fixture")
-    yield Path(shutil.copyfile(fixture, root / fixture.name)), None
+    bigtext = {"bigtext_64k.bin": "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"}
+    yield (Path(shutil.copyfile(fixture, root / fixture.name)),), bigtext
+    classic = fixture.parent / "rar15"
+    hashes = json.loads((classic / "SOURCE.json").read_text(encoding="utf-8"))["sha256"]
+    payload = {"payload.txt": sha(b"rar15 oracle payload\n")}
+    for names, expected_files in (
+        (("compressed.rar",), payload),
+        (("multivol_oldnaming_rar300.rar", "multivol_oldnaming_rar300.r00"), bigtext),
+    ):
+        for name in names:
+            member = classic / name
+            if sha(member.read_bytes()) != hashes[name]:
+                raise ValueError(f"Unexpected classic RAR fixture: {name}")
+            shutil.copyfile(member, root / name)
+        yield tuple(root / name for name in names), expected_files
 
 
 def compare(args):
     with tempfile.TemporaryDirectory(prefix="qing-zip-common-formats-") as work:
         root = Path(work)
-        for archive, expected in cases(root, args.sevenzip):
-            before = sha(archive.read_bytes())
-            reference = expected
+        for volumes, expected in cases(root, args.sevenzip):
+            archive = volumes[0]
+            before = {part.name: sha(part.read_bytes()) for part in volumes}
             tools = ["7-Zip", "qing-zip"] + (["Bandizip"] if args.bandizip else [])
             for tool in tools:
                 output = root / (archive.name + "-" + tool)
@@ -78,13 +92,9 @@ def compare(args):
                 run(command, root)
                 actual = {p.relative_to(output).as_posix(): sha(p.read_bytes())
                           for p in output.rglob("*") if p.is_file()}
-                if reference is None:  # Published RAR5 fixture; use the independently decoded bytes.
-                    if set(actual) != {"bigtext_64k.bin"} or (output / "bigtext_64k.bin").stat().st_size != 65536:
-                        raise ValueError("Unexpected RAR5 reference content")
-                    reference = actual
-                if actual != reference or sha(archive.read_bytes()) != before:
+                if actual != expected or any(sha(part.read_bytes()) != before[part.name] for part in volumes):
                     raise ValueError(f"Unexpected output or changed source: {tool}, {archive.name}, {actual}")
-            print(json.dumps({"archive": archive.name, "engines": tools, "files": reference},
+            print(json.dumps({"archive": archive.name, "engines": tools, "files": expected, "sources": before},
                              ensure_ascii=True))
 
 
