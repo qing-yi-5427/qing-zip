@@ -19,7 +19,7 @@ cargo check --locked --manifest-path obz-gui/Cargo.toml
 
 ## 测试与提交
 
-选题前可查阅[产品定位](docs/PRODUCT_VISION.md)与[优化路线](docs/OPTIMIZATION_ROADMAP.md)。复现问题或比较候选版本时，使用[质量报告](docs/QUALITY_REPORT.md)、[测试矩阵](docs/TEST_MATRIX.md)和[性能报告](docs/PERFORMANCE_REPORT.md)里的基线和命令。
+在对应版本的源码检出中，`docs/PRODUCT_VISION.md` 和 `docs/OPTIMIZATION_ROADMAP.md` 说明选题依据。复现问题或比较候选版本时，查阅同目录的 `QUALITY_REPORT.md`、`TEST_MATRIX.md` 和 `PERFORMANCE_REPORT.md`。[源码仓库](https://github.com/qing-yi-5427/qing-zip)
 
 - 在 PR 中写明可见变化、验证步骤和实际结果。处理归档修改、取消、解压和覆盖时，记录原包及输出的状态。
 - 本机验证优先使用普通临时文件。涉及 NTFS 备用数据流写入、事务、特殊文件系统边界的验证请在获准的可丢弃环境中执行。Windows 回归工作流保留独立的手动入口。
