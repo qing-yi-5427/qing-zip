@@ -98,6 +98,7 @@ STATE = """(() => {
   });
   return {
     first: visible[0]?.dataset.row ?? null,
+    first_selected: visible[0]?.getAttribute("aria-selected") === "true",
     mounted: rows.length,
     visible: visible.length,
     logical: Number(table.getAttribute('aria-rowcount')) - 1,
@@ -117,7 +118,7 @@ class Window:
         if any(name in {"qing-zip.exe", "obz-gui.exe"} for _, name in process_entries().values()):
             raise RuntimeError("Another qing-zip instance is active; its windows were left untouched")
         self.socket = None
-        self.driver = None
+        self.driver = session.get("driver")
         self.cdp = None
         self.sequence = 0
         self.hwnd = None
@@ -135,10 +136,11 @@ class Window:
         session["proc"] = self.proc
 
     def check_attached_window(self):
-        bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
-                          awaitPromise=True, returnByValue=True)
-        if not bound["result"].get("value") or Path(bound["result"]["value"]).resolve() != self.exe:
-            raise RuntimeError("The attached page does not report the expected executable")
+        if self.port:
+            bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
+                              awaitPromise=True, returnByValue=True)
+            if not bound["result"].get("value") or Path(bound["result"]["value"]).resolve() != self.exe:
+                raise RuntimeError("The attached page does not report the expected executable")
         self.hwnd = self.native_window()
         if self.hwnd and not self.allow_unfocused and not self.is_foreground():
             try:
@@ -149,8 +151,6 @@ class Window:
     def connect(self):
         if self.port:
             from nested_restart_gui import connect as connect_hosted
-            from playwright.sync_api import sync_playwright
-            self.driver = sync_playwright().start()
             browser, page = connect_hosted(self.proc, self.port, self.driver)
             page.wait_for_function("Boolean(window.__TAURI__?.core)")
             self.cdp = page.context.new_cdp_session(page)
@@ -158,10 +158,10 @@ class Window:
             return
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self.proc.poll() is None:
-            port_file = None if self.port else next(self.profile.rglob("DevToolsActivePort"), None)
-            if self.port or port_file:
+            port_file = next(self.profile.rglob("DevToolsActivePort"), None)
+            if port_file:
                 try:
-                    port = self.port or int(port_file.read_text().splitlines()[0])
+                    port = int(port_file.read_text().splitlines()[0])
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as request:
                         pages = json.load(request)
                     page = next(p for p in pages if p.get("type") == "page" and "tauri.localhost" in p["url"])
@@ -259,8 +259,6 @@ class Window:
         screenshot.write_bytes(base64.b64decode(result["data"]))
 
     def close(self):
-        if self.driver is not None:
-            self.driver.stop()
         if self.socket is not None:
             self.socket.close()
         if self.proc.poll() is None:
@@ -289,6 +287,12 @@ def trial(exe, archive, count, isolated, allow_unfocused, session, screenshot=No
         first = window.wait(lambda state: state["first"] == f"group-{count // 1000:03}/"
                             and state["logical"] == count // 1000 + 1)
         root = {"ms": round((time.perf_counter() - window.started) * 1000, 3), **first}
+        if first["first_selected"]:
+            raise RuntimeError("Expected an unselected first row before the input probe")
+        window.click(f'input[data-select="{first["first"]}"]')
+        selected = window.wait(lambda state: state["first"] == first["first"] and state["first_selected"])
+        root["first_selection_observed_ms"] = round((time.perf_counter() - window.started) * 1000, 3)
+        root["first_selection_foreground"] = selected["win32_foreground"]
         root["memory"] = process_memory(window.proc.pid)
         if screenshot:
             window.capture(screenshot)
@@ -372,7 +376,10 @@ def main():
                     else:
                         launch = nullcontext({})
                     screenshot = args.screenshots / f"{count}-{label}.png" if args.screenshots and index == 0 else None
-                    with launch as session:
+                    if args.hosted:
+                        from playwright.sync_api import sync_playwright
+                    with launch as session, (sync_playwright() if args.hosted else nullcontext(None)) as driver:
+                        session["driver"] = driver
                         results[label] = trial(exes[label], archive, count, work / label,
                                                args.allow_unfocused, session, screenshot)
                 if sha256(archive.read_bytes()) != original:
