@@ -92,6 +92,17 @@ try:
   for _ in range(100):
    if key!='compress' and valid_outputs():break
    time.sleep(.2)
+  if key=='compress':
+   app_procs=[]
+   for proc in psutil.process_iter(['pid','exe']):
+    try:
+     if proc.info['exe'] and os.path.normcase(proc.info['exe'])==os.path.normcase(str(a.app.resolve())):app_procs.append(proc.pid)
+    except (psutil.Error,OSError):pass
+   try:
+    app_window=wait(lambda:next((w for w in desktop.windows() if w.is_visible() and w.process_id() in app_procs),None),10)
+    app_window.set_focus();time.sleep(2)
+    entry['visible_controls']=[{'name':x.element_info.name,'type':x.element_info.control_type} for x in app_window.descendants() if x.is_visible() and x.element_info.name][:150]
+   except Exception as e:entry['window_error']=repr(e)
   snapshot(key+'-after')
   entry['output_matches_expected']=valid_outputs() if key!='compress' else None
   entry['relative_output_directory']='archive' if key=='smart' else ('.' if key=='here' else None)
