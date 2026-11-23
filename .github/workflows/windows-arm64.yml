@@ -103,6 +103,8 @@ jobs:
         run: |
           node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs obz-gui/tests/folder-projection.cjs obz-gui/tests/archive-tab-focus.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test-native-menu-accessibility.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
       - name: Selected pure listing and serialization regressions

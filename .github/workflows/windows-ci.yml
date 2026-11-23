@@ -68,6 +68,8 @@ jobs:
           $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | Sort-Object Name | ForEach-Object FullName)
           node --test @frontendTests
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test-native-menu-accessibility.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
       - name: Archive update, encryption, filename and nested write-back regressions

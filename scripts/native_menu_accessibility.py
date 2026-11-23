@@ -19,6 +19,32 @@ class HighContrast(ctypes.Structure):
     _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", wintypes.LPWSTR)]
 
 
+def wait_os(read_os, high, animations=None, timeout=10):
+    """Wait for the native setting to settle; retain the last observed value on failure."""
+    deadline = time.monotonic() + timeout
+    while True:
+        state, enabled = read_os()
+        actual = {"os_high": bool(state.flags & 1), "os_animations": enabled}
+        if actual["os_high"] == high and (animations is None or enabled == animations):
+            return actual
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Windows did not apply the requested settings: {actual}")
+        time.sleep(0.1)
+
+
+def apply_os(read_os, invoke, high, animations):
+    state, _ = read_os()
+    if bool(state.flags & 1) != high:
+        state.flags = (state.flags & ~1) | int(high)
+        invoke(0x0043, state.size, ctypes.byref(state), 3)
+        wait_os(read_os, high)
+    # Applying a contrast scheme may itself change animations. Read it again.
+    _, current_animations = read_os()
+    if current_animations != animations:
+        invoke(0x1043, 0, ctypes.c_void_p(int(animations)), 3)
+    return wait_os(read_os, high, animations)
+
+
 def verify_menu(call, js, output, executable):
     check_host()
     spi = ctypes.WinDLL("user32", use_last_error=True).SystemParametersInfoW
@@ -37,12 +63,7 @@ def verify_menu(call, js, output, executable):
         return contrast, bool(animations.value)
 
     def set_os(high, animations):
-        state, current_animations = read_os()
-        if bool(state.flags & 1) != high:
-            state.flags = (state.flags & ~1) | int(high)
-            invoke(0x0043, state.size, ctypes.byref(state), 3)  # persist and broadcast WM_SETTINGCHANGE
-        if current_animations != animations:
-            invoke(0x1043, 0, ctypes.c_void_p(int(animations)), 3)
+        return apply_os(read_os, invoke, high, animations)
 
     def snapshot():
         return js("""(() => {
@@ -68,11 +89,7 @@ def verify_menu(call, js, output, executable):
     try:
         for name, high, animated in (("normal", False, True), ("contrast", True, True),
                                      ("reduced", False, False), ("normal-again", False, True)):
-            set_os(high, animated)
-            flags, enabled = read_os()
-            state = report["states"][name] = {"os_high": bool(flags.flags & 1), "os_animations": enabled}
-            if state["os_high"] != high or enabled != animated:
-                raise RuntimeError(f"Windows did not apply the requested settings: {state}")
+            state = report["states"][name] = set_os(high, animated)
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 js("if(document.querySelector('#oa-menu').hidden)document.querySelector('[data-action=app-menu]').click()")
@@ -93,11 +110,16 @@ def verify_menu(call, js, output, executable):
             (output / (name + ".png")).write_bytes(png)
             state["screenshot_sha256"] = hashlib.sha256(png).hexdigest()
         report["status"] = "PASS"
+    except Exception as error:
+        report["error"] = str(error)
+        raise
     finally:
         try:
-            set_os(original_high, original_animation)
-            restored, animations = read_os()
-            report["restored"] = bool(restored.flags & 1) == original_high and animations == original_animation
+            report["restoration"] = set_os(original_high, original_animation)
+            report["restored"] = True
+        except Exception as error:
+            report["restoration_error"] = str(error)
+            raise
         finally:
             (output / "native-settings.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         if not report["restored"]:
