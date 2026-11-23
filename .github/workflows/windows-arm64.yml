@@ -148,6 +148,7 @@ jobs:
         run: |
           $tests = @(
             'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning',
+            'engine::owned_update::tests::selected_tar_integrity_check_uses_its_owning_job',
             'engine::edit_source::tests::disposable_zip_candidate_reclaims_only_its_new_file',
             'engine::update_modes_tests::reject_unreadable_zip_rename_proposal_and_keep_original'
           )
@@ -156,7 +157,7 @@ jobs:
             $code = $LASTEXITCODE
             Write-Output $result
             if ($code) { exit $code }
-            if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing ZIP update test: $testName" }
+            if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing archive lifecycle test: $testName" }
           }
       - name: Native CLI, policy and verified split extraction
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
@@ -235,13 +236,17 @@ jobs:
           python -m pip install --disable-pip-version-check psutil==7.2.2
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/check-interrupted-archive-update.py --cli $cli[0].FullName --action add --require-owned --require-reclaimed --out (Join-Path $env:RUNNER_TEMP 'zip-add-interruption.jsonl')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check-verifier-exit.py --cli $cli[0].FullName --out (Join-Path $env:RUNNER_TEMP 'zip-verifier-exit.json')
           exit $LASTEXITCODE
       - name: Save ordinary ZIP add interruption trials
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: arm64-zip-add-interruption
-          path: ${{ runner.temp }}/zip-add-interruption.jsonl
+          path: |
+            ${{ runner.temp }}/zip-add-interruption.jsonl
+            ${{ runner.temp }}/zip-verifier-exit.json
           if-no-files-found: warn
       - name: Verify packaged native ZIP cache and cancellation
         shell: pwsh
