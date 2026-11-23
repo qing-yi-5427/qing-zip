@@ -1,0 +1,24 @@
+{
+  "desktop": "private non-input Win32 desktop; WebView2 CDP screenshots",
+  "gui_sha256": "07038b863da06706b04a8fbba0c078d7040486718a4ec549248b683288450a0a",
+  "cli_sha256": "bfeb1af65841c9d0e6a7a3dacaf0868497e61e520a9a72f2c14af3537f127e49",
+  "archive_sha256": "f0a7c7338ea15f4048c9ee7e93b02d00d27d2d0c6b5258e069af328df21041af",
+  "source_sha256": "7760fcdb1f113918c3e6d8a88e0eba57ab936ed86d1834b4a31a1ecab0ac0cd6",
+  "sentinel_sha256": "696c61e0f07b29e1c23e10e1d875679fa2ac343db9bdb71357b708b1a9877802",
+  "wrong_password_no_output": true,
+  "archive_and_sentinel_preserved": true,
+  "failure_text": "解压到此处\n失败\n\nsample-encrypted.zip\n\n收起详情\n\n<test-root>\\sample-encrypted.zip\n\nincorrect password or damaged encrypted archive\n输入密码重试",
+  "toast_text": "Error: incorrect password or damaged encrypted archive",
+  "retry_label": "输入密码重试",
+  "retry_password_initially_empty": true,
+  "retry_destination_matches_requested": true,
+  "retry_preview": "<test-root>\\output",
+  "output_relative_to_requested_destination": "sample.txt",
+  "output_sha256": "7760fcdb1f113918c3e6d8a88e0eba57ab936ed86d1834b4a31a1ecab0ac0cd6",
+  "output_matches_source": true,
+  "output_button_visible": true,
+  "not_observed": [
+    "actual_open_output_action",
+    "system_foreground_desktop"
+  ]
+}
