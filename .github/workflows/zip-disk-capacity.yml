@@ -1,7 +1,6 @@
 name: Disposable Windows ZIP disk capacity
 on:
   pull_request:
-    types: [opened, reopened, synchronize, labeled]
     paths:
       - 'scripts/check-hosted-zip-capacity.py'
       - 'scripts/check-hosted-zip-capacity.ps1'
@@ -30,17 +29,13 @@ permissions:
   actions: read
 jobs:
   real-disk-capacity:
-    if: >-
-      github.repository == 'qing-yi-5427/qing-zip' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.pull_request.head.repo.full_name == github.repository &&
-        (github.event.action != 'labeled' || github.event.label.name == 'qa:zip-disk-capacity-round2')))
+    if: github.repository == 'qing-yi-5427/qing-zip' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: windows-2025
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        trial: ${{ fromJSON((inputs.trial == 'round2' || github.event.label.name == 'qa:zip-disk-capacity-round2') && '["round2"]' || '["baseline","combined"]') }}
+        trial: ${{ fromJSON(inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
