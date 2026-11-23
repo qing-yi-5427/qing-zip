@@ -224,3 +224,7 @@ python scripts/check-archive-interop.py --cli "$output/qing-zip-0.12.23-portable
 ## 静默升级沿用旧安装位置
 
 Windows 11 ARM64 从官方 0.11.27、Windows Server 2025 x64 从官方 0.12.20 升级至 0.12.23，均为 PASS。初装使用独立临时目录，升级时安装器自动使用登记位置。逐件比对发行文件，实测解压旧版创建的 ZIP，卸载后五份合成用户数据 SHA-256 保持一致。[双架构的原始文件结果与复跑方法](verification/native-installer-upgrade/README.md)
+
+## 普通 ZIP 新增时的强退
+
+Windows 11 x64 上观察专属写入进程正在写入 128 MiB 新成员后强退，候选三轮均 PASS。重开和重试后原包旁为 0 字节，另一个并发任务继续完成。输入与输出范围、兼容性控制和计时见[普通 Add 的独立文件回执](verification/round7/ordinary-zip-add/README.md)。

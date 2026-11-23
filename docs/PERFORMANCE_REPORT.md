@@ -257,3 +257,7 @@ python scripts/check-archive-interop.py `
 ## 前台窗口首次可操作的测量
 
 Windows x64 托管桌面上的主线 `14b9e2a` 从启动到实际选中首行，10,000 条目 ZIP 中位 853 ms、50,000 条目 ZIP 中位 1,304 ms。两档和上一主线的五对差值均跨零。测量为热缓存、新进程，含自动化观察延迟。[环境、逐次数据和前台截图](verification/foreground-archive-browse/README.md)
+
+## 普通 ZIP 新增与中断保护
+
+真实加入一个 3,328 字节成员时，10,000 项及 50,000 项归档五对端到端配对差中位分别为 +13.8 和 +44.5 ms，差值范围均跨零。每对成品 SHA-256 相同。[输入、运行条件、逐轮对照与复跑脚本](verification/round7/ordinary-zip-add/README.md)
