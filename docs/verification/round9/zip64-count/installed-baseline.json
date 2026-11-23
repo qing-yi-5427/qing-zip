@@ -1,0 +1,60 @@
+{
+  "cli_sha256": "a66197d6b4d235a5a6dcfbfa1ca001ea3252287967e39f5dc9509f00051529c3",
+  "reference_sha256": "4a41aa37786c7eae7451e81c2c97458d5d1ae5a3a8154637a0d5f77adc05e619",
+  "trials": [
+    {
+      "requested_count": 65535,
+      "input_bytes": 9229347,
+      "input_sha256": "cfd9ca0c0faad7668d8e094b44f68ab525126fc48f99410c656017cd2baa4f4c",
+      "input_directory": {
+        "zip64": false,
+        "count": 65535
+      },
+      "listed_file_count": 65535,
+      "first_names": [
+        "records/000/item-00000.txt",
+        "records/000/item-00001.txt"
+      ],
+      "list_seconds": 0.279,
+      "test_seconds": 1.109,
+      "selected_from_two_engines": "records/255/item-65534.txt",
+      "append_seconds": 6.089,
+      "all_updated_members_verified": 65536,
+      "reference_test_seconds": 1.019,
+      "output_directory": {
+        "zip64": true,
+        "count": 65536
+      },
+      "original_bytes_still_present": false,
+      "source_and_neighbor_preserved": true,
+      "status": "PASS"
+    },
+    {
+      "requested_count": 65536,
+      "input_bytes": 9229564,
+      "input_sha256": "059932696acfe82f2bab0d24aecc4ca0b9c5bc78bf39d2f63b04cb40df306dbd",
+      "input_directory": {
+        "zip64": true,
+        "count": 65536
+      },
+      "listed_file_count": 65536,
+      "first_names": [
+        "records/000/item-00000.txt",
+        "records/000/item-00001.txt"
+      ],
+      "list_seconds": 0.349,
+      "test_seconds": 1.281,
+      "selected_from_two_engines": "records/255/item-65535.txt",
+      "append_seconds": 3.802,
+      "all_updated_members_verified": 65537,
+      "reference_test_seconds": 1.017,
+      "output_directory": {
+        "zip64": true,
+        "count": 65537
+      },
+      "original_bytes_still_present": false,
+      "source_and_neighbor_preserved": true,
+      "status": "PASS"
+    }
+  ]
+}

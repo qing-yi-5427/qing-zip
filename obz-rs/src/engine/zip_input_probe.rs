@@ -217,7 +217,13 @@ fn probe(file: &mut File, ctl: &JobControl, deep: bool, strict: bool) -> Result<
         if (zip_u16(end, 10) != u16::MAX && u64::from(zip_u16(end, 10)) != count)
             || (zip_u32(end, 12) != u32::MAX && u64::from(zip_u32(end, 12)) != directory_size)
             || (zip_u32(end, 16) != u32::MAX && u64::from(zip_u32(end, 16)) != directory_offset) { return Ok(None); }
-    } else if count == u16::MAX as u64 || directory_size == u32::MAX as u64 || directory_offset == u32::MAX as u64 { return Ok(None); }
+    } else if (!strict && count == u64::from(u16::MAX))
+        || directory_size == u64::from(u32::MAX) || directory_offset == u64::from(u32::MAX) {
+        return Ok(None);
+    }
+    // A classic single-disk ZIP can contain exactly 65,535 entries without
+    // a ZIP64 end record. Only the strict path below proves the exact count,
+    // the directory extent and every contiguous local member before decoding.
     if count == 0 || count > directory_size / 46 { return Ok(None); }
     let Some(directory_start) = directory_end.checked_sub(directory_size) else { return Ok(None) };
     let Some(base) = directory_start.checked_sub(directory_offset) else { return Ok(None) };
@@ -357,6 +363,27 @@ mod tests {
         file.write_all(&bytes).unwrap(); file.write_all(suffix).unwrap();
         file
     }
+    #[test]
+    fn classic_zip_with_exactly_65535_members_qualifies_for_verified_selection() {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for index in 0..u16::MAX {
+            writer.start_file(format!("record-{index}.txt"), options).unwrap();
+            writer.write_all(b"ordinary data").unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        // No archive comment or ZIP64 locator was emitted for this entry count.
+        assert_eq!(&bytes[bytes.len() - 22..bytes.len() - 18], b"PK\x05\x06");
+        assert_ne!(&bytes[bytes.len() - 42..bytes.len() - 38], b"PK\x06\x07");
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&bytes).unwrap();
+        let ctl = JobControl::new();
+        let layout = selected_layout(&mut file, &ctl).unwrap().expect("verified classic ZIP");
+        assert_eq!((layout.start, layout.end, layout.count), (0, bytes.len() as u64, u64::from(u16::MAX)));
+        assert_eq!(zip_search_limit(&mut file, &ctl, true).unwrap(), None);
+    }
+
     #[test]
     fn zip_prefix_tail_is_bounded_and_ambiguous_eocd_is_not_accepted() {
         let mut input = fixture(8192, b"trailing bytes");

@@ -136,10 +136,11 @@ jobs:
           Write-Output $result
           if ($code) { exit $code }
           if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing RAR test: $testName" }
-      - name: Ordinary ZIP update ownership, failure and retry
+      - name: Ordinary archive selection, update and retry
         shell: pwsh
         run: |
           $tests = @(
+            'engine::zip_input_probe::tests::classic_zip_with_exactly_65535_members_qualifies_for_verified_selection',
             'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning',
             'engine::owned_update::tests::selected_tar_integrity_check_uses_its_owning_job',
             'engine::edit_source::tests::disposable_zip_candidate_reclaims_only_its_new_file',

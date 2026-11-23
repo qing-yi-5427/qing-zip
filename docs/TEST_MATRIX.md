@@ -4,6 +4,18 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
+## 第九轮 ZIP 条目计数边界
+
+| 场景 | 结果 |
+| --- | --- |
+| 65,534、65,535、65,536 项，选择一个小文件 | PASS。每档三个配对样本均逐次验证源归档及唯一输出。65,535 项的普通 ZIP 已避免全量暂存。[交替计时](verification/round9/classic-zip-selection/paired-selection.json) |
+| 跨入 ZIP64、现有 ZIP64 再追加 | PASS。分别逐一验证 65,536 和 65,537 项并用独立工具整包校验。[回执](verification/round9/zip64-count/README.md) |
+| ZIP64 普通追加写完后强退 | 原包与重试 PASS，完整候选自动回收 FAIL。三轮重开和重试后均留下 9,229,709 字节。[逐案结果](verification/round9/zip64-count/post-write-exit.jsonl) |
+
+### Windows 安装升级与卸载
+
+一次性托管 x64 从官方 v0.12.20、原生 ARM64 从官方 v0.11.27，分别从默认目录和自选目录初装，然后沿原登记位置静默升级。4/4 PASS。逐一比对 x64 的 739 个和 ARM64 的 735 个随包文件，检查快捷方式、既有归档解压，以及卸载后五份测试用户数据的哈希。卸载没有残留本次候选产品文件。交互式向导、生产签名 Explorer 菜单的生命周期另行验收。[四份回执来源及下载摘要](verification/round9/installed-upgrade/source.json) · [x64 默认位置](verification/round9/installed-upgrade/X64-default.json) · [ARM64 默认位置](verification/round9/installed-upgrade/ARM64-default.json)
+
 ## 第八轮普通文件与创建窗口
 
 | 场景 | 实际结果 |
