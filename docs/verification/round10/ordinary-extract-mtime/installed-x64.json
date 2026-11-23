@@ -1,0 +1,285 @@
+{
+  "source": "be86c3560cb56e83efaa66b3a18a8d18943754e1",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python": "3.14.0",
+  "cli_sha256": "4b8a992064ad4d5aa80ab421cf0e2baae8305cab9dd46832d1a4efa0a33d3d33",
+  "sevenzip_sha256": "4a41aa37786c7eae7451e81c2c97458d5d1ae5a3a8154637a0d5f77adc05e619",
+  "results": [
+    {
+      "tool": "qing-zip",
+      "archive": "sample.zip",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "source_sha256_after": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": "2021-02-04T12:14:08"
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": "2021-02-04T12:14:02"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": "2021-02-04T12:14:04"
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": "2021-02-04T12:14:06"
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.zip",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "source_sha256_after": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": "2021-02-04T12:14:04"
+        }
+      }
+    },
+    {
+      "tool": "7-Zip",
+      "archive": "sample.zip",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "source_sha256_after": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": "2021-02-04T12:14:08"
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": "2021-02-04T12:14:02"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": "2021-02-04T12:14:04"
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": "2021-02-04T12:14:06"
+        }
+      }
+    },
+    {
+      "tool": "7-Zip",
+      "archive": "sample.zip",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "source_sha256_after": "9aae73e4f58e0e80dcfeda8cd11f81b9fc31341ebd575c596b84b25d233a41a1",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": "2021-02-04T12:14:04"
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "7ac84314ebb4a4aa012c23e5a82cca737d4a6772b25d303af2e876c533613c50",
+      "source_sha256_after": "7ac84314ebb4a4aa012c23e5a82cca737d4a6772b25d303af2e876c533613c50",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": 1612440848
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": 1612440842
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": 1612440846
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "7ac84314ebb4a4aa012c23e5a82cca737d4a6772b25d303af2e876c533613c50",
+      "source_sha256_after": "7ac84314ebb4a4aa012c23e5a82cca737d4a6772b25d303af2e876c533613c50",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.gz",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "4f28d61d51e48634d4be65c741110998ad91baec25b885e13768c01939009bcc",
+      "source_sha256_after": "4f28d61d51e48634d4be65c741110998ad91baec25b885e13768c01939009bcc",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": 1612440848
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": 1612440842
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": 1612440846
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.gz",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "4f28d61d51e48634d4be65c741110998ad91baec25b885e13768c01939009bcc",
+      "source_sha256_after": "4f28d61d51e48634d4be65c741110998ad91baec25b885e13768c01939009bcc",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.bz2",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "7dc2357f8cbd627594426fabcbbf1fd1589293bdd512f335ed3af14af896d219",
+      "source_sha256_after": "7dc2357f8cbd627594426fabcbbf1fd1589293bdd512f335ed3af14af896d219",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": 1612440848
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": 1612440842
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": 1612440846
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.bz2",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "7dc2357f8cbd627594426fabcbbf1fd1589293bdd512f335ed3af14af896d219",
+      "source_sha256_after": "7dc2357f8cbd627594426fabcbbf1fd1589293bdd512f335ed3af14af896d219",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.xz",
+      "mode": "all",
+      "exit_code": 0,
+      "source_sha256_before": "1cf41f8e1f3912ca1069f6ab0c9aaa215632eeead3baaa36273d90b7f75695d1",
+      "source_sha256_after": "1cf41f8e1f3912ca1069f6ab0c9aaa215632eeead3baaa36273d90b7f75695d1",
+      "output": {
+        "empty": {
+          "kind": "directory",
+          "mtime": 1612440848
+        },
+        "folder": {
+          "kind": "directory",
+          "mtime": 1612440842
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        },
+        "folder/other.txt": {
+          "kind": "file",
+          "sha256": "2762242d08583fff4feb21783b747dc911d9cad1f30c8b74ec013f516c829f9a",
+          "mtime": 1612440846
+        }
+      }
+    },
+    {
+      "tool": "qing-zip",
+      "archive": "sample.tar.xz",
+      "mode": "selected",
+      "exit_code": 0,
+      "source_sha256_before": "1cf41f8e1f3912ca1069f6ab0c9aaa215632eeead3baaa36273d90b7f75695d1",
+      "source_sha256_after": "1cf41f8e1f3912ca1069f6ab0c9aaa215632eeead3baaa36273d90b7f75695d1",
+      "output": {
+        "folder": {
+          "kind": "directory"
+        },
+        "folder/notes.txt": {
+          "kind": "file",
+          "sha256": "68d66ecc340043bfc266909834a2f9dea97fcf375a41ad84abf97de12d0c1995",
+          "mtime": 1612440844
+        }
+      }
+    }
+  ]
+}
