@@ -4,7 +4,18 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
-## 本轮验证
+## 第三轮交付便携包
+
+组合源码 `fa5ecd5` 在托管 Windows x64 与原生 ARM64 均完成构建及普通回归。两架构均核对实际下载包、ZIP 目录和全部 CRC。下列项目使用交付的同一份可执行文件。[包哈希、来源、测试与截图索引](verification/round3/README.md)
+
+| 入口 | 状态与证据 |
+| --- | --- |
+| x64 包的直接 ZIP 更新 | PASS。三轮应用强制退出后写入增长为零，并行任务、原包和重试均通过。另在剩余 0 字节和 6 MiB 的测试盘上更新失败后原包保全，释放空间后重试成功。[中断](verification/round3/zip-interruption.jsonl) · [满盘](verification/round3/update-zip-space-receipt.json) |
+| x64 包的嵌套写回 | PASS。真实窗口在原盘已满时另存到另一卷，释放测试盘空间后在原标签写回，工作副本、另存文件与实际写入内包 SHA-256 相等。[两条恢复路径](https://github.com/qing-yi-5427/qing-zip/tree/65b0298/docs/verification/nested-save-capacity/integrated) |
+| x64 包常见格式 | qing-zip 10/10 PASS。另三款工具共 24 个适用组合有 22 次 PASS、2 次 FAIL，失败的是 7-Zip、Bandizip 处理同一组旧式 RAR 存储三卷，官方 UnRAR 与 qing-zip 的结果一致。ZIP/7z 双向互读另行通过。[逐项清单](verification/round3/format-comparison.jsonl) · [双向互读](verification/round3/interop.json) |
+| ARM64 包的真实菜单 | PASS。Windows 11 26200、实际 100% 缩放上切换普通、高对比度、减少动画并恢复。四种状态均显示 7 项。[配对截图与恢复回执](https://github.com/qing-yi-5427/qing-zip/pull/31) |
+
+## 历史基线与各主题验证
 
 | 层级与入口 | 样本和断言 | 状态 |
 | --- | --- | --- |
@@ -30,13 +41,17 @@
 | 托管 x64 卸载后的旧版残留 | 卸载后仍有十个旧版独有文件，与初装和正式发行文件的哈希一致。候选发行文件全部移除。当前提案保守保留无逐文件归属记录的历史文件。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) · [补测结果](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) · [清单及迁移提案](https://github.com/qing-yi-5427/qing-zip/pull/21) | FAIL（严格残留断言） |
 | 默认安装目录、ARM64 安装和文件关联 | 普通 NSIS 用例仅覆盖托管 x64 的临时路径。默认路径、ARM64 安装、升级及卸载、真实用户数据、安装所设文件关联及升级后保留未验收。 | NOT RUN |
 | Windows 11 ARM64 菜单及系统无障碍 | 系统实际 100% 缩放、运行中切换高对比度和减少动画，7 项菜单一直可见，纯色/渐变及媒体查询符合系统，最后恢复系统原值。[四次截图与回执](https://github.com/qing-yi-5427/qing-zip/pull/13) | PASS |
-| Windows 11 现代右键 | 可信签名、当前用户注册后的一级菜单、真实点击转交、升级保留菜单及卸载后菜单消失。 | BLOCKED（可信签名和可安装验收环境） |
-| Windows 10 与 Windows 11 ARM64 | Windows 11 ARM64 托管菜单及组件已见上方实测。Windows 10、实际 Windows ARM64 设备和安装后 Explorer 的体验仍待验证。 | BLOCKED（所列未覆盖环境） |
+| Windows 11 现代右键 | 一次性 Windows 11 ARM64 以临时签名注册，真实点击「解压到此处」与「智能解压」，分别在同级和同名目录得到两个预期成员。原包和哨兵保全。[动作与截图](https://github.com/qing-yi-5427/qing-zip/actions/runs/45129913820) | PASS（两项解压）。正式发行签名及升级集成待验收。 |
+| Windows 10 与 Windows 11 ARM64 | Windows 11 ARM64 托管菜单及组件已见上方实测。Windows 10、实体 ARM64 设备及正式安装后 Explorer 的体验仍待验证。 | BLOCKED（所列未覆盖环境） |
 | 普通 ZIP 目标卷已满 | 托管 Windows x64 的独占 NTFS 卷可用空间为零。创建与覆盖解压报告空间不足。已有目标、无关文件、来源和原包均保全，释放空间后重试成功。[逐次回执](https://github.com/qing-yi-5427/qing-zip/pull/22) | PASS（普通 ZIP 两种操作） |
 | 覆盖解压写入期间耗尽空间 | 普通 32 MiB 存储 ZIP 的暂存文件实际增长至 29,327,360 字节，观测内容前缀与输入一致。当时还需写 4,227,072 字节，卷上仅余 24,576 字节。原生错误后原包、已有目标、无关文件与暂存目录清单保持，腾出空间后同命令成功，32 MiB 输出通过 SHA-256。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) | PASS（两台独立 runner） |
 | 第二轮组合包的原生 ARM64 常用操作 | 在 Windows 11 ARM64 构建同一提交的便携包。经典 RAR 存储分卷的校验与提取、包内 ZIP 缓存和取消实跑通过。安装包完成构建，安装生命周期和该组合包的真实 ARM64 窗口未在此运行中执行。[原生 ARM64 验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45119972417) | PASS（所列操作） |
+| 已有 ZIP 更新时空间不足 | 目标卷开始时剩 0 B 或 6 MiB。实际 CLI 同时加入 16 MiB 文件并替换一个已有成员，失败后原包整体、原成员、输入与邻近文件均保全。腾出空间后同命令成功，独立读取器核对新建、保留、替换的三个成员。[实测](https://github.com/qing-yi-5427/qing-zip/pull/26) | PASS（两组） |
+| 真实窗口嵌套 ZIP 满盘写回 | 打开内层 ZIP 并重命名成员。外层目标卷已满时点击保存，原包及邻近文件保持，编辑副本完整。释放空间后再次点击保存，写入的内包与编辑副本字节一致，兄弟 ZIP 和外层无关成员未变。[实机截图与复跑](https://github.com/qing-yi-5427/qing-zip/pull/30) | PASS（同会话） |
+| 普通 ZIP 更新时父进程异常退出 | 候选三轮及额外三轮外层 Windows Job 均在父进程退出采样点后零写入，原包保全，独立任务完成，重试通过。2–3 MiB 部分候选仍保留。[逐轮原始记录](https://github.com/qing-yi-5427/qing-zip/pull/28) | PASS（限定直接 ZIP 候选写入阶段） |
+| 满盘后的可访问提示 | 原版同一异常出现两次，候选只出现一个可访问提示并显示真实归档路径。关闭弹窗后在同一标签重试成功。前端共 278 项通过。[配对截图和数据](https://github.com/qing-yi-5427/qing-zip/tree/af2045c73c10f402a8239d1b34399658f8e21a9f/docs/verification/nested-save-capacity) | PASS（Windows x64） |
 | 特殊文件系统 | ADS/TxF、重解析及链接另在获准的隔离环境验证。 | BLOCKED（未启用相应环境） |
-| 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。普通嵌套写回已见上方日常回归。桌面保存嵌套编辑、ZIPX、传统加密 ZIP、ALZ/EGG、ISO、其他损坏类型与 ZIP 修复待扩大独立对照。 | NOT RUN |
+| 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。普通嵌套写回已见上方日常回归。嵌套编辑重启恢复、ZIPX、传统加密 ZIP、ALZ/EGG、ISO、其他损坏类型与 ZIP 修复待扩大独立对照。 | NOT RUN |
 | GUI 退出和重启后的恢复 | 引擎取消、密码续接和发布重试已有回归。选取解压取消验证了原有文件保全及句柄释放；真实 CLI 父进程中断、重开和重试另列于下。普通 TAR.GZ 的真实窗口取消与既有目标保全已通过；GUI 退出及重启恢复仍待实测。 | NOT RUN（上述端到端场景） |
 | 异常路径和数量预算 | 深度、数量和字节计费由内存用例验证，也执行了正常样本的选取预算。异常路径及大量嵌套、超文件数的真实归档场景尚待验证。 | NOT RUN（实包边界） |
 | 真实任务取消和结果入口 | 普通 1 GiB TAR.GZ 进入运行态后点击取消，保存中间及终态显示，原包和两个既有目标内容不变。另一次完成后点开输出按钮，核对真实 Explorer 窗口位置。[实机记录](https://github.com/qing-yi-5427/qing-zip/pull/6) | PASS |
@@ -52,7 +67,7 @@
 
 常用格式对照的细节见 [质量报告](QUALITY_REPORT.md)。Shell 包和原生接口的证据见 [M4 验证记录](https://github.com/qing-yi-5427/qing-zip/pull/1) 与 [原生 x64 / ARM64 托管运行](https://github.com/qing-yi-5427/qing-zip/actions/runs/45096359747)。
 
-推荐审查的组合源码为 `e9eeecd`，x64 便携 ZIP 共 33,286,633 字节，SHA-256 为 `7611a000a3f6ffcc4a93fdb3c6e8189b9b563fd95cfe88019530b59060d72932`。实际包内 worker 完成新加的选择性提取取消用例，观察到 95 次读操作。此候选运行 276 项 Node 回归，真实 ZIP/7z 冒烟及常用格式比对均已复跑。[可复建源码](https://github.com/qing-yi-5427/qing-zip/tree/e9eeecd414fa7379fc959967fb1645ced24eeb62) · [测试实现及控制组](https://github.com/qing-yi-5427/qing-zip/pull/15)
+第一轮审查的组合源码为 `e9eeecd`，x64 便携 ZIP 共 33,286,633 字节，SHA-256 为 `7611a000a3f6ffcc4a93fdb3c6e8189b9b563fd95cfe88019530b59060d72932`。实际包内 worker 完成新加的选择性提取取消用例，观察到 95 次读操作。此候选运行 276 项 Node 回归，真实 ZIP/7z 冒烟及常用格式比对均已复跑。[可复建源码](https://github.com/qing-yi-5427/qing-zip/tree/e9eeecd414fa7379fc959967fb1645ced24eeb62) · [测试实现及控制组](https://github.com/qing-yi-5427/qing-zip/pull/15)
 
 ## 复跑命令
 

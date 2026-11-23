@@ -4,6 +4,12 @@
 
 这份基线记录 Windows x64 加固便携包中 `obz.exe` 的归档操作，以及工具箱所调用的 LZMA 合成基准。四类样本全部完成创建、列出、校验、解压，源目录、源归档与解压结果通过目录树和 SHA-256 比较。
 
+## 第三轮 ZIP 更新与任务卡
+
+本机 Windows 11 x64 build 26300 使用同一 NanaZip 引擎比较两份加固 CLI。普通 ZIP 添加 1 KiB 成员时，12 对交替执行的中位耗时为 93.910 和 93.678 毫秒，逐对差值中位为 +0.537 毫秒，范围 −4.152 至 +9.676。添加 16 MiB 时，8 对中位耗时为 400.567 和 400.990 毫秒，逐对差值中位为 +1.282 毫秒，范围 −8.753 至 +15.487。每轮独立校验成员和输入哈希。中断后另用进程写入计数实测，候选在父进程退出采样点之后的计数增长为零。普通操作耗时的差值两个方向都有。[计时与中断回执](https://github.com/qing-yi-5427/qing-zip/tree/4b2286ff0532cb1f49d045dbf027cc6d9a9fd9f3/docs/verification/zip-update-owned-job)
+
+同机 Ryzen 7 9800X3D、Node 24.14 下，测量实际任务卡函数生成 HTML 字符串的耗时。先预热两对，再交替执行 11 对，每个样本 4,000 次。完成卡片的逐对中位差值为 +0.020 微秒（−0.149 至 +0.099），失败卡片为 +0.089 微秒（−0.193 至 +0.162）。前端源文件增加 935 字节。此项只覆盖字符串生成，WebView2 的窗口布局、绘制、冷启动和 GPU 用量仍需分别测量。[逐轮测量](verification/nested-feedback-timings.json) · [实际失败和重试窗口](https://github.com/qing-yi-5427/qing-zip/tree/af2045c73c10f402a8239d1b34399658f8e21a9f/docs/verification/nested-save-capacity)
+
 ## 第二轮普通操作实测
 
 在本机 Windows 11 x64 26300，使用同一 SSD、自然文件缓存和两份加固便携包。每个样本先执行一对预热，再交替执行七对解压到新目录的操作。计时包括 CLI 启动和解压，内容与来源 SHA-256 在计时之外核对。对照为上一轮组合 `e9eeecd`，候选为 `b2bf9f3`。下表单位为毫秒。[候选组合源码](https://github.com/qing-yi-5427/qing-zip/tree/b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b) · [RAR 修复](https://github.com/qing-yi-5427/qing-zip/pull/25)
