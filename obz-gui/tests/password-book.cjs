@@ -68,3 +68,33 @@ test('the shared list assigns unlabelled legacy records their IDs and distinguis
   assert.deepEqual(rows.map(row => row.innerHTML.match(/<strong>(.*?)<\/strong>/)[1]),
     ['legacy-key', 'archive.zip · 1', 'archive.zip · 2']);
 });
+
+test('the password book lets users disable automatic saving across windows', () => {
+  const window = {};
+  vm.runInNewContext(read('password-book.js'), {window});
+  const preference = new Map();
+  const storage = {
+    getItem: name => preference.get(name),
+    setItem: (name,value) => preference.set(name,value),
+  };
+  const options = {storage,invoke: async () => []};
+  const book = window.QingPasswordBook(options);
+  const otherWindow = window.QingPasswordBook(options);
+  const toggle = {};
+  const elements = {
+    '[data-book-automatic]':toggle, '[data-book-preference-status]':{},
+    '[data-book-add]':{querySelector:()=>({})},
+    '[data-book-entries]':{replaceChildren(){},isConnected:false},
+    '[data-book-status]':{},
+  };
+  book.mountPage({querySelector: selector => elements[selector]});
+  assert.equal(toggle.checked,true);
+  toggle.checked = false;
+  toggle.onchange();
+  assert.equal(otherWindow.automaticSavingEnabled(),false);
+  storage.setItem = () => { throw Error('storage unavailable'); };
+  toggle.checked = true;
+  toggle.onchange();
+  assert.equal(toggle.checked,false);
+  assert.match(elements['[data-book-preference-status]'].textContent,/无法保存/);
+});

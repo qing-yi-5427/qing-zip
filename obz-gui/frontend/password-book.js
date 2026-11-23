@@ -1,13 +1,26 @@
 (() => {
  'use strict';
 
- window.QingPasswordBook = ({invoke, esc}) => {
+ window.QingPasswordBook = ({invoke, esc, storage}) => {
   const mask = '••••••••';
+  const automaticPreference = 'qing-remember-extraction-passwords';
+  function automaticSavingEnabled() {
+   try {
+    return storage?.getItem(automaticPreference) !== 'off';
+   } catch {
+    return false;
+   }
+  }
   const pickerMarkup = id => `<div class="oa-password-picker">
    <button type="button" class="qa-button quiet" data-password-picker="${id}" aria-expanded="false" aria-controls="${id}-book">从密码本选择</button>
    <div id="${id}-book" class="oa-password-choices" hidden></div>
   </div>`;
-  const pageMarkup = `<form class="oa-password-add" autocomplete="off" data-book-add>
+  const pageMarkup = `<div class="qa-setting-group">
+   <label class="qa-check"><input type="checkbox" data-book-automatic>自动保存成功使用的解压密码</label>
+   <p class="qa-sub">密码由当前 Windows 账户保护。关闭自动保存后仍可手动添加和选用密码。</p>
+   <p data-book-preference-status role="status"></p>
+  </div>
+  <form class="oa-password-add" autocomplete="off" data-book-add>
    <div class="qa-fieldrow">
     <label class="qa-field">备注（选填）<input data-book-label type="text"></label>
     <label class="qa-field">密码<input data-book-password type="password" autocomplete="new-password" required></label>
@@ -17,7 +30,6 @@
   </form>
   <section class="qa-setting-group" aria-labelledby="oa-password-book-title">
    <h3 id="oa-password-book-title" tabindex="-1">已保存的密码</h3>
-   <p class="qa-sub">成功解密并解压时使用的密码会自动保存。输入解压密码时可在密码本中选用。</p>
    <p data-book-status role="status"></p>
    <div data-book-entries></div>
   </section>`;
@@ -108,6 +120,20 @@
   }
 
   function mountPage(container) {
+   const automatic = container.querySelector('[data-book-automatic]');
+   if (automatic) {
+    const status = container.querySelector('[data-book-preference-status]');
+    automatic.checked = automaticSavingEnabled();
+    automatic.onchange = () => {
+     try {
+      storage.setItem(automaticPreference, automatic.checked ? 'on' : 'off');
+      status.textContent = '';
+     } catch {
+      automatic.checked = automaticSavingEnabled();
+      status.textContent = '无法保存此设置，请重试。';
+     }
+    };
+   }
    const form = container.querySelector('[data-book-add]');
    const label = form.querySelector('[data-book-label]');
    const password = form.querySelector('[data-book-password]');
@@ -212,6 +238,6 @@
    }
   }
 
-  return {pageMarkup, mountPickers, mountPage, closePicker};
+  return {pageMarkup, mountPickers, mountPage, closePicker, automaticSavingEnabled};
  };
 })();

@@ -397,6 +397,38 @@ pub fn executable() -> Result<PathBuf, String> {
     unrestricted_executable()
 }
 
+fn runtime_root(app: &Path, workspace: &Path, debug_build: bool) -> PathBuf {
+    let adjacent = app.join("runtime");
+    if adjacent.exists() || (!debug_build && !app.starts_with(workspace)) {
+        adjacent
+    } else {
+        workspace.join("runtime")
+    }
+}
+
+pub(crate) fn bundled_runtime() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let app = executable.parent().ok_or("application directory unavailable")?;
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("build source directory unavailable")?;
+    Ok(runtime_root(app, workspace, cfg!(debug_assertions)))
+}
+
+#[cfg(test)]
+#[test]
+fn release_helpers_use_only_the_bundled_runtime() {
+    let scratch = tempfile::tempdir().unwrap();
+    let workspace = scratch.path().join("checkout");
+    let target = workspace.join("target/release");
+    let package = scratch.path().join("portable");
+    assert_eq!(runtime_root(&package, &workspace, false), package.join("runtime"));
+    assert_eq!(runtime_root(&target, &workspace, false), workspace.join("runtime"));
+
+    fs::create_dir_all(target.join("runtime")).unwrap();
+    assert_eq!(runtime_root(&target, &workspace, true), target.join("runtime"));
+}
+
 fn unrestricted_executable() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

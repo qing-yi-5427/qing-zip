@@ -31,7 +31,7 @@ fn start_operation(
     recycle_after: Option<bool>,
     remember_password: Option<bool>,
 ) -> Result<u64, String> {
-    if remember_password.unwrap_or(true) {
+    if remember_password == Some(true) {
         password_book::track_extraction(&mut request);
     }
     jobs::start_operation(request, recycle_after)

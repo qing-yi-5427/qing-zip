@@ -18,7 +18,7 @@ const initialOperation=params.get('operation');
 const hasInitialOperation=[...$('operation').options].some(option=>option.value===initialOperation);
 const fixedOperation=hasInitialOperation&&params.get('choose')!=='1';
 const archiveScope=fixedOperation&&params.get('scope')==='archive'&&!!params.get('path');
-const passwordBook=window.QingPasswordBook({invoke});
+const passwordBook=window.QingPasswordBook({invoke,storage:localStorage});
 const shellManager=fixedOperation&&['shell-enable','shell-disable'].includes(initialOperation);
 const automaticQueries=new Set(['capabilities']);
 const cancellableOperations=new Set(['list','extract','create','test','add','delete','rename','preview','recover','checksum','benchmark','file-split','file-combine']);
@@ -195,7 +195,7 @@ try{
  QingProgress.render(progress,null);
  show('progress',!query);
  if(op.startsWith('shell-'))request.path=await invoke('current_executable');
- active=await invoke('start_operation',{request});
+ active=await invoke('start_operation',{request,rememberPassword:op==='extract'&&passwordBook.automaticSavingEnabled()});
  const cancellable=cancellableOperations.has(op);
  $('cancel').disabled=!cancellable;
  show('cancel',cancellable);

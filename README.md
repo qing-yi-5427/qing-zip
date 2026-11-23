@@ -2,7 +2,7 @@
 <h1 align="center">qing-zip</h1>
 <p align="center">轻透、顺手的 Windows 本地压缩工具</p>
 
-[下载已发布版本](https://github.com/qing-yi-5427/qing-zip/releases) · [稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues)
+[下载稳定版](https://github.com/qing-yi-5427/qing-zip/releases/latest) · [历史版本](https://github.com/qing-yi-5427/qing-zip/releases) · [提交问题](https://github.com/qing-yi-5427/qing-zip/issues) · [安全问题私密报告](https://github.com/qing-yi-5427/qing-zip/security/advisories/new)
 
 ## 软件截图
 
@@ -32,15 +32,16 @@
 - 在“新建压缩文件”或“添加文件”对话框中，可从资源管理器拖入要打包的文件和文件夹。
 - 添加文件的“更新方式”提供添加并替换、更新并添加、仅更新已有和同步所选范围。更新按修改时间与大小判断；同步删除需要单独确认，未选择范围保持不变。
 - 解压工具栏提供常用快捷操作和指定位置、深度解压入口。可记住常用解压选项，也可单次解压并回收。任务可收起并继续浏览已打开的标签；完成后可打开实际输出位置，遇到密码或冲突可从任务中调整后重试。
-- 工具箱中的密码本支持手动添加，也会记录成功解压使用的密码。此前保存的记录可在同一页查看、删除，并可在解压时选用。
+- 工具箱中的密码本支持手动添加、查看、删除和选用密码。默认保存成功解压使用的密码，可在密码本关闭自动保存。保存的密码由当前 Windows 账户保护。
 - 支持文件关联、资源管理器右键入口、ZIP 修复和有限范围密码恢复。
 
 ## 使用
 
-x64 版支持 Windows 10 2004（19041）及以上版本和 Windows 11。Windows 11 ARM64 设备请选择文件名含 `arm64` 的版本。桌面界面需要 Microsoft Edge WebView2 Runtime。
+x64 版面向 Windows 10 2004（19041）及以上版本和 Windows 11。含 `arm64` 的资产是 Windows 11 ARM64 构建，请以对应版本的发布页为准。部分稳定版仅提供 x64。桌面界面需要 Microsoft Edge WebView2 Runtime，可从微软下载缺少的运行时。[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 
 - **便携版**：完整解压 `qing-zip-版本-portable.zip`，运行 `qing-zip.exe`，保留同目录中的其他程序文件及 `runtime` 目录。
 - **安装版**：运行 `qing-zip-版本-setup.exe`，默认安装到当前用户目录，无需管理员权限。
+- **下载校验**：在同一发布页下载对应的 `.sha256`，用 PowerShell 的 `Get-FileHash -Algorithm SHA256 -LiteralPath '下载的文件名'` 计算 SHA-256，并与该校验文件对照。当前稳定版的应用和安装程序未使用 Windows 代码签名。
 - `Ctrl+O` 打开，`Ctrl+N` 新建，`Ctrl+E` 解压，`Ctrl+T` 检查完整性，`Ctrl+Tab` 切换标签。
 - 文件列表支持方向键、Home / End、Shift 连续选择、空格勾选、回车打开和 Shift+F10 右键菜单。
 - 文件列表可选择显示列、调整列顺序与宽度，并记住设置；压缩包目录树支持方向键展开、折叠和跳转，以及 Home / End 定位。
@@ -55,13 +56,13 @@ x64 版支持 Windows 10 2004（19041）及以上版本和 Windows 11。Windows 
 
 ## 构建
 
-需要 Rust stable、Visual Studio C++ Build Tools、Python 3.10+，以及 NSIS 3.11+（构建安装版时使用）。运行完整测试还需要 Node.js。
+需要 Rust stable 的 MSVC 工具链、Visual Studio C++ Build Tools 与 Windows SDK、Python 3.10+，以及 NSIS 3.11+（构建安装版时使用）。前端测试需要 Node.js 22+。
 
 ```powershell
-./scripts/build.ps1 -NsisPath "C:/path/to/NSIS/makensis.exe"
+./scripts/build.ps1 -NsisPath "C:/path/to/NSIS/makensis.exe" -OutputDirectory dist/local-x64
 ```
 
-输出在 `dist/`。`obz-gui` 是 Tauri 界面，`obz-rs` 是归档核心和 `obz.exe` 命令行工具。第三方运行时随 `runtime/` 提供，构建缓存和研究资料不进入发行包。构建会校验运行时哈希，并生成独立的引擎源码包。
+`obz-gui` 是 Tauri 界面，`obz-rs` 是归档核心和 `obz.exe` 命令行工具。x64 构建按清单校验并打包第三方运行时，生成同版本的便携包、安装程序、引擎源码和 SHA-256 文件。引擎源码包需要已缓存的上游归档或联网下载。提交改动前可运行本地回归。[贡献与测试](CONTRIBUTING.md) · [Windows CI](https://github.com/qing-yi-5427/qing-zip/actions/workflows/windows-ci.yml)
 
 ## 许可
 

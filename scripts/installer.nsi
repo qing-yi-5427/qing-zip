@@ -3,7 +3,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !ifndef VERSION
-!define VERSION "0.12.21"
+!define VERSION "0.12.22"
 !endif
 !ifndef STAGING
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"
@@ -189,7 +189,7 @@ Section "Uninstall"
  ${EndIf}
  StrCpy $RequiredFileFailed 0
  ; Delete only shipped files. Archives or other files the user placed here survive.
- !include "uninstall-files.nsh"
+ !include "${STAGING}.uninstall-files.nsh"
  ${If} $RequiredFileFailed != 0
   SetErrorLevel 1
   IfSilent +2

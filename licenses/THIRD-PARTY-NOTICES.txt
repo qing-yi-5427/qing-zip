@@ -524,10 +524,10 @@ foldhash 0.2.0 | Zlib
   Repository: https://github.com/orlp/foldhash
   Notices: rust/foldhash-0.2.0/LICENSE
   Status: preserved
-form_urlencoded 1.2.2 | MIT OR Apache-2.0
-  https://static.crates.io/crates/form_urlencoded/form_urlencoded-1.2.2.crate
+form_urlencoded 1.2.3 | MIT OR Apache-2.0
+  https://static.crates.io/crates/form_urlencoded/form_urlencoded-1.2.3.crate
   Repository: https://github.com/servo/rust-url
-  Notices: rust/form_urlencoded-1.2.2/LICENSE-APACHE, rust/form_urlencoded-1.2.2/LICENSE-MIT
+  Notices: rust/form_urlencoded-1.2.3/LICENSE-APACHE, rust/form_urlencoded-1.2.3/LICENSE-MIT
   Status: preserved
 generic-array 0.14.7 | MIT
   https://static.crates.io/crates/generic-array/generic-array-0.14.7.crate
@@ -1482,10 +1482,10 @@ unicode-segmentation 1.13.3 | MIT OR Apache-2.0
   Repository: https://github.com/unicode-rs/unicode-segmentation
   Notices: rust/unicode-segmentation-1.13.3/COPYRIGHT, rust/unicode-segmentation-1.13.3/LICENSE-APACHE, rust/unicode-segmentation-1.13.3/LICENSE-MIT
   Status: preserved
-url 2.5.8 | MIT OR Apache-2.0
-  https://static.crates.io/crates/url/url-2.5.8.crate
+url 2.5.9 | MIT OR Apache-2.0
+  https://static.crates.io/crates/url/url-2.5.9.crate
   Repository: https://github.com/servo/rust-url
-  Notices: rust/url-2.5.8/LICENSE-APACHE, rust/url-2.5.8/LICENSE-MIT
+  Notices: rust/url-2.5.9/LICENSE-APACHE, rust/url-2.5.9/LICENSE-MIT
   Status: preserved
 urlpattern 0.6.0 | MIT
   https://static.crates.io/crates/urlpattern/urlpattern-0.6.0.crate

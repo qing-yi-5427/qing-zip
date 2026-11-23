@@ -3,7 +3,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const makeContext=value=>vm.createContext(Object.assign(value,{QingProgress:require('../frontend/progress.js'),renderHistoryJob() {},deepExtract:{jobActions:()=>''},performance,updateToolbar:()=>{},schedulePendingQueue:()=>{}}));
+const makeContext=value=>vm.createContext({
+  QingProgress:require('../frontend/progress.js'),renderHistoryJob() {},deepExtract:{jobActions:()=>''},
+  performance,updateToolbar:()=>{},schedulePendingQueue:()=>{},
+  passwordBook:{automaticSavingEnabled:()=>true},...value,
+});
 const taskSource=source=>source.slice(source.indexOf('const ordinaryRetries='),source.indexOf('function pageHeading(')) + source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('));
 const runSource=source=>source.slice(source.indexOf('async function run('),source.indexOf('function forgetRecycledArchives('));
 
@@ -139,11 +143,13 @@ test('clipboard export discards incomplete output and publishes only a completed
   }
 });
 
-test('the native extraction job never records a password for temporary output', async () => {
+test('native extraction follows the password preference and never saves for temporary output', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
   const rememberPassword = [];
+  let saveAutomatically = true;
   const context = makeContext({
     s: {jobs: []},
+    passwordBook: {automaticSavingEnabled: () => saveAutomatically},
     invoke: async (command, args) => {
       if (command === 'start_operation') {
         rememberPassword.push(args.rememberPassword);
@@ -160,9 +166,31 @@ test('the native extraction job never records a password for temporary output', 
   const request = {operation: 'extract', options: {password: 'fixture'}};
   await context.run(request, 'copy', {temporaryOutput: true, silent: true});
   await context.run(request, 'extract', {silent: true});
-  assert.deepEqual(rememberPassword, [false, true]);
+  saveAutomatically = false;
+  await context.run(request, 'extract', {silent: true});
+  await context.run({operation:'deep-extract'}, 'deep extract', {silent: true});
+  assert.deepEqual(rememberPassword, [false, true, false, false]);
   assert.match(context.s.jobs[1].summary, /解压密码未能保存到密码本/);
   assert.doesNotMatch(context.s.jobs[1].summary, /fixture/);
+});
+
+test('deep extraction with recycling reflects the actual report in task completion', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  for (const recycleError of [null, '原压缩包已保留']) {
+    const result = {
+      deep_session:1, finished:true, partial:false, outputs:['C:/output'],
+      recycled_originals:recycleError?[]:['C:/source.zip'], recycle_error:recycleError,
+    };
+    const state = {jobs: []};
+    const context = makeContext({
+      s:state,
+      invoke: async command => command==='wait_operation'?{status:'complete',progress:{},result}:1,
+    });
+    vm.runInContext(taskSource(source)+runSource(source),context);
+    await context.run({operation:'deep-extract'},'深度解压',{silent:true,recycleAfter:true});
+    assert.equal(state.jobs[0].partial,Boolean(recycleError));
+    assert.equal(context.QingProgress.value(state.jobs[0]),recycleError?null:100);
+  }
 });
 
 test('partial moves retain counts and the backend reason in task history', async () => {

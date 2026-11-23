@@ -438,6 +438,11 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .oa-compression-dialog .qa-dialog-footer{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--qa-line)}
 #qing-archive .oa-compression-dialog .qa-error{margin:4px 3px 0;max-height:5em;overflow:auto}
 #qing-archive .oa-compression-dialog .qa-error:empty{display:none}
+#qing-archive .oa-open-dialog{display:flex;flex-direction:column;padding:16px 18px;overflow:hidden}
+#qing-archive .oa-open-dialog .qa-dialog-header{flex:none;margin-bottom:8px}
+#qing-archive .oa-open-dialog .qa-dialog-footer{flex:none;flex-wrap:wrap;margin-top:8px}
+#qing-archive .oa-open-dialog .qa-error{flex:none;margin:4px 3px 0;max-height:6em;overflow:auto}
+#qing-archive .oa-open-dialog .qa-error:empty{display:none}
 #qing-archive .oa-compression-dialog .qa-field{margin:7px 0;gap:4px}
 #qing-archive .oa-compression-dialog .qa-fieldrow{gap:0 12px;grid-template-columns:repeat(2,minmax(0,1fr))}
 #qing-archive .oa-compression-dialog :is(input:not([type=checkbox]),select,textarea){padding:6px 8px}

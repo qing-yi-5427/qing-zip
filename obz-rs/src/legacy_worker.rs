@@ -9,24 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 fn runtime() -> Result<PathBuf, String> {
-    let mut roots = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent().filter(|p| p.join("runtime").is_dir()) {
-            let python = dir.join("runtime/python");
-            if python.join("python.exe").is_file() && python.join("ace_worker.py").is_file() {
-                return Ok(python);
-            }
-            return Err("bundled ACE2 Python runtime is incomplete".into());
-        }
-        for p in exe.ancestors().skip(1).take(4) {
-            roots.push(p.join("runtime/python"));
-        }
+    let python = crate::engine::bundled_runtime()?.join("python");
+    if python.join("python.exe").is_file() && python.join("ace_worker.py").is_file() {
+        Ok(python)
+    } else {
+        Err("bundled ACE2 Python runtime missing; restore runtime/python".into())
     }
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/python"));
-    roots
-        .into_iter()
-        .find(|p| p.join("python.exe").is_file() && p.join("ace_worker.py").is_file())
-        .ok_or("bundled ACE2 Python runtime missing; restore runtime/python".into())
 }
 pub fn available() -> bool {
     runtime().is_ok()
