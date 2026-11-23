@@ -36,7 +36,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        trial: ${{ fromJSON(inputs.trial == 'update' && '["update"]' || inputs.trial == 'midwrite' && '["midwrite"]' || inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
+        trial: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && '["baseline","combined","update"]' ||
+                      inputs.trial == 'historical' && '["baseline","combined"]' ||
+                      format('["{0}"]', inputs.trial)) }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
