@@ -1,0 +1,32 @@
+{
+  "workflow": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45216259741",
+  "run_head_sha": "9c9258cc05c87b0061f8670d3abd248c7d706beb",
+  "checkout_sha": "9c9258cc05c87b0061f8670d3abd248c7d706beb",
+  "checkout_tree": "d7d8cac2f080a3671d5a5b8277daf361cbb01741",
+  "checkout_parents": [
+    "f46164281c969fd63420461d2ffd7906513c382e",
+    "1cc839d9ada3385b16a76b9e18425f2662801833"
+  ],
+  "artifact_name": "qing-zip-windows-x64-trial",
+  "artifact_id": 14839502402,
+  "artifact_digest_from_github": "sha256:3e2000c70121342230faf6aa0536e241d6e3b0abe9181010a5f510d0330c076e",
+  "package_name": "qing-zip-0.12.23-portable.zip",
+  "package_sha256": "8ab4992f19493869bad71a92d76c173392fe1f616a82d3b261790722ca363b71",
+  "build_target": "x86_64-pc-windows-msvc",
+  "installed_and_packaged_authored_sha256": {
+    "obz.exe": "048e5bfe808b34ed5914230930caa1db8e3fae2da71686ade690a85b0b351812",
+    "obz-worker.exe": "48a632ffc845f6443174d8c728aef28cd3e4b4f9af5fe81acdc275817d2d41ab",
+    "qing-zip.exe": "8123c89c46694dc84cc7b0a5ddde00d5dcedf03e12061b0184c5ed5160040b0d"
+  },
+  "installed_and_packaged_nana_runtime_sha256": {
+    "NanaZip.Universal.Console.exe": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139",
+    "NanaZip.Core.dll": "470e80066760f432bef8893ef416ba79fab6b165fbf3db3c1729bbe2b0feb46a",
+    "NanaZip.Codecs.dll": "6fb3d89f4002890c939c07e311fc940dead1a5b571f3daf70e7535da790b65c5",
+    "NanaZip.ZS.Codecs.dll": "8547b43be561fb283115de6e1183a789050b523255a55fe63f802298e5eff869",
+    "K7Base.dll": "6b7903cbadae93f59f6705e73a570da9dee9f76d25879c2e60a5ef1c0b00ea92",
+    "K7User.dll": "916d6ddc18738827921b2ed204c958ebbc4483d8586881a9df8b0f9c5df1052d"
+  },
+  "installed_pe_gate": "PASS",
+  "measuring_script_sha256": "fec89c36df2d926a30e06c27d5dd659f0ece4612259e2758843421ee4268c772",
+  "test_scope": "Installed main, local Windows 11 x64 ordinary NTFS process interruption"
+}
