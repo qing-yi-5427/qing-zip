@@ -79,6 +79,7 @@ jobs:
           $tests = @(
             'cli_auto_rename_reserves_actual_extraction_paths',
             'cli_file_colliding_with_directory_honors_safe_conflict_policies'
+            'cli_smart_extraction_reports_the_retained_top_level_directory'
           )
           foreach ($testName in $tests) {
             $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test operations_integration $testName -- --exact 2>&1 | Out-String)

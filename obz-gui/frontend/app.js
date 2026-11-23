@@ -785,7 +785,7 @@ async function run(request,label,{silent=false,recycleAfter=false,startJob=null,
    catch(error){v={...v,status:'failed',error:String(error)};}
   }
   if(request.operation==='list'&&j.cancelRequested&&v.status==='complete')v={...v,status:'cancelled',error:'operation cancelled'};
-  updateJobProgress(j,v);onProgress?.(j);if(v.status!=='running'){if(v.status==='complete'||v.result?.deep_session){if(v.result?.deep_session)recordDeepReport(j,v.result);if(['add','archive-add','archive-move','archive-copy','delete','rename','comment-set','nested-save'].includes(request.operation))await syncNestedSessions();if(v.result?.valid===false){j.status='failed';j.error='完整性检查未通过。';}if(temporaryOutput){j.summary='文件已准备好';return v.result;}j.outputPath=j.deep?v.result?.outputs?.[0]:v.result?.destination||v.result?.outputs?.[0];const protection=v.result?.input_atime;if(protection&&(protection.unavailable_handles||protection.unconfirmed_sources||protection.backend_best_effort)){j.timeWarning=QingInputAtime.preservationNotice(v.result);j.timeReasons=[...new Set((protection.warnings||[]).map(w=>w.source+'：'+({alternate_stream_proof:'附加数据检查无法完整保留访问时间',encrypted_source_proof:'加密文件检查无法确认访问时间保护',enhanced_open:'无法取得所需的文件权限',enhanced_reopen:'无法取得所需的文件权限',suppress_updates:'系统未能启用访问时间保护'}[w.phase]||'无法确认访问时间保护')))];if(protection.backend_best_effort)j.timeReasons.push('未能逐项确认外部引擎的访问时间保护');}j.partial=!!(j.partial||(recycleAfter&&!j.deep&&v.result?.recycled!==true)||v.result?.recycle_error||v.result?.partial||v.result?.retained_sources?.length||v.result?.metadata_not_merged?.length);if(batch&&QingProgress.complete(j)){batch.done++;j.overall.done=batch.done;}j.summary=v.result?.summary|| (v.result?.retained_sources?.length?`已移动 ${v.result.moved||0} 项；${v.result.retained_sources.length} 个来源仍保留，目标副本已保留。${v.result.retained_reasons?.[0]?`\n${v.result.retained_reasons[0]}`:''}`:v.result?.metadata_not_merged?.length?`已复制 ${v.result.copied||0} 个文件；${v.result.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${v.result.metadata_not_merged[0]}`:v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${v.result.destination}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成');if(v.result?.password_book_error)j.summary+='\n解压密码未能保存到密码本。';return v.result;}throw new Error(v.error||'任务已取消');}if(background)renderInlineTask();else if(s.view==='jobs')renderProgress();
+  updateJobProgress(j,v);onProgress?.(j);if(v.status!=='running'){if(v.status==='complete'||v.result?.deep_session){if(v.result?.deep_session)recordDeepReport(j,v.result);if(['add','archive-add','archive-move','archive-copy','delete','rename','comment-set','nested-save'].includes(request.operation))await syncNestedSessions();if(v.result?.valid===false){j.status='failed';j.error='完整性检查未通过。';}if(temporaryOutput){j.summary='文件已准备好';return v.result;}j.outputPath=j.deep?v.result?.outputs?.[0]:v.result?.output_directory||v.result?.destination||v.result?.outputs?.[0];const protection=v.result?.input_atime;if(protection&&(protection.unavailable_handles||protection.unconfirmed_sources||protection.backend_best_effort)){j.timeWarning=QingInputAtime.preservationNotice(v.result);j.timeReasons=[...new Set((protection.warnings||[]).map(w=>w.source+'：'+({alternate_stream_proof:'附加数据检查无法完整保留访问时间',encrypted_source_proof:'加密文件检查无法确认访问时间保护',enhanced_open:'无法取得所需的文件权限',enhanced_reopen:'无法取得所需的文件权限',suppress_updates:'系统未能启用访问时间保护'}[w.phase]||'无法确认访问时间保护')))];if(protection.backend_best_effort)j.timeReasons.push('未能逐项确认外部引擎的访问时间保护');}j.partial=!!(j.partial||(recycleAfter&&!j.deep&&v.result?.recycled!==true)||v.result?.recycle_error||v.result?.partial||v.result?.retained_sources?.length||v.result?.metadata_not_merged?.length);if(batch&&QingProgress.complete(j)){batch.done++;j.overall.done=batch.done;}j.summary=v.result?.summary|| (v.result?.retained_sources?.length?`已移动 ${v.result.moved||0} 项；${v.result.retained_sources.length} 个来源仍保留，目标副本已保留。${v.result.retained_reasons?.[0]?`\n${v.result.retained_reasons[0]}`:''}`:v.result?.metadata_not_merged?.length?`已复制 ${v.result.copied||0} 个文件；${v.result.metadata_not_merged.length} 个文件夹的附加数据未合并，来源完整保留。\n${v.result.metadata_not_merged[0]}`:v.result?.files!==undefined?`已提取 ${v.result.files} 个文件至 ${j.outputPath}`:v.result?.outputs?'已创建：'+v.result.outputs.join('、'):v.result?.valid?'完整性检查通过':'操作完成');if(v.result?.password_book_error)j.summary+='\n解压密码未能保存到密码本。';return v.result;}throw new Error(v.error||'任务已取消');}if(background)renderInlineTask();else if(s.view==='jobs')renderProgress();
   else if(deferProgress&&!silent&&progressTimer===undefined)showQueuedProgress();
   renderHistoryJob(j);
  }}catch(error){
@@ -996,7 +996,7 @@ async function finishExtraction(source,dest,result,{recycle=false,openAfter=fals
    s.inlineExpanded=true;renderProgress();toast(message);
   }
  }
- if(openAfter)await invoke('reveal_path',{path:result.destination||dest});
+ if(openAfter)await invoke('reveal_path',{path:result.output_directory||result.destination||dest});
  if(closeAfter&&(!recycle||result.recycled))await invoke('window_action',{action:'close'});
  return !recycle||!!result.recycled;
 }
@@ -1723,7 +1723,7 @@ function extractionLayout(source,entries,selected,smart,deep){
   const name=raw.replace(/^\.\//,'').replace(/\/+$/,'');
   const separator=name.indexOf('/'),top=separator<0?name:name.slice(0,separator);
   if(lowerAscii(top)!==expected||(!entry.is_dir&&separator<0))return {folder:stem,wrapped:''};
-  wrapped=top;
+  wrapped||=top;
  }
  return {folder:deep?wrapped||stem:wrapped?'':stem,wrapped};
 }
@@ -1770,7 +1770,7 @@ function extractionLocation(source,entries,selected,smart,deep){
   item,
   relative:item&&!deep?joinExtractionPath(layout.folder,item):layout.folder||layout.wrapped,
   label:item&&!deep?'预计保存路径':'预计输出目录',
-  hint:deep?(layout.wrapped?'沿用包内同名目录。重名的输出目录会自动编号。':'自动展开内层压缩包。重名的输出目录会自动编号。'):
+  hint:deep?'按展开后的内容确定实际目录。重名的输出目录会自动编号。':
    layout.wrapped?'智能解压沿用包内同名目录。':smart?'智能解压会创建以压缩包命名的文件夹。':'保留包内的目录结构。'
  };
 }
