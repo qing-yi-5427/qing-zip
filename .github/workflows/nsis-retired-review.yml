@@ -1,0 +1,76 @@
+name: Hosted NSIS retired-file migration
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/nsis-retired-review.yml'
+      - 'obz-rs/src/private_stage.rs'
+      - 'scripts/installer.nsi'
+      - 'scripts/check-nsis-retired-hosted.py'
+      - 'obz-gui/src/associations/retired_install.rs'
+      - 'obz-rs/src/retired_install.rs'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  migration:
+    if: github.repository == 'qing-yi-5427/qing-zip' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: windows-2025
+    timeout-minutes: 50
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify disposable runner and pin prior assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64' -or $env:RUNNER_OS -ne 'Windows') { throw 'Hosted Windows x64 required' }
+          New-Item -ItemType Directory evidence | Out-Null
+          @{ checkout = (git rev-parse HEAD).Trim(); runner = [Environment]::OSVersion.Version.ToString(); run = $env:GITHUB_RUN_ID } | ConvertTo-Json | Set-Content evidence/bootstrap.json
+          $inputDir = Join-Path $env:RUNNER_TEMP 'qz-retired-input'
+          New-Item -ItemType Directory $inputDir | Out-Null
+          $nsis = Join-Path $inputDir 'nsis.zip'
+          curl.exe --fail --location --retry 2 --output $nsis 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip'
+          if ($LASTEXITCODE -or (Get-FileHash $nsis).Hash -ne 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8') { throw 'NSIS archive digest mismatch' }
+          Expand-Archive -LiteralPath $nsis -DestinationPath $inputDir
+          gh release download v0.12.20 --repo qing-yi-5427/qing-zip --pattern 'qing-zip-0.12.20-setup.exe' --pattern 'qing-zip-0.12.20-portable.zip' --dir $inputDir
+          if ($LASTEXITCODE) { throw 'Prior release unavailable' }
+          if ((Get-FileHash (Join-Path $inputDir 'qing-zip-0.12.20-setup.exe')).Hash -ne '83a08671edde7bb53ff37582f4d82fd880c968029ddcd39001119efc11a979e1') { throw 'Unexpected prior setup digest' }
+          if ((Get-FileHash (Join-Path $inputDir 'qing-zip-0.12.20-portable.zip')).Hash -ne '6acef9b5a4ae726b6e6bd9bad4eecda5b4238d5f60296cc4b5d74e7671efb84a') { throw 'Unexpected prior portable digest' }
+      - name: Build and package the guarded candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'qz-retired-input'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'qz-retired-build'
+          $dist = Join-Path $env:RUNNER_TEMP 'qz-retired-dist'
+          ./scripts/build.ps1 -NsisPath (Join-Path $inputDir 'nsis-3.13/makensis.exe') -TargetDirectory $buildDir -OutputDirectory $dist
+          if ($LASTEXITCODE) { throw 'Candidate build failed' }
+          Copy-Item (Join-Path $buildDir 'x86_64-pc-windows-msvc/release/hardened-build.json') evidence/hardened-build.json
+      - name: Drive real installer consent and verify recoverable moves
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'qz-retired-input'
+          $dist = Join-Path $env:RUNNER_TEMP 'qz-retired-dist'
+          python -m pip install Pillow==11.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check-nsis-retired-hosted.py --old-setup (Join-Path $inputDir 'qing-zip-0.12.20-setup.exe') --old-portable (Join-Path $inputDir 'qing-zip-0.12.20-portable.zip') --candidate-setup (Join-Path $dist 'qing-zip-0.12.23-setup.exe') --candidate-stage (Join-Path $dist 'qing-zip-0.12.23-portable') --out evidence/retired
+          exit $LASTEXITCODE
+      - name: Verify ordinary recovery rename and occupied source
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib retired_install::tests::ordinary_recovery_rename_allows_target_write_sharing_without_clobbering -- --exact
+          exit $LASTEXITCODE
+      - name: Upload installer and migration receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nsis-retired-migration-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: evidence/
