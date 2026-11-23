@@ -160,7 +160,13 @@ async fn cancel_and_close(app: tauri::AppHandle) -> Result<bool,String> {
     verification::revoke();
     jobs::cancel_all();
     tauri::async_runtime::spawn_blocking(move || {
-        for _ in 0..300 {if !jobs::running(){if nested::dirty(){return Ok(false);}nested::cleanup();app.exit(0);return Ok(true);}std::thread::sleep(std::time::Duration::from_millis(100));}
+        for _ in 0..300 {
+            if let Some(closed) = nested::cleanup_if_idle() {
+                if closed { app.exit(0); }
+                return Ok(closed);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         Err("任务正在安全停止，请稍后再关闭窗口。".into())
     }).await.map_err(|e|e.to_string())?
 }
@@ -290,10 +296,14 @@ fn main() {
                 if window.label() == "main" {
                     startup_listing::discard_unclaimed();
                 }
-                if window.label()=="main" && (jobs::running() || nested::dirty()){
-                    use tauri::Emitter;
-                    api.prevent_close();let _=window.emit("close-requested",());
-                } else if window.label()=="main" {verification::revoke();nested::cleanup();
+                if window.label() == "main" {
+                    if nested::cleanup_if_idle() == Some(true) {
+                        verification::revoke();
+                    } else {
+                        use tauri::Emitter;
+                        api.prevent_close();
+                        let _ = window.emit("close-requested", ());
+                    }
                 }
             }
         })
