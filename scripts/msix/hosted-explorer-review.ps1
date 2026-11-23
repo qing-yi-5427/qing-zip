@@ -26,6 +26,7 @@ try {
   $thumb=$cert.Thumbprint; $receipt.thumbprint=$thumb
   $certPath=Join-Path $job 'temporary.cer'; Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
   Import-Certificate -FilePath $certPath -CertStoreLocation Cert:/CurrentUser/TrustedPeople | Out-Null
+  Import-Certificate -FilePath $certPath -CertStoreLocation Cert:/CurrentUser/Root | Out-Null
   $msix=Join-Path $review 'qing-zip-shell-0.12.23.0-arm64.msix'
   & "$sdk/signtool.exe" sign /fd SHA256 /sha1 $thumb /s My $msix; if ($LASTEXITCODE) { throw 'Signing failed' }
   $receipt.msix_sha256=(Get-FileHash $msix).Hash.ToLowerInvariant(); $receipt.stage='register'; Save-Receipt
@@ -40,7 +41,7 @@ try {
 finally {
   try { ./scripts/msix/Unregister-Package.ps1 -Publisher $publisher; $receipt.unregistered=@(Get-AppxPackage -Name 'QingYi.QingZip.Shell').Count -eq 0 } catch { $receipt.unregister_error=$_.Exception.Message }
   try {
-    if ($thumb) { foreach ($store in @('Cert:/CurrentUser/My','Cert:/CurrentUser/TrustedPeople')) { $entry=Join-Path $store $thumb; if (Test-Path $entry) { Remove-Item -LiteralPath $entry -Force } }; $receipt.certificates_removed=!(Test-Path "Cert:/CurrentUser/My/$thumb") -and !(Test-Path "Cert:/CurrentUser/TrustedPeople/$thumb") } else { $receipt.certificates_removed=$true }
+    if ($thumb) { foreach ($store in @('Cert:/CurrentUser/My','Cert:/CurrentUser/TrustedPeople','Cert:/CurrentUser/Root')) { $entry=Join-Path $store $thumb; if (Test-Path $entry) { Remove-Item -LiteralPath $entry -Force } }; $receipt.certificates_removed=!(Test-Path "Cert:/CurrentUser/My/$thumb") -and !(Test-Path "Cert:/CurrentUser/TrustedPeople/$thumb") -and !(Test-Path "Cert:/CurrentUser/Root/$thumb") } else { $receipt.certificates_removed=$true }
   } catch { $receipt.certificate_error=$_.Exception.Message }
   Save-Receipt
   if (!$receipt.unregistered -or !$receipt.certificates_removed) { throw 'Disposable runner cleanup not verified' }
