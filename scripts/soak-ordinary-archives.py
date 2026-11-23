@@ -143,7 +143,9 @@ def main():
                 try: temporary.cleanup();summary['owned_root_cleaned']=not root.exists()
                 except Exception as error: summary['status']='failed';summary['cleanup_error']=str(error).replace(str(root),'<owned-root>')[:500]
             summary['finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();save()
-    print(json.dumps(summary,ensure_ascii=False),flush=True)
+    # Windows hosted runners may expose a non-UTF-8 console; the UTF-8 receipt
+    # above keeps readable names while stdout remains portable ASCII.
+    print(json.dumps(summary,ensure_ascii=True),flush=True)
     if summary['status']!='passed' or not summary['owned_root_cleaned']: raise SystemExit(1)
 
 

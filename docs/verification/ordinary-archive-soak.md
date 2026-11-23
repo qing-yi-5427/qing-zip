@@ -15,3 +15,5 @@ python scripts/soak-ordinary-archives.py --cli <portable>/obz.exe --out <new-evi
 ```
 
 本机 5 秒、256 KiB 输入的早期烟测仅验证脚本基本流程，不是长跑结果；最终以该 PR 对应运行的 artifact 和 `summary.json` 为准。
+
+首次托管运行的 5 秒烟测收据记录 6 轮、12 项、零失败且临时根已清理，但脚本随后向 cp1252 控制台打印中文时异常退出，故该工作流失败、正式长跑没有开始。收据从 [首次运行 artifact](https://github.com/qing-yi-5427/qing-zip/actions/runs/45107685006) 保存；后续版本将控制台摘要转义为 ASCII，JSONL 仍为 UTF-8。该烟测不作为长跑通过证据。
