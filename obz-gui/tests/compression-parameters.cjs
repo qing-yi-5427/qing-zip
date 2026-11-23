@@ -14,3 +14,12 @@ test('single-file requirements and split availability are independent',()=>{
  for(const format of ['zip','zipx','7z','tar','gzip'])assert.equal(volumeSupported(format),true);
  assert.equal(singleFile('tgz'),false);
 });
+test('store level and explicit methods stay consistent in both directions',()=>{
+ const reconcile=ctx.window.qingCompression.reconcileStore;
+ for(const [format,store] of [['zip','Store'],['zipx','Store'],['7z','Copy'],['sfx','Copy']]){
+  assert.deepEqual({...reconcile(format,'Deflate','0','level')},{method:store,level:'0'});
+  assert.deepEqual({...reconcile(format,store,'5','method')},{method:store,level:'0'});
+  assert.deepEqual({...reconcile(format,'LZMA','0','method')},{method:'LZMA',level:'5'});
+ }
+ assert.deepEqual({...reconcile('brotli','','0','level')},{method:'',level:'0'});
+});

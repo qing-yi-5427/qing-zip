@@ -1504,6 +1504,14 @@ async function confirmCompressionOutputs(format,inputs,volumeBytes){
  }
 }
 const compressionLevels=window.qingCompression.levels;
+root.addEventListener('change',event=>{
+ const id=event.target.id;
+ if(id!=='qa-level'&&id!=='oa-method')return;
+ const method=$('oa-method'),level=$('qa-level');
+ const value=window.qingCompression.reconcileStore($('qa-format').value,method.value,level.value,id==='qa-level'?'level':'method');
+ method.value=value.method;
+ level.value=value.level;
+},true);
 function showCompressionAdvanced(open){
  $('oa-compression-advanced').hidden=!open;
  overlay.querySelector('[data-action=compression-advanced]').setAttribute('aria-expanded',String(open));
