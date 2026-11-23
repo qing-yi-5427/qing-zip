@@ -12,3 +12,5 @@
 两组到首次选中的配对差值均跨零，本样本无法确定两版有稳定快慢关系。50,000 条目时，当前主线打开宽目录、目录内搜索、全包搜索、排序和滚动的中位用时分别为 60.3、67.9、61.3、25.7 和 55.3 ms。每个检查点均核对前台状态、结果条目和视口。每轮后复查原包 SHA-256，24 个会话均正常退出且已恢复测试设置。真正的冷盘启动、物理屏幕呈现和不同用户机器仍需单独验证。
 
 [逐次测量与进程内存](browse.json) · [硬件与两包哈希](environment.json) · [原版首行已选](50000-baseline.png) · [主线首行已选](50000-candidate.png) · [托管复跑与会话记录](https://github.com/qing-yi-5427/qing-zip/actions/runs/45208059361)
+
+复跑使用手动工作流 “Foreground archive browsing”，提供要比较的两个成功主线 Windows regression 运行 ID 及其 x64 便携 ZIP 的 SHA-256。默认值对应上表。若 GitHub 已按保留期清理产物，可选用新的主线构建；本地已有两版程序时也可运行 `python scripts/measure-webview-archive.py --baseline <原版程序> --candidate <候选程序> --rounds 5 --receipt <新文件>`。托管结果同时保存每次会话的清理记录。
