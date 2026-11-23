@@ -73,7 +73,7 @@ try:
   group=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name=='qing-zip' and x.element_info.control_type=='MenuItem' and x.is_visible()),None)
   if group:
    entry['top_level_visible']=True
-   rect=group.rectangle();mouse.move(coords=(int((rect.left+rect.right)/2),int((rect.top+rect.bottom)/2)));time.sleep(2);snapshot(key+'-submenu')
+   rect=group.rectangle();entry['group_rect']=str(rect);group.click_input();time.sleep(2);snapshot(key+'-submenu')
   menu=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name==label and x.is_visible()),None)
   if not menu:
    entry['error']='Command not observed after opening qing-zip submenu';keyboard.send_keys('{ESC}');save();continue
