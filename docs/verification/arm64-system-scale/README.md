@@ -16,3 +16,5 @@ GitHub 托管 Windows 11 ARM64 build 26200 的标准显示缩放列表只有 **1
 被测便携包源码为 `fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6`，ARM64 便携 ZIP 的 SHA-256 为 `cc0e06dafef5d4caf7f8905ee87c5396f8e3f022c03c2a6f382dada4321f3bbe`。 [包和运行绑定](package.json) · [原始便携包构建](https://github.com/qing-yi-5427/qing-zip/actions/runs/45128040730)
 
 在此验收分支复跑时，调度 `windows-arm64.yml`，启用 `round2_fluent_capture` 和 `capture_system_scale`，传入这里记录的构建编号、源码 SHA 及包 SHA-256。完整的托管证据包还保留每次展开的系统选项和分别保存的应用前后截图。
+
+本机与两种托管会话的后续只读环境复核见 [系统缩放环境收据](../system-scale-environment/README.md)。该证据不代表真实 200% 已通过。

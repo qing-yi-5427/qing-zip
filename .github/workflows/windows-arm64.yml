@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      hosted_scale_probe:
+        description: 'Read hosted Windows display settings and session availability without changing settings'
+        type: boolean
+        required: false
+        default: false
       round2_fluent_capture:
         description: 'Capture native accessibility states against a verified ARM64 portable package'
         type: boolean
@@ -36,7 +41,7 @@ permissions:
   contents: read
 jobs:
   native:
-    if: github.event_name != 'workflow_dispatch' || !inputs.round2_fluent_capture
+    if: github.event_name != 'workflow_dispatch' || (!inputs.round2_fluent_capture && !inputs.hosted_scale_probe)
     runs-on: windows-11-arm
     timeout-minutes: 55
     env:
@@ -275,7 +280,7 @@ jobs:
             dist/arm64/*-package-build.json
 
   round2-fluent-capture:
-    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.round2_fluent_capture
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.round2_fluent_capture && !inputs.hosted_scale_probe
     runs-on: windows-11-arm
     timeout-minutes: 15
     permissions:
@@ -328,4 +333,34 @@ jobs:
           name: round2-arm64-fluent-evidence
           path: evidence/
           if-no-files-found: warn
+          retention-days: 30
+
+  hosted-display-probe:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.hosted_scale_probe
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read actual display scale options on disposable Windows host
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -notin @('X64','ARM64')) { throw 'Disposable hosted Windows required' }
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $os=Get-CimInstance Win32_OperatingSystem
+          @{ name=$os.Caption; version=$os.Version; arch=$env:RUNNER_ARCH; session=$env:SESSIONNAME; source=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/host.json
+          & powershell.exe -NoProfile -File scripts/display-scale-settings.ps1 -Receipt evidence/settings.json -Screenshot evidence/settings.png -SelectPercent 0
+          if ($LASTEXITCODE) { throw 'Settings probe process failed' }
+          & ./scripts/probe-custom-scale.ps1 -Receipt evidence/custom-page.json
+          $result=Get-Content evidence/settings.json -Raw | ConvertFrom-Json
+          if ($result.error) { throw 'Native settings not observable; inspect receipt' }
+      - name: Preserve read-only host findings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-display-probe-${{ matrix.runner }}
+          path: evidence/
           retention-days: 30

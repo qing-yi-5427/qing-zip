@@ -1,0 +1,153 @@
+{
+  "status": "observed",
+  "action": "navigate only",
+  "session_processes": [],
+  "scale_controls": [
+    {
+      "id": "",
+      "offscreen": false,
+      "type": "ControlType.Group",
+      "patterns": [
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale & layout",
+      "enabled": true
+    },
+    {
+      "id": "",
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "patterns": [
+        "TextPatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale & layout",
+      "enabled": true
+    },
+    {
+      "id": "SystemSettings_Display_Scaling_ItemSizeOverride_EntityItem",
+      "offscreen": false,
+      "type": "ControlType.Group",
+      "patterns": [
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale",
+      "enabled": true
+    },
+    {
+      "id": "",
+      "offscreen": false,
+      "type": "ControlType.Text",
+      "patterns": [
+        "TextPatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale",
+      "enabled": true
+    },
+    {
+      "id": "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+      "offscreen": false,
+      "type": "ControlType.ComboBox",
+      "patterns": [
+        "SelectionPatternIdentifiers.Pattern",
+        "ExpandCollapsePatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern",
+        "ItemContainerPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale",
+      "enabled": true
+    },
+    {
+      "id": "EntityItemButton",
+      "offscreen": false,
+      "type": "ControlType.Button",
+      "patterns": [
+        "InvokePatternIdentifiers.Pattern",
+        "ScrollItemPatternIdentifiers.Pattern"
+      ],
+      "name": "Scale",
+      "enabled": true
+    }
+  ],
+  "custom_page_controls": [
+    {
+      "name": "Custom scaling",
+      "type": "ControlType.Button",
+      "id": "",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "Custom scaling",
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "You shouldn't change these settings unless you need to—it can cause text and apps to become unreadable. All your displays will be set to the custom scaling size you enter and it can be difficult to go back to your original settings.",
+      "type": "ControlType.Text",
+      "id": "Message",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "Custom scaling",
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "Enter a custom scaling size between 100% - 500% (not recommended)",
+      "type": "ControlType.Text",
+      "id": "",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "Custom scaling",
+      "type": "ControlType.Edit",
+      "id": "SystemSettings_Display_Scaling_CustomOverride_ValueTextBox",
+      "enabled": true,
+      "offscreen": false
+    },
+    {
+      "name": "Apply",
+      "type": "ControlType.Button",
+      "id": "SystemSettings_Display_Scaling_CustomOverride_CustomScalingButton",
+      "enabled": false,
+      "offscreen": false
+    },
+    {
+      "name": "Text size",
+      "type": "ControlType.Group",
+      "id": "SystemSettings_Display_EaseOfAccessScaling_ButtonEntityItem",
+      "enabled": true,
+      "offscreen": false
+    }
+  ],
+  "current_process": {
+    "ProcessId": 10400,
+    "ParentProcessId": 11024,
+    "SessionId": 2,
+    "Name": "pwsh.exe"
+  },
+  "runner_processes": [
+    {
+      "ProcessId": 1472,
+      "ParentProcessId": 3436,
+      "SessionId": 2,
+      "Name": "Runner.Listener.exe"
+    },
+    {
+      "ProcessId": 11024,
+      "ParentProcessId": 1472,
+      "SessionId": 2,
+      "Name": "Runner.Worker.exe"
+    }
+  ],
+  "sessions": " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n>runneradmin           console             2  Active      none   11/23/2026 2:54 AM",
+  "navigation_invoked": true
+}
