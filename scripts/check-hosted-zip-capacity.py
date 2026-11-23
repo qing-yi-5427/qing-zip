@@ -257,7 +257,8 @@ def exercise_midwrite(cli, work, env, root, marker, identity, result):
     check(free_before >= restored_required, "Isolated volume cannot support an unconstrained retry")
     observations = {"polls": 0, "open_errors": 0, "samples": []}
     result.update(payload_bytes=payload_size, free_before_reserve=free_before, state_before=before,
-                  archive_before=archive_sha, observations=observations)
+                  archive_before=archive_sha, observations=observations,
+                  expected_prefix_sha256=hashlib.sha256(data[:prefix_size]).hexdigest())
     try:
         reserve_for_midwrite(filler, root, marker, identity, headroom)
         free = verify_volume(root, marker, identity).free
@@ -279,16 +280,24 @@ def exercise_midwrite(cli, work, env, root, marker, identity, result):
 
     samples = observations["samples"]
     check(samples, "Did not observe actual payload bytes in an incomplete private staging file")
-    open_error = result["full_attempt"]
-    check(open_error["space_diagnostic"] and
-          (samples[-1]["free_bytes"] <= 4096 or re.search(r"os error (112|39)\b|0x800700(70|27)\b", open_error["stderr"], re.I)),
+    failure = result["full_attempt"]
+    # A failed native write can be larger than the remaining free clusters.
+    # Polling also cannot capture the last instant before stage cleanup.
+    os_error = re.search(
+        r"os error (112|39)\b|0x800700(70|27)\b|"
+        r"(?m:^System ERROR:[ \t]*\nThere is not enough space on the disk\.[ \t]*$)",
+        failure["stderr"], re.I,
+    )
+    check(failure["space_diagnostic"] and os_error,
           "Could not confirm native disk exhaustion after observing staged payload bytes")
+    result["native_disk_full_evidence"] = os_error.group()
     result["status"] = "failed"
-    check(open_error["exit"] == 1, "Expected a handled CLI failure after writing payload bytes")
+    check(failure["exit"] == 1, "Expected a handled CLI failure after writing payload bytes")
     check(result["free_after_release"] >= restored_required, "Insufficient space after releasing owned reserve")
     result["retry"] = invoke(cli, work, env, "extract", args)
     expected_payload_sha = hashlib.sha256(data).hexdigest()
-    expected_after = dict(before, **{"output/payload.bin": expected_payload_sha})
+    expected_after = dict(before)
+    expected_after["output/payload.bin"] = expected_payload_sha
     result["state_after_retry"], result["archive_after_retry"] = snapshot(job), sha(archive)
     result["expected_payload_sha256"] = expected_payload_sha
     check(result["retry"]["exit"] == 0 and result["state_after_retry"] == expected_after
