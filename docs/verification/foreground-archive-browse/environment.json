@@ -1,0 +1,18 @@
+{
+  "cpu": "AMD EPYC 7763 64-Core Processor                ",
+  "os": "Microsoft Windows Server 2025 Datacenter",
+  "build": "10.0.26100.0",
+  "memory_bytes": 17174360064,
+  "packages": [
+    {
+      "sha": "055659fc7aac67c53a6f4984df9383fdac688c0d370c8d501c58847660352701",
+      "run": "45170725035",
+      "label": "baseline"
+    },
+    {
+      "sha": "0c00da2912bc7cc5b142dab31161b296ca03bd926e878dc781ba45d0fa0a9d66",
+      "run": "45191942063",
+      "label": "candidate"
+    }
+  ]
+}

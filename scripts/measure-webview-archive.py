@@ -1,6 +1,7 @@
 """Measure archive browsing in packaged Tauri windows, using disposable profiles."""
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import base64
 import ctypes
 from ctypes import wintypes as wt
@@ -97,6 +98,7 @@ STATE = """(() => {
   });
   return {
     first: visible[0]?.dataset.row ?? null,
+    first_selected: visible[0]?.getAttribute("aria-selected") === "true",
     mounted: rows.length,
     visible: visible.length,
     logical: Number(table.getAttribute('aria-rowcount')) - 1,
@@ -110,10 +112,14 @@ STATE = """(() => {
 
 
 class Window:
-    def __init__(self, exe, archive, isolated, allow_unfocused):
+    def __init__(self, exe, archive, isolated, allow_unfocused, session):
+        self.exe = exe
+        self.port = session.get("port")
         if any(name in {"qing-zip.exe", "obz-gui.exe"} for _, name in process_entries().values()):
             raise RuntimeError("Another qing-zip instance is active; its windows were left untouched")
         self.socket = None
+        self.driver = session.get("driver")
+        self.cdp = None
         self.sequence = 0
         self.hwnd = None
         self.allow_unfocused = allow_unfocused
@@ -122,13 +128,34 @@ class Window:
         self.local.mkdir(parents=True, exist_ok=True)
         for previous in self.profile.rglob("DevToolsActivePort"):
             previous.unlink()
-        env = dict(os.environ, LOCALAPPDATA=str(self.local), WEBVIEW2_USER_DATA_FOLDER=str(self.profile),
+        env = dict(os.environ, APPDATA=str(isolated / "roaming"), LOCALAPPDATA=str(self.local), WEBVIEW2_USER_DATA_FOLDER=str(self.profile),
                    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=(
-                       "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1"))
+                       session.get("arguments", "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1")))
         self.started = time.perf_counter()
         self.proc = subprocess.Popen([exe, archive], cwd=isolated, env=env)
+        session["proc"] = self.proc
+
+    def check_attached_window(self):
+        if self.port:
+            bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
+                              awaitPromise=True, returnByValue=True)
+            if not bound["result"].get("value") or Path(bound["result"]["value"]).resolve() != self.exe:
+                raise RuntimeError("The attached page does not report the expected executable")
+        self.hwnd = self.native_window()
+        if self.hwnd and not self.allow_unfocused and not self.is_foreground():
+            try:
+                win32gui.SetForegroundWindow(self.hwnd)
+            except WindowError:
+                pass
 
     def connect(self):
+        if self.port:
+            from nested_restart_gui import connect as connect_hosted
+            browser, page = connect_hosted(self.proc, self.port, self.driver)
+            page.wait_for_function("Boolean(window.__TAURI__?.core)")
+            self.cdp = page.context.new_cdp_session(page)
+            self.check_attached_window()
+            return
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self.proc.poll() is None:
             port_file = next(self.profile.rglob("DevToolsActivePort"), None)
@@ -140,12 +167,7 @@ class Window:
                     page = next(p for p in pages if p.get("type") == "page" and "tauri.localhost" in p["url"])
                     self.socket = connect(page["webSocketDebuggerUrl"], max_size=2 * 1024 * 1024,
                                           open_timeout=2, close_timeout=1)
-                    self.hwnd = self.native_window()
-                    if self.hwnd and not self.allow_unfocused and not self.is_foreground():
-                        try:
-                            win32gui.SetForegroundWindow(self.hwnd)
-                        except WindowError:
-                            pass
+                    self.check_attached_window()
                     return
                 except (OSError, ValueError, IndexError, StopIteration):
                     pass
@@ -153,6 +175,8 @@ class Window:
         raise RuntimeError("Packaged WebView2 did not expose its Tauri document over loopback")
 
     def call(self, method, **params):
+        if self.cdp is not None:
+            return self.cdp.send(method, params)
         self.sequence += 1
         self.socket.send(json.dumps({"id": self.sequence, "method": method, "params": params}))
         while True:
@@ -255,14 +279,20 @@ def detect(window, action, predicate):
     return {"ms": round((time.perf_counter() - started) * 1000, 3), **state}
 
 
-def trial(exe, archive, count, isolated, allow_unfocused, screenshot=None):
-    window = Window(exe, archive, isolated, allow_unfocused)
+def trial(exe, archive, count, isolated, allow_unfocused, session, screenshot=None):
+    window = Window(exe, archive, isolated, allow_unfocused, session)
     wide_selector = 'button[data-entry="wide/"]'
     try:
         window.connect()
         first = window.wait(lambda state: state["first"] == f"group-{count // 1000:03}/"
                             and state["logical"] == count // 1000 + 1)
         root = {"ms": round((time.perf_counter() - window.started) * 1000, 3), **first}
+        if first["first_selected"]:
+            raise RuntimeError("Expected an unselected first row before the input probe")
+        window.click(f'input[data-select="{first["first"]}"]')
+        selected = window.wait(lambda state: state["first"] == first["first"] and state["first_selected"])
+        root["first_selection_observed_ms"] = round((time.perf_counter() - window.started) * 1000, 3)
+        root["first_selection_foreground"] = selected["win32_foreground"]
         root["memory"] = process_memory(window.proc.pid)
         if screenshot:
             window.capture(screenshot)
@@ -294,6 +324,24 @@ def trial(exe, archive, count, isolated, allow_unfocused, screenshot=None):
         window.close()
 
 
+@contextmanager
+def temporary_profiles():
+    profiles = tempfile.TemporaryDirectory(prefix="qing-native-browse-")
+    try:
+        yield Path(profiles.name).resolve()
+    finally:
+        # WebView2 may briefly retain profile files after the native GUI exits.
+        deadline = time.monotonic() + 12
+        while True:
+            try:
+                profiles.cleanup()
+                break
+            except OSError as error:
+                if getattr(error, "winerror", None) not in (5, 32, 145) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -303,14 +351,15 @@ def main():
                         help="Measure a visible, non-minimized WebView and record actual Win32 focus")
     parser.add_argument("--screenshots", type=Path, help="New directory for warm-up first-screen evidence")
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--hosted", action="store_true",
+                        help="Use the existing per-executable override on a disposable hosted Windows runner")
     args = parser.parse_args()
     if args.screenshots:
         args.screenshots.mkdir()
     exes = {"baseline": args.baseline.resolve(strict=True), "candidate": args.candidate.resolve(strict=True)}
     evidence = {"gui_sha256": {label: sha256(exe.read_bytes()) for label, exe in exes.items()},
                 "allow_unfocused": args.allow_unfocused, "cases": []}
-    with tempfile.TemporaryDirectory(prefix="qing-native-browse-") as temporary:
-        work = Path(temporary).resolve()
+    with temporary_profiles() as work:
         for count in (10_000, 50_000):
             archive = work / f"wide-{count}.zip"
             fixture(archive, count)
@@ -318,10 +367,21 @@ def main():
             rounds = []
             for index in range(args.rounds + 1):
                 order = ["baseline", "candidate"] if index % 2 else ["candidate", "baseline"]
-                results = {label: trial(exes[label], archive, count, work / label, args.allow_unfocused,
-                                        args.screenshots / f"{count}-{label}.png"
-                                        if args.screenshots and index == 0 else None)
-                           for label in order}
+                results = {}
+                for label in order:
+                    if args.hosted:
+                        from arm_gui_lifecycle import hosted_debug_session
+                        session_log = args.receipt.parent / f"session-{count}-{index}-{label}.json"
+                        launch = hosted_debug_session(exes[label], session_log)
+                    else:
+                        launch = nullcontext({})
+                    screenshot = args.screenshots / f"{count}-{label}.png" if args.screenshots and index == 0 else None
+                    if args.hosted:
+                        from playwright.sync_api import sync_playwright
+                    with launch as session, (sync_playwright() if args.hosted else nullcontext(None)) as driver:
+                        session["driver"] = driver
+                        results[label] = trial(exes[label], archive, count, work / label,
+                                               args.allow_unfocused, session, screenshot)
                 if sha256(archive.read_bytes()) != original:
                     raise RuntimeError("Archive content changed")
                 print(f"{count} entries, round {index}: visible rows, navigation, filter, sort and scroll PASS", flush=True)
