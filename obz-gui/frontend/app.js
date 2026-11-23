@@ -778,6 +778,8 @@ function taskError(e){
  // String(Error(x)) is "Error: x"; the JavaScript class name is not part of the message.
  const text=String(e).replace(/^Error:\s*/,''),directoryError=archiveDirectoryError(text);
  if(directoryError)return directoryError;
+ const blocked=/^destination conflict:\s*output parent is a file:\s*(.+)$/i.exec(text);
+ if(blocked)return `解压需要创建文件夹，但这个位置已有同名文件。\n${blocked[1]}\n请选择其他保存位置后重试。`;
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);
  if(conflict)return '目标位置已有同名项目。\n'+conflict[1];
  if(/^(?:Error:\s*)?incorrect password or damaged encrypted archive[.!。]?$/i.test(text))return '密码不正确，或加密压缩包已损坏。';
@@ -2037,7 +2039,7 @@ function openExtractionRetry(id){
  dialog('重试解压',`
   <p class="oa-extract-source"><span class="qa-sub">压缩包</span> <strong title="${esc(request.source)}">${esc(filename(request.source))}</strong></p>
   <p class="qa-sub oa-extract-scope-detail" tabindex="0">${esc(request.location.item?`包内位置 ${request.location.item}`:request.selected.length?`原选定范围（${request.selected.length} 项）`:'范围为整个压缩包')}</p>
-  ${job?.error?`<p class="oa-extract-problem">${esc(passwordError?'上次解压需要正确的密码。':String(job.error).replace(/^Error: /,''))}</p>`:''}
+  ${job?.error?`<p class="oa-extract-problem qa-jobresult">${esc(passwordError?'上次解压需要正确的密码。':taskError(job.error))}</p>`:''}
   <input id="oa-retry-id" type="hidden" value="${id}">
   <div class="qa-field"><label for="oa-retry-dest">保存到</label><div class="qa-inlinefield oa-extract-target"><input id="oa-retry-dest" value="${esc(request.dest)}" spellcheck="false">${btn('浏览…','extract-retry-dest')}</div></div>
   ${extractionPathMarkup({id:'oa-retry-output',label:request.location.label,copyAction:'copy-extract-retry-output'})}
