@@ -9,6 +9,7 @@ use std::{
 
 const BLOCK: usize = 256 * 1024;
 const MAX_BLOCKS: usize = 16384; // the worker handles classic ZIP only
+const MAX_ARCHIVE_BYTES: u64 = BLOCK as u64 * MAX_BLOCKS as u64;
 pub(super) const FRAME_LIMIT: usize = MAX_BLOCKS * 33;
 pub(super) const FRAME_KIND: u8 = 59;
 const DOMAIN: &[u8] = b"qing-zip/output-block-proof-v1\0";
@@ -16,13 +17,32 @@ type Digest = [u8; 32];
 
 pub(super) enum Prepared<'a> {
     Blocks(&'a Written),
-    Streamed { digest: Digest, length: u64 },
+    Streamed {
+        digest: Digest,
+        length: u64,
+    },
+    #[cfg(test)]
+    ReadBack,
+}
+
+type Capture = JoinHandle<Result<Prepared<'static>, String>>;
+
+pub(super) fn console_destination(
+    mut writer: impl FnMut() -> Result<File, String>,
+    capture: impl FnOnce(File) -> Result<(File, Capture), String>,
+) -> Result<(File, Option<Capture>), String> {
+    match capture(writer()?) {
+        Ok((pipe, capture)) => Ok((pipe, Some(capture))),
+        // No engine has started. Use the original direct output route when
+        // the optional pipe or capture thread cannot be created.
+        Err(_) => Ok((writer()?, None)),
+    }
 }
 
 pub(super) fn capture_stdout(
     mut destination: File,
     control: JobControl,
-) -> Result<(File, JoinHandle<Result<Prepared<'static>, String>>), String> {
+) -> Result<(File, Capture), String> {
     let (mut reader, writer) = super::directory_capture::pipe().map_err(|e| e.to_string())?;
     let task = std::thread::Builder::new()
         .name("zip-output-proof".into())
@@ -73,7 +93,7 @@ impl Written {
             self.unsupported = true;
             return;
         };
-        if end > (BLOCK * MAX_BLOCKS) as u64 {
+        if end > MAX_ARCHIVE_BYTES || usize::try_from(end).is_err() {
             self.unsupported = true;
             return;
         }
@@ -115,7 +135,7 @@ impl Written {
     pub(super) fn resize(&mut self, length: u64) {
         // Never reuse evidence for a truncated final block or bytes exposed
         // again by a later enlargement. A subsequent full rewrite can prove it.
-        if length <= (BLOCK * MAX_BLOCKS) as u64 {
+        if length <= MAX_ARCHIVE_BYTES && usize::try_from(length).is_ok() {
             let keep = length as usize / BLOCK;
             self.blocks.truncate(keep);
             if self
@@ -128,9 +148,9 @@ impl Written {
         }
     }
 
-    pub(super) fn serialize(&self) -> Vec<u8> {
+    pub(super) fn serialize(&self) -> Option<Vec<u8>> {
         if self.unsupported {
-            return Vec::new();
+            return None;
         }
         let mut body = Vec::with_capacity(self.blocks.len() * 33);
         for block in &self.blocks {
@@ -142,7 +162,7 @@ impl Written {
                 None => body.extend_from_slice(&[0; 33]),
             }
         }
-        body
+        Some(body)
     }
 
     pub(super) fn deserialize(body: &[u8]) -> Result<Self, String> {
@@ -219,7 +239,7 @@ mod tests {
     fn confirmed(file: &File, written: &Written) -> u64 {
         let len = file.metadata().unwrap().len();
         let control = JobControl::new();
-        let proof = Written::deserialize(&written.serialize()).unwrap();
+        let proof = Written::deserialize(&written.serialize().unwrap()).unwrap();
         let (value, reread) = proof.seal(file, len, &control).unwrap();
         assert_eq!(
             value,
@@ -282,5 +302,22 @@ mod tests {
         let mut actual = Vec::new();
         file.read_to_end(&mut actual).unwrap();
         assert_eq!(actual, bytes);
+    }
+
+    #[test]
+    fn unavailable_capture_keeps_the_direct_candidate_writable() {
+        let mut candidate = tempfile::tempfile().unwrap();
+        let (mut writer, proof) = console_destination(
+            || candidate.try_clone().map_err(|error| error.to_string()),
+            |_| Err("could not start the optional capture".into()),
+        )
+        .unwrap();
+        assert!(proof.is_none());
+        writer.write_all(b"original engine output").unwrap();
+        drop(writer);
+        candidate.rewind().unwrap();
+        let mut actual = Vec::new();
+        candidate.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, b"original engine output");
     }
 }

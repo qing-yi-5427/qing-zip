@@ -103,6 +103,7 @@ pub(in crate::engine) fn try_encode(
     session.send(REQUEST, request, ctl)?;
     let mut began = false;
     let mut proof = None;
+    let mut proof_frame_seen = false;
     let encoded = loop {
         let (kind, body) = session.next(ctl)?.ok_or("ZIP update worker exited without a result")?;
         match (kind, body.as_slice()) {
@@ -114,11 +115,12 @@ pub(in crate::engine) fn try_encode(
             (46, [percent]) if began && *percent <= 99 => {
                 ctl.set("updating", Some(*percent), "Updating a temporary archive copy");
             }
-            (zip_output_proof::FRAME_KIND, bytes) if began && expects_proof && proof.is_none() => {
-                proof = Some(zip_output_proof::Written::deserialize(bytes)?);
+            (zip_output_proof::FRAME_KIND, bytes) if began && expects_proof && !proof_frame_seen => {
+                proof_frame_seen = true;
+                proof = zip_output_proof::Written::deserialize(bytes).ok();
             }
             (41, []) if !began => break false,
-            (43, []) if began && (expects_proof == proof.is_some()) => break true,
+            (43, []) if began => break true,
             (43, message) if !message.is_empty() => return Err(String::from_utf8_lossy(message).into_owned()),
             _ => return Err("invalid ZIP update worker result".into()),
         }
@@ -182,7 +184,9 @@ pub fn helper_worker() -> u8 {
     if reply(HELLO, &VERSION).is_err() { return 2; }
     let (kind, body, code) = match run_worker() {
         Ok(Some(proof)) => {
-            if reply(zip_output_proof::FRAME_KIND, &proof.serialize()).is_err() { return 2; }
+            if let Some(frame) = proof.serialize() {
+                if reply(zip_output_proof::FRAME_KIND, &frame).is_err() { return 2; }
+            }
             (43, Vec::new(), 0)
         }
         Ok(None) => (41, Vec::new(), 3),

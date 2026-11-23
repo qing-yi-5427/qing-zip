@@ -5819,7 +5819,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     #[cfg(windows)]
     let source = edit_source::EditSource::open_controlled(&locked_path,&control(opts))?;
     #[cfg(nana_selected_worker)]
-    if opts.edit_receipt.is_none() && !_policy.restricted() {
+    let candidate_recovery_eligible = opts.edit_receipt.is_none() && !_policy.restricted();
+    #[cfg(nana_selected_worker)]
+    if candidate_recovery_eligible {
         source.reclaim_candidate(&control(opts));
     }
     let zip_layout = zip_volume_view::require_editable(&locked_path)?;
@@ -5833,7 +5835,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
             // Stdout is sequential and can change how newly added members
             // compress. Prepare it only for edits that copy existing members.
             let eligible = opts.password.is_none() && opts.codepage.is_none()
-                && opts.edit_receipt.is_none() && !_policy.restricted()
+                && candidate_recovery_eligible
                 && zip_layout.as_ref().is_some_and(|layout| !layout.zip64 && layout.entries < u16::MAX
                     && u64::from(layout.directory) + u64::from(layout.directory_size) == layout.end_record)
                 && source.direct_zip(&locked_path)? && source.local_ntfs();
@@ -5883,9 +5885,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         }
     }).transpose()?;
     #[cfg(nana_selected_worker)]
-    let append_count = if prepared.is_none() && !opts.preserve_input_atime && opts.password.is_none()
-        && opts.codepage.is_none() && opts.edit_receipt.is_none() && opts.update_mode == UpdateMode::Add
-        && !_policy.restricted() {
+    let append_count = if candidate_recovery_eligible && prepared.is_none()
+        && !opts.preserve_input_atime && opts.password.is_none()
+        && opts.codepage.is_none() && opts.update_mode == UpdateMode::Add {
         zip_layout.filter(|layout| !layout.zip64 && layout.entries < u16::MAX
             && layout.directory_size <= 8 * 1024 * 1024
             && u64::from(layout.directory) + u64::from(layout.directory_size) == layout.end_record)
@@ -5976,7 +5978,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         )?;
         if let Some((candidate, proof)) = candidate {
             let proof = proof.as_ref().map(zip_output_proof::Prepared::Blocks);
-            output.finish_candidate_with_proof(&source, candidate, opts.edit_receipt.is_none(), proof, &ctl)?;
+            output.finish_candidate_with_proof(&source, candidate, proof, &ctl)?;
             true
         } else {
             false
@@ -6007,9 +6009,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         #[cfg(nana_selected_worker)]
         let candidate = disposable.then(|| output.disposable_zip_candidate()).transpose()?;
         #[cfg(nana_selected_worker)]
-        let (stdout, capture) = candidate.as_ref().map(|file| {
-            zip_output_proof::capture_stdout(file.writer()?, ctl.clone())
-        }).transpose()?.unzip();
+        let (stdout, capture) = candidate.as_ref().map(|file| zip_output_proof::console_destination(
+            || file.writer(), |writer| zip_output_proof::capture_stdout(writer, ctl.clone()),
+        )).transpose()?.map_or((None, None), |(writer, capture)| (Some(writer), capture));
         #[cfg(not(nana_selected_worker))]
         let stdout = None;
         #[cfg(nana_selected_worker)]
@@ -6024,7 +6026,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         read_engine_output(log)?;
         #[cfg(nana_selected_worker)]
         if let Some(candidate) = candidate {
-            output.finish_candidate_with_proof(&source, candidate, opts.edit_receipt.is_none(), proof, &ctl)?;
+            output.finish_candidate_with_proof(&source, candidate, proof, &ctl)?;
         }
     }
     #[cfg(test)]

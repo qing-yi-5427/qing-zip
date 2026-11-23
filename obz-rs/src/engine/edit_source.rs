@@ -262,7 +262,8 @@ impl EditOutput {
         top_level: bool,
         control: &super::JobControl,
     ) -> Result<(), String> {
-        self.finish_candidate_with_proof(source, candidate, top_level, None, control)
+        let proof = top_level.then_some(super::zip_output_proof::Prepared::ReadBack);
+        self.finish_candidate_with_proof(source, candidate, proof, control)
     }
 
     #[cfg(nana_selected_worker)]
@@ -270,11 +271,10 @@ impl EditOutput {
         &mut self,
         source: &EditSource,
         candidate: DisposableZipCandidate,
-        top_level: bool,
         proof: Option<super::zip_output_proof::Prepared<'_>>,
         control: &super::JobControl,
     ) -> Result<(), String> {
-        if top_level && source.local_ntfs() {
+        if let Some(proof) = proof.filter(|_| source.local_ntfs()) {
             self.candidate_receipt = candidate_recovery::arm(source, self, &candidate.0, proof, control);
         }
         control.check()?;

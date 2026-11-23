@@ -169,7 +169,7 @@ pub(super) fn arm(
     source: &EditSource,
     output: &EditOutput,
     candidate: &File,
-    proof: Option<Prepared<'_>>,
+    proof: Prepared<'_>,
     control: &JobControl,
 ) -> Option<Lease> {
     let directory = index()?;
@@ -189,7 +189,7 @@ fn arm_inner(
     source: &EditSource,
     output: &EditOutput,
     candidate: &File,
-    proof: Option<Prepared<'_>>,
+    proof: Prepared<'_>,
     control: &JobControl,
 ) -> Result<Lease, String> {
     let original = Identity::of(&source.read)?;
@@ -241,13 +241,14 @@ fn arm_inner(
         let length = candidate.metadata().map_err(|e| e.to_string())?.len();
         let file = lease.file.as_mut().expect("new ZIP candidate receipt");
         let (digest, block_digest, bytes_reread) = match proof {
-            Some(Prepared::Blocks(proof)) => {
+            Prepared::Blocks(proof) => {
                 let (digest, bytes_reread) = proof.seal(candidate, length, control)?;
                 (digest, true, bytes_reread)
             }
-            Some(Prepared::Streamed { digest, length: written }) if written == length => (digest, false, 0),
-            Some(Prepared::Streamed { .. }) => return Err("ZIP candidate differs from its writing proof".into()),
-            None => (digest(candidate, length, control)?, false, length),
+            Prepared::Streamed { digest, length: written } if written == length => (digest, false, 0),
+            Prepared::Streamed { .. } => return Err("ZIP candidate differs from its writing proof".into()),
+            #[cfg(test)]
+            Prepared::ReadBack => (digest(candidate, length, control)?, false, length),
         };
         if crate::engine::PhaseTimer::enabled() {
             eprintln!("OA_ZIP_CANDIDATE bytes={length} reread={bytes_reread}");
