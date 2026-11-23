@@ -14,9 +14,9 @@
 | 同一份记录被占用 | 另一测试进程持有普通 Windows 文件锁时，继续按钮提示稍后重试，源、目标和记录保持；释放锁后可以继续。另有 Rust 测试验证过期修订无法消费新记录。 |
 | 关闭后目标和来源已变 | 第三项 ZIP 在同一路径被测试脚本替换，目标新增同名文件。确认框返回后，目标、记录和已完成项保持。明确选择「按替换策略继续」才输出当前 ZIP 的内容。 |
 | 磁盘记录不可写、损坏或来自未来版本 | 配置目录被普通文件占用时仍可同会话继续。已识别损坏记录只在主动点击备份后移开，备份和原记录字节一致。较新格式文件原样保留。 |
-| 保存待续记录期间关窗 | 在 WebView 测试中仅延迟真实的保存请求。当前原生解压任务已经结束，从实际标题栏关闭时仍出现确认，保存后正常退出。重新打开能继续第三项。 |
+| 保存待续记录期间关窗 | 在 WebView 测试中仅延迟真实的保存请求。当前原生解压任务已经结束，从实际标题栏关闭时仍出现确认，保存后正常退出。下一次进入续跑领取但尚未派发时，再选择退出，第三项保持未开始。再次打开能继续第三项。 |
 
-本机候选是 Windows 11 x64 的实际 Tauri/WebView2 窗口，GUI 来自 a963bcf 的 Debug 构建，CLI、worker 与原版便携包逐字节一致。关窗竞争的修前候选在延迟同一请求时直接退出，修后在同一节点显示确认，并等待封存后正常退出。[两次正常退出](candidate-cold-local.json) · [明确替换](candidate-overwrite-local.json) · [不可写](candidate-unwritable-local.json) · [备份损坏](candidate-damaged-local.json) · [封存间隙](candidate-closing-local.json)
+本机候选是 Windows 11 x64 的实际 Tauri/WebView2 窗口，GUI 来自 15f7f91 的 Debug 构建，CLI、worker 与原版便携包逐字节一致。关窗竞争的修前候选在延迟同一请求时直接退出，修后在同一节点显示确认，并等待封存后正常退出。[两次正常退出](candidate-cold-local.json) · [明确替换](candidate-overwrite-local.json) · [不可写](candidate-unwritable-local.json) · [备份损坏](candidate-damaged-local.json) · [封存间隙](candidate-closing-local.json)
 
 ## 复跑
 

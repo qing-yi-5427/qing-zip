@@ -1,13 +1,14 @@
 {
-  "source": "9c9258c+local guarded candidate v2",
+  "source": "9c9258c+local guarded candidate v3",
   "binaries_sha256": {
-    "qing-zip.exe": "c70d2df2d370bee494528e61fa86fe4dc3f4eeb973cf1044188731e4466296cf",
+    "qing-zip.exe": "c26083432a57f7574813f4c3fe5cfaaa85705c32bcb54c7a75cae2b022bb1a04",
     "obz.exe": "048e5bfe808b34ed5914230930caa1db8e3fae2da71686ade690a85b0b351812",
     "obz-worker.exe": "48a632ffc845f6443174d8c728aef28cd3e4b4f9af5fe81acdc275817d2d41ab"
   },
   "source_artifact": "locally staged portable directory",
   "stop_control_text": "停止批量处理",
   "normal_close_waited_for_seal": true,
+  "normal_close_before_claim_left_tail_pending": true,
   "sources": {
     "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
     "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
