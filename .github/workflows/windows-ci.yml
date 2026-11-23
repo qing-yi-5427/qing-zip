@@ -9,6 +9,22 @@ on:
         description: 'Capture nested archive restart behavior using the pinned R3 package'
         type: boolean
         default: false
+      nested_product_run:
+        description: 'Pinned successful Windows regression build run'
+        type: string
+        default: '45128040411'
+      nested_product_source:
+        description: 'Full product source commit SHA'
+        type: string
+        default: 'fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6'
+      nested_package_sha256:
+        description: 'Expected portable ZIP SHA-256'
+        type: string
+        default: 'b09d5089eaa0e8bcb5f376598c03be99e5773a716f008e17d49f696450bee6d5'
+      nested_expect_recovery:
+        description: 'Require recovery list, Save As and second-restart verification'
+        type: boolean
+        default: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -207,6 +223,10 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
+      NESTED_PRODUCT_RUN: ${{ inputs.nested_product_run }}
+      NESTED_PRODUCT_SOURCE: ${{ inputs.nested_product_source }}
+      NESTED_PACKAGE_SHA256: ${{ inputs.nested_package_sha256 }}
+      NESTED_EXPECT_RECOVERY: ${{ inputs.nested_expect_recovery }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -215,12 +235,14 @@ jobs:
       - name: Verify R3 build and run isolated nested restart scenarios
         shell: pwsh
         run: |
-          $run=gh api repos/qing-yi-5427/qing-zip/actions/runs/45128040411 | ConvertFrom-Json
-          if ($LASTEXITCODE -or $run.head_sha -cne 'fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6' -or $run.conclusion -cne 'success') { throw 'Unexpected R3 build' }
-          gh run download 45128040411 --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir download
+          if ($env:NESTED_PRODUCT_RUN -notmatch '^\d{1,20}$' -or $env:NESTED_PRODUCT_SOURCE -notmatch '^[0-9a-f]{40}$' -or $env:NESTED_PACKAGE_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Explicit source and package pins required' }
+          $run=gh api "repos/qing-yi-5427/qing-zip/actions/runs/$env:NESTED_PRODUCT_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_sha -cne $env:NESTED_PRODUCT_SOURCE -or $run.conclusion -cne 'success' -or $run.name -cne 'Windows regression') { throw 'Unexpected product build' }
+          gh run download $env:NESTED_PRODUCT_RUN --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir download
           if ($LASTEXITCODE) { throw 'R3 artifact unavailable' }
           $package=@(Get-ChildItem download -Recurse -File -Filter '*-portable.zip')
           if ($package.Count -ne 1) { throw 'Expected one portable package' }
+          if ((Get-FileHash -LiteralPath $package[0].FullName).Hash.ToLowerInvariant() -cne $env:NESTED_PACKAGE_SHA256) { throw 'Portable package hash mismatch' }
           Expand-Archive -LiteralPath $package[0].FullName -DestinationPath staged
           $exe=@(Get-ChildItem staged -Recurse -File -Filter qing-zip.exe)
           if ($exe.Count -ne 1) { throw 'Expected one GUI executable' }
@@ -228,7 +250,9 @@ jobs:
           @{ product_source=$run.head_sha; product_run=$run.id; package_sha256=(Get-FileHash $package[0].FullName).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash $exe[0].FullName).Hash.ToLowerInvariant(); harness=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 nested-restart-evidence/package.json
           python -m pip install --disable-pip-version-check playwright==1.55.0 pywinauto==0.6.9
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python scripts/nested_restart_gui.py --exe $exe[0].FullName
+          $captureArgs=@('--exe', $exe[0].FullName)
+          if ($env:NESTED_EXPECT_RECOVERY -eq 'true') { $captureArgs += '--expect-recovery' }
+          python scripts/nested_restart_gui.py @captureArgs
           exit $LASTEXITCODE
       - name: Preserve real GUI observations and cleanup
         if: always()
