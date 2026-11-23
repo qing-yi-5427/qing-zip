@@ -54,38 +54,54 @@ def run(args, cwd, *, timeout=180):
 def check(condition,message):
     if not condition: raise AssertionError(message)
 
-def installed_version(expected,inst):
-    check(value(ARP,'DisplayVersion')==expected,'unexpected registered version')
-    check(os.path.normcase(os.path.normpath(value(ARP,'InstallLocation') or ''))==os.path.normcase(str(inst)),'unexpected registration location')
-    check(os.path.normcase(os.path.normpath(value(INSTALL,'InstallDir') or ''))==os.path.normcase(str(inst)),'unexpected installer location')
+def installed_version(expected,inst,arp=ARP,install=INSTALL):
+    check(value(arp,'DisplayVersion')==expected,'unexpected registered version')
+    check(os.path.normcase(os.path.normpath(value(arp,'InstallLocation') or ''))==os.path.normcase(str(inst)),'unexpected registration location')
+    check(os.path.normcase(os.path.normpath(value(install,'InstallDir') or ''))==os.path.normcase(str(inst)),'unexpected installer location')
 
-def uninstall(inst,root):
+def uninstall(inst,root,arp=ARP,install=INSTALL):
     run([inst/'Uninstall.exe','/S'],root)
     deadline=time.monotonic()+90
-    while time.monotonic()<deadline and ((inst/'Uninstall.exe').exists() or key_exists(ARP) or key_exists(INSTALL)):
+    while time.monotonic()<deadline and ((inst/'Uninstall.exe').exists() or key_exists(arp) or key_exists(install)):
         time.sleep(.2)
-    check(not (inst/'Uninstall.exe').exists() and not key_exists(ARP) and not key_exists(INSTALL),'uninstall did not clear executable and registration')
+    check(not (inst/'Uninstall.exe').exists() and not key_exists(arp) and not key_exists(install),'uninstall did not clear executable and registration')
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('old-setup','old-portable','candidate-setup','candidate-stage','out'):
         parser.add_argument('--'+name,required=True,type=Path)
+    parser.add_argument('--arch',choices=('X64','ARM64'),default='X64')
     args=parser.parse_args()
     # This is a defensive environment assertion, not cryptographic attestation.
     check(os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
-          and os.environ.get('RUNNER_OS')=='Windows' and os.environ.get('RUNNER_ARCH')=='X64',
-          'requires a disposable GitHub-hosted Windows x64 runner')
+          and os.environ.get('RUNNER_OS')=='Windows' and os.environ.get('RUNNER_ARCH')==args.arch,
+          f'requires a disposable GitHub-hosted Windows {args.arch} runner')
+    if args.arch=='ARM64':
+        product='qing-zip-arm64'
+        previous='0.11.27'
+        old_setup_sha='46f3a8a091dd7b5119e12a3e0e5da4fabd0bbd6e9aaf50a6fb6356c719a22c4c'
+        old_zip_sha='9aafd4acd77a9a3eea535ae1beecb922ac8ef7ddd44a2c91875a93e87487f113'
+    else:
+        product='qing-zip'
+        previous='0.12.20'
+        old_setup_sha,old_zip_sha=OLD_SETUP,OLD_PORTABLE
+    arp=rf'Software\Microsoft\Windows\CurrentVersion\Uninstall\{product}'
+    install=rf'Software\{product}\Installer'
+    current=json.loads((Path(__file__).resolve().parents[1]/'obz-gui/tauri.conf.json').read_text(encoding='utf-8'))['version']
     runner_temp=Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
     old_setup=args.old_setup.resolve(strict=True);old_portable=args.old_portable.resolve(strict=True)
     candidate_setup=args.candidate_setup.resolve(strict=True);stage=args.candidate_stage.resolve(strict=True)
-    check(sha(old_setup)==OLD_SETUP and sha(old_portable)==OLD_PORTABLE,'official v0.12.20 SHA-256 mismatch')
-    check(not key_exists(ARP) and not key_exists(INSTALL),'existing qing-zip registration; refuse to install')
+    check(sha(old_setup)==old_setup_sha and sha(old_portable)==old_zip_sha,f'official v{previous} SHA-256 mismatch')
+    check(not key_exists(arp) and not key_exists(install),'existing qing-zip registration; refuse to install')
     programs=value(r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders','Programs')
     check(bool(programs),'cannot locate the current user Programs folder')
-    shortcuts=Path(programs)/'qing-zip'
+    shortcuts=Path(programs)/product
     check(not shortcuts.exists(),'existing qing-zip Start menu directory; refuse to install')
+    default_location=Path(os.environ['LOCALAPPDATA'])/'Programs'/product
+    check(not default_location.exists(),'existing default installation directory; refuse to install')
     out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
-    report={'status':'starting','release':'v0.12.20','old_setup_sha256':OLD_SETUP,'old_portable_sha256':OLD_PORTABLE,
+    report={'status':'starting','release':'v'+previous,'runner_arch':args.arch,'source':os.environ.get('GITHUB_SHA'),
+            'old_setup_sha256':old_setup_sha,'old_portable_sha256':old_zip_sha,
             'candidate_setup_sha256':sha(candidate_setup),'candidate_gui_sha256':sha(stage/'qing-zip.exe'),
             'candidate_cli_sha256':sha(stage/'obz.exe'),'checks':[],'owned_root_cleaned':False}
     def save(): (out/'receipt.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
@@ -100,8 +116,8 @@ def main():
             old_only={name:hashlib.sha256(archive.read(name)).hexdigest() for name in archive.namelist()
                       if not name.endswith('/') and name not in shipped}
         run([old_setup,'/S',f'/D={inst}'],root)
-        installed_version('0.12.20',inst)
-        check(executable_version(inst/'qing-zip.exe')=='0.12.20.0','unexpected old executable version')
+        installed_version(previous,inst,arp,install)
+        check(executable_version(inst/'qing-zip.exe')==previous+'.0','unexpected old executable version')
         check(all(sha(inst/name)==digest for name,digest in old_hashes.items()),'installed old binaries differ from official portable')
         check((shortcuts/'qing-zip.lnk').is_file() and (shortcuts/'卸载.lnk').is_file(),'expected Start menu shortcuts missing')
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in old_only.items()),'old-only release files missing or changed immediately after old install')
@@ -114,9 +130,10 @@ def main():
         original_sha=sha(archive);source_sha=sha(source);sentinel_sha=sha(sentinel);external_sha=sha(external)
         with zipfile.ZipFile(archive) as z: check(z.read(source.name)==source.read_bytes(),'old archive content mismatch')
         passed('old_archive_and_user_sentinels_created')
-        run([candidate_setup,'/S',f'/D={inst}'],root)
-        installed_version('0.12.23',inst)
-        check(executable_version(inst/'qing-zip.exe')=='0.12.23.0','unexpected candidate executable version')
+        run([candidate_setup,'/S'],root)
+        installed_version(current,inst,arp,install)
+        check(not default_location.exists(),'upgrade wrote to the default directory instead of the registered directory')
+        check(executable_version(inst/'qing-zip.exe')==current+'.0','unexpected candidate executable version')
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in shipped.items()),'upgraded payload differs from candidate portable stage')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'upgrade changed user data')
         passed('in_place_upgrade_payload_and_user_data_verified')
@@ -129,7 +146,7 @@ def main():
                     'inside_sentinel':sentinel,'outside_sentinel':external}
         before_uninstall={name:sha(path) for name,path in data_paths.items()}
         report['user_data_before_uninstall']=before_uninstall;save()
-        uninstall(inst,root);uninstalled=True
+        uninstall(inst,root,arp,install);uninstalled=True
         after_uninstall={name:sha(path) if path.is_file() else None for name,path in data_paths.items()}
         report['user_data_after_uninstall']=after_uninstall;save()
         check(after_uninstall==before_uninstall,'uninstall changed or removed synthetic user data')
@@ -157,7 +174,7 @@ def main():
         passed('silent_upgrade_and_uninstall_preserved_verified_previous_release_files')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(extracted)==source_sha
               and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'uninstall changed user data')
-        report.update({'old_executable_version':'0.12.20.0','candidate_executable_version':'0.12.23.0',
+        report.update({'old_executable_version':previous+'.0','candidate_executable_version':current+'.0',
                        'source_sha256':source_sha,'archive_sha256':original_sha,'extracted_sha256':sha(extracted),
                        'inside_sentinel_sha256':sentinel_sha,'outside_sentinel_sha256':external_sha,
                        'candidate_shipped_file_count':len(shipped),'remaining_user_file_count':len(expected_user),
@@ -167,10 +184,10 @@ def main():
     except Exception as error:
         report['status']='failed';report['error']=f'{type(error).__name__}: {error}'.replace(str(root),'<owned-root>')[:1500]
     finally:
-        if not uninstalled and (inst/'Uninstall.exe').is_file() and value(INSTALL,'InstallDir') and os.path.normcase(os.path.normpath(value(INSTALL,'InstallDir')))==os.path.normcase(str(inst)):
-            try: uninstall(inst,root);uninstalled=True;report['cleanup_uninstall']='completed'
+        if not uninstalled and (inst/'Uninstall.exe').is_file() and value(install,'InstallDir') and os.path.normcase(os.path.normpath(value(install,'InstallDir')))==os.path.normcase(str(inst)):
+            try: uninstall(inst,root,arp,install);uninstalled=True;report['cleanup_uninstall']='completed'
             except Exception as error: report['cleanup_uninstall']=f'failed: {type(error).__name__}'
-        if uninstalled or (not key_exists(ARP) and not key_exists(INSTALL) and not (inst/'qing-zip.exe').exists()):
+        if uninstalled or (not key_exists(arp) and not key_exists(install) and not (inst/'qing-zip.exe').exists()):
             try: shutil.rmtree(root);report['owned_root_cleaned']=not root.exists()
             except Exception as error: report['cleanup_error']=type(error).__name__
         save()
