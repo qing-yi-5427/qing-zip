@@ -22,6 +22,11 @@ on:
         description: 'SHA-256 of the expected ARM64 portable ZIP for the optional build'
         type: string
         required: false
+      capture_system_scale:
+        description: 'Use the standard Windows Display Scale list for a native 200% test'
+        type: boolean
+        required: false
+        default: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -254,12 +259,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Verify pinned package and capture native accessibility states
+      - name: Verify pinned package and capture native desktop states
         shell: pwsh
         env:
           CAPTURE_BUILD: ${{ inputs.capture_build_run }}
           CAPTURE_SOURCE: ${{ inputs.capture_source }}
           CAPTURE_PACKAGE: ${{ inputs.capture_package_sha }}
+          CAPTURE_SYSTEM_SCALE: ${{ inputs.capture_system_scale }}
         run: |
           if ($env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Native ARM64 required' }
           $specified = @(@($env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE) | Where-Object { $_ })
@@ -286,7 +292,8 @@ jobs:
           if ($exe.Count -ne 1) { throw 'Expected exactly one GUI' }
           python -m pip install --disable-pip-version-check websockets==15.0.1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu --native-accessibility
+          $check = if ($env:CAPTURE_SYSTEM_SCALE -eq 'true') { '--native-system-scale' } else { '--native-accessibility' }
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu $check
           exit $LASTEXITCODE
       - name: Preserve package binding and native evidence
         if: always()

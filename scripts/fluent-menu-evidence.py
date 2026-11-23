@@ -11,13 +11,17 @@ p = argparse.ArgumentParser()
 p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--out', type=Path, required=True)
 p.add_argument('--candidate', action='store_true')
-p.add_argument('--native-accessibility', action='store_true',
-               help='Verify real Windows accessibility settings on a disposable GitHub-hosted desktop')
+native = p.add_mutually_exclusive_group()
+native.add_argument('--native-accessibility', action='store_true',
+                    help='Verify real Windows accessibility settings on a disposable GitHub-hosted desktop')
+native.add_argument('--native-system-scale', action='store_true',
+                    help='Verify the standard Windows 200 percent display scale on a disposable hosted desktop')
 p.add_argument('--launch-sample', action='store_true',
                help='Measure one fresh launch and two process-tree private-byte samples (requires psutil)')
 a = p.parse_args()
-if a.native_accessibility:
-    from native_menu_accessibility import check_host, verify_menu
+hosted = a.native_accessibility or a.native_system_scale
+if hosted:
+    from native_menu_accessibility import check_host
     check_host()
 if a.launch_sample:
     import psutil
@@ -30,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) 
     profile = root / 'profile'
     env = dict(os.environ, LOCALAPPDATA=str(root / 'local'), WEBVIEW2_USER_DATA_FOLDER=str(profile), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0 --remote-debugging-address=127.0.0.1')
     debug = None
-    if a.native_accessibility:
+    if hosted:
         from arm_gui_lifecycle import hosted_debug_session
         debug = resources.enter_context(hosted_debug_session(a.exe, a.out / 'desktop-session.json'))
         env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = debug['arguments']
@@ -71,11 +75,16 @@ with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) 
             if js('!!document.querySelector("[data-action=app-menu]") && !!window.__TAURI__?.core'): break
             time.sleep(.1)
         else: raise RuntimeError('UI not ready')
-        if a.native_accessibility:
+        if hosted:
             observed = js("window.__TAURI__.core.invoke('current_executable')", True)
             if Path(observed).resolve() != a.exe.resolve():
                 raise RuntimeError('The running WebView2 page belongs to a different executable')
-            verify_menu(call, js, a.out, a.exe)
+            if a.native_system_scale:
+                from native_display_scale import verify_scale
+                verify_scale(call, js, a.out, a.exe, proc.pid)
+            else:
+                from native_menu_accessibility import verify_menu
+                verify_menu(call, js, a.out, a.exe)
             resources.close()
             raise SystemExit(0)
         if a.launch_sample:
