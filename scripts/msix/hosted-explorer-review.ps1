@@ -29,6 +29,9 @@ try {
   if (!$sdk) { throw 'SDK packaging tools missing' }
   $review=Join-Path $job 'review'; ./scripts/msix/Prepare-Package.ps1 -ComponentDirectory "$build/Release" -OutputDirectory $review -Publisher $publisher -Version '0.12.23.0' -Architecture arm64 -MakeAppxPath "$sdk/makeappx.exe" -ManifestToolPath "$sdk/mt.exe"
   Copy-Item -LiteralPath (Join-Path $review 'shell') -Destination $app[0].DirectoryName -Recurse
+  $receipt.gui_sha256=(Get-FileHash -LiteralPath $app[0].FullName).Hash.ToLowerInvariant()
+  $receipt.shell_sha256=(Get-FileHash -LiteralPath (Join-Path $review 'shell/qing-shell.dll')).Hash.ToLowerInvariant()
+  $receipt.host_sha256=(Get-FileHash -LiteralPath (Join-Path $review 'shell/qing-shell-host.exe')).Hash.ToLowerInvariant()
   $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject $publisher -CertStoreLocation Cert:/CurrentUser/My -NotAfter (Get-Date).AddDays(1)
   $thumb=$cert.Thumbprint; $receipt.thumbprint=$thumb
   $certPath=Join-Path $job 'temporary.cer'; Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
