@@ -31,6 +31,7 @@ def window_metrics(pid):
     enum = bind("EnumWindows", wintypes.BOOL, callback_type, wintypes.LPARAM)
     visible = bind("IsWindowVisible", wintypes.BOOL, wintypes.HWND)
     owner = bind("GetWindowThreadProcessId", wintypes.DWORD, wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    title = bind("GetWindowTextW", ctypes.c_int, wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
     dpi = bind("GetDpiForWindow", wintypes.UINT, wintypes.HWND)
     context = bind("GetWindowDpiAwarenessContext", wintypes.HANDLE, wintypes.HWND)
     awareness = bind("GetAwarenessFromDpiAwarenessContext", ctypes.c_int, wintypes.HANDLE)
@@ -41,17 +42,22 @@ def window_metrics(pid):
 
     def measure():
         windows = []
+        titles = []
 
         @callback_type
         def collect(hwnd, _):
             candidate = wintypes.DWORD()
             owner(hwnd, ctypes.byref(candidate))
             if candidate.value == pid and visible(hwnd) and dpi(hwnd):
-                windows.append(hwnd)
+                name = ctypes.create_unicode_buffer(256)
+                title(hwnd, name, len(name))
+                titles.append(name.value)
+                if name.value == "qing-zip":
+                    windows.append(hwnd)
             return True
 
         if not enum(collect, 0) or len(windows) != 1:
-            raise RuntimeError(f"Expected one visible package window, found {len(windows)}")
+            raise RuntimeError(f"Expected one titled qing-zip main window; visible package titles: {titles}")
         hwnd = windows[0]
         info = MonitorInfo()
         info.size = ctypes.sizeof(info)
@@ -62,6 +68,7 @@ def window_metrics(pid):
             if not monitor_info(monitor(hwnd, 2), ctypes.byref(info)):
                 raise ctypes.WinError(ctypes.get_last_error())
             return {"window_dpi": dpi(hwnd), "awareness": awareness(context(hwnd)),
+                    "window_title": "qing-zip", "visible_package_windows": len(titles),
                     "monitor_pixels": [info.monitor.right - info.monitor.left, info.monitor.bottom - info.monitor.top],
                     "remote_session": bool(metrics(0x1000)), "primary_monitor": bool(info.flags & 1)}
         finally:
