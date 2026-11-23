@@ -1,4 +1,5 @@
 use super::*;
+use std::ffi::OsString;
 
 /// Suggest unused output paths without creating directories or reserving files.
 /// Actual publication still checks every output and never overwrites it.
@@ -8,16 +9,23 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
     if volume_bytes == Some(0) { return Err("分卷大小必须大于零".into()); }
     if sources.len() != paths.len() { return Err("来源与输出数量不一致".into()); }
     let mut directories: HashMap<String, (HashSet<String>, HashSet<String>)> = HashMap::new();
-    let mut earlier_output_dirs = HashSet::new();
+    let mut output_parents: HashMap<OsString, PathBuf> = HashMap::new();
     let mut results = Vec::with_capacity(paths.len());
     for (requested, inputs) in paths.iter().zip(sources) {
         let path = std::path::absolute(requested).map_err(|e| e.to_string())?;
         let parent = path.parent().ok_or("输出路径缺少目录")?;
         no_links(parent)?;
-        let output_dir = canonical_output_parent(parent);
-        check_sources(output_dir.as_deref(), &earlier_output_dirs, inputs, format)?;
-        if let Some(output_dir) = output_dir {
-            earlier_output_dirs.insert(output_dir);
+        // Exact path spelling keeps distinct parents separate on case-sensitive volumes.
+        let cached = output_parents.get(parent.as_os_str());
+        let resolved = if cached.is_none() {
+            canonical_output_parent(parent)
+        } else {
+            None
+        };
+        let output_dir = cached.or(resolved.as_ref()).map(PathBuf::as_path);
+        check_sources(output_dir, &output_parents, inputs, format)?;
+        if let Some(resolved) = resolved {
+            output_parents.insert(parent.as_os_str().to_owned(), resolved);
         }
         let filename = path.file_name().and_then(|name| name.to_str()).ok_or("输出文件名无效")?;
         validate_name(filename)?;
@@ -68,7 +76,7 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
 /// Missing sources are left to creation, which names them.
 fn check_sources(
     output_dir: Option<&Path>,
-    earlier_output_dirs: &HashSet<PathBuf>,
+    earlier_output_dirs: &HashMap<OsString, PathBuf>,
     inputs: &[String],
     format: &str,
 ) -> Result<(), String> {
@@ -82,6 +90,7 @@ fn check_sources(
             return Err(format!("{SINGLE_STREAM_FOLDER}\n{}", folder.display()));
         }
         if roots.len() > 1 { return Err("所选格式每个压缩包只接受一个文件。请调整来源或更改格式。".into()); }
+        return Ok(());
     }
     // ISO stages its input outside the source tree. LZH lists its input before
     // it creates a candidate. Both can safely publish inside their own source.
@@ -89,7 +98,7 @@ fn check_sources(
     for root in &roots {
         if !root.is_dir() { continue; }
         let Ok(source) = fs::canonicalize(root) else { continue };
-        if earlier_output_dirs.iter().any(|output| output.starts_with(&source)) {
+        if earlier_output_dirs.values().any(|output| output.starts_with(&source)) {
             return Err(format!("{EARLIER_OUTPUT_IN_SOURCE}\n{}", root.display()));
         }
         if !own_output_inside_source_is_safe && output_dir.is_some_and(|output| output.starts_with(&source)) {
@@ -288,6 +297,34 @@ mod tests {
         assert!(!zip.exists());
         assert_eq!(fs::read(&outside).unwrap(), b"first archive input");
         assert_eq!(fs::read(&keep).unwrap(), b"preserved source file");
+    }
+
+    #[test]
+    fn reused_parent_does_not_hide_a_different_output_directory() {
+        let fixture = tempfile::tempdir().unwrap();
+        let first = fixture.path().join("project-copy");
+        let second = fixture.path().join("project");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let input = fixture.path().join("input.txt");
+        fs::write(&input, b"ordinary input").unwrap();
+        let ordinary = vec![input.display().to_string()];
+        let folder = vec![second.display().to_string()];
+        let show = |parent: &Path, leaf| parent.join(leaf).display().to_string();
+
+        let outputs = [show(&first, "one.zip"), show(&first, "two.zip"), show(&second, "three.zip")];
+        let error = plan_compression_outputs(&outputs, "zip", None,
+                                             &[ordinary.clone(), ordinary.clone(), folder.clone()]).unwrap_err();
+        assert!(error.starts_with(OUTPUT_IN_SOURCE), "{error}");
+
+        let mut outputs = [show(&first, "one.iso"), show(&first, "two.iso"), show(&first, "three.iso"), show(&first, "four.iso")];
+        let sources = [ordinary.clone(), ordinary.clone(), ordinary, folder];
+        assert_eq!(plan_compression_outputs(&outputs, "iso", None, &sources).unwrap(), outputs);
+        outputs[2] = show(&second, "three.iso");
+        let error = plan_compression_outputs(&outputs, "iso", None, &sources).unwrap_err();
+        assert!(error.starts_with(EARLIER_OUTPUT_IN_SOURCE), "{error}");
+        assert!(first.read_dir().unwrap().next().is_none());
+        assert!(second.read_dir().unwrap().next().is_none());
     }
 
     #[test]
