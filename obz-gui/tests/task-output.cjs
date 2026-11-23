@@ -49,6 +49,48 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   assert.equal(context.s.jobs[0].error,detail);
 });
 
+test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const cause='写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)';
+  const advice='磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
+  const field={textContent:''},card={textContent:advice};
+  const context=makeContext({
+    s:{view:'jobs'},esc:String,btn:()=>'',overlay:{hidden:false,dataset:{page:'jobs'},querySelector:()=>card},$:()=>field,
+  });
+  vm.runInContext(taskSource(source),context);
+  vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
+  assert.equal(context.taskError(cause),advice);
+  assert.equal(context.taskError(Error(cause)),advice);
+  assert.equal(context.taskError(cause.replace('There is not enough space on the disk.', '磁盘空间不足。')),advice);
+  assert.equal(context.taskError(cause+'; rollback requires attention'),cause+'; rollback requires attention');
+  assert.equal(context.taskError('CRC failed: '+cause),'CRC failed: '+cause);
+  assert.match(context.jobCard({id:1,label:'保存至外层压缩包',status:'failed',error:cause}), /role="alert"[^>]*>磁盘空间不足/);
+  context.error(Error(cause));
+  assert.equal(field.textContent,'');
+  card.textContent='another task failed';
+  context.error(Error(cause));
+  assert.equal(field.textContent,advice);
+});
+
+test('nested save shows the real outer archive and the path of each enclosed member', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const outer={archive:'D:/archives/outer.zip'};
+  const child={nestedId:1,archive:'D:/temp/private1/inside.zip',parentArchive:outer.archive,nestedMember:'dir/inside.zip'};
+  const leaf={nestedId:2,archive:'D:/temp/private2/inside.zip',parentArchive:child.archive,nestedMember:'nested/inside.zip'};
+  const context=makeContext({archiveTabs:[outer,child,leaf],archiveKey:p=>p.toLowerCase(),filename:p=>p.split('/').pop()});
+  const start=source.indexOf('function nestedSaveDisplayPath(');
+  assert.ok(start>=0);
+  vm.runInContext(source.slice(start,source.indexOf('async function saveNested(',start)),context);
+  assert.equal(context.nestedSaveDisplayPath(leaf),'D:/archives/outer.zip › dir/inside.zip › nested/inside.zip');
+  vm.runInContext(taskSource(source),context);
+  Object.assign(context,{s:{view:'jobs'},esc:String,btn:()=>''});
+  const card=context.jobCard({id:1,label:'保存至外层',status:'complete',path:leaf.archive,displayPath:context.nestedSaveDisplayPath(leaf)});
+  assert.match(card,/D:\/archives\/outer.zip › dir\/inside.zip › nested\/inside.zip/);
+  assert.doesNotMatch(card,/private2/);
+  context.archiveTabs=[];
+  assert.equal(context.nestedSaveDisplayPath(leaf),'inside.zip › nested/inside.zip');
+});
+
 test('clicking a task result reveals that task output, including numeric native job IDs', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
   const handler = source.split('\n').find(line => line.startsWith("root.addEventListener('click',async") && line.includes('dataset.jobOutput'));

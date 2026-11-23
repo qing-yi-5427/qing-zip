@@ -509,12 +509,12 @@ function jobCard(j,inline=false){
   'Extraction complete':'正在确认解压结果'})[message]??message:message;
  return `<div data-job-card="${j.id}" data-attention="${needsAttention(j)}" class="qa-jobcard${compact?' oa-compression-inline':''}">
   ${details?'':`<div class="qa-jobhead"><strong>${esc(j.label)}</strong><span class="qa-badge" data-state="${badge}">${esc(jobStatus(j))}</span></div>`}
-  ${j.path?`<p class="qa-sub">${esc(j.path)}</p>`:''}
+  ${j.path?`<p class="qa-sub">${esc(j.displayPath||j.path)}</p>`:''}
   ${!details&&(running||percent!==null)?`<p class="qa-sub">${esc(phase)} · ${progressLabel}${stageMetric?' · '+stageMetric:''}${j.startedAt==null?'':' · '+elapsedTime(j)}</p>${QingProgress.markup(`data-job-progress="${j.id}" aria-label="${esc(phase+' · '+progressLabel)}"`,percent,QingProgress.activity(j))}`:''}
   ${running&&j.archives?.length>1?`<p class="qa-sub">已处理 ${j.current} 个 · 后续待处理 ${j.archives.length-j.current-1} 个</p>`:''}
   ${running&&j.context?`<div class="qa-jobresult">${esc(j.context)}</div>`:''}
   ${running&&j.work?`<p class="qa-sub">${esc(jobMeasurements(j))}</p>`:''}
-  ${display?`<div class="qa-jobresult">${j.work?.items_done>0&&running?'最近完成 · ':''}${esc(display)}</div>`:''}
+  ${display?`<div class="qa-jobresult"${j.status==='failed'&&s.view==='jobs'?' role="alert"':''}>${j.work?.items_done>0&&running?'最近完成 · ':''}${esc(display)}</div>`:''}
   ${j.followedBy!=null?'<p class="qa-sub">已有后续处理记录。</p>':''}
   ${j.archives?compressionResults(j,compact):''}
   ${j.timeWarning?`<details class="qa-sub"><summary>${esc(j.timeWarning)}</summary>${j.timeReasons.map(reason=>`<p>${esc(reason)}</p>`).join('')}</details>`:''}
@@ -718,11 +718,21 @@ function taskError(e){
  if(conflict)return '目标位置已有同名项目。\n'+conflict[1];
  if(/^(?:Error:\s*)?incorrect password or damaged encrypted archive[.!。]?$/i.test(text))return '密码不正确，或加密压缩包已损坏。';
  if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';
+ if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：create private stage: [^\r\n]* \(os error (?:39|112)\)$/i.test(text)){
+  return '磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
+ }
  if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';
  return text;
 }
 function showPreservationNotice(message){dialog('操作提示',`<p>${esc(message)}</p>`,btn('关闭','close'));}
-function error(e){const message=taskError(e);if(message==='任务已取消'||message==='任务已取消。内层工作副本已保留，可重试或另存为。'){toast(message);return;}if(!overlay.hidden&&$('qa-formerror'))$('qa-formerror').textContent=message;else toast(message);}
+function error(e){
+ const message=taskError(e);
+ if(message==='任务已取消'||message==='任务已取消。内层工作副本已保留，可重试或另存为。'){toast(message);return;}
+ const field=!overlay.hidden&&$('qa-formerror');
+ if(!field){toast(message);return;}
+ const shown=overlay.dataset?.page==='jobs'&&overlay.querySelector('.qa-jobcard .qa-jobresult[role="alert"]');
+ field.textContent=shown&&shown.textContent===message?'':message;
+}
 async function copySelectedFiles(){
  const names=[...s.selected];
  if(!names.length)throw Error('请选择至少一个文件或文件夹。');
@@ -739,7 +749,7 @@ async function copySelectedFiles(){
  }
  toast('文件已复制到剪贴板，可在资源管理器中粘贴。');
 }
-async function run(request,label,{silent=false,recycleAfter=false,startJob=null,temporaryOutput=false,onStart=null,onProgress=null,batch=null,deferProgress=false,retryFrom=null}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');const background=!silent&&!temporaryOutput&&['extract','deep-extract','deep-resume','deep-discard'].includes(request.operation);
+async function run(request,label,{silent=false,recycleAfter=false,startJob=null,temporaryOutput=false,onStart=null,onProgress=null,batch=null,deferProgress=false,retryFrom=null,displayPath=null}={}){if(s.active)throw new Error('已有任务正在运行，请先等待或取消。');const background=!silent&&!temporaryOutput&&['extract','deep-extract','deep-resume','deep-discard'].includes(request.operation);
  const startedAt=performance.now();
  s.backgroundExtraction=background;s.active='starting';
  if(background)updateToolbar();
@@ -752,7 +762,7 @@ async function run(request,label,{silent=false,recycleAfter=false,startJob=null,
   throw error;
  }
  const session=request.deep_session,previous=retryFrom??(session==null?null:deepSessionJobs.get(session));
- const j={id,label,path:request.path||previous?.path||'',status:'running',percent:null,startedAt,background,operation:request.operation,overall:batch?{...batch}:null};
+ const j={id,label,path:request.path||previous?.path||'',displayPath,status:'running',percent:null,startedAt,background,operation:request.operation,overall:batch?{...batch}:null};
  if(previous){
   previous.followedBy=id;
   if(retryFrom)ordinaryRetries.delete(previous.id);
@@ -3383,7 +3393,17 @@ async function openNestedEntry(member){if(tabBusy())throw Error('请先等待当
 async function continueNestedOpen(context,password){pendingNestedOpen=null;try{if(!context.session){if(password)context.options.password=password;context.session=await run({operation:'nested-open',path:context.parent,name:context.member,options:context.options},'打开内层压缩包');const parentTab=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(context.parent));if(parentTab&&context.options.password){parentTab.password=context.options.password;if(parentTab.id===currentTabId)s.password=parentTab.password;}context.stage='inner';password='';}await openArchive(context.session.path,password,{nested:context.session});}catch(e){const message=archiveOpenMessage(e,!!password);if(/password|密码/i.test(message)){showNestedPassword(context,message);}else{if(context.session)await invoke('close_nested',{ids:[context.session.id],discard:false});throw e;}}}
 function showNestedPassword(context,message){pendingNestedOpen=context;dialog(context.stage==='outer'?'输入外层压缩包密码':'输入内层压缩包密码',`<p>${esc(filename(context.stage==='outer'?context.parent:context.member))}</p><label class="qa-field">密码<input id="oa-nested-password" type="password" autocomplete="off" data-password-book></label>`,btn('取消','close')+btn('打开','nested-open-submit','primary'));$('qa-formerror').textContent=message;$('oa-nested-password').focus();}
 async function retryNestedOpen(){const context=pendingNestedOpen;if(!context)return;const password=$('oa-nested-password').value;if(!password)throw Error('请输入密码。');await continueNestedOpen(context,password);}
-async function saveNested(tab=archiveTabs.find(t=>t.id===currentTabId)){if(!tab?.nestedId)throw Error('当前标签不是内层压缩包。');await run({operation:'nested-save',path:tab.archive},'保存至外层压缩包');await syncNestedSessions();let parent=tab.parentArchive;while(parent){const t=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(parent));if(!t)break;const r=await run({operation:'list',path:t.archive,options:{password:t.password||null,codepage:t.codepage||null}},'刷新外层压缩包',{silent:true});t.entries=r.entries;if(t.id===currentTabId)s.entries=t.entries;parent=t.parentArchive;}navigate('archive');toast('已保存至外层压缩包。');}
+function nestedSaveDisplayPath(tab){
+ const members=[];
+ while(tab.nestedId){
+  members.unshift(tab.nestedMember);
+  const parent=archiveTabs.find(item=>archiveKey(item.archive)===archiveKey(tab.parentArchive));
+  if(!parent)return [filename(tab.parentArchive),...members].join(' › ');
+  tab=parent;
+ }
+ return [tab.archive,...members].join(' › ');
+}
+async function saveNested(tab=archiveTabs.find(t=>t.id===currentTabId)){if(!tab?.nestedId)throw Error('当前标签不是内层压缩包。');await run({operation:'nested-save',path:tab.archive},'保存至外层压缩包',{displayPath:nestedSaveDisplayPath(tab)});await syncNestedSessions();let parent=tab.parentArchive;while(parent){const t=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(parent));if(!t)break;const r=await run({operation:'list',path:t.archive,options:{password:t.password||null,codepage:t.codepage||null}},'刷新外层压缩包',{silent:true});t.entries=r.entries;if(t.id===currentTabId)s.entries=t.entries;parent=t.parentArchive;}navigate('archive');toast('已保存至外层压缩包。');}
 function nestedCloseSelection(mode,id){if(mode==='all'||mode==='exit')return archiveTabs.slice();const remove=mode==='others'?archiveTabs.filter(t=>t.id!==id):archiveTabs.filter(t=>t.id===id);if(mode==='others'){let kept=archiveTabs.find(t=>t.id===id);while(kept?.parentArchive){kept=archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(kept.parentArchive));const index=remove.indexOf(kept);if(index>=0)remove.splice(index,1);}}else{for(let i=0;i<remove.length;i++)for(const t of archiveTabs){if(!remove.includes(t)&&archiveKey(t.parentArchive||'')===archiveKey(remove[i].archive))remove.push(t);}}return remove;}
 function showNestedClose(){const pending=pendingNestedClose;if(!pending)return;dialog('保存内层压缩包的更改？',`<p>以下压缩包的更改尚未写回外层：</p><p>${pending.tabs.filter(t=>t.dirty).map(t=>esc(filename(t.archive))).join('<br>')}</p>`,btn('取消','close')+btn('放弃更改','nested-close-discard','danger')+btn('保存并关闭','nested-close-save','primary'));if(pending.focusOrigin)pending.focusOrigin.dialog=overlay.firstElementChild;}
 function closeArchiveTabs(mode,id=currentTabId){const focusOrigin=archiveTabFocusOrigin();(async()=>{if(closingArchiveTabs||finishingArchiveTabs||removingArchiveTabs)return;closingArchiveTabs=true;try{if(tabBusy()){toast('任务正在进行，请先等待或取消后再关闭标签。');return;}saveCurrentTab();await syncNestedSessions();const tabs=nestedCloseSelection(mode,id);const edits=await invoke('external_edits');if(edits.some(e=>mode==='exit'||tabs.some(t=>archiveKey(t.archive)===archiveKey(e.parent)))){await showExternalEdits();return;}pendingNestedClose={tabs,exit:mode==='exit',focusOrigin};if(tabs.some(t=>t.dirty)){showNestedClose();return;}await finishNestedClose(false);}finally{closingArchiveTabs=false;}})().catch(error);}
