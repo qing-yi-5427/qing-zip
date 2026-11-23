@@ -63,7 +63,7 @@ try:
  shell=Dispatch('Shell.Application')
  for key,label in [('here','解压到此处'),('smart','智能解压'),('compress','用 qing-zip 压缩…')]:
   folder=root/key;folder.mkdir(); archive=folder/'archive.zip'; plain=folder/'plain.txt'
-  plain.write_bytes(b'ordinary compression source\n')
+  plain.write_bytes(b'ordinary compression source\n'); sentinel=folder/'keep.txt';sentinel.write_bytes(b'keep unrelated sentinel\n');sentinel_hash=hashlib.sha256(sentinel.read_bytes()).hexdigest()
   with zipfile.ZipFile(archive,'w') as z:
    for name,contents in data.items():z.writestr(name,contents)
   archive_hash=hashlib.sha256(archive.read_bytes()).hexdigest();plain_hash=hashlib.sha256(plain.read_bytes()).hexdigest()
@@ -94,9 +94,10 @@ try:
   destination=folder/('archive' if key=='smart' else '')
   def valid_outputs():
    return all((destination/name).is_file() and hashlib.sha256((destination/name).read_bytes()).hexdigest()==digest for name,digest in expected.items())
-  for _ in range(100):
-   if key!='compress' and valid_outputs():break
-   time.sleep(.2)
+  if key!='compress':
+   for _ in range(100):
+    if valid_outputs():break
+    time.sleep(.2)
   if key=='compress':
    app_procs=[]
    for proc in psutil.process_iter(['pid','exe']):
@@ -131,6 +132,11 @@ try:
   entry['relative_output_directory']='archive' if key=='smart' else ('.' if key=='here' else None)
   entry['archive_preserved']=hashlib.sha256(archive.read_bytes()).hexdigest()==archive_hash
   entry['plain_preserved']=hashlib.sha256(plain.read_bytes()).hexdigest()==plain_hash
+  entry['sentinel_sha256']=sentinel_hash
+  entry['sentinel_preserved']=hashlib.sha256(sentinel.read_bytes()).hexdigest()==sentinel_hash
+  expected_names={'archive.zip','plain.txt','keep.txt'} | ({'first.txt','second.txt'} if key=='here' else ({'archive'} if key=='smart' else {'plain.txt.zip'}))
+  entry['output_directory_exact']={p.name for p in folder.iterdir()}==expected_names
+  if key=='smart' and (folder/'archive').is_dir():entry['output_directory_exact'] = entry['output_directory_exact'] and {p.name for p in (folder/'archive').iterdir()}==set(expected)
   entry['gui_windows']=[w.element_info.name for w in desktop.windows() if w.is_visible() and 'qing' in w.element_info.name.lower()]
   entry['handoff_observed']=entry['output_matches_expected'] if key!='compress' else entry.get('compression_verified',False)
   if key=='compress' and not entry['handoff_observed']:entry['error']='Compression output not verified'
@@ -140,7 +146,7 @@ try:
     if proc.info['exe'] and os.path.normcase(proc.info['exe'])==os.path.normcase(str(a.app.resolve())):proc.terminate();proc.wait(10)
    except (psutil.Error,OSError):pass
   target.Quit()
- report['stage']='finished';report['passed']=all(v['menu_visible'] and v['handoff_observed'] for v in report['scenarios'].values())
+ report['stage']='finished';report['passed']=len(report['scenarios'])==3 and all(v.get('menu_visible') and v.get('handoff_observed') and v.get('archive_preserved') and v.get('plain_preserved') and v.get('sentinel_preserved') and v.get('output_directory_exact') for v in report['scenarios'].values())
 except Exception as e:
  report['error']=repr(e)
  try:snapshot('failure')
