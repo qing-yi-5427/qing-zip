@@ -120,8 +120,9 @@ try:
   if key=='compress' and 'window_error' not in entry:
    image=ImageGrab.grab(); rgb=image.convert('RGB')
    if image.size==(1024,768):
-    r,g,b=rgb.getpixel((780,604))
-    if b>120 and b>g and g>r+15:
+    samples=[rgb.getpixel(pt) for pt in ((745,595),(775,590),(815,615))]
+    entry['create_button_color_samples']=samples
+    if all(b>120 and b>g and g>r+15 for r,g,b in samples):
      mouse.click(coords=(780,604)); entry['create_clicked']=True
      created=folder/'plain.txt.zip'
      for _ in range(150):
