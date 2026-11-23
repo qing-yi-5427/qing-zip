@@ -8,4 +8,6 @@
 
 两版各主题各 5 次 Playwright 点击到 DOM 错误可见的诊断耗时，中位数浅色 18.88→19.98 ms、深色 20.99→20.03 ms；这些是同机非交错的小样本，包含自动化与探测开销，不能代表端到端压缩速度或证明无性能差异。
 
-复跑：使用隔离便携目录与 Python Playwright/pywin32，执行 `python scripts/check-create-error-focus.py --exe <qing-zip.exe> --out <新目录> --expect-visible`。脚本用真实系统缩放与 WebView2，创建普通临时样本和独立配置，测试浅深两主题，等待 GUI 退出并核查临时目录清理。该检查要求当前机器真实缩放为 150%，不是 100% 或 200% 模拟。无 `--expect-visible` 可记录旧版裁切；回执的 `status=PASS` 表示采集完成，`visible` 字段才是可见性结果。
+复跑：使用隔离便携目录与 Python Playwright/pywin32，执行 `python scripts/check-create-error-focus.py --exe <qing-zip.exe> --out <新目录> --expect-visible`。脚本默认在系统临时目录创建普通样本和独立配置；为截图使用短路径时，可先建立 `G:/QingZipQA` 并追加 `--fixtures-in G:/QingZipQA`。脚本使用真实系统缩放与 WebView2，测试浅深两主题，等待 GUI 正常退出并核查临时目录清理。该检查要求当前机器真实缩放为 150%，不是 100% 或 200% 模拟。无 `--expect-visible` 可记录旧版裁切；回执的 `status=PASS` 表示采集完成，`visible` 字段才是可见性结果。
+
+追加复跑验证了默认系统临时目录和 `--fixtures-in G:/QingZipQA` 两种夹具位置，两版 GUI 均以退出码 0 正常退出，独立临时目录均清理；[基线退出回执](before/exit-check.json) · [候选退出回执](after/exit-check.json)。截图来自同一 GUI 哈希的先前短路径运行，回执来自追加复跑。

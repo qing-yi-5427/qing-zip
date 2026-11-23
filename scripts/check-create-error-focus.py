@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import win32event
+import win32process
 from playwright.sync_api import expect
 
 spec = importlib.util.spec_from_file_location('private_qa', Path(__file__).with_name('check-nested-multi-layer.py'))
@@ -17,9 +19,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--exe', type=Path, required=True)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--expect-visible', action='store_true')
+parser.add_argument('--fixtures-in', type=Path, help='Existing directory for the temporary fixture (defaults to the system temp directory)')
 args = parser.parse_args()
 args.out.mkdir(parents=True, exist_ok=False)
-fixture = Path(tempfile.mkdtemp(prefix='qz-r8-', dir='G:/'))
+fixture = Path(tempfile.mkdtemp(prefix='qz-r8-', dir=args.fixtures_in))
 report = {'gui_sha256': hashlib.sha256(args.exe.read_bytes()).hexdigest(), 'cases': {}, 'status': 'FAIL'}
 try:
     source = fixture / 'sample.txt'
@@ -66,6 +69,11 @@ try:
             report['cases'][theme] = geometry
             page.locator('.qa-dialog-header [data-action=close]').click()
         page.locator('[data-window=close]').click()
+        if win32event.WaitForSingleObject(process, 20000) != win32event.WAIT_OBJECT_0:
+            raise RuntimeError('GUI did not exit normally')
+        report['gui_exit_code'] = win32process.GetExitCodeProcess(process)
+        if report['gui_exit_code'] != 0:
+            raise RuntimeError(f"GUI exited with code {report['gui_exit_code']}")
         report['status'] = 'PASS'
 finally:
     for attempt in range(30):
