@@ -25,6 +25,10 @@ on:
         description: 'Only verify recovery of the second successive inner edit'
         type: boolean
         default: false
+      nested_legacy_record:
+        description: 'Write the old SHA-256 recovery record, then recover it in the chosen product'
+        type: boolean
+        default: false
       nested_large_fixture:
         description: 'Use one 64 MiB stored inner ZIP member in each ordinary scenario'
         type: boolean
@@ -67,6 +71,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $frontendTests = @(Get-ChildItem obz-gui/tests -Filter *.cjs -File | Sort-Object Name | ForEach-Object FullName)
           node --test @frontendTests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test-native-menu-accessibility.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
@@ -204,8 +210,28 @@ jobs:
       - name: Set up the hosted desktop tests
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1
+          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1 playwright==1.55.0
           exit $LASTEXITCODE
+      - name: Verify ordinary batch extraction, stop and resume in the packaged desktop
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          $portable = @(Get-ChildItem -LiteralPath dist/x64 -Filter '*-portable.zip' -File)
+          if ($exe.Count -ne 1 -or $portable.Count -ne 1) { throw 'Expected one packaged x64 GUI and portable archive' }
+          python scripts/check-batch-extract-desktop.py --hosted --mode candidate --case both --exe $exe[0].FullName --package $portable[0].FullName --hardening target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json --out target/batch-extract-acceptance
+          exit $LASTEXITCODE
+      - name: Save batch extraction receipt and result screenshots
+        if: always() && hashFiles('target/batch-extract-acceptance/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-batch-extract-acceptance
+          path: |
+            target/batch-extract-acceptance/*.json
+            target/batch-extract-acceptance/*-result.png
+            target/batch-extract-acceptance/stop-resumed.png
+            target/batch-extract-acceptance/*-diagnostic.png
+          retention-days: 21
+          if-no-files-found: error
       - name: Verify extraction and restore a script-owned ZIP from the Windows Recycle Bin
         shell: pwsh
         run: |
@@ -272,6 +298,7 @@ jobs:
       NESTED_EXPECT_RECOVERY: ${{ inputs.nested_expect_recovery }}
       NESTED_LARGE_FIXTURE: ${{ inputs.nested_large_fixture }}
       NESTED_DOUBLE_EDIT: ${{ inputs.nested_double_edit }}
+      NESTED_LEGACY_RECORD: ${{ inputs.nested_legacy_record }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -299,9 +326,26 @@ jobs:
           if ($env:NESTED_EXPECT_RECOVERY -eq 'true') { $captureArgs += '--expect-recovery' }
           if ($env:NESTED_LARGE_FIXTURE -eq 'true') { $captureArgs += '--large' }
           if ($env:NESTED_DOUBLE_EDIT -eq 'true') { $captureArgs += '--double-edit-only' }
+          if ($env:NESTED_LEGACY_RECORD -eq 'true') {
+            $legacyRun = '45150592481'
+            $legacySource = 'b5a6e137f7f8602ede9f3b5cbcfead0b38e69e74'
+            $legacyZip = 'c33dd19f48862f77f6beebbc3784714f5b8f770a9d0154df211afbf801aa75a7'
+            $legacyGui = '5ff954fde2e63bb40a3904485cb75606ffd83b8484b7c0641f42dfb636b1b647'
+            $older = gh api "repos/qing-yi-5427/qing-zip/actions/runs/$legacyRun" | ConvertFrom-Json
+            if ($LASTEXITCODE -or $older.head_sha -cne $legacySource -or $older.conclusion -cne 'success' -or $older.name -cne 'Windows regression') { throw 'Unexpected old product build' }
+            gh run download $legacyRun --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir legacy-download
+            if ($LASTEXITCODE) { throw 'Old artifact unavailable' }
+            $previous = @(Get-ChildItem legacy-download -Recurse -File -Filter '*-portable.zip')
+            if ($previous.Count -ne 1 -or (Get-FileHash -LiteralPath $previous[0].FullName).Hash.ToLowerInvariant() -cne $legacyZip) { throw 'Old package hash mismatch' }
+            Expand-Archive -LiteralPath $previous[0].FullName -DestinationPath legacy-staged
+            $oldExe = @(Get-ChildItem legacy-staged -Recurse -File -Filter qing-zip.exe)
+            if ($oldExe.Count -ne 1 -or (Get-FileHash -LiteralPath $oldExe[0].FullName).Hash.ToLowerInvariant() -cne $legacyGui) { throw 'Old GUI hash mismatch' }
+            @{ product_run=$legacyRun; product_source=$legacySource; package_sha256=$legacyZip; gui_sha256=$legacyGui } | ConvertTo-Json | Set-Content -Encoding utf8 nested-restart-evidence/legacy-package.json
+            $captureArgs += @('--legacy-exe', $oldExe[0].FullName)
+          }
           python scripts/nested_restart_gui.py @captureArgs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if ($env:NESTED_EXPECT_RECOVERY -eq 'true' -and $env:NESTED_DOUBLE_EDIT -ne 'true') {
+          if ($env:NESTED_EXPECT_RECOVERY -eq 'true' -and $env:NESTED_DOUBLE_EDIT -ne 'true' -and $env:NESTED_LEGACY_RECORD -ne 'true') {
             python scripts/nested_multi_layer_recovery.py --exe $exe[0].FullName
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }

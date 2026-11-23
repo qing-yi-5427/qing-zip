@@ -1,0 +1,100 @@
+{
+  "package": {
+    "gui_sha256": "c19766d07c41d861a8782bf7e60c8f9e40e2c93a8aa0c8c524fe7a66d0ec72cd",
+    "run": 45162252196,
+    "zip_sha256": "0e5068f2385c91af81dfbf1da615bc7134d4d88ea2f96b41f469b818f34121a3",
+    "source": "20b857fe19457cd2cf638d62ff3cc8206f6094d0",
+    "artifact": 14814812268,
+    "merge_checkout": "8e8d99e7e1cbfd2cd12f73416c87ce0c751fe9b7",
+    "tree": "7737e1a24da0dbadc6e7ae27a65bfb8283d2ff23",
+    "arm64": {
+      "run": 45162252206,
+      "artifact": 14813541379,
+      "status": "success"
+    }
+  },
+  "ordinary": {
+    "run": 45165237807,
+    "artifact": 14812429472,
+    "native_save_and_restart": {
+      "record_digest_algorithm": "blake3",
+      "retained_options_first": 1,
+      "retained_options_second": 0,
+      "large_member_bytes": 67108864,
+      "edited_sha256": "7520f30a4f11e12a7e62b1ba5674ca6f39306ea4a3a9a159870edc449bd6fa51",
+      "recovered_sha256": "7520f30a4f11e12a7e62b1ba5674ca6f39306ea4a3a9a159870edc449bd6fa51",
+      "recovered_members": {
+        "after.txt": "565bdac7500c987be02cb2810c8b99f39050e5e027038ffb4a72db8256821eb2",
+        "unchanged.txt": "259346d9dcfb42dea7d19770ece04a02168c971905c2fe0c34815da80a6d9515",
+        "bulk.bin": "3bed82c38e55a69604cc8c1934b02d89e3ebd0db94831f0897623d9a1a132a80"
+      },
+      "outer_unchanged_after_second_reopen": true,
+      "neighbour_unchanged_after_second_reopen": true,
+      "record_removed_after_successful_export": true
+    },
+    "normal_discard_preserved_working_copy_until_confirmation": true,
+    "normal_save_written_to_outer": true,
+    "encrypted_control": {
+      "retained_options": 0,
+      "recovery_index_contains_fixture_password": false,
+      "outer_decrypts_with_original_password": true,
+      "outer_unchanged": true,
+      "neighbour_unchanged": true
+    },
+    "same_named_projects": {
+      "fresh_process_without_live_nested_sessions": true,
+      "cancelled_save_retained_both_records": true,
+      "direct_backend_failure_retained_both_records": true,
+      "successful_save_consumed_only_project_b": true,
+      "both_exportable_after_cancel": true,
+      "no_records_after_both_exports": true,
+      "owned_fixture_cleaned": true,
+      "visible_sources": 2
+    }
+  },
+  "double_edit": {
+    "run": 45165249589,
+    "artifact": 14814812612,
+    "native_save_and_restart": {
+      "record_digest_algorithm": "blake3",
+      "retained_options_first": 1,
+      "retained_options_second": 0,
+      "large_member_bytes": 0,
+      "edited_sha256": "9fa0c8c1f6e999c258323968584e0657db632416e3bbd3577664171eb4a9ea99",
+      "recovered_sha256": "9fa0c8c1f6e999c258323968584e0657db632416e3bbd3577664171eb4a9ea99",
+      "recovered_members": {
+        "final.txt": "565bdac7500c987be02cb2810c8b99f39050e5e027038ffb4a72db8256821eb2",
+        "unchanged.txt": "259346d9dcfb42dea7d19770ece04a02168c971905c2fe0c34815da80a6d9515"
+      },
+      "outer_unchanged_after_second_reopen": true,
+      "neighbour_unchanged_after_second_reopen": true,
+      "record_removed_after_successful_export": true,
+      "first_edit_sha256": "7e196b6f0230e3ad45b0dee58fe011bd85e56b11ccb77313cb5e0a06c5fe231e"
+    }
+  },
+  "legacy": {
+    "run": 45165260500,
+    "artifact": 14813028642,
+    "native_save_and_restart": {
+      "record_digest_algorithm": "sha256",
+      "retained_options_first": 1,
+      "retained_options_second": 0,
+      "large_member_bytes": 0,
+      "edited_sha256": "44f7f01373bc1e5f298399a39167277052a560cb46825a6109cdcbd682120952",
+      "recovered_sha256": "44f7f01373bc1e5f298399a39167277052a560cb46825a6109cdcbd682120952",
+      "recovered_members": {
+        "after.txt": "565bdac7500c987be02cb2810c8b99f39050e5e027038ffb4a72db8256821eb2",
+        "unchanged.txt": "259346d9dcfb42dea7d19770ece04a02168c971905c2fe0c34815da80a6d9515"
+      },
+      "outer_unchanged_after_second_reopen": true,
+      "neighbour_unchanged_after_second_reopen": true,
+      "record_removed_after_successful_export": true,
+      "writer": {
+        "package_sha256": "c33dd19f48862f77f6beebbc3784714f5b8f770a9d0154df211afbf801aa75a7",
+        "gui_sha256": "5ff954fde2e63bb40a3904485cb75606ffd83b8484b7c0641f42dfb636b1b647",
+        "product_run": "45150592481",
+        "product_source": "b5a6e137f7f8602ede9f3b5cbcfead0b38e69e74"
+      }
+    }
+  }
+}

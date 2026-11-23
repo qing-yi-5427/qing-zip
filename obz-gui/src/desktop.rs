@@ -118,7 +118,7 @@ pub fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-fn copy_inner(path: &str, dest: &str) -> Result<String, String> {
+pub(crate) fn copy_inner(path: &str, dest: &str) -> Result<String, String> {
     let src = existing(path)?;
     if !src.is_file() {
         return Err("只能复制归档文件".into());

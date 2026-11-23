@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      hosted_scale_probe:
+        description: 'Read hosted Windows display settings and session availability without changing settings'
+        type: boolean
+        required: false
+        default: false
       round2_fluent_capture:
         description: 'Capture native accessibility states against a verified ARM64 portable package'
         type: boolean
@@ -22,6 +27,11 @@ on:
         description: 'SHA-256 of the expected ARM64 portable ZIP for the optional build'
         type: string
         required: false
+      capture_system_scale:
+        description: 'Use the standard Windows Display Scale list for a native 200% test'
+        type: boolean
+        required: false
+        default: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -31,7 +41,7 @@ permissions:
   contents: read
 jobs:
   native:
-    if: github.event_name != 'workflow_dispatch' || !inputs.round2_fluent_capture
+    if: github.event_name != 'workflow_dispatch' || (!inputs.round2_fluent_capture && !inputs.hosted_scale_probe)
     runs-on: windows-11-arm
     timeout-minutes: 55
     env:
@@ -92,6 +102,8 @@ jobs:
         shell: pwsh
         run: |
           node --test obz-gui/tests/archive-columns.cjs obz-gui/tests/archive-properties.cjs obz-gui/tests/archive-metadata.cjs obz-gui/tests/archive-row-window.cjs obz-gui/tests/folder-projection.cjs obz-gui/tests/archive-tab-focus.cjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/test-native-menu-accessibility.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
@@ -270,7 +282,7 @@ jobs:
             dist/arm64/*-package-build.json
 
   round2-fluent-capture:
-    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.round2_fluent_capture
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.round2_fluent_capture && !inputs.hosted_scale_probe
     runs-on: windows-11-arm
     timeout-minutes: 15
     permissions:
@@ -280,12 +292,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Verify pinned package and capture native accessibility states
+      - name: Verify pinned package and capture native desktop states
         shell: pwsh
         env:
           CAPTURE_BUILD: ${{ inputs.capture_build_run }}
           CAPTURE_SOURCE: ${{ inputs.capture_source }}
           CAPTURE_PACKAGE: ${{ inputs.capture_package_sha }}
+          CAPTURE_SYSTEM_SCALE: ${{ inputs.capture_system_scale }}
         run: |
           if ($env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Native ARM64 required' }
           $specified = @(@($env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE) | Where-Object { $_ })
@@ -312,7 +325,8 @@ jobs:
           if ($exe.Count -ne 1) { throw 'Expected exactly one GUI' }
           python -m pip install --disable-pip-version-check websockets==15.0.1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu --native-accessibility
+          $check = if ($env:CAPTURE_SYSTEM_SCALE -eq 'true') { '--native-system-scale' } else { '--native-accessibility' }
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu $check
           exit $LASTEXITCODE
       - name: Preserve package binding and native evidence
         if: always()
@@ -321,4 +335,35 @@ jobs:
           name: round2-arm64-fluent-evidence
           path: evidence/
           if-no-files-found: warn
+          retention-days: 30
+
+  hosted-display-probe:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.hosted_scale_probe
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read actual display scale options on disposable Windows host
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -notin @('X64','ARM64')) { throw 'Disposable hosted Windows required' }
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $os=Get-CimInstance Win32_OperatingSystem
+          @{ name=$os.Caption; version=$os.Version; arch=$env:RUNNER_ARCH; session=$env:SESSIONNAME; source=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/host.json
+          & powershell.exe -NoProfile -File scripts/display-scale-settings.ps1 -Receipt evidence/settings.json -Screenshot evidence/settings.png -SelectPercent 0
+          if ($LASTEXITCODE) { throw 'Settings probe process failed' }
+          & ./scripts/probe-custom-scale.ps1 -Receipt evidence/custom-page.json
+          $result=Get-Content evidence/settings.json -Raw | ConvertFrom-Json
+          $custom=Get-Content evidence/custom-page.json -Raw | ConvertFrom-Json
+          if ($result.error -or $custom.status -cne 'observed' -or !$custom.navigation_invoked -or !$custom.custom_page_observed) { throw 'Native settings or custom page not observable; inspect receipt' }
+      - name: Preserve read-only host findings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-display-probe-${{ matrix.runner }}
+          path: evidence/
           retention-days: 30

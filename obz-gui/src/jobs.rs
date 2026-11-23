@@ -227,7 +227,7 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
     if request.operation == "nested-save" { return crate::nested::save_job(&request.path, control); }
     crate::nested::validate_request(&request, recycle_after)?;
     let edit_path = request.path.clone();
-    let receipt = crate::nested::track(&mut request);
+    let receipt = crate::nested::track(&mut request)?;
     let password_use = request.options.extraction_password_use.clone()
         .and_then(|evidence| request.options.password.clone().map(|password| (evidence, password)));
     let mut result = execute_archive_job(request, recycle_after, control);
@@ -239,7 +239,13 @@ fn execute_job(mut request: Request, recycle_after: bool, control: &JobControl) 
             }
         }
     }
-    if let Some(revision) = receipt.and_then(|r|r.take()) { crate::nested::committed(&edit_path, &revision); }
+    if let Some(revision) = receipt.and_then(|r|r.take()) {
+        if let Some(warning) = crate::nested::committed(&edit_path, &revision) {
+            if let Ok(OperationResponse::Json(output)) = &mut result {
+                output["recovery_warning"] = Value::String(warning);
+            }
+        }
+    }
     result
 }
 
