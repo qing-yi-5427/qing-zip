@@ -45,7 +45,7 @@ def apply_os(read_os, invoke, high, animations):
     return wait_os(read_os, high, animations)
 
 
-def verify_menu(call, js, output, executable):
+def verify_menu(call, js, output, executable, test_form=False):
     check_host()
     spi = ctypes.WinDLL("user32", use_last_error=True).SystemParametersInfoW
     spi.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.LPVOID, wintypes.UINT]
@@ -109,6 +109,65 @@ def verify_menu(call, js, output, executable):
             png = base64.b64decode(call("Page.captureScreenshot", {"format": "png"})["data"])
             (output / (name + ".png")).write_bytes(png)
             state["screenshot_sha256"] = hashlib.sha256(png).hexdigest()
+            if test_form:
+                js("document.querySelector('[data-action=app-menu]').click()")
+                if name == 'normal-again':
+                    js("document.querySelector('[data-theme=dark]').click()")
+                js("Array.from(document.querySelectorAll('[data-action=compress]')).find(e=>e.getClientRects().length).click()")
+                js("""(() => {
+                    const set=(id,value)=>{let e=document.getElementById(id);e.value=value;e.dispatchEvent(new Event('input',{bubbles:true}))};
+                    set('qa-inputs','C:/qz-synthetic/sample.txt');set('qa-save','C:/qz-synthetic/result.zip');
+                    document.querySelector('[data-action=compression-advanced]').click();
+                    set('qa-threads','999');document.querySelector('[data-action=startcompress]').click();
+                })()""")
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    form = state["form"] = js("""(() => {
+                        const input=document.querySelector('#qa-threads'), body=input.closest('.oa-dialog-body');
+                        const i=input.getBoundingClientRect(),b=body.getBoundingClientRect(),error=document.querySelector('#qa-formerror');
+                        return {forced:matchMedia('(forced-colors: active)').matches,
+                                reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,
+                                active:document.activeElement.id, invalid:input.getAttribute('aria-invalid'),
+                                error:error.textContent, input:[i.top,i.bottom],body:[b.top,b.bottom],
+                                viewport:[innerWidth,innerHeight],dpr:devicePixelRatio,
+                                button:(()=>{let e=document.querySelector('[data-action=startcompress]'),s=getComputedStyle(e),r=e.getBoundingClientRect();return {text:e.innerText,color:s.color,background:s.backgroundColor,forcedAdjust:s.forcedColorAdjust,rect:[r.x,r.y,r.width,r.height],html:e.innerHTML}})()};
+                    })()""")
+                    if form['invalid']=='true' and form['error'] and form['active']=='qa-threads':
+                        break
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError(f"Compression validation was not observable: {form}")
+                if form['forced'] != high or form['reduced'] != (not animated):
+                    raise RuntimeError(f"Compression form did not reflect desktop accessibility: {form}")
+                if form['input'][0] < form['body'][0] or form['input'][1] > form['body'][1]:
+                    raise RuntimeError(f"Focused invalid field is clipped: {form}")
+                time.sleep(1)  # allow the native contrast transition and compositor to settle
+                form['button_settled'] = js("""(() => {let e=document.querySelector('[data-action=startcompress]'),s=getComputedStyle(e);return {color:s.color,background:s.backgroundColor,forcedAdjust:s.forcedColorAdjust}})()""")
+                if high and form['button_settled']['forcedAdjust'] != 'none':
+                    raise RuntimeError(f"Primary button still uses automatic forced colors: {form}")
+                if not high and form['button_settled']['forcedAdjust'] != 'auto':
+                    raise RuntimeError(f"Normal appearance unexpectedly opts out of forced colors: {form}")
+                if high:
+                    form['disabled'] = js("""(() => {let e=document.querySelector('[data-action=startcompress]');e.disabled=true;let s=getComputedStyle(e);let result={color:s.color,background:s.backgroundColor,disabled:e.disabled};e.disabled=false;return result})()""")
+                    if not form['disabled']['disabled'] or form['disabled']['color'] == form['disabled']['background']:
+                        raise RuntimeError(f"Disabled primary button is unreadable: {form}")
+                    for _ in range(30):
+                        for event in ('rawKeyDown','keyUp'):
+                            call('Input.dispatchKeyEvent', {'type':event,'key':'Tab','code':'Tab','windowsVirtualKeyCode':9})
+                        if js("document.activeElement.matches('[data-action=startcompress]')"):
+                            break
+                    else:
+                        raise RuntimeError('Primary button not reachable by Tab')
+                    form['keyboard_focus'] = js("""(() => {let e=document.activeElement,s=getComputedStyle(e);return {focusVisible:e.matches(':focus-visible'),outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth}})()""")
+                    if not form['keyboard_focus']['focusVisible'] or form['keyboard_focus']['outlineStyle']=='none':
+                        raise RuntimeError(f"Keyboard focus not visible: {form}")
+                    png = base64.b64decode(call('Page.captureScreenshot', {'format': 'png'})['data'])
+                    (output / 'form-contrast-keyboard.png').write_bytes(png)
+                    js("document.querySelector('#qa-threads').focus()")
+                png = base64.b64decode(call('Page.captureScreenshot', {'format': 'png'})['data'])
+                (output / ('form-' + name + '.png')).write_bytes(png)
+                form['screenshot_sha256'] = hashlib.sha256(png).hexdigest()
+                js("document.querySelector('.qa-dialog-header [data-action=close]').click()")
         report["status"] = "PASS"
     except Exception as error:
         report["error"] = str(error)

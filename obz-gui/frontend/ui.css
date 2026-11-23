@@ -217,7 +217,22 @@ button {
     --qa-danger: CanvasText;
     --qa-scroll: auto;
   }
-  :is(#qing-archive, .qa-tools) .qa-button.primary { border-color: ButtonText; }
+  :is(#qing-archive, .qa-tools) .qa-button.primary {
+    forced-color-adjust: none;
+    color: HighlightText;
+    background: Highlight;
+    border-color: ButtonText;
+  }
+  :is(#qing-archive, .qa-tools) .qa-button.primary:enabled:is(:hover, :active) {
+    color: HighlightText;
+    background: Highlight;
+    border-color: HighlightText;
+  }
+  :is(#qing-archive, .qa-tools) .qa-button.primary:disabled {
+    color: GrayText;
+    background: ButtonFace;
+    border-color: GrayText;
+  }
   :is(#qing-archive, .qa-tools) .qa-button:enabled:hover { border-color: Highlight; }
   :is(#qing-archive, .qa-tools) .qa-button:enabled:active { border-color: HighlightText; }
   :is(#qing-archive, .qa-tools) button:disabled { opacity: 1; color: GrayText; }
