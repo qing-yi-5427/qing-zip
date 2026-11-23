@@ -28,14 +28,20 @@
 | Windows 11 现代右键 | 包签名、当前用户注册后菜单、卸载后菜单消失和升级保留关联。 | BLOCKED（可信签名和可安装验收环境） |
 | Windows 10 与 Windows 11 ARM64 实机 | 最低系统版本、ARM64 GUI、解压、安装和 Explorer。 | BLOCKED（本轮主机为 Windows 11 x64） |
 | 特殊文件系统、源归档回收和磁盘耗尽 | ADS/TxF、重解析及链接、真实回收站、真实盘满，另在获准的隔离环境验证。合成空间不足的预算模型已列在 Rust 单元行。 | BLOCKED（未启用隔离环境） |
-| 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。包括 ZIPX、传统加密 ZIP、ALZ/EGG、ISO、嵌套编辑写回、其他损坏类型与 ZIP 修复。 | NOT RUN |
-| GUI 取消、退出和重启后的恢复 | 已覆盖引擎压缩取消、内存取消模型和同一会话的密码续接/发布重试。GUI 真实取消、进行中解压的取消、程序进程中断及重启后恢复尚待验收。 | NOT RUN（上述端到端场景） |
+| 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。普通嵌套写回已见上方日常回归。桌面保存嵌套编辑、ZIPX、传统加密 ZIP、ALZ/EGG、ISO、其他损坏类型与 ZIP 修复待扩大独立对照。 | NOT RUN |
+| GUI 退出和重启后的恢复 | 引擎取消、密码续接和发布重试已有回归。选取解压取消验证了原有文件保全及句柄释放；真实 CLI 父进程中断、重开和重试另列于下。普通 TAR.GZ 的真实窗口取消与既有目标保全已通过；GUI 退出及重启恢复仍待实测。 | NOT RUN（上述端到端场景） |
 | 异常路径和数量预算 | 深度、数量和字节计费由内存用例验证，也执行了正常样本的选取预算。异常路径及大量嵌套、超文件数的真实归档场景尚待验证。 | NOT RUN（实包边界） |
+| 真实任务取消和结果入口 | 普通 1 GiB TAR.GZ 进入运行态后点击取消，保存中间及终态显示，原包和两个既有目标内容不变。另一次完成后点开输出按钮，核对真实 Explorer 窗口位置。[实机记录](https://github.com/qing-yi-5427/qing-zip/pull/6) | PASS |
+| 普通归档更新中断 | 三轮强制结束正在更新普通 ZIP 的 CLI，重新打开、校验原包及输入哈希，独立任务继续、重试成功。每轮遗留 134,218,001 字节未发布候选。[逐轮记录](https://github.com/qing-yi-5427/qing-zip/pull/10) | PASS（原包保全及重试） / FAIL（候选回收） |
+| 智能解压桌面入口 | 标准、深度编号、批量、首页文件选择器、已有实例接收命令五条路径核对实际输出。真实系统拖放另行验证。[实机记录](https://github.com/qing-yi-5427/qing-zip/pull/9) | PASS（列出的五种入口） |
+| 经典 RAR 独立工具对照 | RAR 1.5 单卷、RAR 3 旧式两卷均通过。另一个 RAR 1.5 三卷用官方 UnRAR 输出完整文件，qing-zip 失败且输出为空。[四工具记录](https://github.com/qing-yi-5427/qing-zip/pull/7) | PASS（单卷与两卷） / FAIL（三卷样本） |
 | Rust 格式检查 | `obz-rs` 与 `obz-gui` 均有既有 rustfmt 差异，例如 `obz-rs/build.rs` 和 `obz-gui/src/archive_listing.rs`。 | FAIL |
 
 产物 `qing-zip-0.12.23-portable.zip` 为 33,340,323 字节，SHA-256 为 `61918ca1723598776e79de5ed0f677336ccc2b5c22e5951d49f291dd48e8ab09`。四类普通归档与引擎基准见 [性能基线](PERFORMANCE_REPORT.md)。
 
 常用格式对照的细节见 [质量报告](QUALITY_REPORT.md)。Shell 包和原生接口的证据见 [M4 验证记录](https://github.com/qing-yi-5427/qing-zip/pull/1) 与 [原生 x64 / ARM64 托管运行](https://github.com/qing-yi-5427/qing-zip/actions/runs/45096359747)。
+
+推荐审查的组合源码为 `e9eeecd`，x64 便携 ZIP 共 33,286,633 字节，SHA-256 为 `7611a000a3f6ffcc4a93fdb3c6e8189b9b563fd95cfe88019530b59060d72932`。实际包内 worker 完成新加的选择性提取取消用例，观察到 95 次读操作。此候选运行 276 项 Node 回归，真实 ZIP/7z 冒烟及常用格式比对均已复跑。[可复建源码](https://github.com/qing-yi-5427/qing-zip/tree/e9eeecd414fa7379fc959967fb1645ced24eeb62) · [测试实现及控制组](https://github.com/qing-yi-5427/qing-zip/pull/15)
 
 ## 复跑命令
 
