@@ -43,6 +43,12 @@ mod zip_input_probe;
 pub(crate) mod edit_source;
 #[cfg(windows)]
 pub(crate) fn recover_interrupted_edit(path:&std::path::Path)->Result<bool,String>{ edit_source::recover_missing(path) }
+#[cfg(nana_selected_worker)]
+pub(crate) fn reclaim_abandoned_zip_candidate(path: &str, opts: &EngineOptions) {
+    if opts.edit_receipt.is_none() {
+        edit_source::reclaim_on_open(Path::new(path), &control(opts));
+    }
+}
 mod zip_preview;
 #[cfg(windows)]
 mod update_list;
@@ -5801,6 +5807,10 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
     #[cfg(windows)]
     let source = edit_source::EditSource::open_controlled(&locked_path,&control(opts))?;
+    #[cfg(nana_selected_worker)]
+    if opts.edit_receipt.is_none() && !_policy.restricted() {
+        source.reclaim_candidate(&control(opts));
+    }
     let zip_layout = zip_volume_view::require_editable(&locked_path)?;
     #[cfg(nana_selected_worker)]
     let mut verified_console = None;
@@ -5887,6 +5897,8 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     }
     #[cfg(windows)]
     let output = source.output()?;
+    #[cfg(nana_selected_worker)]
+    let mut output = output;
     #[cfg(windows)]
     let staged = output.path().to_owned();
     #[cfg(not(windows))]
@@ -5948,7 +5960,15 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
     ctl.set("updating", None, "Updating a temporary archive copy");
     #[cfg(nana_selected_worker)]
     let appended = if let Some(count) = append_count.filter(|_| direct && source.local_ntfs()) {
-        selected_worker::zip_append::try_encode(&executable()?, source.pinned_archive(), &output, &names, count, &ctl)?
+        let candidate = selected_worker::zip_append::try_encode(
+            &executable()?, source.pinned_archive(), &output, &names, count, &ctl,
+        )?;
+        if let Some(candidate) = candidate {
+            output.finish_candidate(&source, candidate, opts.edit_receipt.is_none(), &ctl)?;
+            true
+        } else {
+            false
+        }
     } else { false };
     #[cfg(not(nana_selected_worker))]
     let appended = false;
@@ -5986,7 +6006,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         read_engine_output(log)?;
         #[cfg(nana_selected_worker)]
         if let Some(candidate) = candidate {
-            candidate.finish()?;
+            output.finish_candidate(&source, candidate, opts.edit_receipt.is_none(), &ctl)?;
         }
     }
     #[cfg(test)]

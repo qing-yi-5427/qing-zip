@@ -60,6 +60,8 @@ pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,St
 pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
     let policy=crate::machine_policy::scope();
     if policy.restricted() { return engine::list(path, opts); }
+    #[cfg(nana_selected_worker)]
+    engine::reclaim_abandoned_zip_candidate(path, opts);
     if crate::rare::supports(path){return crate::rare::list(path,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::list(path,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::list(path,opts);}
@@ -69,6 +71,8 @@ pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entr
 pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return engine::test(path, opts); }
+    #[cfg(nana_selected_worker)]
+    engine::reclaim_abandoned_zip_candidate(path, opts);
     if crate::rare::supports(path){return crate::rare::test(path,opts);}
     if crate::envelopes::is_supported(path){return crate::envelopes::test(path,opts);}
     if crate::stream_formats::is_supported(path){return crate::stream_formats::test(path,opts);}

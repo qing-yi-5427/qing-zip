@@ -12,6 +12,19 @@ use std::{
 const MARKER: &str = "edit-intent.dpapi";
 const MAX_RECORD: u64 = 1024 * 1024;
 const DOMAIN: &str = "qing-zip/archive-edit-v1";
+
+#[cfg(nana_selected_worker)]
+pub(super) fn lock_disarmed_intent(stage: &Path) -> Result<Option<File>, String> {
+    let path = stage.join(MARKER);
+    if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == io::ErrorKind::NotFound) {
+        return Ok(None);
+    }
+    let intent = leaf(&path, 0x80000000, 1)?;
+    if intent.metadata().map_err(|e| e.to_string())?.len() != 0 {
+        return Err("ZIP update belongs to the existing edit recovery journal".into());
+    }
+    Ok(Some(intent))
+}
 #[derive(Serialize, Deserialize)]
 struct Record {
     domain: String,

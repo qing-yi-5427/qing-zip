@@ -486,7 +486,7 @@ fn open_private_child(parent: &File, leaf: &OsStr, mode: ChildAccess) -> Result<
         // As above, plus DELETE and exclusive sharing. Only a new file can
         // become disposable, and only its owner can change that disposition.
         #[cfg(nana_selected_worker)]
-        ChildAccess::CreateDisposableFile => (0x110182, 0x80, 0, 2, 0x200060, "create disposable ZIP candidate"),
+        ChildAccess::CreateDisposableFile => (0x110183, 0x80, 0, 2, 0x200060, "create disposable ZIP candidate"),
         ChildAccess::OpenDirectory => (0x100081, 0, 3, 1, 0x200021, "pin output directory"),
         ChildAccess::CreateJournalDirectory => (0x120180, 0, 7, 2, 0x200021, "create journaled output directory"),
         ChildAccess::CreateDirectory => (0x100080, 0, 7, 2, 0x200021, "create output directory"),

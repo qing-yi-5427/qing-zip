@@ -1,5 +1,8 @@
 #[path = "edit_recovery.rs"]
 mod journal;
+#[cfg(nana_selected_worker)]
+#[path = "edit_candidate_recovery.rs"]
+mod candidate_recovery;
 use super::{
     directory_identity, rename_handle_noclobber_in, validate_transaction_root, CheckedDirectories,
 };
@@ -146,6 +149,10 @@ fn id_checked(handle: &File, control: Option<&super::JobControl>) -> Result<File
         }
         return Ok(FileId::Contents(hasher.finalize().into()));
     }
+    stable_id(handle)
+}
+
+fn stable_id(handle: &File) -> Result<FileId, String> {
     #[repr(C)]
     struct Info {
         volume: u64,
@@ -229,6 +236,9 @@ thread_local! {
 pub(crate) struct EditOutput {
     output_pin: File,
     stage: PrivateStage,
+    // Retire the receipt only after routine stage cleanup has run.
+    #[cfg(nana_selected_worker)]
+    candidate_receipt: Option<candidate_recovery::Lease>,
     path: PathBuf,
 }
 impl EditOutput {
@@ -243,7 +253,25 @@ impl EditOutput {
         DisposableZipCandidate::set_disposition(&file, true)?;
         Ok(DisposableZipCandidate(file))
     }
+
+    #[cfg(nana_selected_worker)]
+    pub(super) fn finish_candidate(
+        &mut self,
+        source: &EditSource,
+        candidate: DisposableZipCandidate,
+        top_level: bool,
+        control: &super::JobControl,
+    ) -> Result<(), String> {
+        if top_level && source.local_ntfs() {
+            self.candidate_receipt = candidate_recovery::arm(source, self, &candidate.0, control);
+        }
+        control.check()?;
+        candidate.finish()
+    }
 }
+
+#[cfg(nana_selected_worker)]
+pub(crate) use candidate_recovery::reclaim_on_open;
 
 #[cfg(nana_selected_worker)]
 pub(super) struct DisposableZipCandidate(File);
@@ -368,6 +396,8 @@ impl EditSource {
         let path = output.join(self.path.file_name().ok_or("missing archive filename")?);
         let output_pin = pin_directory(&output)?;
         Ok(EditOutput {
+            #[cfg(nana_selected_worker)]
+            candidate_receipt: None,
             stage,
             path,
             output_pin,
@@ -399,6 +429,11 @@ impl EditSource {
     #[cfg(nana_selected_worker)]
     pub(super) fn pinned_archive(&self) -> &File {
         &self.read
+    }
+
+    #[cfg(nana_selected_worker)]
+    pub(super) fn reclaim_candidate(&self, control: &super::JobControl) {
+        candidate_recovery::reclaim_on_retry(self, control);
     }
 
     pub(crate) fn commit_tracked(self, output: EditOutput, options: &super::EngineOptions) -> Result<(), String> {
@@ -451,6 +486,8 @@ impl EditSource {
         // exact candidate bridge stays alive throughout the handoff.
         if let Some(bound) = &mut binding { bound._parents.clear(); }
         let EditOutput {
+            #[cfg(nana_selected_worker)]
+            candidate_receipt: _candidate_receipt,
             stage,
             path: staged,
             output_pin,

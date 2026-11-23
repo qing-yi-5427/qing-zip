@@ -21,12 +21,12 @@ extern "C" {
 pub(in crate::engine) fn try_encode(
     program: &Path, original: &File, output: &edit_source::EditOutput,
     names: &[String], count: u16, ctl: &JobControl,
-) -> Result<bool, String> {
-    if names.is_empty() || names.len() > MAX_ROOTS { return Ok(false); }
+) -> Result<Option<edit_source::DisposableZipCandidate>, String> {
+    if names.is_empty() || names.len() > MAX_ROOTS { return Ok(None); }
     let _timer = PhaseTimer::new("zip-append-owned-worker");
     let helper = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("obz-worker.exe");
-    let Ok(_image) = crate::engine_stream::pin(&helper) else { return Ok(false); };
-    let Some(_runtime) = owned_update::verified_bundled_nana_console(program) else { return Ok(false); };
+    let Ok(_image) = crate::engine_stream::pin(&helper) else { return Ok(None); };
+    let Some(_runtime) = owned_update::verified_bundled_nana_console(program) else { return Ok(None); };
 
     // Keep full source name chains fixed. Directory traversal starts from
     // the granted handles and uses the native writer's relative child opens.
@@ -37,30 +37,30 @@ pub(in crate::engine) fn try_encode(
     for name in names {
         ctl.check()?;
         let path = Path::new(name);
-        if attribute_query_path(path).is_none() { return Ok(false); }
+        if attribute_query_path(path).is_none() { return Ok(None); }
         let leaf = path.file_name().ok_or("missing ZIP source filename")?;
         let units = leaf.encode_wide().count();
-        if !(1..=255).contains(&units) || leaf.to_str().is_none() { return Ok(false); }
+        if !(1..=255).contains(&units) || leaf.to_str().is_none() { return Ok(None); }
         request_bytes += 12 + units * 2; // source handle + UTF-16 length and bytes
-        if request_bytes > REQUEST_LIMIT { return Ok(false); }
+        if request_bytes > REQUEST_LIMIT { return Ok(None); }
         if path.is_dir() {
             for parent in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
-                if !guards.pin_directory(parent)? { return Ok(false); }
+                if !guards.pin_directory(parent)? { return Ok(None); }
             }
             let pin = &guards.held[path];
-            if !create_zip::local_ntfs(path, pin) { return Ok(false); }
+            if !create_zip::local_ntfs(path, pin) { return Ok(None); }
             roots.push((leaf, pin.as_raw_handle()));
         } else {
-            let Ok(pin) = crate::engine_stream::pin(path) else { return Ok(false); };
-            if !create_zip::local_ntfs(path, &pin) { return Ok(false); }
+            let Ok(pin) = crate::engine_stream::pin(path) else { return Ok(None); };
+            if !create_zip::local_ntfs(path, &pin) { return Ok(None); }
             roots.push((leaf, pin.as_raw_handle()));
             identities.push(pin);
         }
     }
 
-    let Ok(mut session) = Session::start_mode(&helper, 5) else { return Ok(false); };
+    let Ok(mut session) = Session::start_mode(&helper, 5) else { return Ok(None); };
     match create_zip::create_handshake_frame(&session, ctl)? {
-        None => { create_zip::legacy_create_exit(&session, ctl)?; return Ok(false); }
+        None => { create_zip::legacy_create_exit(&session, ctl)?; return Ok(None); }
         Some((HELLO, version)) if version == VERSION => (),
         _ => return Err("incompatible ZIP update helper".into()),
     }
@@ -103,8 +103,7 @@ pub(in crate::engine) fn try_encode(
         return Err("ZIP update worker status differs from its result".into());
     }
     drop(writer);
-    if encoded { candidate.finish()?; }
-    Ok(encoded)
+    Ok(encoded.then_some(candidate))
 }
 
 fn run_worker() -> Result<bool, String> {
