@@ -271,3 +271,61 @@ test('an unchanged pending-record read leaves existing task history nodes intact
   await current.context.loadBatchResume();
   assert.equal(current.renders,1);
 });
+
+test('same-session overwrite continuation requires confirmation before any pending work', async () => {
+  const current=scenario([{status:'complete'},{status:'cancelled',stop:true},{status:'complete'}]);
+  current.plan.overwrite='overwrite';
+  await current.context.runBatch(current.plan);
+  const selected=current.s.batchResult;
+  await current.context.requestBatchResume(selected);
+  assert.equal(current.modal.title,'确认继续批量解压');
+  assert.equal(current.calls.length,2);
+  assert.match(current.modal.body,/c\.zip/);
+  current.modal.review={dataset:{revision:selected.revision||''}};
+  await current.context.confirmBatchResume();
+  assert.deepEqual(current.calls.map(call=>call.path),['a.zip','b.zip','c.zip']);
+  assert.equal(current.calls[2].options.overwrite,'overwrite');
+});
+
+test('unrecorded current overwrite confirms that exact result without claiming an unrelated saved batch', async () => {
+  const current=scenario([{status:'complete'},{status:'cancelled',stop:true},{status:'complete'}],'extract',checkpoints({failSave:true}));
+  current.plan.overwrite='overwrite';
+  await current.context.runBatch(current.plan);
+  const selected=current.s.batchResult;
+  assert.equal(selected.revision,undefined);
+  const other={revision:'other',overwrite:'overwrite',entries:[{status:'pending',path:'other.zip'}]};
+  current.s.savedBatch=other;
+  await current.context.requestBatchResume(selected);
+  assert.equal(current.calls.length,2);
+  assert.match(current.modal.body,/c\.zip/);
+  assert.doesNotMatch(current.modal.body,/other\.zip/);
+  current.modal.review={dataset:{revision:''}};
+  await current.context.confirmBatchResume();
+  assert.equal(current.calls[2].path,'c.zip');
+  assert.equal(current.s.savedBatch,other);
+});
+
+test('replaced current result invalidates a pending overwrite review', async () => {
+  const current=scenario([{status:'complete'},{status:'cancelled',stop:true}]);
+  current.plan.overwrite='overwrite';
+  await current.context.runBatch(current.plan);
+  const selected=current.s.batchResult;
+  await current.context.requestBatchResume(selected);
+  current.modal.review={dataset:{revision:selected.revision||''}};
+  current.s.batchResult={...selected};
+  await assert.rejects(current.context.confirmBatchResume(),/重新查看/);
+  assert.equal(current.calls.length,2);
+});
+
+test('non-replacement extraction and batch tests continue without an overwrite prompt', async () => {
+  for(const operation of ['extract','test']) {
+    const current=scenario([{status:'complete'}],operation);
+    current.plan.entries=current.plan.entries.slice(0,1);
+    current.plan.overwrite=operation==='extract'?'rename':'overwrite';
+    current.s.batchResult=current.plan;
+    await current.context.requestBatchResume(current.plan);
+    assert.equal(current.calls.length,1);
+    assert.equal(current.modal.title,undefined);
+    assert.equal(current.calls[0].operation,operation);
+  }
+});
