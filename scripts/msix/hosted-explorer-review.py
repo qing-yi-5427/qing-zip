@@ -49,6 +49,15 @@ try:
    except Exception: pass
   if not candidates: break
   button=candidates[0];report['first_run_actions'].append(button.element_info.name);button.click_input();time.sleep(2)
+ # The first-run surface is not exposed through UI Automation on these
+ # images. Recognize its fixed 1024x768 blue Next/Accept button and use
+ # physical input only on the disposable runner; preserve each screenshot.
+ for step in range(3):
+  image=ImageGrab.grab(); image.save(out/('first-run-'+str(step)+'.png'))
+  if image.size != (1024,768): break
+  r,g,b=image.convert('RGB').getpixel((810,650))
+  if not (b>120 and b>g and g>r+30): break
+  mouse.click(coords=(867,656)); report['first_run_actions'].append('physical first-run button');time.sleep(3)
  snapshot('desktop-after-first-run');save()
  shell=Dispatch('Shell.Application');shell.Open(str(root))
  def explorer():
