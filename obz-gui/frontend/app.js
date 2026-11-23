@@ -604,7 +604,7 @@ function pageHeading(title,backLabel='返回工具箱',backAction='tools-home'){
 }
 const batchDraft={inputs:'',dest:'',operation:'test',overwrite:null};
 function batchPage(){
- return pageHeading('批量处理')+`<div id="oa-batch-result" aria-live="polite">${s.batchResult?batchResultMarkup(s.batchResult):''}</div>
+ return pageHeading('批量处理')+`<div id="oa-batch-result" aria-live="polite">${batchResultsMarkup()}</div>
  <section class="oa-batch-form">
   <div class="qa-actions oa-source-heading">
    <label for="qa-batch-inputs">压缩包路径（每行一个）</label><span id="qa-batch-count" class="qa-sub" role="status"></span>
@@ -624,31 +624,179 @@ function batchPage(){
  </section>`;
 }
 function batchResultMarkup(result,compact=false,showOutput=true){
+ const saved=result===s.savedBatch;
  const review=result.attention&&compact?btn('查看批量结果','batch-result','quiet'):'';
- const output=showOutput&&result.hasOutput?btn('打开输出目录','batch-output','quiet'):'';
+ const output=showOutput&&result.hasOutput?btn('打开输出目录',saved?'batch-output-saved':'batch-output','quiet'):'';
  const unresolved=compact?[]:result.entries.filter(entry=>entry.status!=='complete');
- const details=unresolved.length?`<details><summary>查看 ${unresolved.length} 项明细</summary>
+ const details=unresolved.length?`<details${saved?' open':''}><summary>查看 ${unresolved.length} 项明细</summary>
   <ul class="oa-batch-plan">${unresolved.map(entry=>`<li><strong>${entry.index+1}. ${esc(filename(entry.path))} · ${entry.label}</strong>
-  <span class="oa-extract-output">${esc(entry.path)}</span>${entry.message?`<span class="qa-sub">${esc(entry.message)}</span>`:''}</li>`).join('')}</ul></details>`:'';
- const resume=unresolved.some(entry=>entry.status==='pending')?btn('继续未开始的项目','batch-resume','primary'):'';
+  <span class="oa-extract-output">${esc(entry.path)}</span>${entry.status==='pending'&&entry.dest?`<span class="oa-extract-output">${esc(entry.dest)}</span>`:''}${entry.message?`<span class="qa-sub">${esc(entry.message)}</span>`:''}</li>`).join('')}</ul></details>`:'';
+ const resume=unresolved.some(entry=>entry.status==='pending')?btn('继续未开始的项目',saved?'batch-resume-saved':'batch-resume','primary'):'';
+ const clear=resume&&result.revision?btn('清除待继续项目','batch-discard','quiet'):'';
  const dest=!compact&&result.destination?`<div class="qa-sub oa-extract-output">输出目录 · ${esc(result.destination)}</div>`:'';
- return `<section class="oa-batch-outcome"><strong>${result.title}</strong><p>${result.summary}</p>${dest}${details}<div class="qa-actions">${resume}${review}${output}</div></section>`;
+ const policy=resume&&result.operation==='extract'?`<p class="qa-sub">同名文件 · ${batchPolicies[result.overwrite]}</p>`:'';
+ const warning=result.saveWarning?`<p class="qa-sub" role="status">${esc(result.saveWarning)}</p>`:'';
+ const current=saved&&resume?'<p class="qa-sub">继续时会读取列表中路径上的当前压缩包。</p>':'';
+ const keep=clear?'<p class="qa-sub">停止新的批量解压时，新批次的待继续项目会替换这份记录。</p>':'';
+ return `<section class="oa-batch-outcome"><strong>${result.title}</strong><p>${result.summary}</p>${dest}${policy}${warning}${current}${details}<div class="qa-actions">${resume}${review}${output}${clear}</div>${keep}</section>`;
 }
-async function runBatch(plan){
+const batchLabels={complete:'成功',partial:'部分完成',failed:'失败',cancelled:'已取消',interrupted:'已中断',pending:'未开始'};
+let batchResumeLoad,batchResumeSave,batchResumeClaim;
+function describeBatch(plan,lastJob){
+ const counts={complete:0,partial:0,failed:0,cancelled:0,interrupted:0,pending:0};
+ for(const entry of plan.entries){counts[entry.status]++;entry.label=batchLabels[entry.status];}
+ const summary=Object.entries(counts).filter(([,count])=>count).map(([status,count])=>batchLabels[status]+' '+count).join(' · ');
+ return {...plan,summary,title:plan.restored?'待继续的批量解压':plan.operation==='extract'?'批量解压结果':'批量检查结果',
+  attention:counts.complete!==plan.entries.length,hasOutput:plan.operation==='extract'&&plan.entries.some(entry=>entry.hasOutput),
+  lastJob,anchor:s.jobs.at(-1)};
+}
+function savedBatch(record){
+ if(!record)return null;
+ const entries=record.plan.entries.map((entry,index)=>({...entry,index}));
+ return describeBatch({...record.plan,entries,operation:'extract',revision:record.revision,restored:true});
+}
+function batchResultsMarkup(compact=false){
+ const results=s.batchResult?[s.batchResult]:[];
+ if(s.savedBatch&&s.savedBatch.revision!==s.batchResult?.revision)results.push(s.savedBatch);
+ const problem=s.batchResumeProblem;
+ const messages={
+  damaged:'待继续记录已损坏。备份这份记录后，可以保存新的待继续项目。',
+  unsupported:'此版本无法识别待继续记录。文件已保留，可用创建它的版本查看。仍可处理新批次。',
+  unavailable:'暂时无法读取待继续项目。仍可处理新批次。',
+ };
+ const warning=problem?`<section><p class="qa-sub" role="status">${messages[problem]}</p>
+  ${problem==='damaged'?btn('备份损坏记录','batch-backup-damaged','quiet'):''}</section>`:'';
+ return warning+results.map(result=>batchResultMarkup(result,compact)).join('');
+}
+function renderBatchResults(){
+ const host=$('oa-batch-result');
+ if(host)host.innerHTML=batchResultsMarkup();
+ if(s.page==='history')render();
+}
+function updateBatchResume(problem,record){
+ if((s.batchResumeProblem??null)===problem&&s.savedBatch?.revision===record?.revision)return;
+ s.batchResumeProblem=problem;
+ s.savedBatch=savedBatch(record);
+ renderBatchResults();
+}
+function loadBatchResume(){
+ if(batchResumeLoad)return batchResumeLoad;
+ batchResumeLoad=invoke('load_batch_resume').then(({state,record})=>{
+  updateBatchResume(state==='damaged'||state==='unsupported'?state:null,record);
+ }).catch(()=>updateBatchResume('unavailable')).finally(()=>{batchResumeLoad=null;});
+ return batchResumeLoad;
+}
+function sealBatchResume(plan){
+ if(plan?.operation!=='extract'||!plan.entries.some(entry=>entry.status==='pending'))return Promise.resolve(true);
+ if(!batchResumeSave)batchResumeSave=writeBatchResume(plan).finally(()=>{batchResumeSave=null;});
+ return batchResumeSave;
+}
+async function writeBatchResume(plan){
+ const entries=plan.entries.map(({path,dest,status,hasOutput})=>({path,dest,status:status==='running'?'interrupted':status,hasOutput:!!hasOutput}));
+ await batchResumeLoad;
+ try{
+  const record=await invoke('save_batch_resume',{previous:s.savedBatch?.revision??null,plan:{destination:plan.destination,overwrite:plan.overwrite,entries}});
+  s.savedBatch=savedBatch(record);
+  plan.revision=record.revision;
+  delete plan.saveWarning;
+  s.batchResumeProblem=null;
+  return true;
+ }catch{
+  plan.saveWarning='未能保存待继续项目。本次会话仍可继续。';
+  return false;
+ }
+}
+function showBatchResumeReview(result){
+ if(!result)return;
+ const pending=result.entries.filter(entry=>entry.status==='pending');
+ dialog('确认继续批量解压',`<div id="oa-batch-resume-review" data-revision="${esc(result.revision)}">
+  <p>继续时会读取以下路径上的当前压缩包。</p>
+  <p>同名文件 · ${batchPolicies[result.overwrite]}</p>
+  <p>继续后，目标中已有的同名文件会按原策略被替换。</p>
+  <ol class="oa-batch-plan" aria-label="未开始的项目">${pending.map(entry=>`<li><strong>${entry.index+1}. ${esc(filename(entry.path))}</strong>
+   <span class="oa-extract-output">压缩包 · ${esc(entry.path)}</span>
+   <span class="oa-extract-output">输出目录 · ${esc(entry.dest)}</span></li>`).join('')}</ol>
+  </div>`,btn('返回','close')+btn('按替换策略继续','batch-confirm-resume','danger'),'oa-extraction-dialog');
+}
+async function confirmBatchResume(){
+ const revision=$('oa-batch-resume-review')?.dataset.revision;
+ const reviewed=s.savedBatch;
+ if(!revision||reviewed?.revision!==revision)throw Error('待继续项目已更改，请返回并重新查看。');
+ await useBatchResume(reviewed);
+}
+async function backupDamagedBatchResume(){
+ let backup;
+ try{backup=await invoke('backup_damaged_batch_resume');}
+ catch{throw Error('未能备份损坏记录。请稍后重试。');}
+ await loadBatchResume();
+ showPreservationNotice('已备份损坏记录。可以保存新的待继续项目。备份文件 '+backup);
+}
+async function claimSavedBatch(result,discard){
+ if(!discard)await invoke('set_batch_resume_running',{active:true});
+ try{
+  await batchResumeLoad;
+  let claimed;
+  try{claimed=await invoke('take_batch_resume',{revision:result.revision});}
+  catch{throw Error('暂时无法更新待继续项目。请稍后重试。');}
+  if(s.savedBatch?.revision===result.revision)s.savedBatch=null;
+  if(s.batchResult?.revision===result.revision)s.batchResult=null;
+  if(!claimed){await loadBatchResume();throw Error('其他窗口已处理这批待继续项目。');}
+  return {...claimed.plan,operation:'extract',entries:claimed.plan.entries.map((entry,index)=>({...entry,index,message:result.entries[index]?.message}))};
+ }catch(error){
+  if(!discard)await invoke('set_batch_resume_running',{active:false});
+  throw error;
+ }
+}
+async function useBatchResume(result,discard=false){
+ if(!result)return;
+ if(s.active||s.batchRunning)throw Error('已有任务正在运行。');
+ if(!result.revision){if(!discard)await runBatch(result);return;}
+ let plan;
+ if(!discard)s.batchStop=false;
+ s.active='starting';
+ try{
+  const claim=claimSavedBatch(result,discard);
+  if(!discard)batchResumeClaim=claim;
+  plan=await claim;
+ }finally{batchResumeClaim=null;s.active=null;}
+ if(discard)renderBatchResults();
+ else await runBatch(plan,true);
+}
+
+async function saveBatchBeforeExit(box){
+ s.batchStop=true;
+ if(batchResumeClaim)await batchResumeClaim.catch(()=>{});
+ const plan=s.activeBatchPlan||(s.batchResult?.saveWarning?s.batchResult:null);
+ if(!plan)return true;
+ plan.closing=true;
+ if(box?.dataset.withoutBatchResume==='true'||await sealBatchResume(plan))return true;
+ plan.closing=false;
+ if(!box)return true;
+ box.dataset.withoutBatchResume='true';
+ box.querySelector('p').textContent='未能保存待继续项目。可以留在本次会话处理，或退出并放弃本批的待继续记录。';
+ box.querySelector('[data-action=cancel-exit]').textContent='放弃记录并退出';
+ return false;
+}
+async function runBatch(plan,guarded=false){
  if(s.active||s.batchRunning)throw Error('已有任务正在运行。');
  s.batchResult=null;
- s.batchStop=false;
+ if(!guarded)s.batchStop=false;
  s.batchRunning=true;
+ s.activeBatchPlan=plan;
  const counter={done:plan.entries.filter(entry=>entry.status==='complete').length,total:plan.entries.length};
- const labels={complete:'成功',partial:'部分完成',failed:'失败',cancelled:'已取消',pending:'未开始'};
  let lastJob;
  const host=$('oa-batch-result');
  if(host)host.replaceChildren();
  try{
+  if(plan.operation==='extract'&&!guarded){
+   await invoke('set_batch_resume_running',{active:true});
+   guarded=true;
+  }
   close();s.view='jobs';render();
   for(const entry of plan.entries){
    if(s.batchStop)break;
    if(entry.status!=='pending')continue;
+   entry.status='running';
    let current;
    try{
     await run({operation:plan.operation,path:entry.path,dest:entry.dest,options:{overwrite:plan.overwrite}},
@@ -663,18 +811,17 @@ async function runBatch(plan){
    }
   }
  }finally{
-  s.batchRunning=false;
-  const counts={complete:0,partial:0,failed:0,cancelled:0,pending:0};
-  for(const entry of plan.entries){counts[entry.status]++;entry.label=labels[entry.status];}
-  const summary=Object.entries(counts).filter(([,count])=>count).map(([status,count])=>labels[status]+' '+count).join(' · ');
-  const title=plan.operation==='extract'?'批量解压结果':'批量检查结果';
-  const attention=counts.complete!==counter.total;
-  const hasOutput=plan.operation==='extract'&&plan.entries.some(entry=>entry.hasOutput);
-  s.batchResult={...plan,summary,title,attention,hasOutput,lastJob,anchor:s.jobs.at(-1)};
-  const resultHost=$('oa-batch-result');
-  if(resultHost)resultHost.innerHTML=batchResultMarkup(s.batchResult);
-  if(s.page==='history')render();
-  renderProgress();
+  const anchor=s.jobs.at(-1);
+  if(plan.closing)await batchResumeSave;
+  else await sealBatchResume(plan);
+  try{if(guarded)await invoke('set_batch_resume_running',{active:false});}
+  finally{
+   s.activeBatchPlan=null;
+   s.batchRunning=false;
+   s.batchResult={...describeBatch(plan,lastJob),anchor};
+   renderBatchResults();
+   renderProgress();
+  }
  }
 }
 function batchExtractionTarget(dest,path,index){
@@ -699,7 +846,8 @@ function updateBatchPage(){
 }
 function profilesPage(){return pageHeading('压缩预设')+`<p class="qa-sub">保存常用压缩参数，创建时一键载入。不会保存密码。</p><label class="qa-field">预设名称<input id="qa-profile-name" maxlength="80"></label><div class="qa-fieldrow"><label class="qa-field">格式<select id="qa-profile-format">${opts(formats,'zip')}</select></label><label class="qa-field">压缩级别<select id="qa-profile-level">${opts([[0,'仅存储'],[1,'快速'],[5,'标准'],[9,'最大']],5)}</select></label></div>${btn('保存预设','profile-save','primary')}<div class="qa-recent">${s.profiles.map((p,i)=>`<div class="qa-recent-row"><span class="qa-file-copy">${esc(p.name)} · ${esc(p.format)} · ${p.level}</span><button class="qa-button" data-profile="${i}">使用</button><button class="qa-button" data-profile-delete="${i}">删除</button></div>`).join('')}</div>`;}
 function settings(){return `<div class="qa-heading"><h1>设置</h1></div><section class="qa-setting-group oa-app-info"><img src="app-icon.png" alt="" width="44" height="44"><div><strong>qing-zip</strong><p id="oa-version">版本 ${esc(appVersion||'…')}</p></div></section><section class="qa-setting-group"><h3>外观</h3><div class="qa-setting-row"><div>应用主题</div><select id="qa-theme" aria-label="应用主题">${opts([['system','跟随系统'],['light','浅色'],['dark','深色']],s.theme)}</select></div><div class="qa-setting-row"><div>窗口材质<p>Mica 适用于 Windows 11。高对比度模式使用纯色。</p></div><select id="qa-material" aria-label="窗口材质">${opts([['acrylic','Acrylic · 通透'],['mica','Mica · 柔和'],['solid','纯色']],s.material)}</select></div><div class="qa-setting-row"><div>列表密度</div><select id="qa-density" aria-label="列表密度">${opts([['relaxed','舒适'],['compact','紧凑']],s.density)}</select></div></section><section class="qa-setting-group"><h3>解压习惯</h3><div class="qa-setting-row"><div>默认重名处理</div><select id="qa-defaultconflict" aria-label="默认重名处理">${conflicts(s.overwrite)}</select></div></section><section class="qa-setting-group"><h3>解压密码本</h3><div class="qa-setting-row"><div>管理解压时自动保存或手动添加的密码</div>${btn('打开密码本','password-book','quiet')}</div></section><section class="qa-setting-group" aria-labelledby="oa-shell-settings-title"><h3 id="oa-shell-settings-title" tabindex="-1">资源管理器右键设置</h3><label class="oa-switch-row"><span>文件夹右键显示“用 qing-zip 压缩”</span><input id="oa-folder-menu" class="oa-switch" role="switch" type="checkbox" ${folderMenuEnabled?'checked':''}></label><label class="oa-switch-row"><span>文件右键显示“用 qing-zip 压缩”</span><input id="oa-file-menu" class="oa-switch" role="switch" type="checkbox" ${fileMenuEnabled?'checked':''}></label>${btn('管理“使用 qing-zip 打开”入口','shell-open-entry','quiet')}</section><div class="qa-actions">${btn('文件关联设置','associations')}${btn('清空最近记录','clear-recent')}</div>`;}
-const conflicts=v=>opts([['error','停止并报告冲突'],['rename','自动重命名'],['skip','跳过已有文件'],['overwrite','替换已有文件']],v);
+const batchPolicies={error:'停止并报告冲突',rename:'自动重命名',skip:'跳过已有文件',overwrite:'替换已有文件'};
+const conflicts=v=>opts(Object.entries(batchPolicies),v);
 let passwordBookOrigin = 'files';
 function openPasswordBook(){
  if(s.page==='password-book')return;
@@ -766,7 +914,7 @@ function render(){if(overlay.dataset.page==='close-confirm')return;releaseListin
  $('oa-total').textContent=totals?`${totals.files} 个文件 · ${totals.directories} 个文件夹`:'';
  if(s.view==='jobs'){const html=jobs();if(!overlay.hidden&&overlay.dataset.page==='jobs'&&$('oa-dialog-content'))refreshJobContent(html);else{dialog('任务进度',`<div id="oa-dialog-content">${html}</div>`,btn('关闭','close'));overlay.dataset.page='jobs';}overlay.querySelectorAll('.qa-dialog-footer [data-action=close]').forEach(b=>b.disabled=!!s.active);}}
 
-function navigate(v){if(!['files','archive','home','tools','tool','history','settings','associations','batch','profiles','jobs','password-book'].includes(v))return;if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}if(renderedPage==='archive:'+currentTabId)saveCurrentTab();rememberPage();close(false);if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();}
+function navigate(v){if(!['files','archive','home','tools','tool','history','settings','associations','batch','profiles','jobs','password-book'].includes(v))return;if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}if(renderedPage==='archive:'+currentTabId)saveCurrentTab();rememberPage();close(false);if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();if(v==='batch'||v==='history')loadBatchResume();}
 
 function dialog(title,body,footer,layout=''){clearToast();overlay.dataset.page='';returnFocus=document.activeElement;overlay.hidden=false;overlay.innerHTML=`<section class="qa-dialog ${layout}" role="dialog" aria-modal="true" aria-labelledby="qa-dialog-title"><div class="qa-dialog-header"><h2 id="qa-dialog-title">${esc(title)}</h2>${btn('关闭','close','quiet')}</div>${layout?`<div class="oa-dialog-body">${body}</div>`:body}<div id="qa-formerror" class="qa-error" role="alert"></div><div class="qa-dialog-footer">${footer}</div></section>`;root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;$('oa-menu').inert=true;$('oa-toolbar').inert=true;$('oa-archive-tabs').inert=true;passwordBook.mountPickers(overlay);overlay.querySelector('input,textarea,button')?.focus();}
 function close(restoreFocus=true){if($('qa-open-status')?.closest('.qa-dialog')?.getAttribute('aria-busy')==='true'){
@@ -2254,7 +2402,7 @@ case'compression-advanced':{
   if(!panel.hidden)toggle.scrollIntoView({block:'nearest'});
  break;
 }
-case'destination-up':await setDestination(extractionParent($('qa-destination').value));break;case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'home-smart':await pickHomeArchives();break;case'home-review-submit':submitHomeReview();break;case'open-submit-deep':{const path=$('qa-open-path').value.trim(),password=$('qa-open-password').value;if(path)deepExtract.batch([path],{password,allowBrowse:true});break;}case'open':{if(s.backgroundExtraction){openDialog();break;}if(homeIntakeAvailable()){await pickHomeArchives();break;}const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0]&&$('qa-open-path')){$('qa-open-path').value=p[0];offerRepairAfterOpenFailure('','');}break;}case'open-submit':{
+case'destination-up':await setDestination(extractionParent($('qa-destination').value));break;case'cancel-exit':{s.batchStop=true;const box=$('oa-exit-confirm');box?.querySelectorAll('button').forEach(b=>b.disabled=true);try{if(!await saveBatchBeforeExit(box)){box?.querySelectorAll('button').forEach(b=>b.disabled=false);return;}if(s.compressionJob){s.compressionJob.cancelRequested=true;if(Number.isInteger(s.active))await invoke('cancel_operation',{id:s.active});while(s.compressionJob)await new Promise(resolve=>setTimeout(resolve,75));}if(await invoke('cancel_and_close')===false){await action('keep-running');const finish=()=>{if(tabBusy()){setTimeout(finish,100);return;}closeArchiveTabs('exit');};finish();}}catch(e){box?.querySelectorAll('button').forEach(b=>b.disabled=false);throw e;}break;}case'home-smart':await pickHomeArchives();break;case'home-review-submit':submitHomeReview();break;case'open-submit-deep':{const path=$('qa-open-path').value.trim(),password=$('qa-open-password').value;if(path)deepExtract.batch([path],{password,allowBrowse:true});break;}case'open':{if(s.backgroundExtraction){openDialog();break;}if(homeIntakeAvailable()){await pickHomeArchives();break;}const paths=await invoke('pick_files');enqueueArchives(paths);break;}case'open-path':openDialog();break;case'browse-open':{const p=await invoke('pick_files');if(p[0]&&$('qa-open-path')){$('qa-open-path').value=p[0];offerRepairAfterOpenFailure('','');}break;}case'open-submit':{
  const pathInput=$('qa-open-path'),passwordInput=$('qa-open-password'),dialogNode=pathInput?.closest('.qa-dialog');
  if(!dialogNode||pathInput.disabled)break;
  const path=pathInput.value.trim(),password=passwordInput.value;
@@ -2354,7 +2502,15 @@ case'batch-result':{
  break;
 }
 case'batch-output':if(s.batchResult?.hasOutput)await invoke('reveal_path',{path:s.batchResult.destination});break;
-case'batch-resume':if(s.batchResult?.entries.some(entry=>entry.status==='pending'))await runBatch(s.batchResult);break;
+case'batch-output-saved':if(s.savedBatch?.hasOutput)await invoke('reveal_path',{path:s.savedBatch.destination});break;
+case'batch-resume':if(s.batchResult?.entries.some(entry=>entry.status==='pending'))await useBatchResume(s.batchResult);break;
+case'batch-resume-saved':
+ if(s.savedBatch?.overwrite==='overwrite')showBatchResumeReview(s.savedBatch);
+ else await useBatchResume(s.savedBatch);
+ break;
+case'batch-confirm-resume':await confirmBatchResume();break;
+case'batch-backup-damaged':await backupDamagedBatchResume();break;
+case'batch-discard':await useBatchResume(s.savedBatch,true);break;
 case'batch-start':{
  if(s.active||s.batchRunning)throw Error('已有任务正在运行。');
  const paths=lines('qa-batch-inputs'),operation=$('qa-batch-op').value,dest=$('qa-batch-dest').value.trim();
@@ -3179,7 +3335,7 @@ main.addEventListener('change',event=>{
  s.historyAttention=event.target.checked;
  $('oa-history-list').dataset.attentionOnly=String(s.historyAttention);
  const latest=$('oa-history-batch');
- if(latest)latest.hidden=s.historyAttention&&!s.batchResult.attention;
+ if(latest)latest.hidden=s.historyAttention&&!s.batchResult?.attention&&!s.savedBatch&&!s.batchResumeProblem;
 });
 root.addEventListener('keydown',event=>{
  if(event.defaultPrevented||isCompositionKey(event)||s.page!=='tools'||!overlay.hidden||!$('oa-menu').hidden)return;
@@ -3194,7 +3350,8 @@ function associationPage(){return `<div class="qa-heading"><div><h1>文件关联
 async function loadAssociations(){if(associationBusy)return;associationBusy=true;associationError='';if(s.page==='associations')render();try{associationEntries=await invoke('association_status');associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));}catch(e){associationError=taskError(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
 async function saveAssociations(){if(associationBusy||!associationEntries)return;associationBusy=true;associationError='';const extensions=[...associationSelection];if(s.page==='associations')render();try{associationEntries=await invoke('set_file_associations',{extensions});associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));toast('已保存格式注册。需要更改默认打开方式时，请在 Windows 设置中确认。');}catch(e){associationError=taskError(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
 function historyPage(){
- const latest=s.batchResult?`<div id="oa-history-batch"${s.historyAttention&&!s.batchResult.attention?' hidden':''}>${batchResultMarkup(s.batchResult,true)}</div>`:'';
+ const reports=s.batchResult||s.savedBatch||s.batchResumeProblem?batchResultsMarkup(true):'';
+ const latest=reports?`<div id="oa-history-batch"${s.historyAttention&&!s.batchResult?.attention&&!s.savedBatch&&!s.batchResumeProblem?' hidden':''}>${reports}</div>`:'';
  const queue=shellQueueStatus()+latest;
  const filter=s.jobs.length?`<label class="qa-check oa-history-filter"><input id="oa-history-attention" type="checkbox" ${s.historyAttention?'checked':''}>只看需处理的任务</label>`:'';
  const header=`<div class="qa-heading oa-history-heading"><div><h1>任务</h1><p>本次会话的压缩、解压与检查记录。</p></div>${filter}</div>`;
@@ -3381,7 +3538,7 @@ root.addEventListener('keydown',handleMenuKeydown,true);
 root.addEventListener('keydown',handleArchiveSearchKeydown);
 root.addEventListener('keydown',handleFileKeydown);
 function rememberRecent(path){if(archiveTabs.some(t=>t.nestedId&&archiveKey(t.archive)===archiveKey(path)))return;s.recent=[path,...s.recent.filter(p=>archiveKey(p)!==archiveKey(path))].slice(0,12);localStorage.setItem('qing-recent',JSON.stringify(s.recent));}
-function tabBusy(){return !!s.active||!!homeIntake||openingArchive||openingImage||!!$('qa-tools')?.contentWindow?.obzBusy;}
+function tabBusy(){return !!s.active||s.activeBatchPlan?.operation==='extract'||!!homeIntake||openingArchive||openingImage||!!$('qa-tools')?.contentWindow?.obzBusy;}
 function saveCurrentTab(){const tab=archiveTabs.find(t=>t.id===currentTabId);if(!tab)return;for(const key of TAB_FIELDS)tab[key]=s[key] instanceof Set?new Set(s[key]):s[key];if(renderedPage==='archive:'+tab.id){const viewport=archiveViewport();tab.scrollTop=viewport.scrollTop;tab.scrollLeft=viewport.scrollLeft;tab.treeScroll=root.querySelector('.oa-tree-section').scrollTop;}}
 function applyTab(tab){for(const key of TAB_FIELDS)s[key]=tab[key] instanceof Set?new Set(tab[key]):tab[key];if(!s.selected)s.selected=new Set();if(!s.collapsed)s.collapsed=new Set();}
 function emptyArchiveState(){Object.assign(s,{nestedId:null,parentArchive:null,nestedMember:null,dirty:false,conflict:false,archive:'',entries:[],password:'',headerEncrypted:false,codepage:null,folder:'',flatView:false,search:'',sort:'name',reverse:false,selected:new Set(),collapsed:new Set(),anchor:null,cursor:null,focusFile:null,lastDest:undefined,listStyle:pref.listStyle==='icons'?'icons':'details',iconSize:Math.max(80,Math.min(256,Number(pref.iconSize)||144))});currentTabId=null;}
