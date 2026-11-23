@@ -1701,6 +1701,14 @@ fn choose_target_checked(
     policy: &str,
     check: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<Option<PathBuf>, String> {
+    choose_target_reserving(path, policy, check, |_| false)
+}
+fn choose_target_reserving(
+    path: PathBuf,
+    policy: &str,
+    check: &mut impl FnMut(&Path) -> Result<(), String>,
+    reserved: impl Fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, String> {
     check(&path)?;
     if !path.exists() {
         return Ok(Some(path));
@@ -1722,7 +1730,7 @@ fn choose_target_checked(
                 .unwrap_or_default();
             for i in 1..10000 {
                 let p = path.with_file_name(format!("{stem} ({i}){ext}"));
-                if !p.exists() {
+                if !reserved(&p) && !p.exists() {
                     check(&p)?;
                     return Ok(Some(p));
                 }
@@ -1738,7 +1746,9 @@ fn path_key(path: &Path) -> String {
 
 // Include implicit directories and reject file/directory aliases before allowing
 // the decoder to create anything, even when the conflicting entry is unselected.
-fn expected_tree(entries: &[Entry]) -> Result<BTreeMap<String, (bool, u64)>, String> {
+fn expected_tree<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+) -> Result<BTreeMap<String, (bool, u64)>, String> {
     let mut tree = BTreeMap::new();
     for e in entries {
         let rel = validate_name(&e.name)?;
@@ -2841,8 +2851,16 @@ fn preflight_output_targets(
     for e in entries {
         let target = dest.join(validate_name(&e.name)?);
         output_guards.check(&target)?;
-        if target.exists() && (e.is_dir != target.is_dir() || (!e.is_dir && overwrite == "error")) {
-            return Err(format!("destination conflict: {}", target.display()));
+        if target.exists() {
+            let conflict = match (e.is_dir, overwrite) {
+                (true, _) => !target.is_dir(),
+                (false, "rename" | "skip") => false,
+                (false, "error") => true,
+                (false, _) => target.is_dir(),
+            };
+            if conflict {
+                return Err(format!("destination conflict: {}", target.display()));
+            }
         }
         for parent in target.ancestors().skip(1) {
             if !output_guards.pinned(parent) && parent.exists() && !parent.is_dir() {
@@ -3486,6 +3504,19 @@ fn extract_raw_to(
     } else {
         let mut count = 0;
         let mut buffer = Vec::new();
+        // Renamed files must leave the original names of the other outputs
+        // available, including parent directories that have no explicit entry.
+        let selected_outputs = if conflict_policy == "rename" && !opts.selected.is_empty() {
+            Some(expected_tree(entries.iter().copied())?)
+        } else {
+            None
+        };
+        let output_names = selected_outputs.as_ref().unwrap_or(&expected);
+        let reserved = |candidate: &Path| {
+            candidate
+                .strip_prefix(&dest)
+                .is_ok_and(|relative| output_names.contains_key(&path_key(relative)))
+        };
         for (i, e) in entries.iter().enumerate() {
             ctl.check()?;
             ctl.set(
@@ -3500,8 +3531,9 @@ fn extract_raw_to(
                 output_guards.create_dirs(&target)?;
                 continue;
             }
-            let Some(target) =
-                choose_target_checked(target, conflict_policy, &mut |p| output_guards.check(p))?
+            let Some(target) = choose_target_reserving(
+                target, conflict_policy, &mut |p| output_guards.check(p), reserved,
+            )?
             else {
                 continue;
             };
