@@ -150,7 +150,10 @@ def main():
                     entry['outer_unchanged_after_edit'] = inspect_outer(outer) == before
                     page.screenshot(path=str(evidence / f'{case}-edited.png'))
                     if case != 'terminate':
-                        page.keyboard.press('Control+w')
+                        if case == 'cancel-discard':
+                            page.locator('[data-window=close]').click()
+                        else:
+                            page.keyboard.press('Control+w')
                         dialog = page.locator('#qa-overlay:not([hidden])')
                         expect(dialog).to_contain_text('更改尚未写回外层', timeout=15000)
                         entry['close_prompt'] = dialog.inner_text()
@@ -159,14 +162,27 @@ def main():
                             dialog.locator('[data-action="close"]').last.click()
                             expect(page.locator('[data-entry="after.txt"]')).to_be_visible()
                             entry['cancel_kept_working_copy'] = digest(working) == entry['edited_sha256']
-                            page.keyboard.press('Control+w')
+                            page.locator('[data-window=close]').click()
                             expect(dialog).to_be_visible()
                             dialog.locator('[data-action="nested-close-discard"]').click()
                         else:
                             dialog.locator('[data-action="nested-close-save"]').click()
-                        expect(page.locator('[data-entry="inner.zip"]')).to_be_visible(timeout=60000)
+                        if case == 'cancel-discard':
+                            app.wait(timeout=60)
+                            entry['normal_window_close_exit_code'] = app.returncode
+                            with suppress(Exception):
+                                browser.close()
+                        else:
+                            expect(page.locator('[data-entry="inner.zip"]')).to_be_visible(timeout=60000)
+                            page.locator('[data-window=close]').click()
+                            app.wait(timeout=60)
+                            entry['normal_window_close_exit_code'] = app.returncode
+                            with suppress(Exception):
+                                browser.close()
                         entry['after_close_working_exists'] = working.exists()
-                    stop_own(app, browser)
+                    else:
+                        stop_own(app, browser)
+                        entry['forced_gui_exit_code'] = app.returncode
                     lifetime['proc'] = None
                     entry['after_stop_outer'] = inspect_outer(outer)
                     entry['after_stop_neighbour_unchanged'] = digest(root / 'neighbour.txt') == neighbour_hash
@@ -174,6 +190,10 @@ def main():
                     app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
                     page.screenshot(path=str(evidence / f'{case}-reopened.png'))
                     entry['reopened_root_entries'] = page.locator('[data-entry]').evaluate_all('(els)=>els.map(e=>e.getAttribute("data-entry"))')
+                    page.locator('[data-entry="inner.zip"]').dblclick()
+                    expect(page.locator('[data-entry="unchanged.txt"]')).to_be_visible(timeout=60000)
+                    entry['reopened_inner_entries'] = page.locator('[data-entry]').evaluate_all('(els)=>els.map(e=>e.getAttribute("data-entry"))')
+                    page.screenshot(path=str(evidence / f'{case}-reopened-inner.png'))
                     entry['retained_menu'] = retained_dialog(page, evidence, case)
                     stop_own(app, browser)
                     lifetime['proc'] = None
