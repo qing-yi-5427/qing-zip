@@ -308,7 +308,10 @@ jobs:
           gh release download v0.11.27 -R qing-yi-5427/qing-zip --pattern 'qing-zip-0.11.27-arm64-setup.exe' --pattern 'qing-zip-0.11.27-arm64-portable.zip' --dir $inputsDir
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $candidate = "dist/arm64/qing-zip-$env:VERSION-arm64"
-          python scripts/check-nsis-upgrade-hosted.py --arch ARM64 --old-setup (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-setup.exe') --old-portable (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-portable.zip') --candidate-setup "$candidate-setup.exe" --candidate-stage "$candidate-portable" --out evidence/arm64-upgrade
+          $upgradeArgs = @('--arch', 'ARM64', '--old-setup', (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-setup.exe'), '--old-portable', (Join-Path $inputsDir 'qing-zip-0.11.27-arm64-portable.zip'), '--candidate-setup', "$candidate-setup.exe", '--candidate-stage', "$candidate-portable")
+          python scripts/check-nsis-upgrade-hosted.py @upgradeArgs --out evidence/arm64-upgrade
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check-nsis-upgrade-hosted.py @upgradeArgs --use-default-location --out evidence/arm64-default-upgrade
           exit $LASTEXITCODE
       - name: Save ARM64 upgrade and uninstall receipt
         if: always() && (github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade)
@@ -316,6 +319,13 @@ jobs:
         with:
           name: arm64-release-upgrade
           path: evidence/arm64-upgrade/receipt.json
+          if-no-files-found: warn
+      - name: Save ARM64 default installation and upgrade receipt
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arm64-default-release-upgrade
+          path: evidence/arm64-default-upgrade/receipt.json
           if-no-files-found: warn
       - name: Package engine sources
         shell: pwsh

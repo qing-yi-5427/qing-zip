@@ -12,6 +12,7 @@ with tempfile.TemporaryDirectory(prefix='qz-installer-guard-') as root:
         args.extend(['--'+name,str(Path(root)/'nonexistent')])
     args.extend(['--out',str(out)])
     for arch in ('X64','ARM64'):
-        result=subprocess.run([*args,'--arch',arch],env=env,capture_output=True,text=True,timeout=15)
-        assert result.returncode and 'requires a disposable GitHub-hosted' in result.stderr and not out.exists(),result.stderr
-        print(f'PASS: {arch} rejected the non-hosted environment before resolving binaries or writing evidence')
+        for location_options in ([], ['--use-default-location']):
+            result=subprocess.run([*args,'--arch',arch,*location_options],env=env,capture_output=True,text=True,timeout=15)
+            assert result.returncode and 'requires a disposable GitHub-hosted' in result.stderr and not out.exists(),result.stderr
+        print(f'PASS: {arch} rejected both location modes before resolving binaries or writing evidence')
