@@ -106,6 +106,13 @@ try:
     except (psutil.Error,OSError):pass
    try:
     app_window=wait(lambda:next((w for w in desktop.windows() if w.is_visible() and w.process_id() in app_procs),None),10)
+    # Dismiss only the runner's unrelated first-launch WSL prompt; Escape
+    # explicitly cancels it rather than installing or changing WSL.
+    for overlay in desktop.windows():
+     try:
+      if overlay.is_visible() and 'wsl.exe' in overlay.element_info.name.lower():
+       overlay.set_focus();keyboard.send_keys('{ESC}');time.sleep(2)
+     except Exception:pass
     app_window.set_focus();time.sleep(2)
     entry['visible_controls']=[{'name':x.element_info.name,'type':x.element_info.control_type} for x in app_window.descendants() if x.is_visible() and x.element_info.name][:150]
    except Exception as e:entry['window_error']=repr(e)
