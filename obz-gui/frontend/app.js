@@ -1056,7 +1056,7 @@ function restoreCompressionDraft(job){
  refreshSources();
  syncCompressionPassword();
  const issue=job.archives.find(archive=>archive.state==='createFailed')?.error;
- draft.querySelector('#qa-formerror').textContent=[issue,hadPassword?'请重新输入密码。':null].filter(Boolean).join(' ');
+ draft.querySelector('#qa-formerror').textContent=[issue?taskError(issue):null,hadPassword?'请重新输入密码。':null].filter(Boolean).join(' ');
  draft.querySelector(hadPassword?'#qa-new-password':'#qa-save')?.focus();
  renderInlineTask();
 }
