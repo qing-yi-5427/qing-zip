@@ -8,7 +8,9 @@
       2160
     ],
     "baseline_source": "0cc51aa2379321361012f32515edb40b95e2ebf9",
-    "candidate_source": "e9eeecd414fa7379fc959967fb1645ced24eeb62"
+    "candidate_source": "a849a483fd611c0bef5aebea3ff4da583c5a1f1e",
+    "candidate_bundle": "roadmap-perf",
+    "measurement_role": "earlier_integration"
   },
   "gui_sha256": {
     "baseline": "bd544f5a9fc27f546e54ae0ecb12f036c81967f32b50e4aa6a778fe8be8e2ce9",
