@@ -117,6 +117,20 @@ def exercise(args, root, receipt, qa):
         cancel_dialog.child_window(auto_id="2", control_type="Button").click_input()
         expect(page.locator('#oa-retained-edit option')).to_have_count(2)
         receipt['cancelled_save_retained_both_records'] = True
+        # A separate direct backend failure uses an absent parent directory;
+        # native Save As normally prevents choosing this destination.
+        failure = page.evaluate('''async ({index, dest}) => {
+            const records = await window.__TAURI__.core.invoke('retained_edits');
+            try {
+                await window.__TAURI__.core.invoke('save_retained_edit', {selection: records[index].selection, dest});
+                return {failed: false, remaining: (await window.__TAURI__.core.invoke('retained_edits')).length};
+            } catch (_) {
+                return {failed: true, remaining: (await window.__TAURI__.core.invoke('retained_edits')).length};
+            }
+        }''', {'index': matching[chosen][0], 'dest': str(root / 'absent-parent' / 'unwritable.zip')})
+        assert failure == {'failed': True, 'remaining': 2}, failure
+        receipt['direct_backend_failure_retained_both_records'] = True
+        receipt['save_failure_method'] = 'direct backend request to an absent parent; not native Save As'
         select.select_option(index=matching[chosen][0])
         page.screenshot(path=args.out / "cold-selected-project-b.png")
         external = root / "export"
@@ -126,7 +140,7 @@ def exercise(args, root, receipt, qa):
         _, _, modified_name = originals[chosen]
         receipt["export"] = verify_export(recovered, receipt["cases"][chosen], modified_name, qa)
         receipt["export"]["selected_source"] = chosen
-        receipt["save_failure_retry"] = "not observed"
+        receipt["save_failure_retry"] = "direct backend failure; subsequent exports through native Save As"
         assert {entry.name for entry in external.iterdir()} == {"recovered-middle.zip"}
         assert qa["digest"](recovered) != receipt["cases"]["project-a"]["retained_private_middle_sha256"]
         with suppress(Error):
