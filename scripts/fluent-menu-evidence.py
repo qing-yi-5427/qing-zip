@@ -16,6 +16,7 @@ native.add_argument('--native-accessibility', action='store_true',
                     help='Verify real Windows accessibility settings on a disposable GitHub-hosted desktop')
 native.add_argument('--native-system-scale', action='store_true',
                     help='Verify the standard Windows 200 percent display scale on a disposable hosted desktop')
+p.add_argument('--create-form', action='store_true', help='Also observe the compression form under native accessibility settings')
 p.add_argument('--launch-sample', action='store_true',
                help='Measure one fresh launch and two process-tree private-byte samples (requires psutil)')
 a = p.parse_args()
@@ -84,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) 
                 verify_scale(call, js, a.out, a.exe, proc.pid)
             else:
                 from native_menu_accessibility import verify_menu
-                verify_menu(call, js, a.out, a.exe)
+                verify_menu(call, js, a.out, a.exe, test_form=a.create_form)
             resources.close()
             raise SystemExit(0)
         if a.launch_sample:

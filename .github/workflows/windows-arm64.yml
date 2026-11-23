@@ -390,7 +390,7 @@ jobs:
           python -m pip install --disable-pip-version-check websockets==15.0.1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $check = if ($env:CAPTURE_SYSTEM_SCALE -eq 'true') { '--native-system-scale' } else { '--native-accessibility' }
-          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu $check
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu $check --create-form
           exit $LASTEXITCODE
       - name: Preserve package binding and native evidence
         if: always()
