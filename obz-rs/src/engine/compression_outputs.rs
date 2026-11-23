@@ -8,12 +8,17 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
     if volume_bytes == Some(0) { return Err("分卷大小必须大于零".into()); }
     if sources.len() != paths.len() { return Err("来源与输出数量不一致".into()); }
     let mut directories: HashMap<String, (HashSet<String>, HashSet<String>)> = HashMap::new();
+    let mut earlier_output_dirs = HashSet::new();
     let mut results = Vec::with_capacity(paths.len());
     for (requested, inputs) in paths.iter().zip(sources) {
         let path = std::path::absolute(requested).map_err(|e| e.to_string())?;
         let parent = path.parent().ok_or("输出路径缺少目录")?;
         no_links(parent)?;
-        check_sources(parent, inputs, format)?;
+        let output_dir = canonical_output_parent(parent);
+        check_sources(output_dir.as_deref(), &earlier_output_dirs, inputs, format)?;
+        if let Some(output_dir) = output_dir {
+            earlier_output_dirs.insert(output_dir);
+        }
         let filename = path.file_name().and_then(|name| name.to_str()).ok_or("输出文件名无效")?;
         validate_name(filename)?;
         let directory_key = path_key(parent);
@@ -61,7 +66,12 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
 
 /// Report the create-time source errors before any output of a batch exists.
 /// Missing sources are left to creation, which names them.
-fn check_sources(parent: &Path, inputs: &[String], format: &str) -> Result<(), String> {
+fn check_sources(
+    output_dir: Option<&Path>,
+    earlier_output_dirs: &HashSet<PathBuf>,
+    inputs: &[String],
+    format: &str,
+) -> Result<(), String> {
     let mut roots = Vec::with_capacity(inputs.len());
     for input in inputs {
         roots.push(std::path::absolute(input).map_err(|e| e.to_string())?);
@@ -73,19 +83,31 @@ fn check_sources(parent: &Path, inputs: &[String], format: &str) -> Result<(), S
         }
         if roots.len() > 1 { return Err("所选格式每个压缩包只接受一个文件。请调整来源或更改格式。".into()); }
     }
+    // ISO stages its input outside the source tree. LZH lists its input before
+    // it creates a candidate. Both can safely publish inside their own source.
+    let own_output_inside_source_is_safe = matches!(format, "iso" | "lzh");
     for root in &roots {
         if !root.is_dir() { continue; }
-        let Some(existing) = parent.ancestors().find(|path| path.exists()) else { continue };
-        let (Ok(output), Ok(source)) = (fs::canonicalize(existing), fs::canonicalize(root)) else { continue };
-        if output.starts_with(&source) {
+        let Ok(source) = fs::canonicalize(root) else { continue };
+        if earlier_output_dirs.iter().any(|output| output.starts_with(&source)) {
+            return Err(format!("{EARLIER_OUTPUT_IN_SOURCE}\n{}", root.display()));
+        }
+        if !own_output_inside_source_is_safe && output_dir.is_some_and(|output| output.starts_with(&source)) {
             return Err(format!("{OUTPUT_IN_SOURCE}\n{}", root.display()));
         }
     }
     Ok(())
 }
 
+fn canonical_output_parent(parent: &Path) -> Option<PathBuf> {
+    let existing = parent.ancestors().find(|path| path.exists())?;
+    let suffix = parent.strip_prefix(existing).ok()?;
+    Some(fs::canonicalize(existing).ok()?.join(suffix))
+}
+
 const SINGLE_STREAM_FOLDER: &str = "所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR.GZ、ZIP 或 7z 等格式，或移除文件夹来源：";
 const OUTPUT_IN_SOURCE: &str = "保存位置在来源文件夹内，压缩包会把自己打包进去。请选择来源文件夹以外的位置：";
+const EARLIER_OUTPUT_IN_SOURCE: &str = "保存位置在来源文件夹内，批次中较早生成的压缩包会被后续项目打包。请选择来源文件夹以外的位置：";
 
 fn volume_base(name: &str) -> Option<&str> {
     let (base, suffix) = name.rsplit_once('.')?;
@@ -224,6 +246,48 @@ mod tests {
         assert!(plan_compression_outputs(&[path("both.zip", dir.path())], "zip", None,
             &[vec![file.display().to_string(), folder.display().to_string()]]).is_ok());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn staged_formats_allow_own_output_but_reject_an_earlier_output_inside_a_later_source() {
+        let fixture = tempfile::tempdir().unwrap();
+        let outside = fixture.path().join("outside.txt");
+        let source = fixture.path().join("project");
+        fs::write(&outside, b"first archive input").unwrap();
+        fs::create_dir(&source).unwrap();
+        let keep = source.join("keep.txt");
+        fs::write(&keep, b"preserved source file").unwrap();
+        let show = |path: &Path| path.display().to_string();
+        let project_sources = vec![show(&source)];
+        let outside_sources = vec![show(&outside)];
+        for format in ["iso", "lzh"] {
+            let project_output = source.join(format!("project.{format}"));
+            let outside_output = source.join(format!("outside.{format}"));
+
+            // Both staged formats can first write a single combined archive
+            // inside its own source. Combining the other file is also safe.
+            let combined = vec![show(&source), show(&outside)];
+            assert_eq!(plan_compression_outputs(&[show(&project_output)], format, None, &[combined]).unwrap(),
+                       [show(&project_output)]);
+
+            let earlier = [show(&outside_output), show(&project_output)];
+            let error = plan_compression_outputs(&earlier, format, None,
+                                                 &[outside_sources.clone(), project_sources.clone()]).unwrap_err();
+            assert!(error.starts_with(EARLIER_OUTPUT_IN_SOURCE), "{error}");
+
+            // In the reverse order, no later input includes the earlier output.
+            let safe_order = [show(&project_output), show(&outside_output)];
+            assert_eq!(plan_compression_outputs(&safe_order, format, None,
+                                                &[project_sources.clone(), outside_sources.clone()]).unwrap(),
+                       safe_order);
+            assert!(!project_output.exists() && !outside_output.exists());
+        }
+        let zip = source.join("project.zip");
+        let error = plan_compression_outputs(&[show(&zip)], "zip", None, &[project_sources]).unwrap_err();
+        assert!(error.starts_with(OUTPUT_IN_SOURCE), "{error}");
+        assert!(!zip.exists());
+        assert_eq!(fs::read(&outside).unwrap(), b"first archive input");
+        assert_eq!(fs::read(&keep).unwrap(), b"preserved source file");
     }
 
     #[test]
