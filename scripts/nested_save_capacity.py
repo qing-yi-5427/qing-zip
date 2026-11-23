@@ -30,7 +30,7 @@ def inspect_inner(content):
 
 
 def save_copy_on_another_volume(page, app, destination, evidence, result):
-    from pywinauto import Desktop
+    from pywinauto import Desktop, keyboard
 
     page.locator('.oa-nested-bar [data-action="save-as"]').click()
     picker = Desktop(backend="uia").window(process=app.pid, class_name="#32770")
@@ -39,12 +39,30 @@ def save_copy_on_another_volume(page, app, destination, evidence, result):
     try:
         # The standard Windows file dialog exposes its file-name box under
         # FileNameControlHost. Its dialog button ID stays stable across locales.
+        # Navigate to the private fixture directory first, so even the
+        # native dialog's suggested name is inside this test's directory.
+        picker.set_focus()
+        keyboard.send_keys("^l")
+        keyboard.send_keys(str(destination.parent), with_spaces=True, pause=.004)
+        keyboard.send_keys("{ENTER}")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            toolbars = [bar.window_text() for bar in picker.descendants(control_type="ToolBar")]
+            if any(str(destination.parent).casefold() in title.casefold() for title in toolbars):
+                break
+            time.sleep(.2)
+        else:
+            raise RuntimeError("Save As did not navigate to the private test directory")
         filename = picker.child_window(auto_id="FileNameControlHost").child_window(control_type="Edit")
         filename.wait("visible", timeout=10)
-        filename.set_edit_text(str(destination))
+        filename.click_input()
+        keyboard.send_keys("^a")
+        keyboard.send_keys(destination.name, with_spaces=True, pause=.02)
+        if filename.get_value() != destination.name:
+            raise RuntimeError("The native filename field did not contain the selected name")
         picker.capture_as_image().save(evidence / "nested-save-as-dialog.png")
         picker.child_window(auto_id="1", control_type="Button").click_input()
-        expect(page.locator("#qa-toast")).to_contain_text("已另存为", timeout=30000)
+        expect(page.locator("#qa-toast")).to_contain_text(str(destination), timeout=30000)
     except Exception:
         if picker.exists(timeout=1):
             result["native_save_controls"] = [
