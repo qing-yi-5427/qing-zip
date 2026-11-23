@@ -7,11 +7,16 @@ on:
       - 'obz-gui/frontend/app-icon.png'
       - '.github/workflows/shell-package.yml'
   workflow_dispatch:
+    inputs:
+      hosted_explorer:
+        description: 'Run disposable signed Windows 11 Explorer review'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   unsigned-package:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || !inputs.hosted_explorer
     strategy:
       fail-fast: false
       matrix:
@@ -49,7 +54,7 @@ jobs:
           exit $LASTEXITCODE
 
   hosted-explorer:
-    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch'
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.hosted_explorer
     runs-on: windows-11-arm
     timeout-minutes: 25
     env:
