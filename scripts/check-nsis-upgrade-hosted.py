@@ -71,6 +71,8 @@ def main():
     for name in ('old-setup','old-portable','candidate-setup','candidate-stage','out'):
         parser.add_argument('--'+name,required=True,type=Path)
     parser.add_argument('--arch',choices=('X64','ARM64'),default='X64')
+    parser.add_argument('--use-default-location', action='store_true',
+                        help='Let the official installer select its own folder on a fresh hosted VM')
     args=parser.parse_args()
     # This is a defensive environment assertion, not cryptographic attestation.
     check(os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
@@ -98,30 +100,39 @@ def main():
     shortcuts=Path(programs)/product
     check(not shortcuts.exists(),'existing qing-zip Start menu directory; refuse to install')
     default_location=Path(os.environ['LOCALAPPDATA'])/'Programs'/product
-    check(not default_location.exists(),'existing default installation directory; refuse to install')
+    check(default_location.is_absolute() and not os.path.lexists(default_location),'existing default installation directory; refuse to install')
     out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
-    report={'status':'starting','release':'v'+previous,'runner_arch':args.arch,'source':os.environ.get('GITHUB_SHA'),
+    report={'install_location_mode':'default' if args.use_default_location else 'custom',
+            'status':'starting','release':'v'+previous,'runner_arch':args.arch,'source':os.environ.get('GITHUB_SHA'),
             'old_setup_sha256':old_setup_sha,'old_portable_sha256':old_zip_sha,
             'candidate_setup_sha256':sha(candidate_setup),'candidate_gui_sha256':sha(stage/'qing-zip.exe'),
             'candidate_cli_sha256':sha(stage/'obz.exe'),'checks':[],'owned_root_cleaned':False}
     def save(): (out/'receipt.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     def passed(name): report['checks'].append(name);save()
-    save();root=Path(tempfile.mkdtemp(prefix='qznsis-',dir=runner_temp)).resolve();inst=root/'app';uninstalled=False
+    save()
+    root=Path(tempfile.mkdtemp(prefix='qznsis-',dir=runner_temp)).resolve()
+    inst=default_location if args.use_default_location else root/'app'
+    old_options=['/S']
+    uninstalled=False
     try:
-        check(root.is_relative_to(runner_temp) and inst.parent==root and not inst.exists(),'installation target must be a fresh owned temporary path')
-        check(not any(char.isspace() for char in str(inst)),'NSIS /D path must not require quoting')
+        check(root.parent==runner_temp and not os.path.lexists(inst),'installation target must be unused')
+        if not args.use_default_location:
+            check(not any(char.isspace() for char in str(inst)),'NSIS /D path must not require quoting')
+            old_options.append(f'/D={inst}')
         shipped={p.relative_to(stage).as_posix():sha(p) for p in stage.rglob('*') if p.is_file()}
         with zipfile.ZipFile(old_portable) as archive:
             old_hashes={name:hashlib.sha256(archive.read(name)).hexdigest() for name in ('qing-zip.exe','obz.exe','obz-worker.exe')}
             old_only={name:hashlib.sha256(archive.read(name)).hexdigest() for name in archive.namelist()
                       if not name.endswith('/') and name not in shipped}
-        run([old_setup,'/S',f'/D={inst}'],root)
+        run([old_setup,*old_options],root)
         installed_version(previous,inst,arp,install)
         check(executable_version(inst/'qing-zip.exe')==previous+'.0','unexpected old executable version')
         check(all(sha(inst/name)==digest for name,digest in old_hashes.items()),'installed old binaries differ from official portable')
         check((shortcuts/'qing-zip.lnk').is_file() and (shortcuts/'卸载.lnk').is_file(),'expected Start menu shortcuts missing')
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in old_only.items()),'old-only release files missing or changed immediately after old install')
         report['old_only_installed']=[{'relative_path':name,'sha256':digest} for name,digest in sorted(old_only.items())]
+        report['first_install_used_directory_override']=len(old_options)>1
+        report['registered_install_directory_matches_default']=Path(value(arp,'InstallLocation')).samefile(default_location) if args.use_default_location else False
         passed('official_release_installed_to_owned_directory')
         user=inst/'用户保留';user.mkdir();source=root/'样本.txt';source.write_bytes(('普通输入与个人数据哨兵\n'*4096).encode('utf-8'))
         sentinel=user/'无关文件.txt';sentinel.write_bytes(b'unrelated user file, preserve\n')
@@ -132,7 +143,7 @@ def main():
         passed('old_archive_and_user_sentinels_created')
         run([candidate_setup,'/S'],root)
         installed_version(current,inst,arp,install)
-        check(not default_location.exists(),'upgrade wrote to the default directory instead of the registered directory')
+        check(default_location.is_absolute() and not os.path.lexists(default_location),'upgrade wrote to the default directory instead of the registered directory')
         check(executable_version(inst/'qing-zip.exe')==current+'.0','unexpected candidate executable version')
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in shipped.items()),'upgraded payload differs from candidate portable stage')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'upgrade changed user data')
