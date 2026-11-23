@@ -169,11 +169,15 @@ def main():
         raise RuntimeError('Disposable hosted Windows required')
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
+    parser.add_argument('--legacy-exe', type=Path, help='Write a legacy index with this executable, then recover it with --exe')
     parser.add_argument('--double-edit-only', action='store_true', help='Run only two sequential inner ZIP edits followed by recovery')
     parser.add_argument('--large', action='store_true', help='Use a deterministic 64 MiB stored inner ZIP member')
     parser.add_argument('--expect-recovery', action='store_true', help='Require interrupted edit in retained copies and save it through the native dialog')
     options = parser.parse_args()
+    if options.legacy_exe and (not options.expect_recovery or options.double_edit_only):
+        parser.error('--legacy-exe requires --expect-recovery and its own trial')
     exe = options.exe.resolve(strict=True)
+    writer = options.legacy_exe.resolve(strict=True) if options.legacy_exe else exe
     evidence = Path('nested-restart-evidence').resolve()
     evidence.mkdir(exist_ok=True)
     receipt = evidence / 'nested-restart.json'
@@ -190,8 +194,14 @@ def main():
             policy = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments', 0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY)
             session = {'passed': False}
             with guarded_run(winreg, policy, exe.name, arguments, session, evidence / 'desktop-session.json') as lifetime, sync_playwright() as driver:
-                cases = ('double-edit',) if options.double_edit_only else ('cancel-discard', 'save-close', 'terminate')
+                if options.legacy_exe:
+                    cases = ('legacy',)
+                elif options.double_edit_only:
+                    cases = ('double-edit',)
+                else:
+                    cases = ('cancel-discard', 'save-close', 'terminate')
                 for case in cases:
+                    cold = case in ('terminate', 'double-edit', 'legacy')
                     root = top / case
                     root.mkdir()
                     temp = root / 'temp'
@@ -204,7 +214,7 @@ def main():
                     env = dict(os.environ, TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(root / 'local'), APPDATA=str(root / 'roaming'), WEBVIEW2_USER_DATA_FOLDER=str(root / 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=arguments)
                     entry = report['scenarios'][case] = {'before': before, 'neighbour_sha256': neighbour_hash, 'large_member_bytes': 64 * 1024 * 1024 if options.large else 0, 'fixture_prepare_seconds': fixture_seconds}
                     save()
-                    app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
+                    app, browser, page = launch(writer, outer, root, env, port, driver, lifetime)
                     entry['first_gui_pid'] = app.pid
                     edit_started = time.perf_counter()
                     working = edit(page, temp)
@@ -221,12 +231,23 @@ def main():
                         expect(page.locator('.oa-nested-bar')).to_contain_text('更改尚未写回')
                     entry['edited_sha256'] = digest(working)
                     entry['edited_members'] = members(working.read_bytes())
+                    if cold and options.expect_recovery:
+                        index = root / 'local' / 'qing-zip' / 'EditedFiles' / 'index.json'
+                        records = json.loads(index.read_text(encoding='utf-8'))
+                        if len(records) != 1 or Path(records[0]['path']).resolve() != working.resolve():
+                            raise RuntimeError('Recovery index differs from the single committed working copy')
+                        proof = records[0]['nested']['proof']
+                        entry['record_digest_algorithm'] = proof.get('digest', 'sha256')
+                        if not proof['committed']:
+                            raise RuntimeError('Recovery index has no committed proof')
+                        if options.legacy_exe and ('digest' in proof or bytes(proof['committed'][1]).hex() != entry['edited_sha256']):
+                            raise RuntimeError('Old executable did not write the unversioned SHA-256 proof')
                     if case == 'double-edit':
                         if set(entry['first_edit_members']) != {'after.txt', 'unchanged.txt'} or set(entry['edited_members']) != {'final.txt', 'unchanged.txt'} or entry['first_edit_sha256'] == entry['edited_sha256']:
                             raise RuntimeError('Two successful edits did not produce distinct expected generations')
                     entry['outer_unchanged_after_edit'] = inspect_outer(outer) == before
                     page.screenshot(path=str(evidence / f'{case}-edited.png'))
-                    if case not in ('terminate', 'double-edit'):
+                    if not cold:
                         if case == 'cancel-discard':
                             page.locator('[data-window=close]').click()
                         else:
@@ -270,7 +291,7 @@ def main():
                     if not entry['outer_unchanged_after_edit'] or not entry['after_stop_neighbour_unchanged']:
                         raise RuntimeError('Original data changed while editing the private copy')
                     actual_outer = entry['after_stop_outer']
-                    if case in ('cancel-discard', 'terminate', 'double-edit') and actual_outer != before:
+                    if case != 'save-close' and actual_outer != before:
                         raise RuntimeError('Uncommitted nested edit changed the outer archive')
                     if case == 'cancel-discard' and (not entry['cancel_kept_working_copy'] or entry['after_close_working_exists']):
                         raise RuntimeError('Cancel or explicit discard did not preserve its expected result')
@@ -292,7 +313,7 @@ def main():
                         raise RuntimeError('Reopened inner archive entries differ from expected')
                     entry['retained_menu'] = retained_dialog(page, evidence, case)
                     entry['retained_options_first'] = page.locator('#oa-retained-edit option').count()
-                    if case in ('terminate', 'double-edit') and options.expect_recovery:
+                    if cold and options.expect_recovery:
                         if entry['retained_menu']['reports_no_retained_copies'] or entry['retained_options_first'] != 1:
                             raise RuntimeError('Expected exactly one recoverable nested edit')
                         recovered_dir = top / 'recovered-output'
@@ -314,7 +335,7 @@ def main():
                     with suppress(Exception):
                         browser.close()
                     lifetime['proc'] = None
-                    if case in ('terminate', 'double-edit'):
+                    if cold:
                         app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
                         entry['second_reopen_gui_pid'] = app.pid
                         entry['second_reopen_menu'] = retained_dialog(page, evidence, 'terminate-second')
@@ -331,7 +352,7 @@ def main():
                         stop_own(app, browser)
                         lifetime['proc'] = None
                     save()
-                if not options.double_edit_only:
+                if not options.double_edit_only and not options.legacy_exe:
                     encrypted = top / 'encrypted-control'
                     encrypted.mkdir()
                     temp = encrypted / 'temp'

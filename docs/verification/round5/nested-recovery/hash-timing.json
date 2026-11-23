@@ -1,0 +1,3660 @@
+{
+  "sha64": [
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "8.047",
+      "read_ms": "7.906",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "32.145",
+      "read_ms": "6.722",
+      "hash_ms": "25.270"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.444",
+      "read_ms": "6.741",
+      "hash_ms": "25.256"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "32.853",
+      "read_ms": "7.495",
+      "hash_ms": "25.246"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.049",
+      "read_ms": "6.671",
+      "hash_ms": "25.221"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.163",
+      "read_ms": "6.061",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.212",
+      "read_ms": "5.872",
+      "hash_ms": "25.199"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.301",
+      "read_ms": "6.211",
+      "hash_ms": "0.005"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.463",
+      "read_ms": "6.100",
+      "hash_ms": "25.222"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.017",
+      "read_ms": "5.903",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.460",
+      "read_ms": "5.789",
+      "hash_ms": "25.593"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.272",
+      "read_ms": "5.945",
+      "hash_ms": "25.203"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.333",
+      "read_ms": "5.845",
+      "hash_ms": "25.384"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.111",
+      "read_ms": "5.771",
+      "hash_ms": "25.183"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.186",
+      "read_ms": "6.074",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.051",
+      "read_ms": "5.681",
+      "hash_ms": "25.219"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "5.591",
+      "read_ms": "5.478",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.044",
+      "read_ms": "5.618",
+      "hash_ms": "25.311"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "5.578",
+      "read_ms": "5.467",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.861",
+      "read_ms": "6.279",
+      "hash_ms": "25.507"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "30.906",
+      "read_ms": "5.628",
+      "hash_ms": "25.157"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "30.843",
+      "read_ms": "5.569",
+      "hash_ms": "25.170"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.233",
+      "read_ms": "5.896",
+      "hash_ms": "25.169"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "5.803",
+      "read_ms": "5.696",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.166",
+      "read_ms": "5.074",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.407",
+      "read_ms": "5.165",
+      "hash_ms": "25.175"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.522",
+      "read_ms": "5.196",
+      "hash_ms": "25.201"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.395",
+      "read_ms": "5.094",
+      "hash_ms": "25.210"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.313",
+      "read_ms": "5.054",
+      "hash_ms": "25.156"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.095",
+      "read_ms": "4.994",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.407",
+      "read_ms": "5.133",
+      "hash_ms": "25.167"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.109",
+      "read_ms": "5.020",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.066",
+      "read_ms": "5.719",
+      "hash_ms": "25.239"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.284",
+      "read_ms": "5.171",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.700",
+      "read_ms": "5.187",
+      "hash_ms": "25.400"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.471",
+      "read_ms": "5.186",
+      "hash_ms": "25.173"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.405",
+      "read_ms": "5.115",
+      "hash_ms": "25.186"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.270",
+      "read_ms": "5.008",
+      "hash_ms": "25.161"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.062",
+      "read_ms": "4.947",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.585",
+      "read_ms": "5.201",
+      "hash_ms": "25.285"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.174",
+      "read_ms": "5.074",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.761",
+      "read_ms": "5.486",
+      "hash_ms": "25.201"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.811",
+      "read_ms": "5.708",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.461",
+      "read_ms": "6.066",
+      "hash_ms": "25.293"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.605",
+      "read_ms": "5.303",
+      "hash_ms": "25.185"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.333",
+      "read_ms": "5.038",
+      "hash_ms": "25.177"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.623",
+      "read_ms": "5.326",
+      "hash_ms": "25.199"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.125",
+      "read_ms": "5.030",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.458",
+      "read_ms": "5.393",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.845",
+      "read_ms": "5.579",
+      "hash_ms": "25.162"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.710",
+      "read_ms": "5.406",
+      "hash_ms": "25.157"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.496",
+      "read_ms": "5.261",
+      "hash_ms": "25.123"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.710",
+      "read_ms": "5.416",
+      "hash_ms": "25.191"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.443",
+      "read_ms": "5.318",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.585",
+      "read_ms": "5.292",
+      "hash_ms": "25.183"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.305",
+      "read_ms": "5.189",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.580",
+      "read_ms": "5.287",
+      "hash_ms": "25.227"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.336",
+      "read_ms": "5.191",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.982",
+      "read_ms": "5.400",
+      "hash_ms": "25.462"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.015",
+      "read_ms": "5.253",
+      "hash_ms": "25.627"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.836",
+      "read_ms": "5.404",
+      "hash_ms": "25.315"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.030",
+      "read_ms": "5.283",
+      "hash_ms": "25.601"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.502",
+      "read_ms": "5.401",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.696",
+      "read_ms": "4.945",
+      "hash_ms": "25.617"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.222",
+      "read_ms": "5.124",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.350",
+      "read_ms": "5.064",
+      "hash_ms": "25.183"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.139",
+      "read_ms": "5.044",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.591",
+      "read_ms": "5.311",
+      "hash_ms": "25.191"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.160",
+      "read_ms": "5.492",
+      "hash_ms": "25.555"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.481",
+      "read_ms": "5.197",
+      "hash_ms": "25.167"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.548",
+      "read_ms": "5.254",
+      "hash_ms": "25.187"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.195",
+      "read_ms": "5.075",
+      "hash_ms": "0.001"
+    }
+  ],
+  "blake4": [
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.450",
+      "read_ms": "0.385",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.083",
+      "read_ms": "0.409",
+      "hash_ms": "1.584"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.367",
+      "read_ms": "0.394",
+      "hash_ms": "1.582"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.276",
+      "read_ms": "0.354",
+      "hash_ms": "0.844"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.995",
+      "read_ms": "0.362",
+      "hash_ms": "1.580"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.040",
+      "read_ms": "0.358",
+      "hash_ms": "1.571"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.260",
+      "read_ms": "0.353",
+      "hash_ms": "0.840"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.417",
+      "read_ms": "0.358",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.067",
+      "read_ms": "0.391",
+      "hash_ms": "1.578"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.376",
+      "read_ms": "0.435",
+      "hash_ms": "0.853"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.460",
+      "read_ms": "0.373",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.017",
+      "read_ms": "0.370",
+      "hash_ms": "1.582"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.307",
+      "read_ms": "0.376",
+      "hash_ms": "0.850"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.420",
+      "read_ms": "0.343",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.973",
+      "read_ms": "0.352",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.963",
+      "read_ms": "0.345",
+      "hash_ms": "1.571"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.386",
+      "read_ms": "0.346",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.987",
+      "read_ms": "0.377",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.042",
+      "read_ms": "0.390",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.236",
+      "read_ms": "0.350",
+      "hash_ms": "0.840"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.957",
+      "read_ms": "0.345",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.066",
+      "read_ms": "0.386",
+      "hash_ms": "1.582"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.282",
+      "read_ms": "0.362",
+      "hash_ms": "0.845"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.391",
+      "read_ms": "0.345",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.977",
+      "read_ms": "0.355",
+      "hash_ms": "1.576"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.260",
+      "read_ms": "0.345",
+      "hash_ms": "0.839"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.397",
+      "read_ms": "0.348",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.964",
+      "read_ms": "0.351",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "1.220",
+      "read_ms": "0.340",
+      "hash_ms": "0.839"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.377",
+      "read_ms": "0.332",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.943",
+      "read_ms": "0.329",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.981",
+      "read_ms": "0.346",
+      "hash_ms": "1.585"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.536",
+      "read_ms": "0.444",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.043",
+      "read_ms": "0.394",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.014",
+      "read_ms": "0.387",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.263",
+      "read_ms": "0.378",
+      "hash_ms": "0.838"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.035",
+      "read_ms": "0.394",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "1.996",
+      "read_ms": "0.374",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.274",
+      "read_ms": "0.385",
+      "hash_ms": "0.842"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.446",
+      "read_ms": "0.398",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "1.995",
+      "read_ms": "0.375",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.340",
+      "read_ms": "0.420",
+      "hash_ms": "0.850"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.500",
+      "read_ms": "0.408",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.048",
+      "read_ms": "0.389",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.260",
+      "read_ms": "0.379",
+      "hash_ms": "0.831"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.423",
+      "read_ms": "0.375",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "1.991",
+      "read_ms": "0.374",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.058",
+      "read_ms": "0.407",
+      "hash_ms": "1.577"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.456",
+      "read_ms": "0.375",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "1.992",
+      "read_ms": "0.369",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "1.994",
+      "read_ms": "0.369",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.248",
+      "read_ms": "0.373",
+      "hash_ms": "0.829"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.059",
+      "read_ms": "0.421",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.071",
+      "read_ms": "0.401",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.266",
+      "read_ms": "0.381",
+      "hash_ms": "0.829"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.429",
+      "read_ms": "0.380",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.003",
+      "read_ms": "0.382",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.278",
+      "read_ms": "0.383",
+      "hash_ms": "0.828"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.424",
+      "read_ms": "0.377",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.011",
+      "read_ms": "0.393",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "1.401",
+      "read_ms": "0.448",
+      "hash_ms": "0.860"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.458",
+      "read_ms": "0.383",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.060",
+      "read_ms": "0.397",
+      "hash_ms": "1.587"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.049",
+      "read_ms": "0.388",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.626",
+      "read_ms": "0.575",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.216",
+      "read_ms": "0.570",
+      "hash_ms": "1.570"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.190",
+      "read_ms": "0.569",
+      "hash_ms": "1.571"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.474",
+      "read_ms": "0.553",
+      "hash_ms": "0.847"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.210",
+      "read_ms": "0.570",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.209",
+      "read_ms": "0.558",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.551",
+      "read_ms": "0.633",
+      "hash_ms": "0.845"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.675",
+      "read_ms": "0.576",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.207",
+      "read_ms": "0.552",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.467",
+      "read_ms": "0.558",
+      "hash_ms": "0.861"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.620",
+      "read_ms": "0.551",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.169",
+      "read_ms": "0.552",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.448",
+      "read_ms": "0.543",
+      "hash_ms": "0.840"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.586",
+      "read_ms": "0.547",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.192",
+      "read_ms": "0.549",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.172",
+      "read_ms": "0.552",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.630",
+      "read_ms": "0.559",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.217",
+      "read_ms": "0.564",
+      "hash_ms": "1.605"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.283",
+      "read_ms": "0.595",
+      "hash_ms": "1.576"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.528",
+      "read_ms": "0.570",
+      "hash_ms": "0.870"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.225",
+      "read_ms": "0.592",
+      "hash_ms": "1.578"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.283",
+      "read_ms": "0.574",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.529",
+      "read_ms": "0.583",
+      "hash_ms": "0.872"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.643",
+      "read_ms": "0.565",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.224",
+      "read_ms": "0.585",
+      "hash_ms": "1.577"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.551",
+      "read_ms": "0.611",
+      "hash_ms": "0.849"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.691",
+      "read_ms": "0.609",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.236",
+      "read_ms": "0.558",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.529",
+      "read_ms": "0.588",
+      "hash_ms": "0.884"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.670",
+      "read_ms": "0.570",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.218",
+      "read_ms": "0.582",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.300",
+      "read_ms": "0.587",
+      "hash_ms": "1.582"
+    }
+  ],
+  "blake64": [
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.359",
+      "read_ms": "6.246",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.731",
+      "read_ms": "6.235",
+      "hash_ms": "25.254"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.217",
+      "read_ms": "6.556",
+      "hash_ms": "25.227"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "20.596",
+      "read_ms": "7.006",
+      "hash_ms": "13.489"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.756",
+      "read_ms": "6.338",
+      "hash_ms": "25.248"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.289",
+      "read_ms": "5.915",
+      "hash_ms": "25.258"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.441",
+      "read_ms": "6.059",
+      "hash_ms": "13.260"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.351",
+      "read_ms": "6.209",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.544",
+      "read_ms": "6.223",
+      "hash_ms": "25.204"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.798",
+      "read_ms": "6.419",
+      "hash_ms": "13.271"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.425",
+      "read_ms": "6.278",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.703",
+      "read_ms": "6.405",
+      "hash_ms": "25.184"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.392",
+      "read_ms": "6.038",
+      "hash_ms": "13.246"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "5.980",
+      "read_ms": "5.876",
+      "hash_ms": "0.005"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.256",
+      "read_ms": "6.019",
+      "hash_ms": "25.164"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.401",
+      "read_ms": "6.050",
+      "hash_ms": "25.224"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.123",
+      "read_ms": "6.016",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.810",
+      "read_ms": "6.345",
+      "hash_ms": "25.317"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.988",
+      "read_ms": "7.365",
+      "hash_ms": "25.480"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.896",
+      "read_ms": "6.518",
+      "hash_ms": "13.270"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.962",
+      "read_ms": "6.604",
+      "hash_ms": "25.213"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.265",
+      "read_ms": "6.936",
+      "hash_ms": "25.203"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "21.114",
+      "read_ms": "7.589",
+      "hash_ms": "13.413"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.361",
+      "read_ms": "6.215",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.847",
+      "read_ms": "6.311",
+      "hash_ms": "25.419"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.621",
+      "read_ms": "6.248",
+      "hash_ms": "13.267"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.370",
+      "read_ms": "6.222",
+      "hash_ms": "0.008"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.728",
+      "read_ms": "6.432",
+      "hash_ms": "25.195"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "19.979",
+      "read_ms": "6.592",
+      "hash_ms": "13.284"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.480",
+      "read_ms": "6.370",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.486",
+      "read_ms": "6.178",
+      "hash_ms": "25.180"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.598",
+      "read_ms": "6.244",
+      "hash_ms": "25.231"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.592",
+      "read_ms": "5.478",
+      "hash_ms": "0.003"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.111",
+      "read_ms": "5.392",
+      "hash_ms": "25.626"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.692",
+      "read_ms": "5.388",
+      "hash_ms": "25.202"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "18.530",
+      "read_ms": "5.195",
+      "hash_ms": "13.240"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.735",
+      "read_ms": "5.458",
+      "hash_ms": "25.202"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.757",
+      "read_ms": "6.380",
+      "hash_ms": "25.255"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "19.095",
+      "read_ms": "5.668",
+      "hash_ms": "13.338"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.538",
+      "read_ms": "5.427",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.181",
+      "read_ms": "5.859",
+      "hash_ms": "25.215"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "19.339",
+      "read_ms": "5.933",
+      "hash_ms": "13.303"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "6.227",
+      "read_ms": "6.096",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.454",
+      "read_ms": "6.031",
+      "hash_ms": "25.310"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "19.191",
+      "read_ms": "5.762",
+      "hash_ms": "13.329"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.216",
+      "read_ms": "5.110",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.556",
+      "read_ms": "5.266",
+      "hash_ms": "25.223"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.740",
+      "read_ms": "6.325",
+      "hash_ms": "25.306"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "7.505",
+      "read_ms": "7.368",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.557",
+      "read_ms": "6.202",
+      "hash_ms": "25.246"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "32.607",
+      "read_ms": "7.136",
+      "hash_ms": "25.316"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "19.489",
+      "read_ms": "6.042",
+      "hash_ms": "13.339"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.971",
+      "read_ms": "5.659",
+      "hash_ms": "25.226"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.041",
+      "read_ms": "5.727",
+      "hash_ms": "25.192"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "18.919",
+      "read_ms": "5.480",
+      "hash_ms": "13.326"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "6.454",
+      "read_ms": "6.346",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.110",
+      "read_ms": "5.652",
+      "hash_ms": "25.330"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "19.053",
+      "read_ms": "5.662",
+      "hash_ms": "13.272"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "6.183",
+      "read_ms": "6.055",
+      "hash_ms": "0.003"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.525",
+      "read_ms": "6.083",
+      "hash_ms": "25.318"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "20.463",
+      "read_ms": "7.050",
+      "hash_ms": "13.301"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.525",
+      "read_ms": "5.423",
+      "hash_ms": "0.003"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "31.954",
+      "read_ms": "6.192",
+      "hash_ms": "25.658"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.938",
+      "read_ms": "6.515",
+      "hash_ms": "25.260"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "6.232",
+      "read_ms": "6.126",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.738",
+      "read_ms": "6.292",
+      "hash_ms": "25.317"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "32.156",
+      "read_ms": "6.216",
+      "hash_ms": "25.830"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.365",
+      "read_ms": "5.773",
+      "hash_ms": "13.515"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "32.016",
+      "read_ms": "6.357",
+      "hash_ms": "25.575"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "32.003",
+      "read_ms": "6.358",
+      "hash_ms": "25.499"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.845",
+      "read_ms": "6.139",
+      "hash_ms": "13.593"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "7.106",
+      "read_ms": "7.007",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "34.921",
+      "read_ms": "7.943",
+      "hash_ms": "26.748"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "20.122",
+      "read_ms": "6.315",
+      "hash_ms": "13.700"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.836",
+      "read_ms": "5.708",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.121",
+      "read_ms": "5.734",
+      "hash_ms": "25.292"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.599",
+      "read_ms": "5.948",
+      "hash_ms": "13.532"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "6.274",
+      "read_ms": "6.162",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.336",
+      "read_ms": "5.769",
+      "hash_ms": "25.445"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.507",
+      "read_ms": "6.100",
+      "hash_ms": "25.296"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.681",
+      "read_ms": "5.569",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.120",
+      "read_ms": "5.595",
+      "hash_ms": "25.412"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.113",
+      "read_ms": "5.733",
+      "hash_ms": "25.259"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "18.807",
+      "read_ms": "5.241",
+      "hash_ms": "13.446"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.706",
+      "read_ms": "5.396",
+      "hash_ms": "25.209"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.780",
+      "read_ms": "5.479",
+      "hash_ms": "25.171"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.772",
+      "read_ms": "6.002",
+      "hash_ms": "13.675"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.590",
+      "read_ms": "5.478",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.593",
+      "read_ms": "5.907",
+      "hash_ms": "25.581"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.711",
+      "read_ms": "5.964",
+      "hash_ms": "13.630"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.782",
+      "read_ms": "5.679",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.828",
+      "read_ms": "5.533",
+      "hash_ms": "25.182"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "19.823",
+      "read_ms": "6.063",
+      "hash_ms": "13.663"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.784",
+      "read_ms": "5.679",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.189",
+      "read_ms": "5.892",
+      "hash_ms": "25.230"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.357",
+      "read_ms": "5.951",
+      "hash_ms": "25.277"
+    }
+  ],
+  "blake-default4": [
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.522",
+      "read_ms": "0.440",
+      "hash_ms": "0.004"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.055",
+      "read_ms": "0.383",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.327",
+      "read_ms": "0.372",
+      "hash_ms": "1.578"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.742",
+      "read_ms": "0.356",
+      "hash_ms": "0.321"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.008",
+      "read_ms": "0.374",
+      "hash_ms": "1.582"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.102",
+      "read_ms": "0.418",
+      "hash_ms": "1.595"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.746",
+      "read_ms": "0.349",
+      "hash_ms": "0.320"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.402",
+      "read_ms": "0.348",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.976",
+      "read_ms": "0.355",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.711",
+      "read_ms": "0.346",
+      "hash_ms": "0.320"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.398",
+      "read_ms": "0.351",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.956",
+      "read_ms": "0.347",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.702",
+      "read_ms": "0.345",
+      "hash_ms": "0.318"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.382",
+      "read_ms": "0.337",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.975",
+      "read_ms": "0.361",
+      "hash_ms": "1.570"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.996",
+      "read_ms": "0.342",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.392",
+      "read_ms": "0.341",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.001",
+      "read_ms": "0.369",
+      "hash_ms": "1.585"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.014",
+      "read_ms": "0.355",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.720",
+      "read_ms": "0.345",
+      "hash_ms": "0.319"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.994",
+      "read_ms": "0.366",
+      "hash_ms": "1.579"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.025",
+      "read_ms": "0.368",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.774",
+      "read_ms": "0.361",
+      "hash_ms": "0.319"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.406",
+      "read_ms": "0.340",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "2.004",
+      "read_ms": "0.362",
+      "hash_ms": "1.578"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.750",
+      "read_ms": "0.347",
+      "hash_ms": "0.319"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.399",
+      "read_ms": "0.337",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "1.962",
+      "read_ms": "0.347",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "0.697",
+      "read_ms": "0.339",
+      "hash_ms": "0.318"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "0.364",
+      "read_ms": "0.326",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "2.484",
+      "read_ms": "0.441",
+      "hash_ms": "2.006"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "1.984",
+      "read_ms": "0.332",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.476",
+      "read_ms": "0.427",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.036",
+      "read_ms": "0.407",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "1.989",
+      "read_ms": "0.374",
+      "hash_ms": "1.572"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.744",
+      "read_ms": "0.376",
+      "hash_ms": "0.322"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "1.987",
+      "read_ms": "0.377",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.004",
+      "read_ms": "0.381",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.752",
+      "read_ms": "0.381",
+      "hash_ms": "0.318"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.407",
+      "read_ms": "0.368",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.018",
+      "read_ms": "0.391",
+      "hash_ms": "1.585"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.775",
+      "read_ms": "0.383",
+      "hash_ms": "0.319"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.438",
+      "read_ms": "0.394",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.059",
+      "read_ms": "0.404",
+      "hash_ms": "1.571"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.769",
+      "read_ms": "0.389",
+      "hash_ms": "0.320"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.415",
+      "read_ms": "0.373",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.004",
+      "read_ms": "0.392",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.018",
+      "read_ms": "0.396",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.448",
+      "read_ms": "0.394",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "1.987",
+      "read_ms": "0.374",
+      "hash_ms": "1.577"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.016",
+      "read_ms": "0.394",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.835",
+      "read_ms": "0.444",
+      "hash_ms": "0.322"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.111",
+      "read_ms": "0.443",
+      "hash_ms": "1.579"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.088",
+      "read_ms": "0.425",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.772",
+      "read_ms": "0.379",
+      "hash_ms": "0.324"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.427",
+      "read_ms": "0.385",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "1.991",
+      "read_ms": "0.373",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.750",
+      "read_ms": "0.382",
+      "hash_ms": "0.329"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.477",
+      "read_ms": "0.413",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.009",
+      "read_ms": "0.378",
+      "hash_ms": "1.573"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "0.766",
+      "read_ms": "0.395",
+      "hash_ms": "0.333"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "0.489",
+      "read_ms": "0.392",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "2.032",
+      "read_ms": "0.394",
+      "hash_ms": "1.576"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "2.199",
+      "read_ms": "0.463",
+      "hash_ms": "1.635"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.818",
+      "read_ms": "0.685",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.331",
+      "read_ms": "0.677",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.294",
+      "read_ms": "0.599",
+      "hash_ms": "1.576"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.098",
+      "read_ms": "0.621",
+      "hash_ms": "0.391"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.273",
+      "read_ms": "0.590",
+      "hash_ms": "1.584"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.241",
+      "read_ms": "0.592",
+      "hash_ms": "1.574"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.034",
+      "read_ms": "0.609",
+      "hash_ms": "0.344"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.678",
+      "read_ms": "0.594",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.245",
+      "read_ms": "0.574",
+      "hash_ms": "1.589"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.218",
+      "read_ms": "0.728",
+      "hash_ms": "0.382"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.696",
+      "read_ms": "0.592",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.286",
+      "read_ms": "0.622",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.012",
+      "read_ms": "0.578",
+      "hash_ms": "0.335"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.647",
+      "read_ms": "0.594",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.219",
+      "read_ms": "0.572",
+      "hash_ms": "1.577"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.280",
+      "read_ms": "0.610",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.679",
+      "read_ms": "0.576",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.282",
+      "read_ms": "0.622",
+      "hash_ms": "1.594"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.303",
+      "read_ms": "0.612",
+      "hash_ms": "1.580"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.071",
+      "read_ms": "0.605",
+      "hash_ms": "0.370"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.252",
+      "read_ms": "0.595",
+      "hash_ms": "1.576"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.287",
+      "read_ms": "0.622",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.023",
+      "read_ms": "0.585",
+      "hash_ms": "0.335"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.673",
+      "read_ms": "0.609",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.213",
+      "read_ms": "0.561",
+      "hash_ms": "1.577"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.010",
+      "read_ms": "0.591",
+      "hash_ms": "0.370"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.682",
+      "read_ms": "0.587",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.749",
+      "read_ms": "0.599",
+      "hash_ms": "2.082"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "1.012",
+      "read_ms": "0.573",
+      "hash_ms": "0.334"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "0.644",
+      "read_ms": "0.584",
+      "hash_ms": "0.000"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "2.232",
+      "read_ms": "0.586",
+      "hash_ms": "1.575"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "2.256",
+      "read_ms": "0.591",
+      "hash_ms": "1.574"
+    }
+  ],
+  "blake-default64": [
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.673",
+      "read_ms": "6.552",
+      "hash_ms": "0.005"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.780",
+      "read_ms": "6.444",
+      "hash_ms": "25.176"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.514",
+      "read_ms": "6.696",
+      "hash_ms": "25.218"
+    },
+    {
+      "iteration": "0",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.513",
+      "read_ms": "6.278",
+      "hash_ms": "5.103"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.591",
+      "read_ms": "6.266",
+      "hash_ms": "25.195"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.670",
+      "read_ms": "6.334",
+      "hash_ms": "25.211"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.540",
+      "read_ms": "6.317",
+      "hash_ms": "5.100"
+    },
+    {
+      "iteration": "1",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.386",
+      "read_ms": "6.230",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.595",
+      "read_ms": "6.306",
+      "hash_ms": "25.157"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.582",
+      "read_ms": "6.359",
+      "hash_ms": "5.096"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.572",
+      "read_ms": "6.439",
+      "hash_ms": "0.006"
+    },
+    {
+      "iteration": "2",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.691",
+      "read_ms": "6.356",
+      "hash_ms": "25.224"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.549",
+      "read_ms": "6.328",
+      "hash_ms": "5.098"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.535",
+      "read_ms": "6.370",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.710",
+      "read_ms": "6.422",
+      "hash_ms": "25.184"
+    },
+    {
+      "iteration": "3",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.053",
+      "read_ms": "6.753",
+      "hash_ms": "25.157"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.800",
+      "read_ms": "6.671",
+      "hash_ms": "0.005"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "32.708",
+      "read_ms": "7.358",
+      "hash_ms": "25.208"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.430",
+      "read_ms": "6.949",
+      "hash_ms": "25.349"
+    },
+    {
+      "iteration": "4",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.859",
+      "read_ms": "6.627",
+      "hash_ms": "5.124"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "32.605",
+      "read_ms": "7.008",
+      "hash_ms": "25.473"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.048",
+      "read_ms": "6.696",
+      "hash_ms": "25.209"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.777",
+      "read_ms": "6.536",
+      "hash_ms": "5.105"
+    },
+    {
+      "iteration": "5",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.715",
+      "read_ms": "6.552",
+      "hash_ms": "0.008"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "32.353",
+      "read_ms": "6.620",
+      "hash_ms": "25.596"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.790",
+      "read_ms": "6.542",
+      "hash_ms": "5.115"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.615",
+      "read_ms": "6.470",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "6",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "32.326",
+      "read_ms": "6.599",
+      "hash_ms": "25.636"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "3",
+      "total_ms": "11.529",
+      "read_ms": "6.296",
+      "hash_ms": "5.106"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "0",
+      "total_ms": "6.224",
+      "read_ms": "6.101",
+      "hash_ms": "0.007"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "1",
+      "total_ms": "31.495",
+      "read_ms": "6.161",
+      "hash_ms": "25.244"
+    },
+    {
+      "iteration": "7",
+      "buffer": "262144",
+      "engine": "2",
+      "total_ms": "31.662",
+      "read_ms": "6.336",
+      "hash_ms": "25.206"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "6.010",
+      "read_ms": "5.911",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "32.164",
+      "read_ms": "6.248",
+      "hash_ms": "25.795"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.399",
+      "read_ms": "6.031",
+      "hash_ms": "25.262"
+    },
+    {
+      "iteration": "0",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "11.025",
+      "read_ms": "5.809",
+      "hash_ms": "5.106"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.877",
+      "read_ms": "5.577",
+      "hash_ms": "25.199"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.748",
+      "read_ms": "5.424",
+      "hash_ms": "25.214"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.633",
+      "read_ms": "5.428",
+      "hash_ms": "5.108"
+    },
+    {
+      "iteration": "1",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.843",
+      "read_ms": "5.745",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "31.018",
+      "read_ms": "5.287",
+      "hash_ms": "25.619"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.402",
+      "read_ms": "5.203",
+      "hash_ms": "5.082"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.194",
+      "read_ms": "5.094",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "2",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.925",
+      "read_ms": "5.570",
+      "hash_ms": "25.262"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.647",
+      "read_ms": "5.452",
+      "hash_ms": "5.088"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.200",
+      "read_ms": "5.121",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.671",
+      "read_ms": "5.397",
+      "hash_ms": "25.174"
+    },
+    {
+      "iteration": "3",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.582",
+      "read_ms": "5.306",
+      "hash_ms": "25.158"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.258",
+      "read_ms": "5.161",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.531",
+      "read_ms": "5.273",
+      "hash_ms": "25.170"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.633",
+      "read_ms": "5.327",
+      "hash_ms": "25.192"
+    },
+    {
+      "iteration": "4",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.301",
+      "read_ms": "5.103",
+      "hash_ms": "5.097"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.472",
+      "read_ms": "5.158",
+      "hash_ms": "25.148"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.845",
+      "read_ms": "5.333",
+      "hash_ms": "25.400"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.373",
+      "read_ms": "5.153",
+      "hash_ms": "5.121"
+    },
+    {
+      "iteration": "5",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.171",
+      "read_ms": "5.058",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.587",
+      "read_ms": "5.312",
+      "hash_ms": "25.186"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.482",
+      "read_ms": "5.290",
+      "hash_ms": "5.088"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.134",
+      "read_ms": "5.032",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "6",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.962",
+      "read_ms": "5.380",
+      "hash_ms": "25.511"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "3",
+      "total_ms": "10.824",
+      "read_ms": "5.494",
+      "hash_ms": "5.214"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "0",
+      "total_ms": "5.116",
+      "read_ms": "4.991",
+      "hash_ms": "0.002"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "1",
+      "total_ms": "30.805",
+      "read_ms": "5.505",
+      "hash_ms": "25.199"
+    },
+    {
+      "iteration": "7",
+      "buffer": "1048576",
+      "engine": "2",
+      "total_ms": "30.595",
+      "read_ms": "5.287",
+      "hash_ms": "25.189"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.633",
+      "read_ms": "5.533",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.275",
+      "read_ms": "5.837",
+      "hash_ms": "25.300"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "32.367",
+      "read_ms": "6.679",
+      "hash_ms": "25.553"
+    },
+    {
+      "iteration": "0",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "11.005",
+      "read_ms": "5.660",
+      "hash_ms": "5.210"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.009",
+      "read_ms": "5.645",
+      "hash_ms": "25.236"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.064",
+      "read_ms": "5.717",
+      "hash_ms": "25.204"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "11.776",
+      "read_ms": "6.246",
+      "hash_ms": "5.395"
+    },
+    {
+      "iteration": "1",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.666",
+      "read_ms": "5.564",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.210",
+      "read_ms": "5.810",
+      "hash_ms": "25.247"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "11.198",
+      "read_ms": "5.712",
+      "hash_ms": "5.373"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.583",
+      "read_ms": "5.424",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "2",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.902",
+      "read_ms": "6.344",
+      "hash_ms": "25.436"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "10.881",
+      "read_ms": "5.600",
+      "hash_ms": "5.153"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.497",
+      "read_ms": "5.396",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.746",
+      "read_ms": "5.371",
+      "hash_ms": "25.257"
+    },
+    {
+      "iteration": "3",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "32.002",
+      "read_ms": "5.845",
+      "hash_ms": "26.028"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.444",
+      "read_ms": "5.300",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.643",
+      "read_ms": "5.361",
+      "hash_ms": "25.206"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "30.595",
+      "read_ms": "5.299",
+      "hash_ms": "25.172"
+    },
+    {
+      "iteration": "4",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "10.768",
+      "read_ms": "5.472",
+      "hash_ms": "5.192"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "30.705",
+      "read_ms": "5.424",
+      "hash_ms": "25.155"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.799",
+      "read_ms": "6.176",
+      "hash_ms": "25.468"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "12.427",
+      "read_ms": "7.025",
+      "hash_ms": "5.250"
+    },
+    {
+      "iteration": "5",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "9.607",
+      "read_ms": "9.492",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "32.425",
+      "read_ms": "6.956",
+      "hash_ms": "25.320"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "12.075",
+      "read_ms": "6.724",
+      "hash_ms": "5.216"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "6.136",
+      "read_ms": "6.006",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "6",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.072",
+      "read_ms": "5.709",
+      "hash_ms": "25.262"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "3",
+      "total_ms": "10.641",
+      "read_ms": "5.394",
+      "hash_ms": "5.138"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "0",
+      "total_ms": "5.306",
+      "read_ms": "5.214",
+      "hash_ms": "0.001"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "1",
+      "total_ms": "31.020",
+      "read_ms": "5.416",
+      "hash_ms": "25.509"
+    },
+    {
+      "iteration": "7",
+      "buffer": "4194304",
+      "engine": "2",
+      "total_ms": "31.057",
+      "read_ms": "5.693",
+      "hash_ms": "25.232"
+    }
+  ]
+}
