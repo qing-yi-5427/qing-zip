@@ -6,7 +6,10 @@ use std::{
     ffi::OsStr,
     fs::File,
     io::Read,
-    os::windows::fs::{MetadataExt, OpenOptionsExt},
+    os::windows::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     path::{Component, Path, PathBuf, Prefix},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -185,6 +188,16 @@ fn pin_install_root(path: &Path) -> Result<Vec<File>, String> {
     }
     let mut drive = PathBuf::from(prefix.as_os_str());
     drive.push(r"\");
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let wide: Vec<_> = drive.as_os_str().encode_wide().chain(Some(0)).collect();
+    // DRIVE_FIXED. Mounted network paths and removable disks are left alone.
+    if unsafe { GetDriveTypeW(wide.as_ptr()) } != 3 {
+        return Err("旧版文件检查只支持本地固定磁盘".into());
+    }
+
     let root = File::options()
         .access_mode(0x100081)
         .share_mode(1)

@@ -98,6 +98,7 @@ Section "qing-zip（必需）" Main
  IfErrors legacy_review_done
  IfSilent legacy_review_done
  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayVersion"
+ ClearErrors
  StrCmp $0 "0.12.20" 0 legacy_review_done
  ExecWait '$\"$INSTDIR\qing-zip.exe$\" --review-retired-install-files' $0
  IfErrors legacy_review_failed

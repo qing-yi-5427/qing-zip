@@ -184,6 +184,9 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
         baseline = {name: old.sha(inst / name) for name in manifest}
         old.check(baseline == manifest, "initial retired-file hashes differ from official release")
         report["old_installed"] = baseline
+        old.run([args.candidate_stage / "qing-zip.exe", "--review-retired-install-files"], root, timeout=15)
+        old.check(not list(root.glob("qing-zip-v0.12.20-Recovery-*")), "mismatched install directory created a recovery")
+        report["mismatched_registration_preserved"] = True
         expected = dict(baseline)
 
         user = inst / "user-data"
@@ -212,10 +215,14 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             expected.update({name: old.sha(inst / name) for name in (MODIFIED, SAME_BYTES, SAME_NAME)})
         traces = report.setdefault("dialogs", [])
         before_ids = {name: (inst / name).stat().st_ino for name in MOVE}
-        interactive_setup(args.candidate_setup, root, inst, mode, manifest, traces)
+        if mode == "quiet":
+            old.run([args.candidate_setup, "/S", f"/D={inst}"], root)
+        else:
+            interactive_setup(args.candidate_setup, root, inst, mode, manifest, traces)
         old.installed_version("0.12.23", inst)
         old.check(all(old.sha(inst / name) == digest for name, digest in shipped.items()), "candidate file hash mismatch")
-        old.check(any(d["dialog"] == "offer" for d in traces), "no explicit old file review was shown")
+        if mode != "quiet":
+            old.check(any(d["dialog"] == "offer" for d in traces), "no explicit old file review was shown")
         recoveries = list(root.glob("qing-zip-v0.12.20-Recovery-*"))
         selected = MOVE if mode == "selected" else set()
         old.check(len(recoveries) == bool(selected), "unexpected recovery directory count")
@@ -295,7 +302,7 @@ def main():
                         for name in prior.namelist() if not name.endswith("/") and name not in shipped}
         old.check(len(manifest) == 10 and MOVE | {MODIFIED, SAME_BYTES, SAME_NAME} <= set(manifest),
                   "unexpected official retired inventory")
-        for mode in ("decline", "selected"):
+        for mode in ("quiet", "decline", "selected"):
             case = report["cases"][mode] = {}
             exercise(args, old, runner_temp, mode, shipped, manifest, case)
         report["status"] = "passed"
