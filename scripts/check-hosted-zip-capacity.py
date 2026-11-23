@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from zip_working_space import measure
 
 MIB = 1024 * 1024
 CAPACITY = 96 * MIB
@@ -194,6 +195,15 @@ def main():
             owned = work / name
             owned.mkdir(exist_ok=True)
             env[variable] = str(owned)
+        try:
+            measurements = measure(cli, work, root, root / ("qa-" + marker), env, invoke, sha)
+            verify_volume(root, marker, identity)
+            report["ordinary_working_space"] = {"status": "passed", **measurements}
+        except (RuntimeError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
+            report["ordinary_working_space"] = {
+                "status": "failed", "error": str(error).replace(str(job), "<qa-root>").replace(str(root), "<qa-volume>/")
+            }
+        save()
         for case in ("create", "extract"):
             result = {"status": "blocked"}
             report["cases"][case] = result
@@ -203,6 +213,7 @@ def main():
                 result["error"] = str(error).replace(str(job), "<qa-root>").replace(str(root), "<qa-volume>/")
             save()
         statuses = {result["status"] for result in report["cases"].values()}
+        statuses.add(report["ordinary_working_space"]["status"])
         report["status"] = "passed" if statuses == {"passed"} else ("failed" if "failed" in statuses else "blocked")
     except (RuntimeError, OSError) as error:
         report["environment_error"] = str(error).replace(str(job), "<qa-root>")

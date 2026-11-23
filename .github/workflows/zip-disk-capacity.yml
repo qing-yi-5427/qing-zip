@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'scripts/check-hosted-zip-capacity.py'
+      - 'scripts/zip_working_space.py'
       - 'scripts/check-hosted-zip-capacity.ps1'
       - '.github/workflows/zip-disk-capacity.yml'
   workflow_dispatch:
