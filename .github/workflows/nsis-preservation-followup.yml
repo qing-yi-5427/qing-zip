@@ -1,0 +1,100 @@
+name: Hosted NSIS user-data follow-up
+on:
+  pull_request:
+    paths:
+      - 'scripts/check-nsis-upgrade-hosted.py'
+      - '.github/workflows/nsis-preservation-followup.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  user-data-followup:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Assert runner and unchanged product source
+        shell: pwsh
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory evidence | Out-Null
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 required' }
+          git diff --quiet 51a68cc32bafcd535eac6cef8eee5169a54adcbe HEAD -- obz-gui obz-rs runtime assets licenses scripts/installer.nsi scripts/package.py scripts/x64_runtime.py scripts/audit_pe_security.py scripts/verify-runtime.py
+          if ($LASTEXITCODE) { throw 'Product or package inputs differ from the reference build' }
+          @{source=(git rev-parse HEAD).Trim();pr_head=$env:PR_HEAD;reference_source='51a68cc32bafcd535eac6cef8eee5169a54adcbe';reference_run='45100520858';stage='download-pending'} | ConvertTo-Json | Set-Content evidence/bootstrap.json -Encoding utf8
+          python scripts/test-hosted-installer-guard.py
+          if ($LASTEXITCODE) { throw 'Non-hosted guard failed' }
+      - name: Fetch verified release, NSIS and same-source hardened portable artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-followup-inputs'
+          New-Item -ItemType Directory $inputs | Out-Null
+          $run=gh api repos/qing-yi-5427/qing-zip/actions/runs/45100520858 | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_sha -ne '51a68cc32bafcd535eac6cef8eee5169a54adcbe' -or $run.conclusion -ne 'success') { throw 'Reference build provenance mismatch' }
+          gh run download 45100520858 --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir (Join-Path $inputs 'reference')
+          if ($LASTEXITCODE) { throw 'Reference artifact download failed' }
+          gh release download v0.12.20 --repo qing-yi-5427/qing-zip --pattern 'qing-zip-0.12.20-setup.exe' --pattern 'qing-zip-0.12.20-portable.zip' --dir $inputs
+          if ($LASTEXITCODE) { throw 'Prior release download failed' }
+          $nsisArchive=Join-Path $inputs 'nsis-3.13.zip'
+          curl.exe --fail --location --retry 2 --output $nsisArchive 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip'
+          if ($LASTEXITCODE -or (Get-FileHash $nsisArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8') { throw 'NSIS download or digest failed' }
+          Expand-Archive -LiteralPath $nsisArchive -DestinationPath (Join-Path $inputs 'nsis')
+      - name: Repackage exact hardened binaries without recompiling product
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-followup-inputs'
+          $reference=Join-Path $inputs 'reference'
+          $packages=@(Get-ChildItem $reference -Recurse -File -Filter '*-portable.zip')
+          $receipts=@(Get-ChildItem $reference -Recurse -File -Filter 'hardened-build.json')
+          $audits=@(Get-ChildItem $reference -Recurse -File -Filter 'pe-security.json')
+          if ($packages.Count -ne 1 -or $receipts.Count -ne 1 -or $audits.Count -ne 1) { throw 'Reference artifact incomplete or ambiguous' }
+          $unpacked=Join-Path $inputs 'unpacked';Expand-Archive -LiteralPath $packages[0].FullName -DestinationPath $unpacked
+          $bins=Join-Path $inputs 'binaries';New-Item -ItemType Directory $bins | Out-Null
+          Copy-Item (Join-Path $unpacked 'qing-zip.exe') (Join-Path $bins 'obz-gui.exe')
+          Copy-Item (Join-Path $unpacked 'obz.exe') $bins
+          Copy-Item (Join-Path $unpacked 'obz-worker.exe') $bins
+          $receipt=Get-Content $receipts[0].FullName -Raw | ConvertFrom-Json
+          foreach ($entry in $receipt.binaries) {
+            $file=Join-Path $bins $entry.name
+            if (!(Test-Path -LiteralPath $file) -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256.ToLowerInvariant()) { throw 'Reference binary digest mismatch' }
+          }
+          if (@($receipt.binaries).Count -ne 3) { throw 'Unexpected hardened binary count' }
+          python scripts/verify-runtime.py
+          if ($LASTEXITCODE) { throw 'Runtime provenance failed' }
+          $dist=Join-Path $env:RUNNER_TEMP 'qz-followup-dist'
+          python scripts/package.py --binary-directory $bins --output-directory $dist
+          if ($LASTEXITCODE) { throw 'Verified portable repackaging failed' }
+          $stage=Join-Path $dist 'qing-zip-0.12.23-portable';$setup=Join-Path $dist 'qing-zip-0.12.23-setup.exe'
+          $nsis=Join-Path $inputs 'nsis/nsis-3.13/makensis.exe'
+          & $nsis /INPUTCHARSET UTF8 '/DVERSION=0.12.23' "/DSTAGING=$stage" "/DOUTPUT=$setup" scripts/installer.nsi
+          if ($LASTEXITCODE) { throw 'NSIS repackaging failed' }
+          Copy-Item $receipts[0].FullName evidence/hardened-build.json
+          Copy-Item $audits[0].FullName evidence/pe-security.json
+          @{reference_portable_sha256=(Get-FileHash $packages[0].FullName -Algorithm SHA256).Hash;gui_sha256=(Get-FileHash (Join-Path $bins 'obz-gui.exe') -Algorithm SHA256).Hash;setup_sha256=(Get-FileHash $setup -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content evidence/binaries.json -Encoding utf8
+      - name: Repeat isolated install, upgrade, data hashes, and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-followup-inputs';$dist=Join-Path $env:RUNNER_TEMP 'qz-followup-dist'
+          python scripts/check-nsis-upgrade-hosted.py --old-setup (Join-Path $inputs 'qing-zip-0.12.20-setup.exe') --old-portable (Join-Path $inputs 'qing-zip-0.12.20-portable.zip') --candidate-setup (Join-Path $dist 'qing-zip-0.12.23-setup.exe') --candidate-stage (Join-Path $dist 'qing-zip-0.12.23-portable') --out evidence/acceptance
+          if ($LASTEXITCODE) { throw 'Strict acceptance failed; inspect data checks and preserved-file receipt' }
+      - name: Upload pass, failure and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nsis-user-data-followup-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: evidence/

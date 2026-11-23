@@ -125,7 +125,15 @@ def main():
         extracted=output/source.name
         check(sha(extracted)==source_sha and sha(archive)==original_sha,'extraction or source archive changed')
         passed('upgraded_cli_tests_and_extracts_original_archive')
+        data_paths={'source':source,'archive':archive,'extracted':extracted,
+                    'inside_sentinel':sentinel,'outside_sentinel':external}
+        before_uninstall={name:sha(path) for name,path in data_paths.items()}
+        report['user_data_before_uninstall']=before_uninstall;save()
         uninstall(inst,root);uninstalled=True
+        after_uninstall={name:sha(path) if path.is_file() else None for name,path in data_paths.items()}
+        report['user_data_after_uninstall']=after_uninstall;save()
+        check(after_uninstall==before_uninstall,'uninstall changed or removed synthetic user data')
+        passed('uninstall_preserved_all_synthetic_user_data')
         check(not (shortcuts/'qing-zip.lnk').exists() and not (shortcuts/'卸载.lnk').exists(),'owned Start menu shortcuts remained')
         report['candidate_files_remaining']=[name for name in sorted(shipped) if (inst/name).exists()]
         save()
