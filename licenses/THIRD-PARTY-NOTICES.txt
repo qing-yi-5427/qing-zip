@@ -74,6 +74,11 @@ base32ct 0.3.1 | Apache-2.0 OR MIT
   Repository: https://github.com/RustCrypto/formats
   Notices: rust/base32ct-0.3.1/LICENSE-APACHE, rust/base32ct-0.3.1/LICENSE-MIT
   Status: preserved
+arrayvec 0.7.8 | MIT OR Apache-2.0
+  https://static.crates.io/crates/arrayvec/arrayvec-0.7.8.crate
+  Repository: https://github.com/bluss/arrayvec
+  Notices: rust/arrayvec-0.7.8/LICENSE-APACHE, rust/arrayvec-0.7.8/LICENSE-MIT
+  Status: preserved
 base64 0.23.1 | MIT OR Apache-2.0
   https://static.crates.io/crates/base64/base64-0.23.1.crate
   Repository: https://github.com/marshallpierce/rust-base64
@@ -113,6 +118,11 @@ bitstream-io 4.10.0 | MIT/Apache-2.0
   https://static.crates.io/crates/bitstream-io/bitstream-io-4.10.0.crate
   Repository: https://github.com/tuffy/bitstream-io
   Notices: rust/bitstream-io-4.10.0/LICENSE-APACHE, rust/bitstream-io-4.10.0/LICENSE-MIT
+  Status: preserved
+blake3 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception
+  https://static.crates.io/crates/blake3/blake3-1.8.7.crate
+  Repository: https://github.com/BLAKE3-team/BLAKE3
+  Notices: rust/blake3-1.8.7/LICENSE_A2, rust/blake3-1.8.7/LICENSE_A2LLVM, rust/blake3-1.8.7/LICENSE_CC0
   Status: preserved
 block-buffer 0.10.4 | MIT OR Apache-2.0
   https://static.crates.io/crates/block-buffer/block-buffer-0.10.4.crate
@@ -253,6 +263,11 @@ const-oid 0.10.2 | Apache-2.0 OR MIT
   https://static.crates.io/crates/const-oid/const-oid-0.10.2.crate
   Repository: https://github.com/RustCrypto/formats
   Notices: rust/const-oid-0.10.2/LICENSE-APACHE, rust/const-oid-0.10.2/LICENSE-MIT
+  Status: preserved
+constant_time_eq 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0
+  https://static.crates.io/crates/constant_time_eq/constant_time_eq-0.4.2.crate
+  Repository: https://github.com/cesarb/constant_time_eq
+  Notices: rust/constant_time_eq-0.4.2/LICENSE-APACHE, rust/constant_time_eq-0.4.2/LICENSE-CC0, rust/constant_time_eq-0.4.2/LICENSE-MIT0
   Status: preserved
 constant_time_eq 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0
   https://static.crates.io/crates/constant_time_eq/constant_time_eq-0.6.1.crate

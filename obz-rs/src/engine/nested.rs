@@ -42,6 +42,32 @@ struct WorkingFileVersion {
     created: u64,
     modified: u64,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RecoveryDigest {
+    // Index entries created before the algorithm field used SHA-256.
+    #[default]
+    Sha256,
+    Blake3,
+}
+
+impl RecoveryDigest {
+    fn digest(self, file: &mut impl Read, control: &JobControl) -> Result<[u8; 32], String> {
+        match self {
+            Self::Sha256 => {
+                let mut hash = Sha256::new();
+                hash_chunks(file, control, |bytes| hash.update(bytes))?;
+                Ok(hash.finalize().into())
+            }
+            Self::Blake3 => {
+                let mut hash = blake3::Hasher::new();
+                hash_chunks(file, control, |bytes| { hash.update(bytes); })?;
+                Ok(*hash.finalize().as_bytes())
+            }
+        }
+    }
+}
 impl WorkingFileVersion {
     fn from_file(file: &File) -> Result<Self, String> {
         let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -65,6 +91,8 @@ pub struct RecoveryCopy {
     workspace_identity: (u32, u64),
     original_hash: [u8; 32],
     committed: Option<(WorkingFileVersion, [u8; 32])>,
+    #[serde(default)]
+    digest: RecoveryDigest,
 }
 pub struct PinnedRecoveryCopy {
     _source: engine_stream::PinnedSource,
@@ -76,7 +104,7 @@ impl RecoveryCopy {
         if WorkingFileVersion::from_file(&source)? != committed {
             return Ok(false);
         }
-        let hash = digest(&mut *source, &JobControl::new())?;
+        let hash = self.digest.digest(&mut *source, &JobControl::new())?;
         self.committed = (hash != self.original_hash).then_some((committed, hash));
         Ok(true)
     }
@@ -103,7 +131,7 @@ impl RecoveryCopy {
         {
             return Ok(None);
         }
-        if verify_bytes && digest(&mut *source, &JobControl::new())? != *hash {
+        if verify_bytes && self.digest.digest(&mut *source, &JobControl::new())? != *hash {
             return Ok(None);
         }
         Ok(Some(PinnedRecoveryCopy { _source: source }))
@@ -139,7 +167,7 @@ fn ordinary_recovery_zip_from(path: &Path, source: &mut File) -> Result<bool, St
         {
             return Ok(false);
         }
-        let mut archive = zip::ZipArchive::new(std::io::BufReader::with_capacity(64 * 1024, source))
+        let archive = zip::ZipArchive::new(std::io::BufReader::with_capacity(64 * 1024, source))
             .map_err(|e| e.to_string())?;
         Ok(archive.len() == entries
             && (0..entries).all(|index| archive.by_index_data(index).is_ok_and(|member| !member.encrypted())))
@@ -179,21 +207,20 @@ fn utf8(path: &Path) -> Result<&str, String> {
         .ok_or_else(|| "invalid archive path".to_string())
 }
 
-fn digest(file: &mut impl Read, control: &JobControl) -> Result<[u8; 32], String> {
-    let mut hash = Sha256::new();
+fn hash_chunks(file: &mut impl Read, control: &JobControl, mut update: impl FnMut(&[u8])) -> Result<(), String> {
     let mut buffer = vec![0; 256 * 1024];
     loop {
         control.check()?;
         let size = file.read(&mut buffer).map_err(|err| err.to_string())?;
         if size == 0 {
-            return Ok(hash.finalize().into());
+            return Ok(());
         }
-        hash.update(&buffer[..size]);
+        update(&buffer[..size]);
     }
 }
 
 // Bind one validated ZIP namespace to the held source and send the exact
-// member to SHA-256. Candidate publication also verifies all unrelated members.
+// member to BLAKE3. Candidate publication also verifies all unrelated members.
 // Other decoders retain the private extraction path and its verification.
 fn zip_member_digest(
     path: &Path,
@@ -239,7 +266,7 @@ fn zip_member_digest(
         if !whole_archive && !selected { continue; }
         let mut file = archive.by_index(index).map_err(|error| error.to_string())?;
         let mut whole = crc32fast::Hasher::new();
-        let mut selected_hash = selected.then(Sha256::new);
+        let mut selected_hash = selected.then(blake3::Hasher::new);
         let mut size = 0u64;
         loop {
             job.check()?;
@@ -256,7 +283,7 @@ fn zip_member_digest(
             return Err("ZIP size or CRC mismatch".into());
         }
         if let Some(hash) = selected_hash {
-            matching_hash = Some(hash.finalize().into());
+            matching_hash = Some(*hash.finalize().as_bytes());
         }
     }
     job.check()?;
@@ -315,7 +342,7 @@ impl NestedArchive {
             return Err("expected exactly one nested archive member".into());
         }
         let mut content = engine_stream::pin(&path)?;
-        let original_hash = digest(&mut *content, &control(options))?;
+        let original_hash = RecoveryDigest::Blake3.digest(&mut *content, &control(options))?;
         drop(content);
         Ok(Self {
             directory,
@@ -353,7 +380,7 @@ impl NestedArchive {
     }
     pub fn has_changes(&self, options: &EngineOptions) -> Result<bool, String> {
         let mut working = engine_stream::pin(&self.path)?;
-        Ok(digest(&mut *working, &control(options))? != self.original_hash)
+        Ok(RecoveryDigest::Blake3.digest(&mut *working, &control(options))? != self.original_hash)
     }
     pub fn path(&self) -> &Path {
         &self.path
@@ -365,6 +392,7 @@ impl NestedArchive {
             workspace_identity: super::directory_identity(&workspace)?,
             original_hash: self.original_hash,
             committed: None,
+            digest: RecoveryDigest::Blake3,
         })
     }
     pub fn has_ordinary_source(&self) -> bool {
@@ -407,7 +435,7 @@ impl NestedArchive {
     pub fn save(&mut self, options: &EngineOptions) -> Result<(), String> {
         let job = control(options);
         let mut working = engine_stream::pin(&self.path)?;
-        let next_hash = digest(&mut *working, &job)?;
+        let next_hash = RecoveryDigest::Blake3.digest(&mut *working, &job)?;
         if next_hash == self.original_hash {
             return Ok(());
         }
@@ -485,6 +513,9 @@ mod tests {
         fs::write(&parent, zip(&[("inner.zip", &original)])).unwrap();
         let tab = NestedArchive::open(utf8(&parent).unwrap(), "inner.zip", &Default::default()).unwrap();
         let mut recovery = tab.recovery_copy().unwrap();
+        let mut legacy = recovery.clone();
+        legacy.digest = RecoveryDigest::Sha256;
+        legacy.original_hash = Sha256::digest(&original).into();
         let path = tab.path();
         assert!(recovery.pin_changed(path, "inner.zip", true).unwrap().is_none());
         let identical = ArchiveRevision::new(path, path).unwrap();
@@ -499,9 +530,19 @@ mod tests {
             inputs: vec!["before.txt".into(), "after.txt".into()], options,
             ..Default::default()
         }).unwrap();
-        assert!(recovery.record_commit(path, &receipt.take().unwrap()).unwrap());
+        let committed = receipt.take().unwrap();
+        assert!(recovery.record_commit(path, &committed).unwrap());
         assert!(recovery.pin_changed(path, "inner.zip", false).unwrap().is_some());
         assert!(recovery.pin_changed(path, "inner.zip", true).unwrap().is_some());
+        let saved = fs::read(path).unwrap();
+        assert_eq!(recovery.committed.as_ref().unwrap().1, *blake3::hash(&saved).as_bytes());
+        assert!(legacy.record_commit(path, &committed).unwrap());
+        assert_eq!(legacy.committed.as_ref().unwrap().1, <[u8; 32]>::from(Sha256::digest(&saved)));
+        let mut legacy_json = serde_json::to_value(legacy).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("digest");
+        let old_record: RecoveryCopy = serde_json::from_value(legacy_json).unwrap();
+        assert!(old_record.pin_changed(path, "inner.zip", true).unwrap().is_some());
+        drop(committed);
         assert_eq!(member(path, "after.txt"), b"ordinary fixture");
         assert_eq!(member(&parent, "inner.zip"), original);
         let mut stale = recovery.clone();
@@ -545,7 +586,7 @@ mod tests {
         let parent = root.path().join("normal.zip");
         fs::write(&parent, zip(&[("entry.bin", b"working bytes"), ("sibling", b"sibling")])).unwrap();
         let mut pinned = engine_stream::pin(&parent).unwrap();
-        let expected: [u8; 32] = Sha256::digest(b"working bytes").into();
+        let expected = *blake3::hash(b"working bytes").as_bytes();
         assert_eq!(
             zip_member_digest(&parent, "entry.bin", &EngineOptions::default(), &mut pinned, false).unwrap(),
             Some(expected)
