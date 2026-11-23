@@ -253,7 +253,12 @@ jobs:
           $captureArgs=@('--exe', $exe[0].FullName)
           if ($env:NESTED_EXPECT_RECOVERY -eq 'true') { $captureArgs += '--expect-recovery' }
           python scripts/nested_restart_gui.py @captureArgs
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($env:NESTED_EXPECT_RECOVERY -eq 'true') {
+            python scripts/nested_multi_layer_recovery.py --exe $exe[0].FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          exit 0
       - name: Preserve real GUI observations and cleanup
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

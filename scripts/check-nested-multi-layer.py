@@ -52,14 +52,18 @@ def checked_members(data):
         return {name: package.read(name) for name in paths}
 
 
-def verify_package(exe, hardening, package):
-    expected = json.loads(hardening.read_text(encoding="utf-8-sig"))
+def verify_package(args):
+    names = ("qing-zip.exe", "obz.exe", "obz-worker.exe")
+    actual = {name: digest(args.exe.with_name(name)) for name in names}
+    if args.staged_sha256:
+        assert actual == dict(zip(names, (value.lower() for value in args.staged_sha256), strict=True))
+        return {"binaries_sha256": actual, "source_artifact": "locally staged portable directory"}
+    expected = json.loads(args.hardening.read_text(encoding="utf-8-sig"))
     assert expected["target"] == "x86_64-pc-windows-msvc"
     binaries = {item["name"]: item["sha256"] for item in expected["binaries"]}
-    actual = {name: digest(exe.with_name(name)) for name in ("qing-zip.exe", "obz.exe", "obz-worker.exe")}
     assert actual == {"qing-zip.exe": binaries["obz-gui.exe"], "obz.exe": binaries["obz.exe"],
                       "obz-worker.exe": binaries["obz-worker.exe"]}
-    return {"binaries_sha256": actual, "portable_zip_sha256": digest(package)}
+    return {"binaries_sha256": actual, "portable_zip_sha256": digest(args.package)}
 
 
 def allow_private_launch():
@@ -194,6 +198,9 @@ def arm_click_timing(page, feedback):
 def close_baseline(page, process):
     page.locator('[data-window="close"]').click()
     expect(page.get_by_text("保存内层压缩包的更改？", exact=True)).to_be_visible()
+    overlay = page.locator('#qa-overlay:not([hidden])')
+    expect(overlay).to_contain_text("middle.zip")
+    expect(overlay).not_to_contain_text("inner.zip")
     try:
         page.locator('[data-action="nested-close-discard"]').click()
     except Error:
@@ -202,8 +209,8 @@ def close_baseline(page, process):
     assert win32process.GetExitCodeProcess(process) == 0
 
 
-def exercise(args, fixture, report):
-    leaf_original = {"leaf.txt": b"ordinary leaf payload\n", "inner-peer.txt": b"untouched inner peer\n"}
+def prepare_case(fixture, leaf_payload=b"ordinary leaf payload\n"):
+    leaf_original = {"leaf.txt": leaf_payload, "inner-peer.txt": b"untouched inner peer\n"}
     inner_original = archive(leaf_original)
     middle_peer = b"untouched middle peer\n"
     outer_peer = b"untouched outer peer\n"
@@ -213,75 +220,90 @@ def exercise(args, fixture, report):
     initial.write_bytes(archive(outer_members))
     sibling = fixture / "filesystem-peer.txt"
     sibling.write_bytes(b"untouched filesystem peer\n")
+    return initial, sibling
+
+
+def exercise_conflict(page, fixture, initial, sibling, report, expect_feedback, new_name="changed-leaf.txt"):
+    outer_members = checked_members(initial)
+    middle_original = outer_members["middle.zip"]
+    inner_original = checked_members(middle_original)["inner.zip"]
+    leaf_original = checked_members(inner_original)
+    middle_peer = checked_members(middle_original)["middle-peer.txt"]
+    outer_peer = outer_members["outer-peer.txt"]
     report["initial_outer_sha256"] = digest(initial)
     report["filesystem_peer_sha256"] = digest(sibling)
+    page.locator('[data-entry="middle.zip"]').dblclick(timeout=45000)
+    page.locator('[data-entry="inner.zip"]').dblclick(timeout=45000)
+    page.locator('[data-entry="leaf.txt"]').click(button="right", timeout=45000)
+    page.locator('#oa-menu [data-action="rename"]').click()
+    page.locator('#qa-rename').fill(new_name)
+    page.locator('[data-action="rename-submit"]').click()
+    expect(page.locator(f'[data-entry="{new_name}"]')).to_be_visible(timeout=45000)
+    before = sessions(page, fixture)
+    assert set(before) == {"inner.zip", "middle.zip"}
+    assert before["inner.zip"]["dirty"] and not before["middle.zip"]["dirty"], before
+    inner_copy, middle_copy = (Path(before[name]["path"]) for name in ("inner.zip", "middle.zip"))
+    inner_sha = digest(inner_copy)
+    edited = {new_name: leaf_original["leaf.txt"], "inner-peer.txt": leaf_original["inner-peer.txt"]}
+    assert checked_members(inner_copy) == edited and digest(middle_copy) == digest(middle_original)
+    assert digest(initial) == report["initial_outer_sha256"]
+
+    external_middle = archive({"inner.zip": inner_original, "middle-peer.txt": middle_peer,
+                               "external-middle.txt": b"separate writer\n"})
+    external_outer = {**outer_members, "middle.zip": external_middle,
+                      "external-outer.txt": b"separate writer\n"}
+    external_bytes = archive(external_outer)
+    expected_outer = digest(external_bytes)
+    identity = initial.stat().st_ino
+    # A separate ordinary writer can retain the parent identity while replacing the selected member's bytes.
+    with initial.open("r+b") as output:
+        output.write(external_bytes)
+        output.truncate()
+        output.flush()
+        os.fsync(output.fileno())
+    assert identity == initial.stat().st_ino
+    report["same_outer_file_id_after_external_write"] = True
+    assert expected_outer != report["initial_outer_sha256"] and digest(initial) == expected_outer
+
+    arm_click_timing(page, expect_feedback)
+    page.locator('[data-action="save-nested"]').click()
+    failure = wait_for_conflict(page, expect_feedback)
+    after = sessions(page, fixture)
+    newest = checked_members(middle_copy)
+    assert newest.keys() == {"inner.zip", "middle-peer.txt"}
+    assert newest["middle-peer.txt"] == middle_peer and digest(newest["inner.zip"]) == inner_sha
+    assert checked_members(newest["inner.zip"]) == edited
+    assert not after["inner.zip"]["dirty"] and after["middle.zip"]["dirty"], after
+    assert digest(initial) == expected_outer and checked_members(initial) == external_outer
+    assert digest(sibling) == report["filesystem_peer_sha256"]
+    assert checked_members(checked_members(initial)["middle.zip"])["inner.zip"] == inner_original
+    if expect_feedback:
+        expect(page.locator('[data-archive-tab]').filter(has_text="middle.zip")).to_contain_text("● middle.zip")
+        expect(page.locator('[data-archive-tab]').filter(has_text="inner.zip")).not_to_contain_text("●")
+    timing = page.evaluate("window.qzNestedTiming()")
+    assert isinstance(timing["failure_card_ms"], (float, int)) and timing["failure_card_ms"] >= 0
+    if expect_feedback:
+        assert isinstance(timing["correct_middle_tab_ms"], (float, int)) and timing["correct_middle_tab_ms"] >= 0
+    report.update({"external_outer_sha256": expected_outer, "outer_untouched_by_conflicting_save": True,
+                   "after_save_dirty": {name: row["dirty"] for name, row in after.items()},
+                   "immediate_dirty_tab_labels": [text.strip() for text in
+                       page.locator('[data-archive-tab]').all_text_contents() if "●" in text],
+                   "timing": timing, "retained_private_middle_sha256": digest(middle_copy), "edited_inner_sha256": inner_sha,
+                   "outer_peer_sha256": digest(outer_peer), "middle_peer_sha256": digest(middle_peer),
+                   "inner_peer_sha256": digest(leaf_original["inner-peer.txt"]),
+                   "edited_leaf_sha256": digest(edited[new_name]),
+                   "save_failure": failure.replace(str(fixture), "<test-root>")})
+    return inner_copy, middle_copy
+
+
+def exercise(args, fixture, report):
+    initial, sibling = prepare_case(fixture)
     with private_process(args.exe, fixture, initial) as (page, process, pid):
-        page.locator('[data-entry="middle.zip"]').dblclick(timeout=45000)
-        page.locator('[data-entry="inner.zip"]').dblclick(timeout=45000)
-        page.locator('[data-entry="leaf.txt"]').click(button="right", timeout=45000)
-        page.locator('#oa-menu [data-action="rename"]').click()
-        page.locator('#qa-rename').fill("changed-leaf.txt")
-        page.locator('[data-action="rename-submit"]').click()
-        expect(page.locator('[data-entry="changed-leaf.txt"]')).to_be_visible(timeout=45000)
-        before = sessions(page, fixture)
-        assert set(before) == {"inner.zip", "middle.zip"}
-        assert before["inner.zip"]["dirty"] and not before["middle.zip"]["dirty"], before
-        inner_copy, middle_copy = (Path(before[name]["path"]) for name in ("inner.zip", "middle.zip"))
-        inner_sha = digest(inner_copy)
-        edited = {"changed-leaf.txt": leaf_original["leaf.txt"], "inner-peer.txt": leaf_original["inner-peer.txt"]}
-        assert checked_members(inner_copy) == edited and digest(middle_copy) == digest(middle_original)
-        assert digest(initial) == report["initial_outer_sha256"]
-
-        external_middle = archive({"inner.zip": inner_original, "middle-peer.txt": middle_peer,
-                                   "external-middle.txt": b"separate writer\n"})
-        external_outer = {**outer_members, "middle.zip": external_middle,
-                          "external-outer.txt": b"separate writer\n"}
-        external_bytes = archive(external_outer)
-        expected_outer = digest(external_bytes)
-        identity = initial.stat().st_ino
-        # Simulate an independent ordinary tool rewriting an already open ZIP
-        # in place. The parent identity stays fixed; the selected member changes.
-        with initial.open("r+b") as output:
-            output.write(external_bytes)
-            output.truncate()
-            output.flush()
-            os.fsync(output.fileno())
-        assert identity == initial.stat().st_ino
-        report["same_outer_file_id_after_external_write"] = True
-        assert expected_outer != report["initial_outer_sha256"] and digest(initial) == expected_outer
-
-        arm_click_timing(page, args.expect_feedback)
-        page.locator('[data-action="save-nested"]').click()
-        failure = wait_for_conflict(page, args.expect_feedback)
-        after = sessions(page, fixture)
-        newest = checked_members(middle_copy)
-        assert newest.keys() == {"inner.zip", "middle-peer.txt"}
-        assert newest["middle-peer.txt"] == middle_peer and digest(newest["inner.zip"]) == inner_sha
-        assert checked_members(newest["inner.zip"]) == edited
-        assert not after["inner.zip"]["dirty"] and after["middle.zip"]["dirty"], after
-        assert digest(initial) == expected_outer and checked_members(initial) == external_outer
-        assert digest(sibling) == report["filesystem_peer_sha256"]
-        assert checked_members(checked_members(initial)["middle.zip"])["inner.zip"] == inner_original
-        if args.expect_feedback:
-            expect(page.locator('[data-archive-tab]').filter(has_text="middle.zip")).to_contain_text("● middle.zip")
-            expect(page.locator('[data-archive-tab]').filter(has_text="inner.zip")).not_to_contain_text("●")
-        timing = page.evaluate("window.qzNestedTiming()")
-        assert isinstance(timing["failure_card_ms"], (float, int)) and timing["failure_card_ms"] >= 0
-        if args.expect_feedback:
-            assert isinstance(timing["correct_middle_tab_ms"], (float, int)) and timing["correct_middle_tab_ms"] >= 0
-        report["timing"] = timing
-        report.update({"external_outer_sha256": expected_outer, "outer_untouched_by_conflicting_save": True,
-                       "after_save_dirty": {name: row["dirty"] for name, row in after.items()},
-                       "immediate_dirty_tab_labels": [text.strip() for text in
-                           page.locator('[data-archive-tab]').all_text_contents() if "●" in text],
-                       "retained_private_middle_sha256": digest(middle_copy), "edited_inner_sha256": inner_sha,
-                       "outer_peer_sha256": digest(outer_peer), "middle_peer_sha256": digest(middle_peer),
-                       "inner_peer_sha256": digest(leaf_original["inner-peer.txt"]),
-                       "edited_leaf_sha256": digest(edited["changed-leaf.txt"]), "first_process_id": pid,
-                       "save_failure": failure.replace(str(fixture), "<test-root>")})
+        report["first_process_id"] = pid
+        inner_copy, middle_copy = exercise_conflict(page, fixture, initial, sibling, report, args.expect_feedback)
         page.screenshot(path=args.out / "conflicting-save.png")
         close_baseline(page, process)
-    assert digest(initial) == expected_outer and digest(sibling) == report["filesystem_peer_sha256"]
+    assert digest(initial) == report["external_outer_sha256"] and digest(sibling) == report["filesystem_peer_sha256"]
     report["normal_close_discarded_private_copies"] = not inner_copy.exists() and not middle_copy.exists()
     assert report["normal_close_discarded_private_copies"]
     with private_process(args.exe, fixture, initial) as (page, process, pid):
@@ -308,20 +330,29 @@ def exercise(args, fixture, report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for label in ("exe", "hardening", "package", "out"):
+    for label in ("exe", "out"):
         parser.add_argument("--" + label, required=True, type=Path)
+    for label in ("hardening", "package"):
+        parser.add_argument("--" + label, type=Path)
+    parser.add_argument("--staged-sha256", nargs=3, metavar=("GUI_SHA", "CLI_SHA", "WORKER_SHA"))
     parser.add_argument("--source", required=True)
     parser.add_argument("--expect-feedback", action="store_true",
                         help="Require localized conflict guidance and exactly the backend's dirty middle tab")
     args = parser.parse_args()
+    if args.staged_sha256 and (args.hardening or args.package):
+        parser.error("A staged directory uses --staged-sha256 without a ZIP or hardening receipt")
+    if not args.staged_sha256 and not (args.hardening and args.package):
+        parser.error("Provide --hardening and --package, or explicitly pin three staged SHA-256s")
     for label in ("exe", "hardening", "package"):
-        setattr(args, label, getattr(args, label).resolve(strict=True))
+        path = getattr(args, label)
+        if path:
+            setattr(args, label, path.resolve(strict=True))
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=False)
     report = {"status": "failed", "source": args.source,
               "windows_build": sys.getwindowsversion().build, "expect_feedback": args.expect_feedback,
               "desktop": "private Win32 non-input desktop, real Tauri/WebView2 product"}
-    report.update(verify_package(args.exe, args.hardening, args.package))
+    report.update(verify_package(args))
     try:
         private = tempfile.TemporaryDirectory(prefix="qz-three-layer-", dir=args.out.parent,
                                               ignore_cleanup_errors=True)
