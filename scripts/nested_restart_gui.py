@@ -181,15 +181,19 @@ def main():
                     root.mkdir()
                     temp = root / 'temp'
                     temp.mkdir()
+                    fixture_started = time.perf_counter()
                     outer = fixture(root, large=options.large)
+                    fixture_seconds = round(time.perf_counter() - fixture_started, 3)
                     before = inspect_outer(outer)
                     neighbour_hash = digest(root / 'neighbour.txt')
                     env = dict(os.environ, TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(root / 'local'), APPDATA=str(root / 'roaming'), WEBVIEW2_USER_DATA_FOLDER=str(root / 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=arguments)
-                    entry = report['scenarios'][case] = {'before': before, 'neighbour_sha256': neighbour_hash, 'large_member_bytes': 64 * 1024 * 1024 if options.large else 0}
+                    entry = report['scenarios'][case] = {'before': before, 'neighbour_sha256': neighbour_hash, 'large_member_bytes': 64 * 1024 * 1024 if options.large else 0, 'fixture_prepare_seconds': fixture_seconds}
                     save()
                     app, browser, page = launch(exe, outer, root, env, port, driver, lifetime)
                     entry['first_gui_pid'] = app.pid
+                    edit_started = time.perf_counter()
                     working = edit(page, temp)
+                    entry['edit_elapsed_seconds'] = round(time.perf_counter() - edit_started, 3)
                     entry['edited_sha256'] = digest(working)
                     entry['edited_members'] = members(working.read_bytes())
                     entry['outer_unchanged_after_edit'] = inspect_outer(outer) == before
@@ -266,7 +270,9 @@ def main():
                         recovered_dir = top / 'recovered-output'
                         recovered_dir.mkdir()
                         recovered = recovered_dir / 'recovered-inner.zip'
+                        save_started = time.perf_counter()
                         save_retained_copy(page, app, recovered, evidence)
+                        entry['recovery_save_elapsed_seconds'] = round(time.perf_counter() - save_started, 3)
                         entry['recovered_sha256'] = digest(recovered)
                         entry['recovered_members'] = members(recovered.read_bytes())
                         entry['recovered_matches_edit'] = entry['recovered_sha256'] == entry['edited_sha256'] and entry['recovered_members'] == entry['edited_members']
