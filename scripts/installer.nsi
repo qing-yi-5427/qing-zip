@@ -14,6 +14,9 @@ Unicode true
 !else
 !define PRODUCT_KEY "qing-zip"
 !define PRODUCT_LABEL "qing-zip"
+!if "${VERSION}" == "0.12.23"
+!define V01220_RETIRED_REVIEW
+!endif
 !endif
 Name "${PRODUCT_LABEL}"
 !ifndef OUTPUT
@@ -86,7 +89,25 @@ Section "qing-zip（必需）" Main
  !else
   !error "Missing required archive worker in package staging"
  !endif
+!ifdef V01220_RETIRED_REVIEW
+ ClearErrors
+!endif
  File /r "${STAGING}\*"
+!ifdef V01220_RETIRED_REVIEW
+ ; The new helper moves only the files individually confirmed by the user.
+ IfErrors legacy_review_done
+ IfSilent legacy_review_done
+ ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_KEY}" "DisplayVersion"
+ ClearErrors
+ StrCmp $0 "0.12.20" 0 legacy_review_done
+ ExecWait '$\"$INSTDIR\qing-zip.exe$\" --review-retired-install-files' $0
+ IfErrors legacy_review_failed
+ StrCmp $0 0 legacy_review_done
+ legacy_review_failed:
+ DetailPrint "无法完成旧版文件检查。未确认的文件保留在原位置。"
+ ClearErrors
+ legacy_review_done:
+!endif
  WriteUninstaller "$INSTDIR\Uninstall.exe"
  CreateDirectory "$SMPROGRAMS\${PRODUCT_KEY}"
  !insertmacro InstallShortcut start "$INSTDIR\qing-zip.exe"

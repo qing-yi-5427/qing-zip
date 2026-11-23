@@ -1388,7 +1388,7 @@ pub(crate) fn no_links(path: &Path) -> Result<(), String> {
     Ok(())
 }
 #[cfg(windows)]
-fn directory_identity(file: &File) -> Result<(u32, u64), String> {
+pub(crate) fn directory_identity(file: &File) -> Result<(u32, u64), String> {
     directory_identity_and_attributes(file).map(|(identity, _)| identity)
 }
 #[cfg(windows)]

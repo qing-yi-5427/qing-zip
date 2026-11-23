@@ -17,6 +17,8 @@ pub mod machine_policy;
 pub mod korean;
 pub mod legacy;
 pub mod installer;
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub mod retired_install;
 
 pub mod checksum;
 pub mod legacy_worker;
