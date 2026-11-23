@@ -1,0 +1,547 @@
+{
+  "baseline_source": "e9eeecd414fa7379fc959967fb1645ced24eeb62",
+  "candidate_source": "b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b",
+  "candidate_package": {
+    "sha256": "db006b7aa53e52eb747ca3d908782dc08d75b66a7550070d5898bf95062676b1",
+    "size_bytes": 33381094,
+    "previous_sha256": "7611a000a3f6ffcc4a93fdb3c6e8189b9b563fd95cfe88019530b59060d72932",
+    "entries": 731,
+    "changed": [
+      "obz-worker.exe",
+      "obz.exe",
+      "qing-zip.exe"
+    ],
+    "binaries": {
+      "qing-zip.exe": "5db1f9479f43ca29b7270f35ba896442b2905a5b1dc7b3c6ade724dffbc00b11",
+      "obz.exe": "600cfebdc7b1cc8d9dac754ad1b07921488dd51d5ac4d9cb485db80ea4ffcf62",
+      "obz-worker.exe": "6b0aacb6a7cd38f5c5c195b80135a6b8af9dcab4e49260f88ba98e48e2fe6e23"
+    }
+  },
+  "extraction_comparison": [
+    {
+      "archive": "sample.zip",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "资料/item.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52",
+        "other/item.txt": "a3ead5eedad5df82318c51685dbc1c147a36d1ff8584fc82de6b08d0bf63a795",
+        "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "sources": {
+        "sample.zip": "c20c38b466976716dcb1804665225af81605cbf6d5ec1fa14a05091d9df2092d"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "sample.7z",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "资料/item.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52",
+        "other/item.txt": "a3ead5eedad5df82318c51685dbc1c147a36d1ff8584fc82de6b08d0bf63a795",
+        "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "sources": {
+        "sample.7z": "d844b5e23cbf3bf15448e68ebea4286bc2acbebef55a01456ccc0eaf1a34dab7"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "sample.tar",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "资料/item.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52",
+        "other/item.txt": "a3ead5eedad5df82318c51685dbc1c147a36d1ff8584fc82de6b08d0bf63a795",
+        "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "sources": {
+        "sample.tar": "92937d804b75896cda5bda0c1b21fad95f6c081368f9c50187d1258186c9e36d"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "payload.txt.gz",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "payload.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52"
+      },
+      "sources": {
+        "payload.txt.gz": "a6b4c093b75550285622ea7ffa8528c86786aaab4fcc757ab39427792f8617f3"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "payload.txt.bz2",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "payload.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52"
+      },
+      "sources": {
+        "payload.txt.bz2": "a63e2e1771c2c42bbd3515118d7bbbf8adeaa56647c170920ab75f165fffc1cd"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "payload.txt.xz",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip"
+      ],
+      "files": {
+        "payload.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52"
+      },
+      "sources": {
+        "payload.txt.xz": "0da6fce84e96be2facd5f8c2d32bdfa3a5d53b88cc4e3053983f62cb4a4ebeef"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "rar5-m3.rar",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip",
+        "RARLAB UnRAR"
+      ],
+      "files": {
+        "bigtext_64k.bin": "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"
+      },
+      "sources": {
+        "rar5-m3.rar": "3029e7d1a03e9afaf9d5384caa929cf1fe10165e8b15e38a6e509364a300ad59"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "RARLAB UnRAR": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "compressed.rar",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip",
+        "RARLAB UnRAR"
+      ],
+      "files": {
+        "payload.txt": "c9750e0d6cad39585c508a09a2caf4cf5bc7b5f88265766a41d077a2b214f32f"
+      },
+      "sources": {
+        "compressed.rar": "63167b0bf799022863790ad55e5cb8883e0d21f1862f70bbcf4f35646ba45d64"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "RARLAB UnRAR": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "multivol_oldnaming_rar300.rar",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip",
+        "RARLAB UnRAR"
+      ],
+      "files": {
+        "bigtext_64k.bin": "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"
+      },
+      "sources": {
+        "multivol_oldnaming_rar300.rar": "e1745f67455fdde7eb49864f774430ade66fc82349db9631fda4c4b1ebe66d7d",
+        "multivol_oldnaming_rar300.r00": "265121ab73732354bd015507780b0e57f1a14209b3f55bf7496ab8f2f33fd8d8"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "RARLAB UnRAR": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    },
+    {
+      "archive": "split-store.rar",
+      "engines": [
+        "7-Zip",
+        "qing-zip",
+        "Bandizip",
+        "RARLAB UnRAR"
+      ],
+      "files": {
+        "payload.txt": "c9750e0d6cad39585c508a09a2caf4cf5bc7b5f88265766a41d077a2b214f32f"
+      },
+      "sources": {
+        "split-store.rar": "6d8ef8910a736bc9f6f60f431b0e0951ca6c37a6c8688a3a6690acb512394f5e",
+        "split-store.r00": "1139d8c61a50f1172fd912ba337a950ad3b4c1149a443205cce4f985770be41d",
+        "split-store.r01": "f482d988c684a804845f776e608a2a18e2ca39528449780b0fdee9fc94376634"
+      },
+      "outcomes": {
+        "7-Zip": {
+          "status": "FAIL",
+          "exit": 2,
+          "written": {
+            "payload.txt": "c9750e0d6cad39585c508a09a2caf4cf5bc7b5f88265766a41d077a2b214f32f"
+          }
+        },
+        "qing-zip": {
+          "status": "PASS",
+          "exit": 0
+        },
+        "Bandizip": {
+          "status": "FAIL",
+          "exit": 2,
+          "written": {}
+        },
+        "RARLAB UnRAR": {
+          "status": "PASS",
+          "exit": 0
+        }
+      }
+    }
+  ],
+  "paired_controls": {
+    "windows": "10.0.26300",
+    "binaries": {
+      "base": "dab84002f36b31324a29537e6d47bfd4a177112645bd6e3bd3125cc5c8fa41e1",
+      "candidate": "600cfebdc7b1cc8d9dac754ad1b07921488dd51d5ac4d9cb485db80ea4ffcf62"
+    },
+    "cases": {
+      "sample.zip": {
+        "source_hashes": {
+          "sample.zip": "ab0d7bd963c232f3365da31aa273e875fe034009fe1d51066db2b32fb304e83b"
+        },
+        "expected_files": {
+          "资料/item.txt": "e7c5d2768aaff4cc0d41c53ac808832ccf11bb7bcb44cf2bf22e6bc0c58b7b52",
+          "other/item.txt": "a3ead5eedad5df82318c51685dbc1c147a36d1ff8584fc82de6b08d0bf63a795",
+          "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "warmup_ms": {
+          "base": 61.778,
+          "candidate": 56.867
+        },
+        "pairs_ms": [
+          {
+            "candidate": 53.43,
+            "base": 55.248
+          },
+          {
+            "base": 53.324,
+            "candidate": 58.667
+          },
+          {
+            "candidate": 55.856,
+            "base": 55.847
+          },
+          {
+            "base": 53.958,
+            "candidate": 55.562
+          },
+          {
+            "candidate": 57.342,
+            "base": 55.898
+          },
+          {
+            "base": 56.433,
+            "candidate": 55.055
+          },
+          {
+            "candidate": 55.277,
+            "base": 58.032
+          }
+        ],
+        "medians_ms": {
+          "base": 55.847,
+          "candidate": 55.562
+        },
+        "paired_delta_range_ms": [
+          -2.755,
+          5.343
+        ]
+      },
+      "rar5-m3.rar": {
+        "source_hashes": {
+          "rar5-m3.rar": "3029e7d1a03e9afaf9d5384caa929cf1fe10165e8b15e38a6e509364a300ad59"
+        },
+        "expected_files": {
+          "bigtext_64k.bin": "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"
+        },
+        "warmup_ms": {
+          "base": 58.285,
+          "candidate": 56.764
+        },
+        "pairs_ms": [
+          {
+            "candidate": 58.848,
+            "base": 55.497
+          },
+          {
+            "base": 54.257,
+            "candidate": 53.082
+          },
+          {
+            "candidate": 57.372,
+            "base": 50.517
+          },
+          {
+            "base": 54.883,
+            "candidate": 54.062
+          },
+          {
+            "candidate": 51.349,
+            "base": 53.405
+          },
+          {
+            "base": 54.888,
+            "candidate": 53.803
+          },
+          {
+            "candidate": 54.359,
+            "base": 53.154
+          }
+        ],
+        "medians_ms": {
+          "base": 54.257,
+          "candidate": 54.062
+        },
+        "paired_delta_range_ms": [
+          -2.056,
+          6.855
+        ]
+      },
+      "compressed.rar": {
+        "source_hashes": {
+          "compressed.rar": "63167b0bf799022863790ad55e5cb8883e0d21f1862f70bbcf4f35646ba45d64"
+        },
+        "expected_files": {
+          "payload.txt": "c9750e0d6cad39585c508a09a2caf4cf5bc7b5f88265766a41d077a2b214f32f"
+        },
+        "warmup_ms": {
+          "base": 54.499,
+          "candidate": 53.749
+        },
+        "pairs_ms": [
+          {
+            "candidate": 53.601,
+            "base": 52.518
+          },
+          {
+            "base": 52.675,
+            "candidate": 52.331
+          },
+          {
+            "candidate": 52.327,
+            "base": 51.409
+          },
+          {
+            "base": 50.572,
+            "candidate": 50.892
+          },
+          {
+            "candidate": 50.78,
+            "base": 51.525
+          },
+          {
+            "base": 51.606,
+            "candidate": 55.403
+          },
+          {
+            "candidate": 57.326,
+            "base": 58.438
+          }
+        ],
+        "medians_ms": {
+          "base": 51.606,
+          "candidate": 52.331
+        },
+        "paired_delta_range_ms": [
+          -1.112,
+          3.797
+        ]
+      },
+      "multivol_oldnaming_rar300.rar": {
+        "source_hashes": {
+          "multivol_oldnaming_rar300.rar": "e1745f67455fdde7eb49864f774430ade66fc82349db9631fda4c4b1ebe66d7d",
+          "multivol_oldnaming_rar300.r00": "265121ab73732354bd015507780b0e57f1a14209b3f55bf7496ab8f2f33fd8d8"
+        },
+        "expected_files": {
+          "bigtext_64k.bin": "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"
+        },
+        "warmup_ms": {
+          "base": 56.991,
+          "candidate": 54.708
+        },
+        "pairs_ms": [
+          {
+            "candidate": 54.111,
+            "base": 52.716
+          },
+          {
+            "base": 58.841,
+            "candidate": 52.479
+          },
+          {
+            "candidate": 53.322,
+            "base": 55.409
+          },
+          {
+            "base": 54.092,
+            "candidate": 53.131
+          },
+          {
+            "candidate": 52.128,
+            "base": 52.401
+          },
+          {
+            "base": 50.736,
+            "candidate": 52.814
+          },
+          {
+            "candidate": 59.482,
+            "base": 52.358
+          }
+        ],
+        "medians_ms": {
+          "base": 52.716,
+          "candidate": 53.131
+        },
+        "paired_delta_range_ms": [
+          -6.362,
+          7.124
+        ]
+      }
+    }
+  }
+}

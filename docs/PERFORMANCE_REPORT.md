@@ -4,6 +4,27 @@
 
 这份基线记录 Windows x64 加固便携包中 `obz.exe` 的归档操作，以及工具箱所调用的 LZMA 合成基准。四类样本全部完成创建、列出、校验、解压，源目录、源归档与解压结果通过目录树和 SHA-256 比较。
 
+## 第二轮普通操作实测
+
+在本机 Windows 11 x64 26300，使用同一 SSD、自然文件缓存和两份加固便携包。每个样本先执行一对预热，再交替执行七对解压到新目录的操作。计时包括 CLI 启动和解压，内容与来源 SHA-256 在计时之外核对。对照为上一轮组合 `e9eeecd`，候选为 `b2bf9f3`。下表单位为毫秒。[候选组合源码](https://github.com/qing-yi-5427/qing-zip/tree/b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b) · [RAR 修复](https://github.com/qing-yi-5427/qing-zip/pull/25)
+
+| 已支持的普通样本 | 旧包中位 | 候选中位 | 同一对「候选 − 旧包」范围 |
+| --- | ---: | ---: | ---: |
+| ZIP Deflate | 55.85 | 55.56 | −2.76 至 +5.34 |
+| RAR5 m3 | 54.26 | 54.06 | −2.06 至 +6.86 |
+| 经典 RAR 压缩单卷 | 51.61 | 52.33 | −1.11 至 +3.80 |
+| RAR 3.00 旧式两卷 | 52.72 | 53.13 | −6.36 至 +7.12 |
+
+四组都出现过候选较快和较慢的轮次。目标三卷在旧包上无法成功提取，候选提取结果与官方 UnRAR 一致。[逐轮耗时、样本和二进制哈希](verification/ordinary-archive-round2.json)
+
+复跑命令使用带有分卷样本的组合源码检出目录。
+
+```powershell
+python scripts/measure-ordinary-extraction.py --checkout <组合源码目录> --baseline <旧包的obz.exe> --candidate <候选的obz.exe> --sevenzip <7z.exe> --receipt <新JSON文件>
+```
+
+常态磁盘样本在两台独立的一次性 Windows runner 上运行，使用独占的 96 MiB 固定 VHD。测试 16 MiB 文件的 ZIP Store 创建及对已有同尺寸文件的覆盖提取。每项预热一轮，再测五轮。基线 `51a68cc` 创建期间观察到的已用空间增长均为 16,781,312 字节，覆盖提取为 16,777,216–27,303,936 字节。第一轮组合 `e9eeecd` 的对应范围为 16,781,312–16,846,848 和 21,020,672–32,542,720 字节。覆盖提取完成后的净增均为零。最大实际采样间隔约 19 毫秒，这些数值为采到的峰值下界。独立 runner 的结果不足以判定版本间的空间差异。[逐轮收据与运行条件](https://github.com/qing-yi-5427/qing-zip/pull/24)
+
 ## 环境与计时
 
 - Windows 11 Pro x64 build 26300，AMD Ryzen 7 9800X3D（8 核 / 16 线程），48 GiB RAM，Solidigm SSDPFKKW020X7 2 TB NVMe。便携程序在 `G:`，合成输入与输出由 Python 在同一物理 SSD 的 `%TEMP%` 下创建。

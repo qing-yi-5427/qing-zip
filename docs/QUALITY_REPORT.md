@@ -22,7 +22,8 @@
 | P2 · 创建 ZIP | 在真实创建窗口先选 Deflate、再选择「仅存储」，原版仍压缩，候选写入 ZIP Store。输入、CRC 和读取后的 225,000 字节均已核对。 | PASS · [创建表单和产物](https://github.com/qing-yi-5427/qing-zip/pull/5) |
 | P2 · 智能解压 | 完成后原版将用户带到父目录，候选任务能指向实际保留的顶层目录。主窗口、深度编号、批量、首页文件选择器和命令转交有实机回执。 | PASS · [路径和实机截图](https://github.com/qing-yi-5427/qing-zip/pull/9) |
 | 任务反馈 | 真实 TAR.GZ 解压期间点击取消，窗口显示「正在取消」随后「已取消」，百分比消失，源包及两个已有目标维持原哈希。另一次完整提取后点击输出按钮，核对 Explorer 打开的真实目录。 | PASS · [取消及打开位置](https://github.com/qing-yi-5427/qing-zip/pull/6) |
-| P2 · 经典 RAR 分卷 | 官方 UnRAR 能完整还原一个 RAR 1.5 三卷样本，qing-zip 返回错误且目标为空。其他已测的经典单卷、旧式两卷和 RAR5 样本通过。 | FAIL · [四工具结果](https://github.com/qing-yi-5427/qing-zip/pull/7) |
+| P2 · 经典 RAR 分卷 | 原版对一组旧式未加密存储三卷误报 CRC。候选按成员解包版本读取历史记录，复算完整成员 CRC；缺卷和校验错误时保全已有目标。 | FAIL（原版）→ PASS（该样本的校验、全量和选取提取） · [初始证据](https://github.com/qing-yi-5427/qing-zip/pull/7) · [修复和对照](https://github.com/qing-yi-5427/qing-zip/pull/25) |
+| 密码错误重试 | 原版任务卡和短时提示显示英文。候选显示中文并保留文件损坏这一可能。输入正确密码后输出与来源 SHA-256 一致。 | PASS · [前后截图及数据保全](https://github.com/qing-yi-5427/qing-zip/pull/23) |
 | P2 · 异常退出后占用磁盘 | 强制结束普通归档更新的父进程，原包、输入、独立任务和重试通过。三轮均留有 134,218,001 字节的候选文件。 | FAIL（候选回收） · [真实中断](https://github.com/qing-yi-5427/qing-zip/pull/10) · [修复所需的所有权验证](https://github.com/qing-yi-5427/qing-zip/pull/11) |
 | 性能 · 大 ZIP 选取小文件 | 七对交替测量中，50,000 条目选取单个 33 字节文件的中位耗时由 1,378 降至 607 毫秒。100 条目 ZIP、固实 7z 及 100 MiB 大成员控制组的配对差范围均跨零。 | PASS（本机 x64 样本） · [逐轮测量与文件核对](https://github.com/qing-yi-5427/qing-zip/pull/15) |
 
@@ -62,4 +63,4 @@ python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --seven
 
 ## 后续验收
 
-普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。后续关注已注册一级菜单、Windows 10、存储故障、批量中断和过期候选回收。[产品路线](OPTIMIZATION_ROADMAP.md)
+普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。真实满盘已验证普通 ZIP 创建及覆盖解压的报错、文件保全和腾出空间后的重试。后续关注已注册一级菜单、Windows 10、更新/嵌套写回时盘满、批量中断和过期候选回收。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)

@@ -32,7 +32,8 @@
 | Windows 11 ARM64 菜单及系统无障碍 | 系统实际 100% 缩放、运行中切换高对比度和减少动画，7 项菜单一直可见，纯色/渐变及媒体查询符合系统，最后恢复系统原值。[四次截图与回执](https://github.com/qing-yi-5427/qing-zip/pull/13) | PASS |
 | Windows 11 现代右键 | 可信签名、当前用户注册后的一级菜单、真实点击转交、升级保留菜单及卸载后菜单消失。 | BLOCKED（可信签名和可安装验收环境） |
 | Windows 10 与 Windows 11 ARM64 | Windows 11 ARM64 托管菜单及组件已见上方实测。Windows 10、实际 Windows ARM64 设备和安装后 Explorer 的体验仍待验证。 | BLOCKED（所列未覆盖环境） |
-| 特殊文件系统与磁盘耗尽 | ADS/TxF、重解析及链接、真实盘满，另在获准的隔离环境验证。合成空间不足的预算模型已列在 Rust 单元行。 | BLOCKED（未启用隔离环境） |
+| 普通 ZIP 目标卷已满 | 托管 Windows x64 的独占 NTFS 卷可用空间为零。创建与覆盖解压报告空间不足。已有目标、无关文件、来源和原包均保全，释放空间后重试成功。[逐次回执](https://github.com/qing-yi-5427/qing-zip/pull/22) | PASS（普通 ZIP 两种操作） |
+| 特殊文件系统 | ADS/TxF、重解析及链接另在获准的隔离环境验证。 | BLOCKED（未启用相应环境） |
 | 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。普通嵌套写回已见上方日常回归。桌面保存嵌套编辑、ZIPX、传统加密 ZIP、ALZ/EGG、ISO、其他损坏类型与 ZIP 修复待扩大独立对照。 | NOT RUN |
 | GUI 退出和重启后的恢复 | 引擎取消、密码续接和发布重试已有回归。选取解压取消验证了原有文件保全及句柄释放；真实 CLI 父进程中断、重开和重试另列于下。普通 TAR.GZ 的真实窗口取消与既有目标保全已通过；GUI 退出及重启恢复仍待实测。 | NOT RUN（上述端到端场景） |
 | 异常路径和数量预算 | 深度、数量和字节计费由内存用例验证，也执行了正常样本的选取预算。异常路径及大量嵌套、超文件数的真实归档场景尚待验证。 | NOT RUN（实包边界） |
@@ -41,7 +42,8 @@
 | ZIP/7z 双任务长跑 | Windows x64 连续 1,800.062 秒，1,912 轮观测到进程重叠，3,824 项任务均完成。逐轮复核输入、输出哈希与工作目录清理。[托管运行](https://github.com/qing-yi-5427/qing-zip/actions/runs/45108701387) | PASS（半小时普通合成样本） |
 | 普通归档更新中断 | 三轮强制结束正在更新普通 ZIP 的 CLI，重新打开、校验原包及输入哈希，独立任务继续、重试成功。每轮遗留 134,218,001 字节未发布候选。[逐轮记录](https://github.com/qing-yi-5427/qing-zip/pull/10) | PASS（原包保全及重试） / FAIL（候选回收） |
 | 智能解压桌面入口 | 标准、深度编号、批量、首页文件选择器、已有实例接收命令五条路径核对实际输出。另从真实 Explorer 将错扩展名 ZIP 拖入首页，核对原生悬停提示、识别预告、实际输出和原包哈希。[实机记录](https://github.com/qing-yi-5427/qing-zip/pull/9) | PASS（五种入口与原生拖入） |
-| 经典 RAR 独立工具对照 | RAR 1.5 单卷、RAR 3 旧式两卷均通过。另一个 RAR 1.5 三卷用官方 UnRAR 输出完整文件，qing-zip 失败且输出为空。[四工具记录](https://github.com/qing-yi-5427/qing-zip/pull/7) | PASS（单卷与两卷） / FAIL（三卷样本） |
+| 经典 RAR 独立工具对照 | 存储三卷、压缩单卷和旧式两卷均与官方 UnRAR 内容一致。三卷首版误报 CRC 的证据单独保留。[旧版结果](https://github.com/qing-yi-5427/qing-zip/pull/7) · [修复与回归](https://github.com/qing-yi-5427/qing-zip/pull/25) | PASS（已测样本） |
+| 加密 ZIP 任务失败后重试 | 在真实 Tauri 窗口观察中文诊断。失败时核对原包、输入与已有目标，正确密码重试并复核最终输出哈希。[窗口和哈希](https://github.com/qing-yi-5427/qing-zip/pull/23) | PASS |
 | Rust 格式检查 | `obz-rs` 与 `obz-gui` 均有既有 rustfmt 差异，例如 `obz-rs/build.rs` 和 `obz-gui/src/archive_listing.rs`。 | FAIL |
 
 产物 `qing-zip-0.12.23-portable.zip` 为 33,340,323 字节，SHA-256 为 `61918ca1723598776e79de5ed0f677336ccc2b5c22e5951d49f291dd48e8ab09`。四类普通归档与引擎基准见 [性能基线](PERFORMANCE_REPORT.md)。
