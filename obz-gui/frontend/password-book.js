@@ -11,21 +11,28 @@
     return false;
    }
   }
-  const pickerMarkup = id => `<div class="oa-password-picker">
-   <button type="button" class="qa-button quiet" data-password-picker="${id}" aria-expanded="false" aria-controls="${id}-book">从密码本选择</button>
-   <div id="${id}-book" class="oa-password-choices" hidden></div>
-  </div>`;
+  const pickers = new WeakMap();
+  const pickerMarkup = id => `
+   <button type="button" class="qa-button oa-password-command" data-password-picker="${id}"
+    aria-expanded="false" aria-controls="${id}-book" aria-label="密码本，选择已保存的密码">密码本</button>
+   <div id="${id}-book" class="oa-password-choices" role="group" aria-label="已保存的密码" hidden></div>`;
   const pageMarkup = `<div class="qa-setting-group">
    <label class="qa-check"><input type="checkbox" data-book-automatic>自动保存成功使用的解压密码</label>
    <p class="qa-sub">密码由当前 Windows 账户保护。关闭自动保存后仍可手动添加和选用密码。</p>
    <p data-book-preference-status role="status"></p>
   </div>
   <form class="oa-password-add" autocomplete="off" data-book-add>
-   <div class="qa-fieldrow">
-    <label class="qa-field">备注（选填）<input data-book-label type="text"></label>
-    <label class="qa-field">密码<input data-book-password type="password" autocomplete="new-password" required></label>
+   <div class="oa-book-password-field">
+    <label for="oa-book-new-password">密码</label>
+    <div class="qa-inlinefield">
+     <input id="oa-book-new-password" data-book-password type="password" autocomplete="new-password" placeholder="输入解压密码" required>
+     <button type="button" class="qa-button" data-book-reveal aria-controls="oa-book-new-password" aria-label="显示密码">显示</button>
+    </div>
    </div>
-   <button type="submit" class="qa-button primary">添加密码</button>
+   <label class="qa-field oa-book-note">备注（选填）
+    <input data-book-label type="text" placeholder="例如：项目名或压缩包名">
+   </label>
+   <button type="submit" class="qa-button primary" data-book-submit>添加密码</button>
    <p data-book-save-status role="status"></p>
   </form>
   <section class="qa-setting-group" aria-labelledby="oa-password-book-title">
@@ -48,10 +55,9 @@
   }
 
   function closePicker(input) {
-   const picker = input.closest('label')?.nextElementSibling;
-   const button = picker?.querySelector('[data-password-picker]');
-   if (!button) return;
-   const choices = picker.querySelector('.oa-password-choices');
+   const picker = pickers.get(input);
+   if (!picker) return;
+   const {button, choices} = picker;
    button.setAttribute('aria-expanded', 'false');
    choices.hidden = true;
    choices.replaceChildren();
@@ -60,12 +66,24 @@
   function mountPickers(container) {
    for (const input of container.querySelectorAll('input[data-password-book]')) {
     const field = input.closest('label');
-    field.insertAdjacentHTML('afterend', pickerMarkup(input.id));
-    const picker = field.nextElementSibling;
+    if (!field || pickers.has(input)) continue;
+    const picker = document.createElement('div');
+    picker.className = 'oa-password-field';
+    field.before(picker);
+    picker.append(field);
+    picker.insertAdjacentHTML('beforeend', pickerMarkup(input.id));
     const button = picker.querySelector('[data-password-picker]');
     const choices = picker.querySelector('.oa-password-choices');
+    pickers.set(input, {button, choices});
+    picker.addEventListener('keydown', event => {
+     if (event.key !== 'Escape' || choices.hidden) return;
+     event.preventDefault();
+     event.stopPropagation();
+     closePicker(input);
+     button.focus();
+    });
     button.onclick = async () => {
-     if (input.disabled || button.disabled) return;
+     if (input.disabled || input.readOnly || button.disabled) return;
      if (!choices.hidden) {
       closePicker(input);
       return;
@@ -84,7 +102,7 @@
       for (const {id, label} of distinguishEntries(entries)) {
        const item = document.createElement('button');
        item.type = 'button';
-       item.className = 'qa-button';
+       item.className = 'qa-button quiet';
        item.textContent = label;
        item.title = label;
        item.onclick = async () => {
@@ -137,12 +155,20 @@
    const form = container.querySelector('[data-book-add]');
    const label = form.querySelector('[data-book-label]');
    const password = form.querySelector('[data-book-password]');
-   const submit = form.querySelector('button');
+   const submit = form.querySelector('[data-book-submit]');
+   const reveal = form.querySelector('[data-book-reveal]');
    const saveStatus = form.querySelector('[data-book-save-status]');
+   const showPassword = visible => {
+    password.type = visible ? 'text' : 'password';
+    reveal.textContent = visible ? '隐藏' : '显示';
+    reveal.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+   };
+   reveal.onclick = () => showPassword(password.type === 'password');
    form.onsubmit = async event => {
     event.preventDefault();
     if (submit.disabled || pendingWrite || !password.value) return;
-    submit.disabled = label.disabled = password.disabled = true;
+    showPassword(false);
+    submit.disabled = reveal.disabled = label.disabled = password.disabled = true;
     saveStatus.textContent = '正在保存密码…';
     try {
      await write('password_book_save', {label: label.value, password: password.value});
@@ -154,7 +180,7 @@
     } catch {
      if (form.isConnected) saveStatus.textContent = '无法保存密码，请重试。';
     } finally {
-     submit.disabled = label.disabled = password.disabled = false;
+     submit.disabled = reveal.disabled = label.disabled = password.disabled = false;
      if (form.isConnected && (document.activeElement === document.body || form.contains(document.activeElement))) {
       password.focus({preventScroll: true});
      }

@@ -45,6 +45,5 @@ fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 #parts-unit { width: 130px; flex: 0 0 130px; }
 
 #runbar:not(:has(button:not(.hidden), #status:not(:empty))), #result:empty { display: none; }
-#password-group input { margin-block: var(--qa-space-1); }
-.oa-password-choices:not([hidden]) { display: flex; flex-wrap: wrap; gap: var(--qa-space-1); max-height: 12rem; overflow: auto; }
-.oa-password-choices .qa-button { max-width: 100%; overflow-wrap: anywhere; }
+#password-group .oa-password-field { margin: 0; }
+#password-group .oa-password-field input { display: block; margin-top: var(--qa-space-1); }

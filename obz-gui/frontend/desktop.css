@@ -528,34 +528,21 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 
 #qing-archive .qa-window-controls button:is(:active,[data-native-state=pressed]){background:var(--qa-tint)}
 #qing-archive .qa-window-controls button:focus-visible{outline-offset:-3px}
-#qing-archive .qa-field[hidden] + .oa-password-picker { display: none; }
-#qing-archive .oa-password-picker { margin-block: 0 10px; }
-#qing-archive .oa-password-picker > button { padding-inline: 0; }
-#qing-archive .oa-password-choices {
- display: grid;
- gap: 4px;
- max-height: 150px;
- overflow-y: auto;
- margin-block: 4px;
- padding: 4px;
- border: 1px solid var(--qa-line);
- border-radius: 8px;
-}
-#qing-archive .oa-password-choices > button {
- display: block;
- min-width: 0;
- overflow: hidden;
- text-overflow: ellipsis;
- text-align: left;
- white-space: nowrap;
-}
-#qing-archive .oa-password-choices > p { margin: 0; }
-#qing-archive .oa-password-choices > p:empty { display: none; }
+#qing-archive .oa-password-field > .qa-field { margin: 0; }
 #qing-archive .oa-password-add {
+ max-width: 560px;
  padding-bottom: 16px;
  border-bottom: 1px solid var(--qa-line);
 }
-#qing-archive .oa-password-add .qa-fieldrow { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+#qing-archive .oa-book-password-field > label {
+ display: block;
+ margin-bottom: 6px;
+ color: var(--qa-text);
+ font-weight: 600;
+}
+#qing-archive .oa-book-password-field > .qa-inlinefield { align-items: stretch; }
+#qing-archive .oa-book-note { max-width: 420px; margin-block: 14px; }
+#qing-archive .oa-book-note input { background: var(--qa-soft); }
 #qing-archive .oa-password-add [role=status],
 #qing-archive [data-book-status] { margin-block: 10px 0; }
 #qing-archive .oa-password-add [role=status]:empty,

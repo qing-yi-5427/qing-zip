@@ -98,3 +98,39 @@ test('the password book lets users disable automatic saving across windows', () 
   assert.equal(toggle.checked,false);
   assert.match(elements['[data-book-preference-status]'].textContent,/无法保存/);
 });
+
+test('the add form masks the password before saving and sends the note separately', async () => {
+  const window = {};
+  vm.runInNewContext(read('password-book.js'), {window});
+  const saved = [];
+  const password = {type:'password', value:'test-only'};
+  const note = {value:'项目归档'};
+  const reveal = {setAttribute() {}};
+  const fields = {
+    '[data-book-password]':password, '[data-book-label]':note, '[data-book-reveal]':reveal,
+    '[data-book-submit]':{}, '[data-book-save-status]':{},
+  };
+  const form = {
+    querySelector: selector => fields[selector],
+    reset() { password.value=''; note.value=''; },
+  };
+  const elements = {
+    '[data-book-add]':form,
+    '[data-book-entries]':{replaceChildren() {}, isConnected:false},
+    '[data-book-status]':{},
+  };
+  const book = window.QingPasswordBook({invoke: async (command,args) => {
+    assert.equal(command,'password_book_save');
+    assert.equal(password.type,'password');
+    saved.push([args.label,args.password]);
+  }});
+  book.mountPage({querySelector: selector => elements[selector]});
+  reveal.onclick();
+  assert.equal(password.type,'text');
+  assert.equal(reveal.textContent,'隐藏');
+  await form.onsubmit({preventDefault() {}});
+  assert.deepEqual(saved,[['项目归档','test-only']]);
+  assert.equal(password.type,'password');
+  assert.equal(password.value,'');
+  assert.equal(reveal.textContent,'显示');
+});
