@@ -268,6 +268,8 @@ fn main() {
             shell_compress::startup(&args).map(|result| result.map_err(|error| error.to_string()))
         })
     };
+    #[cfg(target_arch = "x86_64")]
+    let early_action = early_action.or_else(|| associations::retired_install::configure(&args));
     if let Some(result) = early_action {
         if let Err(error) = result {
             eprintln!("{error}");
