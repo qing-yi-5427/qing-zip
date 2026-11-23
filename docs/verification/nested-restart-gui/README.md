@@ -8,7 +8,7 @@
 
 逐项哈希、PID、退出方式及第二次重开见 [机器回执](baseline.json)，调试策略恢复见 [desktop-session.json](desktop-session.json)。运行成功表示观察完成，不能当作强退恢复通过。另存恢复副本、候选修复以及系统文件对话框尚未在本基线上通过。[三层外部写入冲突基线](three-layer.md) 单独记录正常用户操作期间的嵌套冲突。
 
-复跑：在 GitHub Actions 的 `Windows regression` workflow 选择本分支并设置 `nested_restart_capture=true`；该入口默认固定下载 R3 构建，不启用深度或特殊文件系统测试；可显式提供同仓库成功的 Windows regression 构建 run、源码提交及便携 ZIP SHA-256，以绑定候选。优先使用直接分支构建或手动运行，避免 PR 合并树与 head 不一致。候选测试脚本支持 `--expect-recovery`：要求恢复入口恰有一项，通过真正的 Windows 另存对话框写入全新独立目录，核验输出与编辑副本 SHA、成员及二次重开不新增副本；这一候选模式仍待产品实现及实跑，不能视为通过。
+复跑：在 GitHub Actions 的 `Windows regression` workflow 选择本分支并设置 `nested_restart_capture=true`；该入口默认固定下载 R3 构建，不启用深度或特殊文件系统测试；可显式提供同仓库成功的 Windows regression 构建 run、源码提交及便携 ZIP SHA-256，以绑定候选。优先使用直接分支构建或手动运行，避免 PR 合并树与 head 不一致。候选测试脚本支持 `--expect-recovery`：要求恢复入口恰有一项，通过真正的 Windows 另存对话框写入全新独立目录，核验输出与编辑副本 SHA、成员及二次重开记录从一项变零项。随后三层控制要求两项同名来源可区分、取消原生另存和一次直接后端保存失败后仍可各自导出，成功导出 B 后只保留 A，再导出 A 后为零项；这一候选模式仍待产品实现及实跑，不能视为通过。
 
 ## AES 外层控制组
 
