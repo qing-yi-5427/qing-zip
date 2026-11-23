@@ -24,4 +24,4 @@ python scripts/fluent-menu-evidence.py --exe <原版exe> --out <新的基线目�
 python scripts/fluent-menu-evidence.py --exe <候选exe> --out <新的候选目录> --candidate
 ```
 
-两版各采两轮。可逐项复查视口、材质、菜单尺寸、模拟缩放与帧耗时。[原版第一轮](before-1.json) · [原版第二轮](before-2.json) · [候选第一轮](after-1.json) · [候选第二轮](after-2.json) · [启动、内存与两版构建哈希](../../../docs/verification/menu-resource-cost.md)
+两版各采两轮。可逐项复查视口、材质、菜单尺寸、模拟缩放与帧耗时。[原版第一轮](before-1.json) · [原版第二轮](before-2.json) · [候选第一轮](after-1.json) · [候选第二轮](after-2.json) · [启动、内存与两版构建哈希](../menu-resource-cost.md)
