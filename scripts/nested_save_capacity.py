@@ -30,7 +30,7 @@ def inspect_inner(content):
 
 
 def exercise_nested_save(exe, work, env, root, marker, identity, result,
-                         fill, verify_volume, sha, snapshot):
+                         fill, verify_volume, sha, snapshot, expect_feedback):
     if os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted" or os.environ.get("RUNNER_OS") != "Windows":
         raise RuntimeError("A disposable hosted Windows desktop is required")
     evidence = work.parent / "evidence"
@@ -105,6 +105,17 @@ def exercise_nested_save(exe, work, env, root, marker, identity, result,
                     message = page.get_by_text(re.compile(r"空间不足|磁盘已满|not enough space|disk full|os error 112", re.I))
                     expect(message.first).to_be_visible(timeout=30000)
                     result["failure_text"] = message.first.inner_text()[:500]
+                    dialog = page.get_by_role("dialog")
+                    result["dialog_path"] = dialog.locator(".qa-jobcard p.qa-sub").first.inner_text()
+                    result["dialog_alerts"] = [text for text in dialog.get_by_role("alert").all_inner_texts() if text]
+                    if expect_feedback:
+                        advice = "磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。"
+                        expect(dialog.get_by_text(advice, exact=True)).to_have_count(1)
+                        if result["dialog_alerts"] != [advice]:
+                            raise RuntimeError("Expected one accessible and actionable space error")
+                        display = result["dialog_path"].removeprefix("\\\\?\\")
+                        if display != f"{outer} › inner.zip":
+                            raise RuntimeError("Nested task did not show the original outer path and member")
                     page.screenshot(path=evidence / "nested-insufficient-space.png")
                     result["outer_after_failure"] = snapshot(folder)
                     result["working_after_failure"] = sha(working)

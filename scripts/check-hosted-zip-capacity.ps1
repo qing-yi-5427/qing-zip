@@ -1,9 +1,11 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('baseline', 'combined', 'round2', 'midwrite', 'update', 'nested')]
+    [ValidateSet('baseline', 'combined', 'round2', 'midwrite', 'update', 'nested', 'nested-feedback')]
     [string]$Trial,
     [ValidatePattern('^[0-9]{1,20}$')]
-    [string]$BuildRun
+    [string]$BuildRun,
+    [ValidatePattern('^[0-9a-f]{40}$')]
+    [string]$CandidateSource
 )
 $ErrorActionPreference = 'Stop'
 if (!$IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
@@ -15,6 +17,7 @@ $repo = 'qing-yi-5427/qing-zip'
 $runs = @{
     baseline = @{ id = '45100520858'; source = '51a68cc32bafcd535eac6cef8eee5169a54adcbe' }
     combined = @{ id = '45116763549'; source = 'e9eeecd414fa7379fc959967fb1645ced24eeb62' }
+    'nested-feedback' = @{ id = '45126120466'; source = '3ebb566b8b3d49d10e83ff66b4a082d12e251996' }
     round2 = @{ id = '45118493619'; source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' }
 }
 $trialRun = if ($Trial -in @('midwrite', 'update', 'nested')) { $runs.round2 } else { $runs[$Trial] }
@@ -25,6 +28,11 @@ $mode = switch ($Trial) {
     'midwrite' { 'midwrite' }
     'update' { 'update' }
     'nested' { 'nested' }
+    'nested-feedback' { 'nested-feedback' }
+}
+if ($CandidateSource) {
+    if ($Trial -ne 'nested-feedback' -or !$BuildRun) { throw 'CandidateSource requires a nested-feedback build run' }
+    $trialRun.source = $CandidateSource
 }
 if ($BuildRun) { $trialRun.id = $BuildRun }
 $tempRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
@@ -73,6 +81,9 @@ try {
     for ($wait = 0; $run.status -ne 'completed' -and $wait -lt 16; $wait++) {
         Start-Sleep -Seconds 30
         $run = Read-Run
+    }
+    if ($Trial -eq 'nested-feedback' -and ($run.head_repository.full_name -ne $repo -or $run.event -notin @('workflow_dispatch','push'))) {
+        throw 'Candidate evidence requires a same-repository product build from its exact source ref'
     }
     if ($run.head_sha -ne $trialRun.source -or $run.conclusion -ne 'success' -or $run.name -ne 'Windows regression') {
         throw 'Pinned Windows regression build is unavailable or source does not match'

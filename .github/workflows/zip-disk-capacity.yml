@@ -12,7 +12,7 @@ on:
       trial:
         description: Select historical, final package, or incomplete-write acceptance
         type: choice
-        options: [historical, round2, midwrite, update, nested]
+        options: [historical, round2, midwrite, update, nested, nested-feedback]
         default: historical
       baseline_build_run:
         description: Replacement hardened run for the pinned baseline source
@@ -24,6 +24,14 @@ on:
         required: false
       round2_build_run:
         description: Replacement hardened run for the pinned round-two source
+        type: string
+        required: false
+      candidate_build_run:
+        description: Optional same-repository Windows regression run for nested-feedback
+        type: string
+        required: false
+      candidate_source:
+        description: Exact product commit of the replacement nested-feedback run
         type: string
         required: false
 permissions:
@@ -49,7 +57,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install WebView2 test transport for nested archive acceptance
-        if: matrix.trial == 'nested'
+        if: startsWith(matrix.trial, 'nested')
         run: python -m pip install playwright==1.56.0
       - name: Verify isolated VHD and run the selected ZIP operations
         shell: pwsh
@@ -58,6 +66,8 @@ jobs:
           BASELINE_RUN: ${{ inputs.baseline_build_run }}
           COMBINED_RUN: ${{ inputs.combined_build_run }}
           ROUND2_RUN: ${{ inputs.round2_build_run }}
+          CANDIDATE_RUN: ${{ inputs.candidate_build_run }}
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
         run: |
           $ErrorActionPreference = 'Stop'
           $buildRun = switch ($env:TRIAL) {
@@ -67,8 +77,13 @@ jobs:
             'midwrite' { $env:ROUND2_RUN }
             'update' { $env:ROUND2_RUN }
             'nested' { $env:ROUND2_RUN }
+            'nested-feedback' { $env:CANDIDATE_RUN }
           }
-          if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
+          if ($env:TRIAL -eq 'nested-feedback' -and ($env:CANDIDATE_RUN -or $env:CANDIDATE_SOURCE)) {
+            if (!$buildRun -or !$env:CANDIDATE_SOURCE) { throw 'Specify both the candidate run and its exact product commit' }
+            ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun -CandidateSource $env:CANDIDATE_SOURCE
+          }
+          elseif ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
           else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }
       - name: Upload product, volume and cleanup receipts
         if: always()
