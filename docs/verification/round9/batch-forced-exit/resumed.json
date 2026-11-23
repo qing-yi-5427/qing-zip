@@ -1,0 +1,59 @@
+{
+  "source": "26be67b (product bits 6e29fad)",
+  "binaries_sha256": {
+    "qing-zip.exe": "02681f53cbd653ca52642d698c02cef5ce2c889611c0c18549b4be61fddd9e09",
+    "obz.exe": "a66197d6b4d235a5a6dcfbfa1ca001ea3252287967e39f5dc9509f00051529c3",
+    "obz-worker.exe": "220682c9e9c17ac1eb8f1e31af30205dbc14a9d08169d7af030cc8c27d75774f"
+  },
+  "portable_zip_sha256": "3dc20c7488911ca153dc3f0b20ea23ffc79957df69fa829d02bbda49d5b9a670",
+  "record_present_after_normal_close": true,
+  "record_consumed_before_forced_exit": true,
+  "native_running_at_exit": {
+    "id": 1,
+    "status": "running",
+    "progress": {
+      "phase": "decoding",
+      "percent": 9,
+      "message": "parts/0190.bin",
+      "work": {
+        "items_done": 192,
+        "items_total": 2049,
+        "bytes_done": 12517399,
+        "bytes_total": 134217751
+      }
+    }
+  },
+  "no_resume_after_forced_exit": true,
+  "sources": {
+    "fifth.zip": "e321bda73e272002010aa3b21861be1acd9bb641e27a3a0fa4d5d24dd4ed3c0f",
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "fourth.zip": "85aef229e92efccf9c1003ffdfdb2806b9aadbb72caed412fa61e43bd6818e45",
+    "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
+    "third.zip": "cf3718074739d8ea66535b24a136e9f2a467e880c6d4f838748c5d5ed170c617"
+  },
+  "preexisting_files": {
+    "2-second/outside-archive.txt": "b74da086f942a5c01f0f863443ca3a9b73f9b669091d0c336b94f9dd3bb64d95",
+    "4-fourth/file.txt": "90759a6806ae4c1c31f449a8ceab96a9f8e8220dcfbba56a916939834ebc0991",
+    "sentinel.txt": "9e308c7ad347094c7753dd64d7af92e6af34052c7bc6d1b0ea72e378fa031318"
+  },
+  "outputs_by_directory": {
+    "1-first": {
+      "file_count": 1,
+      "file_manifest_sha256": "e3cd31dda758e41f988c36be2ecebabdf1a91d3cf40241ae18c5fefc06d54f6c"
+    },
+    "2-second": {
+      "file_count": 1,
+      "file_manifest_sha256": "9ad31c537ae543ab7b901c5696a0e4cd69c64ef5524059fba8344bcd3a417ffd"
+    },
+    "3-third": {
+      "file_count": 202,
+      "file_manifest_sha256": "0cf9aa61b1e8d0802bd90cc9726dda0f92176741ce77312ed59c0a91a762f530"
+    },
+    "4-fourth": {
+      "file_count": 1,
+      "file_manifest_sha256": "9704ae3b78b9f42ee070cac22c57df076a602b2085904bde2aeac7b49b7dc777"
+    }
+  },
+  "first_published_file_identity_preserved": true,
+  "scenario": "resumed"
+}
