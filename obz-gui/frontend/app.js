@@ -976,6 +976,8 @@ function error(e){
  if(!field){toast(message);return;}
  const shown=overlay.dataset?.page==='jobs'&&overlay.querySelector('.qa-jobcard .qa-jobresult[role="alert"]');
  field.textContent=shown&&shown.textContent===message?'':message;
+ const invalid=overlay.querySelector('.oa-compression-dialog .oa-dialog-body [aria-invalid="true"]:focus');
+ if(invalid)invalid.scrollIntoView({block:'nearest'});
 }
 async function copySelectedFiles(){
  const names=[...s.selected];

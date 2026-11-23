@@ -1,0 +1,84 @@
+{
+  "cli_sha256": {
+    "previous": "e5b87919d19ea75f19f93ea04ebb20fb366b5b8176bc6f67b84c54f119faa520",
+    "candidate": "c6da6352030056405056f75eba9f125e2440e5db19ab1145ca5349fca27d41d7"
+  },
+  "os": "Windows-11-10.0.26300-SP0",
+  "cache": "one warm-up per version, alternating five pairs, no OS cache flush",
+  "cases": [
+    {
+      "case": "small",
+      "input_bytes": 16384,
+      "zip_bytes": 16509,
+      "zip_sha256": "e2ea41ba6397a1f326b3d3662275c39c1fa040c59c2dc76f7d23973da10c7404",
+      "samples_ms": [
+        {
+          "previous": 65.337,
+          "candidate": 65.738
+        },
+        {
+          "candidate": 63.863,
+          "previous": 62.531
+        },
+        {
+          "previous": 61.165,
+          "candidate": 61.739
+        },
+        {
+          "candidate": 61.993,
+          "previous": 61.98
+        },
+        {
+          "previous": 60.659,
+          "candidate": 62.68
+        }
+      ],
+      "medians_ms": {
+        "previous": 61.98,
+        "candidate": 62.68
+      },
+      "paired_delta_ms": [
+        0.01300000000000523,
+        0.5739999999999981,
+        2.021000000000001
+      ]
+    },
+    {
+      "case": "mixed",
+      "input_bytes": 33554432,
+      "zip_bytes": 15932166,
+      "zip_sha256": "ff1e9177187228950dd203010337533ab256bc76f3e75339869c956980bf6a5a",
+      "samples_ms": [
+        {
+          "previous": 95.543,
+          "candidate": 93.009
+        },
+        {
+          "candidate": 96.105,
+          "previous": 106.891
+        },
+        {
+          "previous": 94.828,
+          "candidate": 99.645
+        },
+        {
+          "candidate": 93.123,
+          "previous": 93.884
+        },
+        {
+          "previous": 93.499,
+          "candidate": 93.558
+        }
+      ],
+      "medians_ms": {
+        "previous": 94.828,
+        "candidate": 93.558
+      },
+      "paired_delta_ms": [
+        -10.786000000000001,
+        -0.7609999999999957,
+        4.816999999999993
+      ]
+    }
+  ]
+}

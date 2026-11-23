@@ -660,13 +660,13 @@ fn run_staged_decode(
 enum EngineLifetime {
     Ordinary,
     #[cfg(nana_selected_worker)]
-    OwnedZipUpdate,
+    OwnedByCaller,
 }
 
 enum EngineProcess {
     Standard(std::process::Child),
     #[cfg(nana_selected_worker)]
-    OwnedUpdate(owned_update::Process),
+    Owned(owned_update::Process),
 }
 
 impl EngineProcess {
@@ -674,7 +674,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => child.try_wait(),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => child.try_wait(),
+            Self::Owned(child) => child.try_wait(),
         }
     }
 
@@ -682,7 +682,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => wait_for_process(child, timeout),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => child.wait_ready(timeout),
+            Self::Owned(child) => child.wait_ready(timeout),
         }
     }
 
@@ -690,7 +690,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => { let _ = child.kill(); let _ = child.wait(); }
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => { let _ = child.kill(); let _ = child.wait(); }
+            Self::Owned(child) => { let _ = child.kill(); let _ = child.wait(); }
         }
     }
 
@@ -699,7 +699,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => PasswordInput::spawn(child, password),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
+            Self::Owned(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
         }
     }
 }
@@ -718,7 +718,16 @@ fn run_program_log_with_directory(
     lifetime: EngineLifetime,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
-    let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
+    let command = args.first().map(String::as_str);
+    // This also covers the verifier launched by selective extraction through
+    // run_staged_decode, in addition to explicit tests and archive updates.
+    #[cfg(nana_selected_worker)]
+    let lifetime = if command == Some("t") && stream_input.is_none() {
+        EngineLifetime::OwnedByCaller
+    } else {
+        lifetime
+    };
+    let archive_command = !matches!(command, Some("h" | "i"));
     let policy = archive_command.then(crate::machine_policy::scope);
     if let Some(policy) = &policy {
         if policy.restricted() && program != policy.official_executable()? {
@@ -731,7 +740,7 @@ fn run_program_log_with_directory(
     let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
     let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
     let mut live_progress = engine_progress::LiveProgress::open(
-        args.first().map(String::as_str),
+        command,
         &errors,
         output.as_ref().zip(output_size),
     );
@@ -782,10 +791,10 @@ fn run_program_log_with_directory(
                 .map_err(|e| format!("cannot launch archive engine: {e}"))?)
         }
         #[cfg(nana_selected_worker)]
-        EngineLifetime::OwnedZipUpdate => {
-            if stream_input.is_some() { return Err("ZIP update cannot carry archive stream input".into()); }
-            EngineProcess::OwnedUpdate(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
-                .map_err(|e| format!("无法启动受本次 ZIP 更新控制的归档引擎：{e}"))?)
+        EngineLifetime::OwnedByCaller => {
+            if stream_input.is_some() { return Err("owned archive process cannot carry archive stream input".into()); }
+            EngineProcess::Owned(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
+                .map_err(|e| format!("无法启动受当前任务控制的归档引擎：{e}"))?)
         }
     };
     #[cfg(test)]
@@ -5999,7 +6008,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         #[cfg(not(nana_selected_worker))]
         let stdout = None;
         #[cfg(nana_selected_worker)]
-        let lifetime = if direct { EngineLifetime::OwnedZipUpdate } else { EngineLifetime::Ordinary };
+        let lifetime = if direct { EngineLifetime::OwnedByCaller } else { EngineLifetime::Ordinary };
         #[cfg(not(nana_selected_worker))]
         let lifetime = EngineLifetime::Ordinary;
         let (log, _) = run_program_log_with_directory(program, &a, cwd, opts, stdout, false, false, None, None, lifetime)?;
