@@ -2,11 +2,33 @@
 import argparse, ctypes, hashlib, json, os, subprocess, tempfile, time
 from ctypes import wintypes
 from pathlib import Path
+from contextlib import contextmanager
 import win32api, win32con, win32event, win32process
 from playwright.sync_api import Error, expect, sync_playwright
 
 
 def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@contextmanager
+def private_fixture(parent):
+    parent = parent.resolve(strict=True)
+    temp = tempfile.TemporaryDirectory(prefix='qz-password-', dir=parent, ignore_cleanup_errors=True)
+    path = Path(temp.name)
+    try:
+        yield path
+    finally:
+        # WebView2 can finish releasing profile files after its host has exited.
+        deadline = time.monotonic() + 15
+        while path.exists():
+            if path.resolve() != path or path.parent != parent:
+                raise RuntimeError('The private fixture path changed during the run')
+            temp.cleanup()
+            if not path.exists():
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'Private test profile still in use: {path}')
+            time.sleep(0.2)
 
 
 def run(exe, out, fixture, expected):
@@ -84,10 +106,9 @@ def run(exe, out, fixture, expected):
                      'output_relative_to_requested_destination':output.relative_to(target).as_posix(),
                      'output_sha256':digest(output),'output_matches_source':True,'output_button_visible':True,
                      'not_observed':['actual_open_output_action','system_foreground_desktop']}
-            (out/'receipt.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-            print(json.dumps(receipt,ensure_ascii=True),flush=True)
             try: page.evaluate('window.__TAURI__.core.invoke("window_action",{action:"close"})')
             except Error: pass
+            return receipt
     finally:
         if process:
             if win32event.WaitForSingleObject(process,8000)!=win32event.WAIT_OBJECT_0:
@@ -105,5 +126,8 @@ if __name__=='__main__':
     running=subprocess.run(['powershell','-NoProfile','-Command',"[Diagnostics.Process]::GetProcessesByName('qing-zip').Id; [Diagnostics.Process]::GetProcessesByName('obz-gui').Id"],capture_output=True,text=True,check=True)
     if running.stdout.strip(): raise RuntimeError('Close other qing-zip instances before running')
     args.out.mkdir(parents=True,exist_ok=False);args.fixtures_in.mkdir(parents=True,exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='qz-password-',dir=args.fixtures_in,ignore_cleanup_errors=True) as tmp:
-        run(args.exe.resolve(strict=True),args.out.resolve(),Path(tmp).resolve(),args.expect)
+    with private_fixture(args.fixtures_in) as fixture:
+        receipt = run(args.exe.resolve(strict=True), args.out.resolve(), fixture, args.expect)
+    receipt['private_fixture_removed'] = True
+    (args.out / 'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    print(json.dumps(receipt, ensure_ascii=True), flush=True)
