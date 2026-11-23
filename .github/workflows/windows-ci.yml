@@ -204,8 +204,28 @@ jobs:
       - name: Set up the hosted desktop tests
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1
+          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1 playwright==1.55.0
           exit $LASTEXITCODE
+      - name: Verify ordinary batch extraction, stop and resume in the packaged desktop
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          $portable = @(Get-ChildItem -LiteralPath dist/x64 -Filter '*-portable.zip' -File)
+          if ($exe.Count -ne 1 -or $portable.Count -ne 1) { throw 'Expected one packaged x64 GUI and portable archive' }
+          python scripts/check-batch-extract-desktop.py --hosted --mode candidate --case both --exe $exe[0].FullName --package $portable[0].FullName --hardening target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json --out target/batch-extract-acceptance
+          exit $LASTEXITCODE
+      - name: Save batch extraction receipt and result screenshots
+        if: always() && hashFiles('target/batch-extract-acceptance/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-batch-extract-acceptance
+          path: |
+            target/batch-extract-acceptance/*.json
+            target/batch-extract-acceptance/*-result.png
+            target/batch-extract-acceptance/stop-resumed.png
+            target/batch-extract-acceptance/*-diagnostic.png
+          retention-days: 21
+          if-no-files-found: error
       - name: Verify extraction and restore a script-owned ZIP from the Windows Recycle Bin
         shell: pwsh
         run: |

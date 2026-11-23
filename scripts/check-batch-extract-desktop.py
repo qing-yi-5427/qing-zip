@@ -1,13 +1,15 @@
 """Drive ordinary batch extraction on an isolated Windows desktop."""
 
 import argparse
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
 import runpy
+import subprocess
 import tempfile
 import time
 import zipfile
@@ -166,7 +168,7 @@ def check_candidate(page, root, output, evidence, result, cancel, redact, origin
     take_screenshot(page, evidence, "stop-resumed", redact, report)
 
 
-def run_case(page, process, root, evidence, result, cancel, candidate, show_paths, expect, error, win32event, win32process):
+def run_case(page, root, evidence, result, cancel, candidate, show_paths, expect, error):
     inputs, paths, output, expected = fixtures(root, cancel)
     before = snapshot(inputs)
     original_targets = snapshot(output)
@@ -222,10 +224,51 @@ def run_case(page, process, root, evidence, result, cancel, candidate, show_path
         for row, name, state in zip(history, ("third", "second", "first"),
                                     ("complete", "cancelled" if cancel else "failed", "complete"), strict=True):
             assert row["state"] == state and f"{name}.zip" in row["text"], row
-    with suppress(error):
-        page.locator('[data-window="close"]').click()
-    assert win32event.WaitForSingleObject(process, 10000) == win32event.WAIT_OBJECT_0
-    assert win32process.GetExitCodeProcess(process) == 0
+            if candidate and state == "complete":
+                assert "100%" in row["text"] and "总进度（步骤）" not in row["text"], row
+
+
+@contextmanager
+def launch_local(exe, root, helpers):
+    with helpers["private_process"](exe, root, None) as (page, process, _):
+        def wait_for_exit():
+            events = helpers["win32event"]
+            if events.WaitForSingleObject(process, 10000) != events.WAIT_OBJECT_0:
+                raise RuntimeError("The private GUI did not close")
+            return helpers["win32process"].GetExitCodeProcess(process)
+
+        yield page, wait_for_exit
+
+
+@contextmanager
+def launch_hosted(exe, root, session_receipt, helpers):
+    from arm_gui_lifecycle import hosted_debug_session
+    from nested_restart_gui import connect
+
+    helpers["allow_private_launch"]()
+    with hosted_debug_session(exe, session_receipt) as session:
+        directories = {key: root / name for key, name in (
+            ("LOCALAPPDATA", "local"), ("APPDATA", "roaming"), ("TEMP", "transient"),
+            ("WEBVIEW2_USER_DATA_FOLDER", "profile"),
+        )}
+        for directory in directories.values():
+            directory.mkdir(exist_ok=True)
+        env = {**os.environ, **{key: str(path) for key, path in directories.items()},
+               "TMP": str(directories["TEMP"]), "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": session["arguments"]}
+        process = subprocess.Popen([str(exe)], cwd=root, env=env, stdin=subprocess.DEVNULL)
+        session["proc"] = process
+        with helpers["sync_playwright"]() as driver:
+            _, page = connect(process, session["port"], driver)
+            api = helpers["win32api"]
+            handle = api.OpenProcess(0x0410, False, process.pid)  # Query the process image and read its module list.
+            try:
+                image = helpers["win32process"].GetModuleFileNameEx(handle, 0)
+                if Path(image).resolve(strict=True) != exe:
+                    raise RuntimeError("The hosted GUI process image does not match the packaged executable")
+            finally:
+                api.CloseHandle(handle)
+            page.set_default_timeout(12000)
+            yield page, lambda: process.wait(timeout=10)
 
 
 def main():
@@ -234,33 +277,56 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--case", choices=("mixed", "stop", "both"), default="both")
     parser.add_argument("--mode", choices=("baseline", "candidate"), required=True)
+    parser.add_argument("--hosted", action="store_true", help="use the disposable GitHub-hosted Windows desktop")
+    parser.add_argument("--hardening", type=Path)
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--public-scratch-root", type=Path,
                         help="existing non-personal parent for temporary fixture paths shown in screenshots")
     args = parser.parse_args()
+    if args.hosted:
+        if (os.environ.get("GITHUB_ACTIONS"), os.environ.get("RUNNER_ENVIRONMENT"),
+            os.environ.get("RUNNER_OS"), os.environ.get("RUNNER_ARCH")) != ("true", "github-hosted", "Windows", "X64"):
+            parser.error("--hosted requires a disposable GitHub-hosted Windows x64 runner")
+        if args.mode != "candidate" or not (args.hardening and args.package) or args.public_scratch_root:
+            parser.error("--hosted requires candidate mode, --hardening and --package, with redacted fixtures")
+    elif args.hardening or args.package:
+        parser.error("--hardening and --package bind the hosted Windows package")
     exe = args.exe.resolve(strict=True)
     evidence = args.out.resolve()
-    scratch = args.public_scratch_root.resolve(strict=True) if args.public_scratch_root is not None else evidence.parent
     evidence.mkdir(parents=True, exist_ok=False)
+    scratch = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True) if args.hosted else args.public_scratch_root or evidence.parent
     helpers = runpy.run_path(str(Path(__file__).with_name("check-nested-multi-layer.py")))
-    receipt = {"status": "running", "mode": args.mode, "platform": platform.platform(), "desktop": "private non-input Win32",
-               "binaries_sha256": {path.name: digest(path) for path in
-                                   (exe, exe.with_name("obz.exe"), exe.with_name("obz-worker.exe"))},
-               "cases": {}}
+    receipt = {"status": "running", "mode": args.mode, "platform": platform.platform(),
+               "desktop": "GitHub-hosted Windows" if args.hosted else "private non-input Win32", "cases": {}}
     try:
+        if args.hosted:
+            binding = argparse.Namespace(exe=exe, staged_sha256=None, hardening=args.hardening, package=args.package)
+            receipt.update(helpers["verify_package"](binding), checkout=os.environ["GITHUB_SHA"], run=os.environ["GITHUB_RUN_ID"])
+        else:
+            receipt["binaries_sha256"] = {path.name: digest(path) for path in
+                                          (exe, exe.with_name("obz.exe"), exe.with_name("obz-worker.exe"))}
         for name in ("mixed", "stop") if args.case == "both" else (args.case,):
             result = receipt["cases"][name] = {}
             temporary = tempfile.TemporaryDirectory(prefix="qing-zip-batch-", dir=scratch)
             root = Path(temporary.name).resolve()
             try:
-                with helpers["private_process"](exe, root, None) as (page, process, _):
+                session = launch_hosted(exe, root, evidence / f"{name}-desktop-session.json", helpers) if args.hosted else launch_local(exe, root, helpers)
+                with session as (page, wait_for_exit):
                     try:
-                        run_case(page, process, root, evidence, result, name == "stop", args.mode == "candidate",
-                                 args.public_scratch_root is not None, helpers["expect"],
-                                 helpers["Error"], helpers["win32event"], helpers["win32process"])
+                        page.wait_for_function("Boolean(window.__TAURI__?.core)")
+                        reported = page.evaluate("window.__TAURI__.core.invoke('current_executable')")
+                        if Path(reported).resolve(strict=True) != exe:
+                            raise RuntimeError("The attached WebView2 does not belong to the test executable")
+                        result["attached_executable_verified"] = True
+                        if args.hosted:
+                            result["windows_process_image_verified"] = True
+                        run_case(page, root, evidence, result, name == "stop", args.mode == "candidate",
+                                 args.public_scratch_root is not None, helpers["expect"], helpers["Error"])
                     finally:
-                        if helpers["win32event"].WaitForSingleObject(process, 0) != helpers["win32event"].WAIT_OBJECT_0:
+                        if result.get("attached_executable_verified"):
                             with suppress(helpers["Error"]):
                                 page.locator('[data-window="close"]').click(timeout=2500)
+                    assert wait_for_exit() == 0
             finally:
                 deadline = time.monotonic() + 8
                 while root.exists():
