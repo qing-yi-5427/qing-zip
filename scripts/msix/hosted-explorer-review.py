@@ -77,8 +77,13 @@ try:
   filename='plain' if key=='compress' else 'archive'
   entry=report['scenarios'][key]={'menu_visible':False,'activated':False,'handoff_observed':False,'archive_sha256_before':archive_hash,'plain_sha256_before':plain_hash};save()
   item=wait(lambda: next((x for x in window.descendants(control_type='ListItem') if x.element_info.name==filename),None))
-  item.click_input(button='right');time.sleep(2); snapshot(key+'-menu');entry['menu_controls']=text_controls()
-  group=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name=='qing-zip' and x.element_info.control_type=='MenuItem' and x.is_visible()),None)
+  group=None
+  for attempt in range(3):
+   window.set_focus();time.sleep(.5);item.click_input(button='right');time.sleep(3)
+   group=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name=='qing-zip' and x.element_info.control_type=='MenuItem' and x.is_visible()),None)
+   if group:break
+   keyboard.send_keys('{ESC}');time.sleep(1)
+  snapshot(key+'-menu');entry['menu_controls']=text_controls();entry['menu_attempts']=attempt+1
   if group:
    entry['top_level_visible']=True
    rect=group.rectangle();entry['group_rect']=str(rect);group.click_input();time.sleep(2);snapshot(key+'-submenu')
