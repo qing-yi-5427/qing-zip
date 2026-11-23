@@ -1,0 +1,143 @@
+{
+  "status": "passed",
+  "release": "v0.11.27",
+  "runner_arch": "ARM64",
+  "source": "7419eeb4a7c13e7e59c7e0bd417ac9b3fd6ade49",
+  "old_setup_sha256": "46f3a8a091dd7b5119e12a3e0e5da4fabd0bbd6e9aaf50a6fb6356c719a22c4c",
+  "old_portable_sha256": "9aafd4acd77a9a3eea535ae1beecb922ac8ef7ddd44a2c91875a93e87487f113",
+  "candidate_setup_sha256": "e718727a31050885918451752238f530faba69c3319bddcc5972de5c116e46db",
+  "candidate_gui_sha256": "4509df7f4560d5c0fac26fd505c46aa9dd88c5257bbec539f8b47215226c42cc",
+  "candidate_cli_sha256": "41e34cff354beb31c86fd4531dc621ef97416c48ab29d30b4100e1c2c22a6e29",
+  "checks": [
+    "official_release_installed_to_owned_directory",
+    "old_archive_and_user_sentinels_created",
+    "in_place_upgrade_payload_and_user_data_verified",
+    "upgraded_cli_tests_and_extracts_original_archive",
+    "uninstall_preserved_all_synthetic_user_data",
+    "uninstall_removed_candidate_payload_registration_and_shortcuts",
+    "silent_upgrade_and_uninstall_preserved_verified_previous_release_files",
+    "uninstall_removed_payload_and_registration_preserved_user_files"
+  ],
+  "owned_root_cleaned": true,
+  "old_only_installed": [
+    {
+      "relative_path": "licenses/7zip-26.05/License.txt",
+      "sha256": "519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d"
+    },
+    {
+      "relative_path": "licenses/7zip-26.05/README.txt",
+      "sha256": "7ff2c6a5ef77fc6375e55fac9bbb0a5457a46a85c884a578e3afe856d47a3e33"
+    },
+    {
+      "relative_path": "licenses/python-3.14.9/LICENSE-ACEFILE.md",
+      "sha256": "ad376bd9695f0e355f5c523443abf822bb896999a3252aaa614d313cc4f1f5b5"
+    },
+    {
+      "relative_path": "licenses/python-3.14.9/LICENSE.txt",
+      "sha256": "8b118ff55fecfb456a77061e8b0546cfa105ec9530ed7e52821db5ea5b531b5f"
+    },
+    {
+      "relative_path": "licenses/rust/form_urlencoded-1.2.2/LICENSE-APACHE",
+      "sha256": "7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c"
+    },
+    {
+      "relative_path": "licenses/rust/form_urlencoded-1.2.2/LICENSE-MIT",
+      "sha256": "f54e054fdca9a7f74282499bd68bb801f641d164c31e0b32782076dcf3f8c316"
+    },
+    {
+      "relative_path": "licenses/rust/url-2.5.8/LICENSE-APACHE",
+      "sha256": "7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c"
+    },
+    {
+      "relative_path": "licenses/rust/url-2.5.8/LICENSE-MIT",
+      "sha256": "08bbc5db85e5d502dcc20872de9f505a5ed30332536f6e9f4a1be55995e363a7"
+    }
+  ],
+  "user_data_before_uninstall": {
+    "source": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+    "archive": "35856e2a66b098b8c3ab97c565287f432e0385b54bbb682fb10cb7840f919965",
+    "extracted": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+    "inside_sentinel": "d4b7d43057cfc330e488ce8a0023d155ac9b4c877385260e49264a907e5f6b09",
+    "outside_sentinel": "c644954fc1b3405329ca8531da4375a68c1879dd7208e57ef3e6be96ba0ae0df"
+  },
+  "user_data_after_uninstall": {
+    "source": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+    "archive": "35856e2a66b098b8c3ab97c565287f432e0385b54bbb682fb10cb7840f919965",
+    "extracted": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+    "inside_sentinel": "d4b7d43057cfc330e488ce8a0023d155ac9b4c877385260e49264a907e5f6b09",
+    "outside_sentinel": "c644954fc1b3405329ca8531da4375a68c1879dd7208e57ef3e6be96ba0ae0df"
+  },
+  "candidate_files_remaining": [],
+  "remaining_after_uninstall": [
+    {
+      "relative_path": "licenses/7zip-26.05/License.txt",
+      "sha256": "519ac0a4bded9c18ea02e0afb71f663d8c47373bd9facd3ac96a79f51d77765d",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/7zip-26.05/README.txt",
+      "sha256": "7ff2c6a5ef77fc6375e55fac9bbb0a5457a46a85c884a578e3afe856d47a3e33",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/python-3.14.9/LICENSE-ACEFILE.md",
+      "sha256": "ad376bd9695f0e355f5c523443abf822bb896999a3252aaa614d313cc4f1f5b5",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/python-3.14.9/LICENSE.txt",
+      "sha256": "8b118ff55fecfb456a77061e8b0546cfa105ec9530ed7e52821db5ea5b531b5f",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/rust/form_urlencoded-1.2.2/LICENSE-APACHE",
+      "sha256": "7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/rust/form_urlencoded-1.2.2/LICENSE-MIT",
+      "sha256": "f54e054fdca9a7f74282499bd68bb801f641d164c31e0b32782076dcf3f8c316",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/rust/url-2.5.8/LICENSE-APACHE",
+      "sha256": "7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "licenses/rust/url-2.5.8/LICENSE-MIT",
+      "sha256": "08bbc5db85e5d502dcc20872de9f505a5ed30332536f6e9f4a1be55995e363a7",
+      "classification": "unchanged_previous_release_file",
+      "verified_old_only_at_install": true
+    },
+    {
+      "relative_path": "用户保留/原始归档.zip",
+      "sha256": "35856e2a66b098b8c3ab97c565287f432e0385b54bbb682fb10cb7840f919965",
+      "classification": "synthetic_user_file",
+      "verified_old_only_at_install": false
+    },
+    {
+      "relative_path": "用户保留/无关文件.txt",
+      "sha256": "d4b7d43057cfc330e488ce8a0023d155ac9b4c877385260e49264a907e5f6b09",
+      "classification": "synthetic_user_file",
+      "verified_old_only_at_install": false
+    }
+  ],
+  "old_executable_version": "0.11.27.0",
+  "candidate_executable_version": "0.12.23.0",
+  "source_sha256": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+  "archive_sha256": "35856e2a66b098b8c3ab97c565287f432e0385b54bbb682fb10cb7840f919965",
+  "extracted_sha256": "4db3622052b6b2cd16f55c208ee86387214c111ac980305bf60a829d0f661138",
+  "inside_sentinel_sha256": "d4b7d43057cfc330e488ce8a0023d155ac9b4c877385260e49264a907e5f6b09",
+  "outside_sentinel_sha256": "c644954fc1b3405329ca8531da4375a68c1879dd7208e57ef3e6be96ba0ae0df",
+  "candidate_shipped_file_count": 735,
+  "remaining_user_file_count": 2,
+  "remaining_previous_release_file_count": 8
+}

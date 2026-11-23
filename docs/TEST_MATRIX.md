@@ -212,3 +212,7 @@ python scripts/check-archive-interop.py --cli "$output/qing-zip-0.12.23-portable
 | [Windows x64 regression · 45003050224](https://github.com/qing-yi-5427/qing-zip/actions/runs/45003050224) | 已发布运行时校验、有限前端/纯 Rust、深度解压正常样本、加固 x64 便携包。 | 完整前端、原生 Explorer、核心扩展套件、原生链接与桌面回归、注册后 Explorer 测试均为该运行的 `SKIP`。 |
 | [Windows ARM64 native validation · 45003050222](https://github.com/qing-yi-5427/qing-zip/actions/runs/45003050222) | 原生运行时和工具、选定纯回归、ARM64 便携包和安装包构建、源码包。 | 原生 CLI/分卷、ADS/链接、经典菜单、安装及卸载的实跑为 `SKIP`。 |
 | [Windows EFS regression · 45003050182](https://github.com/qing-yi-5427/qing-zip/actions/runs/45003050182) | 运行状态为 `SKIP`。 | EFS 真实操作。 |
+
+## 静默升级沿用旧安装位置
+
+Windows 11 ARM64 从官方 0.11.27、Windows Server 2025 x64 从官方 0.12.20 升级至 0.12.23，均为 PASS。初装使用独立临时目录，升级时安装器自动使用登记位置。逐件比对发行文件，实测解压旧版创建的 ZIP，卸载后五份合成用户数据 SHA-256 保持一致。[双架构的原始文件结果与复跑方法](verification/native-installer-upgrade/README.md)
