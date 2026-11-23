@@ -11,6 +11,7 @@ permissions:
   contents: read
 jobs:
   unsigned-package:
+    if: github.event_name != 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -46,3 +47,23 @@ jobs:
           if (!$sdk) { throw 'Windows SDK packaging tools missing' }
           python scripts/msix/test-review-package.py "$build/Release" $arch $sdk
           exit $LASTEXITCODE
+
+  hosted-explorer:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch'
+    runs-on: windows-11-arm
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Exercise a signed temporary sparse package on disposable Windows 11
+        shell: pwsh
+        run: ./scripts/msix/hosted-explorer-review.ps1
+      - name: Upload Explorer observations and cleanup receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-explorer-review
+          path: explorer-evidence/
+          if-no-files-found: error
+          retention-days: 30
