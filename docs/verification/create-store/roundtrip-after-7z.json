@@ -1,0 +1,16 @@
+{
+  "mode": "candidate",
+  "scenario": "roundtrip",
+  "format": "7z",
+  "gui_sha256": "8bfd4ee52e5028cc8e14bc8d41adf42f17b6914d2bc309a02ce020695d6d3a5a",
+  "form_level": 5,
+  "form_method": "自动",
+  "actual_method": [
+    "LZMA2"
+  ],
+  "stored": false,
+  "unpacked_bytes": 225000,
+  "packed_bytes": 265,
+  "unpacked_sha256": "46d23027c8be96f2d6e2b025ba26dc080dae5ced2cf5e47409ede3683cfdda3e",
+  "source_sha256": "46d23027c8be96f2d6e2b025ba26dc080dae5ced2cf5e47409ede3683cfdda3e"
+}

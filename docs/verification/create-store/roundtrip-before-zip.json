@@ -1,0 +1,14 @@
+{
+  "mode": "baseline",
+  "scenario": "roundtrip",
+  "format": "zip",
+  "gui_sha256": "d753f5b5ff1c1b1447e2744874692675bdef85fefe357a28d0de113665d0f38f",
+  "form_level": 5,
+  "form_method": "Store",
+  "actual_method": 0,
+  "stored": true,
+  "unpacked_bytes": 225000,
+  "packed_bytes": 225000,
+  "unpacked_sha256": "46d23027c8be96f2d6e2b025ba26dc080dae5ced2cf5e47409ede3683cfdda3e",
+  "source_sha256": "46d23027c8be96f2d6e2b025ba26dc080dae5ced2cf5e47409ede3683cfdda3e"
+}
