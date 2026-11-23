@@ -35,4 +35,4 @@ with tempfile.TemporaryDirectory(prefix='qz-store-cli-') as tmp:
     output = base/'out-encrypted'
     run('extract',encrypted,output,secret='qz-test-only')
     assert (output/'sample.txt').read_bytes() == content
-    print('PASS: explicit Deflate level 0 reproduces the defect; Store/Copy level 0 and compressed controls round-trip, including encrypted 7z.')
+    print('PASS: explicit CLI methods retain their method-dependent level behavior. Store/Copy and compressed controls round-trip, including encrypted 7z.')
