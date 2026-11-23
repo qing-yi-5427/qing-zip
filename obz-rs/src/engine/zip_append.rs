@@ -3,7 +3,8 @@ use super::*;
 
 const HELLO: u8 = 57;
 const REQUEST: u8 = 58;
-const VERSION: [u8; 4] = 1u32.to_le_bytes();
+const LEGACY_VERSION: [u8; 4] = 1u32.to_le_bytes();
+const VERSION: [u8; 4] = 2u32.to_le_bytes();
 const MAX_ROOTS: usize = 4096;
 const REQUEST_LIMIT: usize = 3 * 1024 * 1024;
 
@@ -13,15 +14,33 @@ struct Root {
     leaf: *const u16,
 }
 
+#[repr(C)]
+struct OutputObserver {
+    context: *mut std::ffi::c_void,
+    write: unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const u8, u32),
+    resize: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
+}
+
+unsafe extern "C" fn observe_write(context: *mut std::ffi::c_void, at: u64, data: *const u8, len: u32) {
+    // The native Output serializes calls while these Rust values are borrowed.
+    let proof = unsafe { &mut *context.cast::<zip_output_proof::Written>() };
+    proof.write(at, unsafe { std::slice::from_raw_parts(data, len as usize) });
+}
+
+unsafe extern "C" fn observe_resize(context: *mut std::ffi::c_void, length: u64) {
+    unsafe { &mut *context.cast::<zip_output_proof::Written>() }.resize(length);
+}
+
 extern "C" {
     fn qz_append_zip(runtime: *const u16, owner: Handle, original: Handle, output: Handle,
-        expected_count: u32, roots: *const Root, root_count: u32, error: *mut u8, capacity: usize) -> i32;
+        expected_count: u32, roots: *const Root, root_count: u32, observer: *const OutputObserver,
+        error: *mut u8, capacity: usize) -> i32;
 }
 
 pub(in crate::engine) fn try_encode(
     program: &Path, original: &File, output: &edit_source::EditOutput,
     names: &[String], count: u16, ctl: &JobControl,
-) -> Result<Option<edit_source::DisposableZipCandidate>, String> {
+) -> Result<Option<(edit_source::DisposableZipCandidate, Option<zip_output_proof::Written>)>, String> {
     if names.is_empty() || names.len() > MAX_ROOTS { return Ok(None); }
     let _timer = PhaseTimer::new("zip-append-owned-worker");
     let helper = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("obz-worker.exe");
@@ -59,11 +78,12 @@ pub(in crate::engine) fn try_encode(
     }
 
     let Ok(mut session) = Session::start_mode(&helper, 5) else { return Ok(None); };
-    match create_zip::create_handshake_frame(&session, ctl)? {
+    let expects_proof = match create_zip::create_handshake_frame(&session, ctl)? {
         None => { create_zip::legacy_create_exit(&session, ctl)?; return Ok(None); }
-        Some((HELLO, version)) if version == VERSION => (),
+        Some((HELLO, version)) if version == VERSION => true,
+        Some((HELLO, version)) if version == LEGACY_VERSION => false,
         _ => return Err("incompatible ZIP update helper".into()),
-    }
+    };
     let candidate = output.disposable_zip_candidate()?;
     let writer = candidate.writer()?;
     let mut request = Vec::with_capacity(request_bytes);
@@ -82,6 +102,7 @@ pub(in crate::engine) fn try_encode(
     }
     session.send(REQUEST, request, ctl)?;
     let mut began = false;
+    let mut proof = None;
     let encoded = loop {
         let (kind, body) = session.next(ctl)?.ok_or("ZIP update worker exited without a result")?;
         match (kind, body.as_slice()) {
@@ -93,8 +114,11 @@ pub(in crate::engine) fn try_encode(
             (46, [percent]) if began && *percent <= 99 => {
                 ctl.set("updating", Some(*percent), "Updating a temporary archive copy");
             }
+            (zip_output_proof::FRAME_KIND, bytes) if began && expects_proof && proof.is_none() => {
+                proof = Some(zip_output_proof::Written::deserialize(bytes)?);
+            }
             (41, []) if !began => break false,
-            (43, []) if began => break true,
+            (43, []) if began && (expects_proof == proof.is_some()) => break true,
             (43, message) if !message.is_empty() => return Err(String::from_utf8_lossy(message).into_owned()),
             _ => return Err("invalid ZIP update worker result".into()),
         }
@@ -103,10 +127,10 @@ pub(in crate::engine) fn try_encode(
         return Err("ZIP update worker status differs from its result".into());
     }
     drop(writer);
-    Ok(encoded.then_some(candidate))
+    Ok(encoded.then_some((candidate, proof)))
 }
 
-fn run_worker() -> Result<bool, String> {
+fn run_worker() -> Result<Option<zip_output_proof::Written>, String> {
     let runtime = runtime_dir()?.ok_or("missing ZIP update runtime")?;
     let runtime: Vec<_> = runtime.as_os_str().encode_wide().chain(Some(0)).collect();
     let (kind, bytes) = read_frame(&mut std::io::stdin().lock(), REQUEST_LIMIT)?.ok_or("missing ZIP update request")?;
@@ -126,12 +150,18 @@ fn run_worker() -> Result<bool, String> {
     }
     request.end()?;
     let roots: Vec<_> = sources.iter().map(|(source, leaf)| Root { source: *source, leaf: leaf.as_ptr() }).collect();
+    let mut proof = zip_output_proof::Written::default();
+    let observer = OutputObserver {
+        context: (&mut proof as *mut zip_output_proof::Written).cast(),
+        write: observe_write,
+        resize: observe_resize,
+    };
     let mut error = [0; 256];
     let status = unsafe { qz_append_zip(runtime.as_ptr(), owner, original, output, expected, roots.as_ptr(),
-        count as u32, error.as_mut_ptr(), error.len()) };
+        count as u32, &observer, error.as_mut_ptr(), error.len()) };
     match status {
-        0 => Ok(true),
-        1 => Ok(false),
+        0 => Ok(Some(proof)),
+        1 => Ok(None),
         _ => {
             let len = error.iter().position(|&byte| byte == 0).unwrap_or(error.len());
             Err(format!("ZIP update worker failed {status:#x}: {}", String::from_utf8_lossy(&error[..len])))
@@ -151,8 +181,11 @@ fn reply(kind: u8, body: &[u8]) -> std::io::Result<()> {
 pub fn helper_worker() -> u8 {
     if reply(HELLO, &VERSION).is_err() { return 2; }
     let (kind, body, code) = match run_worker() {
-        Ok(true) => (43, Vec::new(), 0),
-        Ok(false) => (41, Vec::new(), 3),
+        Ok(Some(proof)) => {
+            if reply(zip_output_proof::FRAME_KIND, &proof.serialize()).is_err() { return 2; }
+            (43, Vec::new(), 0)
+        }
+        Ok(None) => (41, Vec::new(), 3),
         Err(error) => (43, error.into_bytes(), 1),
     };
     if reply(kind, &body).is_err() { 2 } else { code }

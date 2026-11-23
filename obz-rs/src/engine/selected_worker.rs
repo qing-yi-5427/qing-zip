@@ -397,9 +397,9 @@ impl<'a> Fields<'a> {
 
 type Frame = Option<(u8, Vec<u8>)>;
 fn read_frame(stdout: &mut impl std::io::Read, limit:usize) -> Result<Frame, String> {
-    read_frame_with_direct_manifest(stdout, limit, false)
+    read_frame_with_direct_manifest(stdout, limit, false, false)
 }
-fn read_frame_with_direct_manifest(stdout: &mut impl std::io::Read, limit: usize, direct: bool) -> Result<Frame, String> {
+fn read_frame_with_direct_manifest(stdout: &mut impl std::io::Read, limit: usize, direct: bool, zip_append: bool) -> Result<Frame, String> {
     let mut kind = [0];
     let mut n = [0; 4];
     if stdout.read(&mut kind).map_err(|e| e.to_string())? == 0 {
@@ -407,13 +407,38 @@ fn read_frame_with_direct_manifest(stdout: &mut impl std::io::Read, limit: usize
     }
     stdout.read_exact(&mut n).map_err(|e| e.to_string())?;
     let length = u32::from_le_bytes(n) as usize;
-    if length > if direct && kind[0] == 26 { DIRECT_MANIFEST_LIMIT } else { limit } {
+    let ceiling = match kind[0] {
+        26 if direct => DIRECT_MANIFEST_LIMIT,
+        zip_output_proof::FRAME_KIND if zip_append => zip_output_proof::FRAME_LIMIT,
+        _ => limit,
+    };
+    if length > ceiling {
         return Err("selected worker frame exceeds size limit".into());
     }
     let mut body = vec![0; length];
     stdout.read_exact(&mut body).map_err(|e| e.to_string())?;
     Ok(Some((kind[0], body)))
 }
+
+#[cfg(test)]
+#[test]
+fn append_worker_proof_alone_has_a_larger_bounded_frame() {
+    let proof_frame = |tag: u8, length: usize| {
+        let mut frame = vec![tag];
+        frame.extend_from_slice(&(length as u32).to_le_bytes());
+        frame.resize(length + 5, 0);
+        frame
+    };
+    let length = zip_output_proof::FRAME_LIMIT;
+    let frame = proof_frame(zip_output_proof::FRAME_KIND, length);
+    assert!(read_frame_with_direct_manifest(&mut frame.as_slice(), 1024, false, true).is_ok());
+    assert!(read_frame_with_direct_manifest(&mut frame.as_slice(), 1024, false, false).is_err());
+    let oversized = proof_frame(zip_output_proof::FRAME_KIND, length + 1);
+    assert!(read_frame_with_direct_manifest(&mut oversized.as_slice(), 1024, false, true).is_err());
+    let progress = proof_frame(46, 2 * 1024);
+    assert!(read_frame_with_direct_manifest(&mut progress.as_slice(), 1024, false, true).is_err());
+}
+
 struct Session {
     child: OwnedHandle,
     _job: Option<OwnedHandle>,
@@ -459,7 +484,7 @@ impl Session {
             std::thread::Builder::new()
                 .name("selected-worker-output".into())
                 .spawn(move || loop {
-                    let frame = read_frame_with_direct_manifest(&mut stdout, if create_zip { 1024 } else { LIMIT }, direct);
+                    let frame = read_frame_with_direct_manifest(&mut stdout, if create_zip { 1024 } else { LIMIT }, direct, mode == 5);
                     let last = !matches!(&frame, Ok(Some(_)));
                     if tx.send(frame).is_err() || last {
                         break;

@@ -104,7 +104,7 @@ public:
 
 extern "C" HRESULT qz_append_zip(const wchar_t *runtime_dir, HANDLE owner, HANDLE original,
     HANDLE output, UInt32 expected_count, const zip_append::Root *roots, UInt32 root_count,
-    char *error, size_t capacity) noexcept {
+    const zip_create::OutputObserver *observer, char *error, size_t capacity) noexcept {
   using namespace zip_create;
   bool started = false;
   try {
@@ -155,7 +155,7 @@ extern "C" HRESULT qz_append_zip(const wchar_t *runtime_dir, HANDLE owner, HANDL
     *update.put() = new zip_append::Update(plan, incoming);
     Ref<IOutArchive> editor;
     exact(archive->QueryInterface(IID_IOutArchive, reinterpret_cast<void **>(editor.put())), "open ZIP update interface");
-    Ref<Output> stream(new Output(output));
+    Ref<Output> stream(new Output(output, 0, observer));
     exact(stream->Seek(0, FILE_BEGIN, nullptr), "set ZIP candidate position");
     frame(47);
     started = true;

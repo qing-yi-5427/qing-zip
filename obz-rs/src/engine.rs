@@ -41,6 +41,8 @@ mod zip_volume_view;
 mod zip_input_probe;
 #[cfg(windows)]
 pub(crate) mod edit_source;
+#[cfg(nana_selected_worker)]
+mod zip_output_proof;
 #[cfg(windows)]
 pub(crate) fn recover_interrupted_edit(path:&std::path::Path)->Result<bool,String>{ edit_source::recover_missing(path) }
 #[cfg(nana_selected_worker)]
@@ -5972,8 +5974,9 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         let candidate = selected_worker::zip_append::try_encode(
             &executable()?, source.pinned_archive(), &output, &names, count, &ctl,
         )?;
-        if let Some(candidate) = candidate {
-            output.finish_candidate(&source, candidate, opts.edit_receipt.is_none(), &ctl)?;
+        if let Some((candidate, proof)) = candidate {
+            let proof = proof.as_ref().map(zip_output_proof::Prepared::Blocks);
+            output.finish_candidate_with_proof(&source, candidate, opts.edit_receipt.is_none(), proof, &ctl)?;
             true
         } else {
             false
@@ -6004,18 +6007,24 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         #[cfg(nana_selected_worker)]
         let candidate = disposable.then(|| output.disposable_zip_candidate()).transpose()?;
         #[cfg(nana_selected_worker)]
-        let stdout = candidate.as_ref().map(|file| file.writer()).transpose()?;
+        let (stdout, capture) = candidate.as_ref().map(|file| {
+            zip_output_proof::capture_stdout(file.writer()?, ctl.clone())
+        }).transpose()?.unzip();
         #[cfg(not(nana_selected_worker))]
         let stdout = None;
         #[cfg(nana_selected_worker)]
         let lifetime = if direct { EngineLifetime::OwnedByCaller } else { EngineLifetime::Ordinary };
         #[cfg(not(nana_selected_worker))]
         let lifetime = EngineLifetime::Ordinary;
-        let (log, _) = run_program_log_with_directory(program, &a, cwd, opts, stdout, false, false, None, None, lifetime)?;
+        let launched = run_program_log_with_directory(program, &a, cwd, opts, stdout, false, false, None, None, lifetime);
+        #[cfg(nana_selected_worker)]
+        let proof = capture.map(|task| task.join().map_err(|_| "ZIP candidate writer stopped".to_string())?)
+            .transpose()?;
+        let (log, _) = launched?;
         read_engine_output(log)?;
         #[cfg(nana_selected_worker)]
         if let Some(candidate) = candidate {
-            output.finish_candidate(&source, candidate, opts.edit_receipt.is_none(), &ctl)?;
+            output.finish_candidate_with_proof(&source, candidate, opts.edit_receipt.is_none(), proof, &ctl)?;
         }
     }
     #[cfg(test)]

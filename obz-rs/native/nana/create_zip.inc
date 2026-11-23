@@ -578,12 +578,22 @@ public:
     });
   }
 };
+struct OutputObserver {
+  void *context;
+  void (*write)(void *context, uint64_t at, const void *bytes, uint32_t length);
+  void (*resize)(void *context, uint64_t length);
+};
+
 class Output final : public ComObject<IOutStream> {
   HANDLE h_;
   uint64_t base_;
+  uint64_t position_ = 0;
+  const OutputObserver *observer_;
+  std::mutex observation_;
 
 public:
-  explicit Output(HANDLE h,uint64_t base=0) : h_(h),base_(base) {}
+  explicit Output(HANDLE h, uint64_t base = 0, const OutputObserver *observer = nullptr)
+      : h_(h), base_(base), observer_(observer) {}
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID i,
                                            void **out) noexcept override {
     return identify(out, i == IID_IUnknown || i == IID_ISequentialOutStream ||
@@ -591,17 +601,25 @@ public:
   }
   HRESULT STDMETHODCALLTYPE Write(const void *p, UInt32 n,
                                   UInt32 *written) noexcept override {
+    std::unique_lock lock(observation_, std::defer_lock);
+    if (observer_) lock.lock();
     DWORD got = 0;
     if (written)
       *written = 0;
     if (!WriteFile(h_, p, n, &got, nullptr))
       return HRESULT_FROM_WIN32(GetLastError());
+    if (observer_ && got) {
+      observer_->write(observer_->context, position_, p, got);
+      position_ += got;
+    }
     if (written)
       *written = got;
     return got == n ? S_OK : E_FAIL;
   }
   HRESULT STDMETHODCALLTYPE Seek(Int64 offset, UInt32 origin,
                                  UInt64 *pos) noexcept override {
+    std::unique_lock lock(observation_, std::defer_lock);
+    if (observer_) lock.lock();
     LARGE_INTEGER d{}, result{};
     if(origin>FILE_END || base_>INT64_MAX) return E_INVALIDARG;
     if(origin==FILE_BEGIN) {
@@ -618,17 +636,21 @@ public:
     }
     if (!SetFilePointerEx(h_, d, &result, origin))
       return HRESULT_FROM_WIN32(GetLastError());
+    if (observer_) position_ = result.QuadPart - static_cast<int64_t>(base_);
     if (pos)
       *pos = result.QuadPart-static_cast<int64_t>(base_);
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE SetSize(UInt64 n) noexcept override {
+    std::unique_lock lock(observation_, std::defer_lock);
+    if (observer_) lock.lock();
     FILE_END_OF_FILE_INFO end{};
     if(n>uint64_t(INT64_MAX)-base_)return E_INVALIDARG;
     end.EndOfFile.QuadPart = n+base_;
-    return SetFileInformationByHandle(h_, FileEndOfFileInfo, &end, sizeof(end))
-               ? S_OK
-               : HRESULT_FROM_WIN32(GetLastError());
+    if (!SetFileInformationByHandle(h_, FileEndOfFileInfo, &end, sizeof(end)))
+      return HRESULT_FROM_WIN32(GetLastError());
+    if (observer_) observer_->resize(observer_->context, n);
+    return S_OK;
   }
 };
 class Update final : public ComObject<IArchiveUpdateCallback>, public ICryptoGetTextPassword2 {

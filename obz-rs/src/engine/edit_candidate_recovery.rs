@@ -2,6 +2,7 @@
 //! The separate edit journal handles the transaction after that claim.
 use super::*;
 use crate::engine::JobControl;
+use crate::engine::zip_output_proof::{Prepared, Written};
 use std::io::{Read, Write};
 
 const DIRECTORY: &str = "edit-candidates-v1";
@@ -59,6 +60,8 @@ struct Record {
     candidate: Identity,
     length: u64,
     digest: [u8; 32],
+    #[serde(default)]
+    block_digest: bool,
 }
 
 fn key(original: &Identity) -> Result<String, String> {
@@ -166,10 +169,11 @@ pub(super) fn arm(
     source: &EditSource,
     output: &EditOutput,
     candidate: &File,
+    proof: Option<Prepared<'_>>,
     control: &JobControl,
 ) -> Option<Lease> {
     let directory = index()?;
-    match arm_inner(&directory, source, output, candidate, control) {
+    match arm_inner(&directory, source, output, candidate, proof, control) {
         Ok(lease) => Some(lease),
         Err(error) => {
             #[cfg(test)]
@@ -185,6 +189,7 @@ fn arm_inner(
     source: &EditSource,
     output: &EditOutput,
     candidate: &File,
+    proof: Option<Prepared<'_>>,
     control: &JobControl,
 ) -> Result<Lease, String> {
     let original = Identity::of(&source.read)?;
@@ -235,6 +240,18 @@ fn arm_inner(
     let written = (|| -> Result<(), String> {
         let length = candidate.metadata().map_err(|e| e.to_string())?.len();
         let file = lease.file.as_mut().expect("new ZIP candidate receipt");
+        let (digest, block_digest, bytes_reread) = match proof {
+            Some(Prepared::Blocks(proof)) => {
+                let (digest, bytes_reread) = proof.seal(candidate, length, control)?;
+                (digest, true, bytes_reread)
+            }
+            Some(Prepared::Streamed { digest, length: written }) if written == length => (digest, false, 0),
+            Some(Prepared::Streamed { .. }) => return Err("ZIP candidate differs from its writing proof".into()),
+            None => (digest(candidate, length, control)?, false, length),
+        };
+        if crate::engine::PhaseTimer::enabled() {
+            eprintln!("OA_ZIP_CANDIDATE bytes={length} reread={bytes_reread}");
+        }
         let record = Record {
             version: 1,
             receipt: Identity::of(file)?,
@@ -248,7 +265,8 @@ fn arm_inner(
             output: Identity::of(&output.output_pin)?,
             candidate: Identity::of(candidate)?,
             length,
-            digest: digest(candidate, length, control)?,
+            digest,
+            block_digest,
         };
         let sealed = crate::services::protect(
             &serde_json::to_vec(&record).map_err(|e| e.to_string())?,
@@ -742,7 +760,11 @@ fn reclaim_record(
                 || metadata.file_attributes() & 0x400 != 0
                 || record.candidate != Identity::of(&candidate)?
                 || record.length != metadata.len()
-                || record.digest != digest(&candidate, record.length, control)?
+                || record.digest != if record.block_digest {
+                    Written::default().seal(&candidate, record.length, control)?.0
+                } else {
+                    digest(&candidate, record.length, control)?
+                }
             {
                 return Err("ZIP candidate was replaced or changed".into());
             }

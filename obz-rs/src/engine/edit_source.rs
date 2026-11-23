@@ -254,7 +254,7 @@ impl EditOutput {
         Ok(DisposableZipCandidate(file))
     }
 
-    #[cfg(nana_selected_worker)]
+    #[cfg(all(nana_selected_worker, test))]
     pub(super) fn finish_candidate(
         &mut self,
         source: &EditSource,
@@ -262,8 +262,20 @@ impl EditOutput {
         top_level: bool,
         control: &super::JobControl,
     ) -> Result<(), String> {
+        self.finish_candidate_with_proof(source, candidate, top_level, None, control)
+    }
+
+    #[cfg(nana_selected_worker)]
+    pub(super) fn finish_candidate_with_proof(
+        &mut self,
+        source: &EditSource,
+        candidate: DisposableZipCandidate,
+        top_level: bool,
+        proof: Option<super::zip_output_proof::Prepared<'_>>,
+        control: &super::JobControl,
+    ) -> Result<(), String> {
         if top_level && source.local_ntfs() {
-            self.candidate_receipt = candidate_recovery::arm(source, self, &candidate.0, control);
+            self.candidate_receipt = candidate_recovery::arm(source, self, &candidate.0, proof, control);
         }
         control.check()?;
         candidate.finish()
