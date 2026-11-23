@@ -1,0 +1,24 @@
+{
+  "source": "ddfdfc11db6b8e7dd5caa2113642cf56ecb59284 / https://github.com/qing-yi-5427/qing-zip/actions/runs/45273082510",
+  "binaries_sha256": {
+    "qing-zip.exe": "6b0db6dd75b30d913c0f80be6eb867e65538e4ab51ea2569e02835ff1a2d5908",
+    "obz.exe": "4d0d63e337ab51907dc7b4520095da57127bcabe13011de46eb14669d78efa27",
+    "obz-worker.exe": "4d9aaaee1bf05523ce33e3b0b2fe97faf8412e98b0ed5e74ffd837ec301fc8f2"
+  },
+  "portable_zip_sha256": "e296303aa045fed8425025399809c454aa97b982c4c3204e810661d528824976",
+  "stop_control_text": "停止批量处理",
+  "damaged_backup_sha256": "7922b10f7296664807de14d45c923d29cb0f9a2646bf3f0dd558b772238991bf",
+  "future_record_sha256": "f4dac834649a8bca5bf7afaa209c61b5ba58985183b2249b07b7c94bd0226bc6",
+  "ordinary_batch_completed": true,
+  "sources": {
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "second.zip": "152d2913d37743f17b9ce21070b1f19383adff840f6c8a8588057236daff7130",
+    "third.zip": "7e4344d79756acf05a0b4a1527e5eb5d470f8c3796f2c682faca9716e21d86d7"
+  },
+  "output": {
+    "1-first/file.txt": "c469af0d900e727bc5f85e0b9af09053268df5518d93ec1e6c11deed5942a092",
+    "2-second/outside-archive.txt": "b74da086f942a5c01f0f863443ca3a9b73f9b669091d0c336b94f9dd3bb64d95",
+    "3-third/file.txt": "c9336cde0a8578330b8fc882e341ae475c98e57e7df2c98b3384228f7e7742ec",
+    "sentinel.txt": "9e308c7ad347094c7753dd64d7af92e6af34052c7bc6d1b0ea72e378fa031318"
+  }
+}

@@ -2,6 +2,14 @@
 
 2026-11-23 以本地提交 `0cc51aa` 建立基线。复测使用独立工作树、便携构建以及临时数据。以下优先级依据用户能观察到的结果。一个样本通过，只计入该样本覆盖的格式、行为与平台。
 
+## 第九轮批量异常退出与高对比窗口
+
+#63 的固定 x64 正式候选在真实 Windows 11 窗口通过九案：新批次与续跑中的进程强退、最后一项中断、受控残尾、正常停止重开、替换确认、不可写配置、损坏／未知记录及关窗交接。已开始但结果未确认的项目保守标为中断，不自动重跑；未开始项须由用户明确继续。仅保留一份续跑记录，已占用或损坏时的行为另有提示；断电和介质故障未作等价测试。[九案和固定包来源](verification/round9/final-acceptance/README.md)
+
+旧版在同一会话暂停后直接续跑时，替换策略会无二次确认地覆盖同名目标。#64 将确认绑定实际点击的批次，#65 的 x64 打包窗口在正常及续跑目录不可写两案中均核对返回无写入、确认后替换和源文件保全。[旧版与候选回执](verification/round9/same-session-overwrite/README.md) · [托管两案](https://github.com/qing-yi-5427/qing-zip/actions/runs/45273334807)
+
+#61 修复 Windows 高对比下主按钮文字与背板接近的问题。Win11 ARM64 实际 100% 系统缩放下，前后截图的文字与背景色估算对比约 1.42:1 → 7.89:1；候选还核对了真实系统高对比、减少动画、禁用态、Tab 焦点和普通浅深界面。真实 200% 仍未验证。[截图与回执](verification/round9/final-acceptance/README.md)
+
 ## 选择一个文件时的 ZIP 条目数边界
 
 旧版对含 65,535 个成员的普通 ZIP 会在临时目录写出未选文件。主线已修复该边界。在同一组文件中选取一个成员，三对交替测试的中位数由 79.75 秒降至 0.462 秒，原包和唯一输出均逐次校验。相邻的 65,534 项普通 ZIP 与 65,536 项 ZIP64 耗时接近各自基线。新增文件跨越条目数边界也能通过独立 7-Zip 校验。真正的 ZIP64 更新如在候选写完后强退，仍可能消耗临时磁盘。[选择实测](verification/round9/classic-zip-selection/paired-selection.json) · [跨界、保全及残留](verification/round9/zip64-count/README.md)
@@ -120,4 +128,4 @@ python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --seven
 
 ## 后续验收
 
-普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。在操作开始时已满的卷上，普通 ZIP 创建与覆盖解压都明确报错，并在腾出空间后重试成功。另两次覆盖提取在暂存文件已写约 28 MiB 后才遇空间不足，原包、已有目标、无关文件及暂存目录清单均保全。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) 普通 ZIP 更新和嵌套写回也通过空间不足后的保全与同会话重试。[普通更新](https://github.com/qing-yi-5427/qing-zip/pull/26) · [嵌套写回](https://github.com/qing-yi-5427/qing-zip/pull/30) 后续关注正式安装版的一级菜单、Windows 10、批次尚在运行时异常退出、候选写完至提交间的中断，以及其他格式的恢复。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)
+普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。在操作开始时已满的卷上，普通 ZIP 创建与覆盖解压都明确报错，并在腾出空间后重试成功。另两次覆盖提取在暂存文件已写约 28 MiB 后才遇空间不足，原包、已有目标、无关文件及暂存目录清单均保全。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) 普通 ZIP 更新和嵌套写回也通过空间不足后的保全与同会话重试。[普通更新](https://github.com/qing-yi-5427/qing-zip/pull/26) · [嵌套写回](https://github.com/qing-yi-5427/qing-zip/pull/30) 后续关注正式安装版的一级菜单、Windows 10、多个历史批次、断电、候选写完至提交间的中断以及其他格式的恢复；普通批次进程强退已按上文范围验收。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)

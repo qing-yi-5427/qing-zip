@@ -1,0 +1,12 @@
+{
+  "pr_head": "ddfdfc11db6b8e7dd5caa2113642cf56ecb59284",
+  "actual_checkout": "ad3f405fb6e111ccdaab9bfea5697c24a3b3c19f",
+  "commit_parents": [
+    "24d86f631a8fd9f26e17b72d42a91658b215ad0e",
+    "ddfdfc11db6b8e7dd5caa2113642cf56ecb59284"
+  ],
+  "run": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45273082510",
+  "artifact_id": 14867611550,
+  "outer_digest": "sha256:e26da88c5e82b5b144bec73999e78a5a1a3427fb2a922f9fe83f92dfb4eeda81",
+  "portable_sha256": "e296303aa045fed8425025399809c454aa97b982c4c3204e810661d528824976"
+}

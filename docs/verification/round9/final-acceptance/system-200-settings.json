@@ -1,0 +1,98 @@
+﻿{
+    "requested":  0,
+    "action":  "probe",
+    "settings_visible":  true,
+    "combos":  [
+                   {
+                       "selection":  "100% (Recommended)",
+                       "name":  "Scale",
+                       "id":  "SystemSettings_Display_Scaling_ItemSizeOverride_ComboBox",
+                       "enabled":  true
+                   },
+                   {
+                       "selection":  "1024 × 768 (Recommended)",
+                       "name":  "Display resolution",
+                       "id":  "SystemSettings_Display_Resolution_ComboBox",
+                       "enabled":  true
+                   },
+                   {
+                       "selection":  "Landscape",
+                       "name":  "Display orientation",
+                       "id":  "SystemSettings_Display_Orientation_ComboBox",
+                       "enabled":  false
+                   }
+               ],
+    "settings_window_count":  1,
+    "current":  100,
+    "options":  [
+                    {
+                        "label":  "100% (Recommended)",
+                        "percent":  100,
+                        "enabled":  true
+                    },
+                    {
+                        "label":  "125%",
+                        "percent":  125,
+                        "enabled":  true
+                    }
+                ],
+    "screenshot_method":  "PrintWindow for the Settings HWND",
+    "screenshot_error":  "Settings window capture was blank",
+    "resolution_options":  [
+                               {
+                                   "enabled":  true,
+                                   "label":  "1920 × 1080"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1680 × 1050"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1600 × 1200"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1600 × 900"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1440 × 900"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1366 × 768"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1280 × 1024"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1280 × 800"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1280 × 720"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1152 × 864"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "1024 × 768 (Recommended)"
+                               },
+                               {
+                                   "enabled":  true,
+                                   "label":  "800 × 600"
+                               }
+                           ],
+    "video_controllers":  [
+                              {
+                                  "Name":  "Microsoft Hyper-V Video",
+                                  "DriverVersion":  "10.0.26100.1150",
+                                  "VideoModeDescription":  "1024 x 768 x 4294967296 colors"
+                              }
+                          ]
+}
