@@ -9,6 +9,8 @@ from statistics import median
 import tempfile
 import time
 import zipfile
+import pywintypes
+import win32file
 
 scripts = Path(__file__).resolve().parent
 resume = runpy.run_path(str(scripts / "check-batch-resume-desktop.py"))
@@ -56,14 +58,106 @@ def fail_active_window(args, page, process, index, count):
     return observed
 
 
-def after_restart(args, root, output):
+def batch_lease(root):
+    path = root / "local/qing-zip/BatchResume/record.lock"
+    return win32file.CreateFile(str(path), 0x80000000, 0, None, 3, 0, None)
+
+
+def active_lease_rejects_other_process(root):
+    try:
+        competing = batch_lease(root)
+    except pywintypes.error as error:
+        assert error.winerror == 32, error
+    else:
+        competing.Close()
+        raise AssertionError("The active GUI allowed an independent process to lock its live record.")
+
+
+def after_restart(args, root, output, expected, previously_resumed=False):
     before = snapshot(output)
     with batch["launch_local"](args.exe, root, helpers) as (page, wait):
+        if args.expect_recovery:
+            competing = batch_lease(root)
+            try:
+                state = page.evaluate("window.__TAURI__.core.invoke('load_batch_resume')")
+                assert state["state"] == "empty"
+                page.locator('[data-view="history"]').click()
+                expect(page.get_by_text("还没有任务记录。")).to_be_visible()
+                assert snapshot(output) == before
+            finally:
+                competing.Close()
+            summary = ("成功 1 · 已取消 1 · 已中断 1 · 未开始 2" if previously_resumed else
+                       "成功 1 · 已中断 1 · 未开始 2")
+            report, _ = resume["show_saved"](page, root, output, summary,
+                                                    "自动重命名" if previously_resumed else "替换已有文件")
+            expect(report).to_contain_text("上次意外退出")
+            assert snapshot(output) == before
+            page.screenshot(path=args.out / "reopened.png")
+            if previously_resumed:
+                report.get_by_role("button", name="继续未开始的项目").click()
+                summary = "成功 3 · 已取消 1 · 已中断 1"
+                correct = {**before, "4-fourth/file (1).txt": expected["fourth"],
+                           "5-fifth/file.txt": expected["fifth"]}
+            else:
+                dialog = resume["review_resume"](page, report)
+                expect(dialog).to_contain_text("替换已有文件")
+                page.screenshot(path=args.out / "confirm-overwrite.png")
+                dialog.get_by_role("button", name="返回").click()
+                assert snapshot(output) == before
+                dialog = resume["review_resume"](page, report)
+                dialog.get_by_role("button", name="按替换策略继续").click()
+                summary = "成功 3 · 已中断 1"
+                correct = {**before, "3-third/file.txt": expected["third"],
+                           "4-fourth/file.txt": expected["fourth"]}
+            batch["candidate_report"](page, expect, summary)
+            page.screenshot(path=args.out / "resumed-tail.png")
+            assert snapshot(output) == correct
+        else:
+            page.locator('[data-view="history"]').click()
+            expect(page.get_by_text("还没有任务记录。")).to_be_visible()
+            assert page.locator("#oa-history-batch").count() == 0
+            assert snapshot(output) == before
+            page.screenshot(path=args.out / "reopened.png")
+            correct = before
+        resume["close"](page, wait)
+    assert snapshot(output) == correct
+    if args.expect_recovery:
+        assert not (root / "local/qing-zip/BatchResume/pending.json").exists()
+    return before, correct
+
+
+def inspect_without_resume(args, root, output):
+    before = snapshot(output)
+    record = root / "local/qing-zip/BatchResume/pending.json"
+    if args.scenario == "partial":
+        # Model an incomplete final append in this owned profile. The tool
+        # does not start work from a record it cannot verify.
+        data = record.read_bytes() + b'{"index":2,'
+        record.write_bytes(data)
+    with batch["launch_local"](args.exe, root, helpers) as (page, wait):
         page.locator('[data-view="history"]').click()
-        expect(page.get_by_text("还没有任务记录。")).to_be_visible()
-        assert page.locator("#oa-history-batch").count() == 0
+        if args.scenario == "partial":
+            expect(page.get_by_text("无法确认哪些项目还未开始。", exact=False)).to_be_visible()
+            expect(page.get_by_role("button", name="继续未开始的项目")).to_have_count(0)
+            page.screenshot(path=args.out / "incomplete-journal.png")
+            page.get_by_role("button", name="备份损坏记录").click()
+            expect(page.get_by_role("dialog", name="操作提示")).to_be_visible()
+            backups = list(record.parent.glob("damaged-*.json"))
+            assert len(backups) == 1 and backups[0].read_bytes() == data
+            page.locator('#qa-overlay .qa-dialog-footer [data-action="close"]').click()
+        else:
+            report = page.locator("#oa-history-batch .oa-batch-outcome")
+            expect(report).to_contain_text("中断的批量解压")
+            expect(report).to_contain_text("成功 1 · 已中断 1")
+            report.get_by_role("button", name="查看批量结果").click()
+            report = page.locator("#oa-batch-result .oa-batch-outcome")
+            expect(report).to_contain_text(str(output / "2-second"))
+            expect(report.get_by_role("button", name="继续未开始的项目")).to_have_count(0)
+            page.screenshot(path=args.out / "last-item-inspection.png")
+            report.get_by_role("button", name="清除中断记录").click()
+            expect(report).to_have_count(0)
+        assert not record.exists()
         assert snapshot(output) == before
-        page.screenshot(path=args.out / "reopened.png")
         resume["close"](page, wait)
     assert snapshot(output) == before
     return before
@@ -85,6 +179,8 @@ def summarize(outputs, neighbors):
 
 def exercise(args, root):
     inputs, paths, output, expected = fixture(root)
+    if args.scenario == "last":
+        paths = paths[:2]
     occupied = output / "4-fourth/file.txt"
     occupied.parent.mkdir()
     occupied.write_bytes(b"existing fourth destination")
@@ -97,24 +193,34 @@ def exercise(args, root):
         batch["fill_batch"](page, paths, output, expect)
         page.locator("#qa-batch-conflict").select_option("overwrite")
         page.locator('[data-action="batch-start"]').click()
-        observation = live_task(page, 2, 4)
+        observation = live_task(page, 2, len(paths))
+        if args.expect_recovery:
+            active_lease_rejects_other_process(root)
+            result["independent_process_lock_rejected_while_active"] = True
         if not first.exists():
             print(json.dumps({"observation": observation, "output_files": snapshot(output),
                               "task_surface": batch["text_without_paths"](page.locator("#qing-archive").inner_text(), root)},
                              ensure_ascii=False))
         assert batch["digest"](first) == expected["first"]
         identity = batch["published_identity"](first)
-        result["native_running_at_exit"] = fail_active_window(args, page, process, 2, 4)
+        result["native_running_at_exit"] = fail_active_window(args, page, process, 2, len(paths))
 
 
-    before_restart = after_restart(args, root, output)
+    if args.scenario in ("last", "partial"):
+        before_restart = final = inspect_without_resume(args, root, output)
+    else:
+        before_restart, final = after_restart(args, root, output, expected)
     assert before_restart["1-first/file.txt"] == expected["first"]
     assert all(before_restart[name] == digest for name, digest in neighbors.items())
     assert not any(name.startswith("3-third/") for name in before_restart)
     assert batch["published_identity"](first) == identity
     assert snapshot(inputs) == originals
-    return {**result, "no_resume_after_forced_exit": True, "sources": originals,
-            **summarize(before_restart, neighbors), "first_published_file_identity_preserved": True}
+    return {**result, "no_resume_after_forced_exit": not args.expect_recovery, "sources": originals,
+            **summarize(before_restart, neighbors), "first_published_file_identity_preserved": True,
+            "cold_gui_with_external_lease_started_nothing": args.expect_recovery and args.scenario == "fresh",
+            "inspected_without_resume": args.scenario in ("last", "partial"),
+            "after_explicit_resume": summarize(final, neighbors)["outputs_by_directory"]
+            if args.expect_recovery and args.scenario == "fresh" else None}
 
 
 def resumed_then_exited(args, root):
@@ -136,18 +242,19 @@ def resumed_then_exited(args, root):
         report, _ = resume["show_saved"](page, root, output, "成功 1 · 已取消 1 · 未开始 3")
         report.get_by_role("button", name="继续未开始的项目").click()
         live_task(page, 3, 5)
-        # The approved normal-close checkpoint is consumed before dispatch.
-        assert not record.exists()
-        result["record_consumed_before_forced_exit"] = True
+        assert record.exists() == args.expect_recovery
+        result["record_remains_during_resumed_run"] = record.exists()
         result["native_running_at_exit"] = fail_active_window(args, page, process, 3, 5)
-    files = after_restart(args, root, output)
+    files, final = after_restart(args, root, output, expected, previously_resumed=True)
     assert files["1-first/file.txt"] == expected["first"]
     assert all(files[name] == digest for name, digest in neighbors.items())
     assert not any(name.startswith("5-fifth/") or name.startswith("4-fourth/") and name not in neighbors
                    for name in files)
     assert snapshot(inputs) == original_inputs and batch["published_identity"](first) == identity
-    return {**result, "no_resume_after_forced_exit": True, "sources": original_inputs,
-            **summarize(files, neighbors), "first_published_file_identity_preserved": True}
+    return {**result, "no_resume_after_forced_exit": not args.expect_recovery, "sources": original_inputs,
+            **summarize(files, neighbors), "first_published_file_identity_preserved": True,
+            "cold_gui_with_external_lease_started_nothing": args.expect_recovery,
+            "after_explicit_resume": summarize(final, neighbors)["outputs_by_directory"] if args.expect_recovery else None}
 
 
 def metrics(values):
@@ -180,7 +287,8 @@ def timing(args, root):
         batch["fill_batch"](page, paths, output, expect)
         page.evaluate("""() => {
             const source = command => window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
-            const commands = new Map(["start_operation","set_batch_resume_running"].map(name => [source(name), name]));
+            const commands = new Map(["start_operation","set_batch_resume_running","begin_batch_resume_run","admit_batch_archive"]
+                    .map(name => [source(name), name]));
             const actual = window.fetch.bind(window);
             window.measuredNativeCalls = {};
             window.fetch = async (url, init) => {
@@ -199,11 +307,15 @@ def timing(args, root):
     assert snapshot(inputs) == original_inputs
     assert snapshot(output) == {**neighbors,
                                 "1-first/file.txt": expected["first"], "3-third/file.txt": expected["third"]}
+    if args.expect_recovery:
+        assert len(calls["admit_batch_archive"]) == 3 and len(calls["begin_batch_resume_run"]) == 1
     samples = [round(value,2) for value in saves[1:]]
     return {**result, "cas_warmup_ms":round(saves[0],2), "cas_save_roundtrip_ms":samples,
             "cas_save_summary_ms":metrics(samples),
             "native_start_request_ms":[round(value,2) for value in calls["start_operation"]],
             "native_guard_request_ms":[round(value,2) for value in calls["set_batch_resume_running"]],
+            "native_archive_admission_ms":[round(value,2) for value in calls.get("admit_batch_archive", [])],
+            "native_journal_registration_ms":[round(value,2) for value in calls.get("begin_batch_resume_run", [])],
             "boundary":"Existing save includes durable file sync and replace, not a proposed new checkpoint implementation."}
 
 
@@ -215,15 +327,18 @@ def main():
     parser.add_argument("--hardening", type=Path)
     parser.add_argument("--staged-sha256", nargs=3)
     parser.add_argument("--source", required=True)
-    parser.add_argument("--scenario", choices=("fresh", "resumed", "timing"), default="fresh")
+    parser.add_argument("--scenario", choices=("fresh", "resumed", "timing", "last", "partial"), default="fresh")
+    parser.add_argument("--expect-recovery", action="store_true")
     args = parser.parse_args()
+    if args.scenario in ("last", "partial") and not args.expect_recovery:
+        parser.error("last and partial scenarios require a journal-aware candidate")
     args.exe = args.exe.resolve(strict=True)
     if bool(args.staged_sha256) == bool(args.package and args.hardening):
         parser.error("provide a ZIP and hardening receipt, or the three staged binary hashes")
     args.out.mkdir(parents=True, exist_ok=False)
     owner = tempfile.TemporaryDirectory(prefix="batch-crash-", dir=args.fixtures_in)
     try:
-        test = {"fresh": exercise, "resumed": resumed_then_exited, "timing": timing}[args.scenario]
+        test = {"resumed": resumed_then_exited, "timing": timing}.get(args.scenario, exercise)
         result = {**test(args, Path(owner.name)), "scenario": args.scenario}
     finally:
         deadline = time.monotonic() + 12

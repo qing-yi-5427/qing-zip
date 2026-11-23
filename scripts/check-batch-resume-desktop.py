@@ -293,7 +293,7 @@ def record_recovery(args, root):
         report.get_by_role("button", name="继续未开始的项目").click()
         batch["candidate_report"](page, expect, "成功 2 · 已取消 1")
         close(page, wait)
-    future = b'{"version":2,"future":"keep these bytes"}'
+    future = b'{"version":3,"future":"keep these bytes"}'
     pending.write_bytes(future)
     with launch(args, root) as (page, wait):
         page.locator('[data-view="history"]').click()
@@ -351,7 +351,7 @@ def exit_while_saving(args, root):
     record = sealed(root, ["complete", "cancelled", "pending"], paths, output, "error")
     with launch(args, root) as (page, wait):
         report, _ = show_saved(page, root, output, "成功 1 · 已取消 1 · 未开始 1", "停止并报告冲突")
-        delay_invocation(page, "take_batch_resume")
+        delay_invocation(page, "begin_batch_resume_run")
         report.get_by_role("button", name="继续未开始的项目").click()
         exit_during_delayed_call(page, wait, args.out / "normal-close-awaits-claim.png")
     assert not (output / "3-third").exists()

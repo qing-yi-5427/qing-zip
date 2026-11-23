@@ -1,0 +1,73 @@
+{
+  "source": "R9 candidate, GUI SHA b1d9b8bc",
+  "binaries_sha256": {
+    "qing-zip.exe": "b1d9b8bc60cbe351b3696d92d914037f2ea1c564f2a5d880fd831b7c2b796151",
+    "obz.exe": "a66197d6b4d235a5a6dcfbfa1ca001ea3252287967e39f5dc9509f00051529c3",
+    "obz-worker.exe": "220682c9e9c17ac1eb8f1e31af30205dbc14a9d08169d7af030cc8c27d75774f"
+  },
+  "source_artifact": "locally staged portable directory",
+  "independent_process_lock_rejected_while_active": true,
+  "native_running_at_exit": {
+    "id": 2,
+    "status": "running",
+    "progress": {
+      "phase": "decoding",
+      "percent": 3,
+      "message": "parts/0062.bin",
+      "work": {
+        "items_done": 64,
+        "items_total": 2049,
+        "bytes_done": 4128792,
+        "bytes_total": 134217752
+      }
+    }
+  },
+  "no_resume_after_forced_exit": false,
+  "sources": {
+    "first.zip": "e063e6dcdcd2b901d77ecdacaa4f874f1cec09651a37efc8f8e6cc951cd2df1f",
+    "fourth.zip": "86cdd7d2df98c8247e4554c6fdf06e0bbdafffa4671c8f2035ef62fe68472393",
+    "second.zip": "4e20b9e4857d3f7e708c8fc0d0cf7888133edda9299b5c3fd323fd5f8438be47",
+    "third.zip": "7e4344d79756acf05a0b4a1527e5eb5d470f8c3796f2c682faca9716e21d86d7"
+  },
+  "preexisting_files": {
+    "2-second/outside-archive.txt": "b74da086f942a5c01f0f863443ca3a9b73f9b669091d0c336b94f9dd3bb64d95",
+    "4-fourth/file.txt": "3c776a68139a563b265e2e975b5947b26594a12eebd4c457bb7f3ebbc6e39a40",
+    "sentinel.txt": "9e308c7ad347094c7753dd64d7af92e6af34052c7bc6d1b0ea72e378fa031318"
+  },
+  "outputs_by_directory": {
+    "1-first": {
+      "file_count": 1,
+      "file_manifest_sha256": "e3cd31dda758e41f988c36be2ecebabdf1a91d3cf40241ae18c5fefc06d54f6c"
+    },
+    "2-second": {
+      "file_count": 74,
+      "file_manifest_sha256": "c611adfb287e1bd408a48eaef92a2a85accef412494133d5a19d320253246d10"
+    },
+    "4-fourth": {
+      "file_count": 1,
+      "file_manifest_sha256": "b38d902035f95e02b5af434874a03f4a912f62e744fd79085afeea0a0a2b9b5e"
+    }
+  },
+  "first_published_file_identity_preserved": true,
+  "cold_gui_with_external_lease_started_nothing": true,
+  "inspected_without_resume": false,
+  "after_explicit_resume": {
+    "1-first": {
+      "file_count": 1,
+      "file_manifest_sha256": "e3cd31dda758e41f988c36be2ecebabdf1a91d3cf40241ae18c5fefc06d54f6c"
+    },
+    "2-second": {
+      "file_count": 74,
+      "file_manifest_sha256": "c611adfb287e1bd408a48eaef92a2a85accef412494133d5a19d320253246d10"
+    },
+    "3-third": {
+      "file_count": 1,
+      "file_manifest_sha256": "70c2a9ad6e2f2b69e1e7798aeb5820f866af828fbf2562394c4acb43be1fcaf4"
+    },
+    "4-fourth": {
+      "file_count": 1,
+      "file_manifest_sha256": "777573f734e4fd61a0168e017e38cce316824ce48851998e18ceaed741b5a951"
+    }
+  },
+  "scenario": "fresh"
+}

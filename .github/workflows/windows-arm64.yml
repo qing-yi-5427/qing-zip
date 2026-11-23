@@ -220,6 +220,21 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ./scripts/check-arm64-layout.ps1 -Cli target/arm-validation/debug/obz.exe -Desktop target/arm-validation/debug/obz-gui.exe -Layout (Join-Path $env:RUNNER_TEMP 'qing-arm64-layout')
           exit $LASTEXITCODE
+      - name: Verify ordinary batch interruption journal and legacy pause
+        shell: pwsh
+        run: |
+          $result = (cargo test --locked --manifest-path obz-gui/Cargo.toml --bin obz-gui batch_resume:: -- --test-threads=1 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          foreach ($name in @(
+            'crash_record_hides_live_jobs_and_only_preserves_unstarted_tail',
+            'a_large_plan_remains_complete_after_registering_the_first_archive',
+            'ongoing_journal_becomes_the_existing_stopped_schema_without_a_lock_gap',
+            'failed_admission_write_preserves_the_unstarted_entries'
+          )) {
+            if ($result -notmatch ('test .*::' + $name + ' \.\.\. ok')) { throw "Missing passing ordinary batch test: $name" }
+          }
       - name: Build hardened ARM64 portable package
         id: package
         shell: pwsh
