@@ -81,8 +81,13 @@ def launch(exe, outer, root, env, port, driver, lifetime):
     return process, browser, page
 
 
-def edit(page, temp):
+def edit(page, temp, password=None):
     page.locator('[data-entry="inner.zip"]').dblclick()
+    if password is not None:
+        password_field = page.locator('#oa-nested-password')
+        expect(password_field).to_be_visible(timeout=30000)
+        password_field.fill(password)
+        page.locator('[data-action="nested-open-submit"]').click()
     page.locator('[data-entry="before.txt"]').click(timeout=60000)
     page.keyboard.press('F2')
     page.locator('#qa-rename').fill('after.txt')
@@ -283,6 +288,60 @@ def main():
                         stop_own(app, browser)
                         lifetime['proc'] = None
                     save()
+                encrypted = top / 'encrypted-control'
+                encrypted.mkdir()
+                temp = encrypted / 'temp'
+                temp.mkdir()
+                source = encrypted / 'source'
+                source.mkdir()
+                plaintext_inner = io.BytesIO()
+                with zipfile.ZipFile(plaintext_inner, 'w', zipfile.ZIP_STORED) as archive:
+                    archive.writestr('before.txt', b'editable nested content\n')
+                    archive.writestr('unchanged.txt', b'preserve nested sibling\n')
+                (source / 'inner.zip').write_bytes(plaintext_inner.getvalue())
+                (source / 'outer-only.txt').write_bytes(b'preserve encrypted outer sibling\n')
+                sentinel = encrypted / 'neighbour.txt'
+                sentinel.write_bytes(b'preserve ordinary neighbour\n')
+                password = 'fixture-zip-password-unique-7264'
+                outer = encrypted / 'protected.zip'
+                cli = exe.with_name('obz.exe')
+                env = dict(os.environ, TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(encrypted / 'local'), APPDATA=str(encrypted / 'roaming'), WEBVIEW2_USER_DATA_FOLDER=str(encrypted / 'webview'), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=arguments)
+                create = subprocess.run([str(cli), 'create', str(outer), str(source / 'inner.zip'), str(source / 'outer-only.txt'), '--format', 'zip', '--encryption', 'AES256', '--password-stdin'], input=password+'\n', text=True, capture_output=True, timeout=90, env=env)
+                if create.returncode:
+                    raise RuntimeError('Could not create encrypted synthetic ZIP')
+                with zipfile.ZipFile(outer) as archive:
+                    if any(not item.flag_bits & 1 for item in archive.infolist()):
+                        raise RuntimeError('Synthetic ZIP entries were not encrypted')
+                control = report['scenarios']['encrypted-control'] = {'outer_sha256_before': digest(outer), 'neighbour_sha256': digest(sentinel)}
+                save()
+                app, browser, page = launch(exe, outer, encrypted, env, port, driver, lifetime)
+                control['first_gui_pid'] = app.pid
+                working = edit(page, temp, password=password)
+                control['edited_sha256'] = digest(working)
+                control['edited_members'] = members(working.read_bytes())
+                page.screenshot(path=str(evidence / 'encrypted-edited.png'))
+                stop_own(app, browser)
+                control['exit_method'] = 'TerminateProcess on the GUI process created by this test'
+                control['forced_gui_exit_code'] = app.returncode
+                lifetime['proc'] = None
+                app, browser, page = launch(exe, outer, encrypted, env, port, driver, lifetime)
+                control['reopened_gui_pid'] = app.pid
+                control['retained_menu'] = retained_dialog(page, evidence, 'encrypted')
+                control['retained_options'] = page.locator('#oa-retained-edit option').count()
+                stop_own(app, browser)
+                lifetime['proc'] = None
+                recovery_index = encrypted / 'local' / 'qing-zip' / 'EditedFiles' / 'index.json'
+                control['recovery_index_exists'] = recovery_index.exists()
+                control['recovery_index_contains_fixture_password'] = password.encode() in recovery_index.read_bytes() if recovery_index.exists() else False
+                recovered = encrypted / 'decrypt-check'
+                recovered.mkdir()
+                extract = subprocess.run([str(cli), 'extract', str(outer), str(recovered), '--password-stdin'], input=password+'\n', text=True, capture_output=True, timeout=90, env=env)
+                control['outer_decrypts_with_original_password'] = extract.returncode == 0 and (recovered / 'inner.zip').is_file() and (recovered / 'inner.zip').read_bytes() == plaintext_inner.getvalue() and (recovered / 'outer-only.txt').read_bytes() == b'preserve encrypted outer sibling\n'
+                control['outer_unchanged'] = digest(outer) == control['outer_sha256_before']
+                control['neighbour_unchanged'] = digest(sentinel) == control['neighbour_sha256']
+                if control['retained_options'] != 0 or control['recovery_index_contains_fixture_password'] or not control['outer_decrypts_with_original_password'] or not control['outer_unchanged'] or not control['neighbour_unchanged']:
+                    raise RuntimeError('Encrypted control failed its isolation or preservation assertions')
+                save()
                 session['passed'] = True
         report['status'] = 'observed'
     except Exception as error:
