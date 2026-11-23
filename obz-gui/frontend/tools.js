@@ -132,7 +132,7 @@ $('cancel').onclick=async()=>{
   await invoke('cancel_operation',{id});
  }catch(err){
   if(active===id){
-   $('status').textContent=String(err);
+   $('status').textContent=String(err).replace(/^Error:\s*/,'');
    $('status').className='error';
    $('cancel').disabled=false;
   }
@@ -218,7 +218,7 @@ try{
   $('status').textContent=measured.value===null?'处理中 · 进度待定':`处理中 · 本阶段 ${measured.value}%`;
  }
 }catch(err){
- $('status').textContent=String(err);
+ $('status').textContent=String(err).replace(/^Error:\s*/,'');
  $('status').className='error';
  if(query)show('run',true);
  if(op==='preview'&&archivePreviewImages!==null)$('archive-image').value='';

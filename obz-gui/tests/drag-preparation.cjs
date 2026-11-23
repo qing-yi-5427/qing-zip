@@ -4,6 +4,7 @@ const code=text.slice(text.indexOf('let dragGesture=null;'),text.indexOf('const 
 const compositionGuard=text.split('\n').find(line=>line.startsWith('function isCompositionKey('));
 const run=text.slice(text.indexOf('async function run('),text.indexOf('async function finishExtraction('));
 const progress=text.slice(text.indexOf('function updateJobProgress('),text.indexOf('function jobMeasurements('));
+const errorText=text.slice(text.indexOf('function archiveDirectoryError('),text.indexOf('function archiveOpenMessage('))+text.slice(text.indexOf('function taskError('),text.indexOf('function showPreservationNotice('));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 function fixture(){
@@ -22,7 +23,7 @@ function fixture(){
    if(!['cancel_drag_preparation','forget_operation','discard_drag'].includes(name))throw Error(name);
   }
  };
- vm.runInNewContext([progress,run,compositionGuard,code,'this.begin=dragSelection;'].join('\n'),context);
+ vm.runInNewContext([errorText,progress,run,compositionGuard,code,'this.begin=dragSelection;'].join('\n'),context);
  return {start,wait,finish,calls,toasts,context,events};
 }
 const complete={status:'complete',result:{files:1,destination:'owned temporary export'},progress:{}};

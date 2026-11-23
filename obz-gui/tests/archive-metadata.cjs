@@ -100,7 +100,8 @@ test('UTC listing display follows local timezone without changing old local stri
  }
 });
 
-const thumbnailPump=source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function watchTile('));
+const errorText=source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('))+source.slice(source.indexOf('function taskError('),source.indexOf('function showPreservationNotice('));
+const thumbnailPump=errorText+source.slice(source.indexOf('function pumpThumbnails()'),source.indexOf('function watchTile('));
 
 test('an in-flight thumbnail cannot repaint or cache plaintext under a different policy',async()=>{
  const run=async(token,returned,revisionAfterStart)=>{

@@ -2211,7 +2211,7 @@ case'destination-up':await setDestination(extractionParent($('qa-destination').v
   if(dialogNode.isConnected&&overlay.contains(dialogNode)){
    message.textContent=taskError(e);
    offerRepairAfterOpenFailure(path,e);
-  }else toast(String(e));
+  }else toast(taskError(e));
  }finally{
   if(dialogNode.isConnected&&overlay.contains(dialogNode)){
    controls.forEach(control=>control.disabled=false);
@@ -2292,7 +2292,7 @@ case'batch-start':{
    try{
     await run({operation,path,dest:operation==='extract'?batchExtractionTarget(dest,path,i):'',options:{overwrite}},
      `批量 ${i+1}/${paths.length} · ${operation==='test'?'检查':'解压'}`,{batch});
-   }catch(e){toast(String(e));}
+   }catch(e){toast(taskError(e));}
   }
  }finally{
   s.batchRunning=false;
@@ -2847,7 +2847,7 @@ async function dragSelection(pointerId) {
     status(copied?'complete':'cancelled',summary);
     toast(summary);
   } catch(e) {
-    if(!gesture.cancelled&&ownJob()?.status!=='cancelled'&&!/operation cancelled|已取消拖放/i.test(String(e))){status('failed',String(e));throw e;}
+    if(!gesture.cancelled&&ownJob()?.status!=='cancelled'&&!/operation cancelled|已取消拖放/i.test(String(e))){status('failed',taskError(e));throw e;}
     status('cancelled','已取消拖放。');
     toast('已取消拖放。');
   } finally {
@@ -3125,8 +3125,8 @@ root.addEventListener('keydown',event=>{
  }
 });
 function associationPage(){return `<div class="qa-heading"><div><h1>文件关联</h1><p>让 qing-zip 出现在这些文件的打开方式中。</p></div>${btn('返回设置','settings','quiet')}</div><section class="qa-setting-group"><p class="qa-sub">勾选并保存会注册可用的打开方式；当前默认应用由 Windows 管理，需要你在系统设置中确认。取消勾选仅移除本程序的格式注册，不替你更改其他应用或系统默认选择。</p><div class="qa-actions">${btn('在 Windows 中设为默认','default-apps')}${btn('刷新状态','associations-refresh','quiet')}</div></section><div id="oa-association-status" role="status">${esc(associationError|| (associationBusy?'正在读取或保存文件关联…':''))}</div>${associationEntries?`<div class="oa-association-table"><table><thead><tr><th>注册打开方式</th><th>本程序已注册</th><th>当前默认应用</th></tr></thead><tbody>${associationEntries.map(e=>`<tr><td><label class="qa-check"><input type="checkbox" data-association="${esc(e.extension)}" ${associationSelection.has(e.extension)?'checked':''} ${associationBusy?'disabled':''}>${esc(e.extension.toUpperCase())}</label></td><td>${e.registered?'已注册':'未注册'}</td><td title="${esc(e.current_progid||'尚未设置默认应用')}">${e.is_default?'qing-zip':'其他应用或未设置'}</td></tr>`).join('')}</tbody></table></div><div class="qa-actions oa-spaced"><button class="qa-button primary" data-action="associations-save" ${associationBusy?'disabled':''}>保存所选格式</button><span class="qa-sub">保存后仍可在 Windows 中确认默认应用。</span></div>`:!associationBusy?'<p class="qa-sub">无法读取文件关联，请刷新重试。</p>':''}`;}
-async function loadAssociations(){if(associationBusy)return;associationBusy=true;associationError='';if(s.page==='associations')render();try{associationEntries=await invoke('association_status');associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));}catch(e){associationError=String(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
-async function saveAssociations(){if(associationBusy||!associationEntries)return;associationBusy=true;associationError='';const extensions=[...associationSelection];if(s.page==='associations')render();try{associationEntries=await invoke('set_file_associations',{extensions});associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));toast('已保存格式注册。需要更改默认打开方式时，请在 Windows 设置中确认。');}catch(e){associationError=String(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
+async function loadAssociations(){if(associationBusy)return;associationBusy=true;associationError='';if(s.page==='associations')render();try{associationEntries=await invoke('association_status');associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));}catch(e){associationError=taskError(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
+async function saveAssociations(){if(associationBusy||!associationEntries)return;associationBusy=true;associationError='';const extensions=[...associationSelection];if(s.page==='associations')render();try{associationEntries=await invoke('set_file_associations',{extensions});associationSelection=new Set(associationEntries.filter(e=>e.registered).map(e=>e.extension));toast('已保存格式注册。需要更改默认打开方式时，请在 Windows 设置中确认。');}catch(e){associationError=taskError(e);throw e;}finally{associationBusy=false;if(s.page==='associations')render();}}
 function historyPage(){
  const queue=shellQueueStatus();
  const filter=s.jobs.length?`<label class="qa-check oa-history-filter"><input id="oa-history-attention" type="checkbox" ${s.historyAttention?'checked':''}>只看需处理的任务</label>`:'';
@@ -3252,11 +3252,11 @@ function pumpThumbnails() {
           rememberThumbnail(name, record);
           paintMatchingThumbnails(name, record);
         } catch (error) {
-          paintMatchingThumbnails(name, {error:String(error).slice(0,240)});
+          paintMatchingThumbnails(name, {error:taskError(error).slice(0,240)});
         }
       });
     }).catch(error => {
-      if (current()) tasks.forEach(({name})=>paintMatchingThumbnails(name, {error:String(error).slice(0,240)}));
+      if (current()) tasks.forEach(({name})=>paintMatchingThumbnails(name, {error:taskError(error).slice(0,240)}));
     }).finally(() => {
       thumbnailActive--;
       tasks.forEach(({key})=>thumbnailInflight.delete(key));
@@ -3400,7 +3400,7 @@ function clearShellQueue(){for(const request of pendingShellExtractions)clearShe
 function showShellPassword(){if(shellQueueRunning||tabBusy())throw Error('请先等待或取消当前任务。');const request=pendingShellExtractions[0];if(!request||!shellQueuePaused)throw Error('没有等待重试的解压任务。');shellPasswordRequest=request;dialog('输入密码重试',`<p class="qa-sub">${esc(filename(request.path))}</p><label class="qa-field">密码<input id="qa-shell-password" type="password" autocomplete="off" data-password-book></label>`,btn('取消','close')+btn('重试','shell-password-submit','primary'));}
 async function retryShellExtraction(withPassword=false){if(shellQueueRunning||tabBusy())throw Error('请先等待或取消当前任务。');const request=withPassword?shellPasswordRequest:pendingShellExtractions[0];if(!request||pendingShellExtractions[0]!==request)throw Error('该解压任务已移出队列。');if(withPassword){const input=$('qa-shell-password');if(!input||!input.value)throw Error('请输入密码。');request.password=input.value;input.value='';}request.state='pending';delete request.error;request.cancelRequested=false;shellPasswordRequest=null;shellQueuePaused=false;if(!overlay.hidden)close();await pumpShellExtractions();}
 function enqueueShellExtractions(requests){if(!Array.isArray(requests))return;for(const request of requests){if(typeof request?.path!=='string'||typeof request?.dest!=='string'||typeof request?.smart!=='boolean')continue;if(!pendingShellExtractions.some(p=>p.smart===request.smart&&archiveKey(p.path)===archiveKey(request.path)))pendingShellExtractions.push({path:request.path,dest:request.dest,smart:request.smart,state:'pending'});}if(requests.length&&(tabBusy()||!overlay.hidden))toast('解压任务已加入队列，当前操作结束后继续。');if(s.page==='history')render();else renderProgress();}
-async function pumpShellExtractions(){if(shellQueueRunning||shellQueuePaused||tabBusy()||!overlay.hidden)return;shellQueueRunning=true;shellQueueInterrupted=false;let allSucceeded=true,wantsClose=false,completedItem=false;const canAdvance=()=>overlay.hidden||(completedItem&&overlay.dataset.page==='jobs'&&!$('oa-exit-confirm'));try{while(pendingShellExtractions.length&&!shellQueuePaused&&!tabBusy()&&canAdvance()){const request=pendingShellExtractions[0],tab=archiveKey(s.archive)===archiveKey(request.path)?s:archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(request.path)),overwrite=s.overwrite,recycle=!!s.recycleAfter&&canRecycleArchive(request.path,overwrite),openAfter=!!s.openAfter;wantsClose=!!s.closeAfter;shellActiveRequest=request;request.state='running';let extracted=false;try{const result=await run({operation:'extract',path:request.path,dest:request.dest,smart:request.smart,options:{selected:[],overwrite,password:(request.password!==undefined?request.password:tab?.password)||null,codepage:tab?.codepage||null}},(request.smart?'智能解压 · ':'解压到此处 · ')+filename(request.path),{recycleAfter:recycle});extracted=true;completedItem=true;request.state='complete';clearShellSecret(request);const index=pendingShellExtractions.indexOf(request);if(index>=0)pendingShellExtractions.splice(index,1);if(!await finishExtraction(request.path,request.dest,result,{recycle,openAfter})){allSucceeded=false;shellQueuePaused=!!pendingShellExtractions.length;break;}}catch(e){allSucceeded=false;if(!extracted){request.state=request.cancelRequested?'cancelled':'failed';request.error=String(e);shellQueuePaused=true;}else shellQueuePaused=!!pendingShellExtractions.length;error(e);break;}finally{shellActiveRequest=null;}}const drained=await drainNativeArchives();if(wantsClose&&allSucceeded&&!shellQueueInterrupted&&!shellQueuePaused&&drained&&!pendingShellExtractions.length&&!pendingFolders.length&&!pendingFileGroups.length&&!pendingArchivePaths.length&&!tabBusy()&&!openQueueRunning&&canAdvance())await invoke('window_action',{action:'close'});}finally{shellActiveRequest=null;shellQueueRunning=false;if(s.page==='history')render();else renderProgress();}}
+async function pumpShellExtractions(){if(shellQueueRunning||shellQueuePaused||tabBusy()||!overlay.hidden)return;shellQueueRunning=true;shellQueueInterrupted=false;let allSucceeded=true,wantsClose=false,completedItem=false;const canAdvance=()=>overlay.hidden||(completedItem&&overlay.dataset.page==='jobs'&&!$('oa-exit-confirm'));try{while(pendingShellExtractions.length&&!shellQueuePaused&&!tabBusy()&&canAdvance()){const request=pendingShellExtractions[0],tab=archiveKey(s.archive)===archiveKey(request.path)?s:archiveTabs.find(t=>archiveKey(t.archive)===archiveKey(request.path)),overwrite=s.overwrite,recycle=!!s.recycleAfter&&canRecycleArchive(request.path,overwrite),openAfter=!!s.openAfter;wantsClose=!!s.closeAfter;shellActiveRequest=request;request.state='running';let extracted=false;try{const result=await run({operation:'extract',path:request.path,dest:request.dest,smart:request.smart,options:{selected:[],overwrite,password:(request.password!==undefined?request.password:tab?.password)||null,codepage:tab?.codepage||null}},(request.smart?'智能解压 · ':'解压到此处 · ')+filename(request.path),{recycleAfter:recycle});extracted=true;completedItem=true;request.state='complete';clearShellSecret(request);const index=pendingShellExtractions.indexOf(request);if(index>=0)pendingShellExtractions.splice(index,1);if(!await finishExtraction(request.path,request.dest,result,{recycle,openAfter})){allSucceeded=false;shellQueuePaused=!!pendingShellExtractions.length;break;}}catch(e){allSucceeded=false;if(!extracted){request.state=request.cancelRequested?'cancelled':'failed';request.error=taskError(e);shellQueuePaused=true;}else shellQueuePaused=!!pendingShellExtractions.length;error(e);break;}finally{shellActiveRequest=null;}}const drained=await drainNativeArchives();if(wantsClose&&allSucceeded&&!shellQueueInterrupted&&!shellQueuePaused&&drained&&!pendingShellExtractions.length&&!pendingFolders.length&&!pendingFileGroups.length&&!pendingArchivePaths.length&&!tabBusy()&&!openQueueRunning&&canAdvance())await invoke('window_action',{action:'close'});}finally{shellActiveRequest=null;shellQueueRunning=false;if(s.page==='history')render();else renderProgress();}}
 function showCompressionFiles(paths) {
   compress(undefined,paths);
 }
@@ -3489,7 +3489,7 @@ async function showProperties(wholeArchive){
  const target=$('qa-property-status');
  try{const properties=await run({operation:'archive-properties',path:archive,options},'读取压缩包属性',{silent:true,startJob:async request=>{const id=await invoke('start_operation',{request});if(!target.isConnected)await invoke('cancel_operation',{id}).catch(()=>{});return id;}});
   if(target.isConnected)target.innerHTML=markup(QingArchiveProperties.technical(properties))+(properties.partial?'<p class="qa-sub">部分属性未提供：归档包含无法可靠解析的多行元数据。</p>':'');
- }catch(reason){if(target.isConnected)target.textContent=/cancelled/i.test(String(reason))?'已取消属性读取':'格式属性读取失败：'+String(reason);}
+ }catch(reason){if(target.isConnected)target.textContent=/cancelled/i.test(String(reason))?'已取消属性读取':'格式属性读取失败：'+taskError(reason);}
  finally{if(target.isConnected)overlay.querySelector('[data-action="canceljob"]')?.remove();}
 }
 
