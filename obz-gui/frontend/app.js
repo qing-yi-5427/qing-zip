@@ -635,13 +635,14 @@ function batchResultMarkup(result,compact=false,showOutput=true){
  const clear=resume&&result.revision?btn('清除待继续项目','batch-discard','quiet'):'';
  const dest=!compact&&result.destination?`<div class="qa-sub oa-extract-output">输出目录 · ${esc(result.destination)}</div>`:'';
  const policy=resume&&result.operation==='extract'?`<p class="qa-sub">同名文件 · ${batchPolicies[result.overwrite]}</p>`:'';
- const warning=result.saveWarning?`<p class="qa-sub" role="status">${esc(result.saveWarning)}</p>`:'';
+ const warning=[result.admissionWarning,result.saveWarning].filter(Boolean).map(message=>`<p class="qa-sub" role="status">${esc(message)}</p>`).join('');
+ const interrupted=result.unexpectedExit?'<p class="qa-sub">上次意外退出。已开始但结果未确认的项目可能留下部分文件，请检查对应目录。</p>':'';
  const current=saved&&resume?'<p class="qa-sub">继续时会读取列表中路径上的当前压缩包。</p>':'';
  const keep=clear?'<p class="qa-sub">停止新的批量解压时，新批次的待继续项目会替换这份记录。</p>':'';
- return `<section class="oa-batch-outcome"><strong>${result.title}</strong><p>${result.summary}</p>${dest}${policy}${warning}${current}${details}<div class="qa-actions">${resume}${review}${output}${clear}</div>${keep}</section>`;
+ return `<section class="oa-batch-outcome"><strong>${result.title}</strong><p>${result.summary}</p>${dest}${policy}${warning}${interrupted}${current}${details}<div class="qa-actions">${resume}${review}${output}${clear}</div>${keep}</section>`;
 }
 const batchLabels={complete:'成功',partial:'部分完成',failed:'失败',cancelled:'已取消',interrupted:'已中断',pending:'未开始'};
-let batchResumeLoad,batchResumeSave,batchResumeClaim;
+let batchResumeLoad,batchResumeSave,batchResumeClaim,batchResumeBegin;
 function describeBatch(plan,lastJob){
  const counts={complete:0,partial:0,failed:0,cancelled:0,interrupted:0,pending:0};
  for(const entry of plan.entries){counts[entry.status]++;entry.label=batchLabels[entry.status];}
@@ -653,7 +654,7 @@ function describeBatch(plan,lastJob){
 function savedBatch(record){
  if(!record)return null;
  const entries=record.plan.entries.map((entry,index)=>({...entry,index}));
- return describeBatch({...record.plan,entries,operation:'extract',revision:record.revision,restored:true});
+ return describeBatch({...record.plan,entries,operation:'extract',revision:record.revision,restored:true,unexpectedExit:record.version===2});
 }
 function batchResultsMarkup(compact=false){
  const results=s.batchResult?[s.batchResult]:[];
@@ -691,17 +692,32 @@ function sealBatchResume(plan){
  if(!batchResumeSave)batchResumeSave=writeBatchResume(plan).finally(()=>{batchResumeSave=null;});
  return batchResumeSave;
 }
-async function writeBatchResume(plan){
+function batchReceipt(plan){
  const entries=plan.entries.map(({path,dest,status,hasOutput})=>({path,dest,status:status==='running'?'interrupted':status,hasOutput:!!hasOutput}));
+ return {destination:plan.destination,overwrite:plan.overwrite,entries};
+}
+async function registerBatchRun(plan){
  await batchResumeLoad;
  try{
-  const record=await invoke('save_batch_resume',{previous:s.savedBatch?.revision??null,plan:{destination:plan.destination,overwrite:plan.overwrite,entries}});
+  const record=await invoke('begin_batch_resume_run',{plan:batchReceipt(plan),revision:null});
+  plan.tracked=!!record;
+  plan.activeRevision=record?.revision;
+ }catch{
+  plan.saveWarning='本批尚未登记。程序意外退出时，这一批可能无法找回。';
+ }
+}
+async function writeBatchResume(plan){
+ await batchResumeLoad;
+ await batchResumeBegin;
+ try{
+  const record=await invoke('save_batch_resume',{previous:s.savedBatch?.revision??null,plan:batchReceipt(plan)});
   s.savedBatch=savedBatch(record);
   plan.revision=record.revision;
   delete plan.saveWarning;
   s.batchResumeProblem=null;
   return true;
  }catch{
+  if(plan.activeRevision)plan.revision=plan.activeRevision;
   plan.saveWarning='未能保存待继续项目。本次会话仍可继续。';
   return false;
  }
@@ -736,12 +752,12 @@ async function claimSavedBatch(result,discard){
  try{
   await batchResumeLoad;
   let claimed;
-  try{claimed=await invoke('take_batch_resume',{revision:result.revision});}
+  try{claimed=await invoke(discard?'take_batch_resume':'begin_batch_resume_run',{revision:result.revision});}
   catch{throw Error('暂时无法更新待继续项目。请稍后重试。');}
   if(s.savedBatch?.revision===result.revision)s.savedBatch=null;
   if(s.batchResult?.revision===result.revision)s.batchResult=null;
   if(!claimed){await loadBatchResume();throw Error('其他窗口已处理这批待继续项目。');}
-  return {...claimed.plan,operation:'extract',entries:claimed.plan.entries.map((entry,index)=>({...entry,index,message:result.entries[index]?.message}))};
+  return {...claimed.plan,tracked:!discard,activeRevision:claimed.revision,operation:'extract',entries:claimed.plan.entries.map((entry,index)=>({...entry,index,message:result.entries[index]?.message}))};
  }catch(error){
   if(!discard)await invoke('set_batch_resume_running',{active:false});
   throw error;
@@ -784,18 +800,27 @@ async function runBatch(plan,guarded=false){
  s.batchRunning=true;
  s.activeBatchPlan=plan;
  const counter={done:plan.entries.filter(entry=>entry.status==='complete').length,total:plan.entries.length};
- let lastJob;
+ let lastJob,previousAdmission=null;
  const host=$('oa-batch-result');
  if(host)host.replaceChildren();
  try{
   if(plan.operation==='extract'&&!guarded){
-   await invoke('set_batch_resume_running',{active:true});
-   guarded=true;
+   batchResumeBegin=(async()=>{
+    await invoke('set_batch_resume_running',{active:true});
+    guarded=true;
+    await registerBatchRun(plan);
+   })();
+   try{await batchResumeBegin;}finally{batchResumeBegin=null;}
   }
   close();s.view='jobs';render();
   for(const entry of plan.entries){
    if(s.batchStop)break;
    if(entry.status!=='pending')continue;
+   if(plan.tracked){
+    try{await invoke('admit_batch_archive',{admission:{index:entry.index,previous:previousAdmission}});}
+    catch{plan.admissionWarning='续跑记录未能安全更新。已停止开始新的压缩包。';break;}
+    if(s.batchStop)break;
+   }
    entry.status='running';
    let current;
    try{
@@ -809,6 +834,7 @@ async function runBatch(plan,guarded=false){
     entry.status=current?.status==='cancelled'?'cancelled':'failed';
     entry.message=taskError(e);
    }
+   previousAdmission={status:entry.status,hasOutput:!!entry.hasOutput};
   }
  }finally{
   const anchor=s.jobs.at(-1);

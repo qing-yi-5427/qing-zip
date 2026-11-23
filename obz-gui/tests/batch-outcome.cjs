@@ -7,16 +7,36 @@ const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8
 const functions = source.slice(source.indexOf('const batchPolicies='), source.indexOf('const conflicts='))
   + source.slice(source.indexOf('function batchResultMarkup'), source.indexOf('function updateBatchPage'));
 
-function checkpoints({failSave=false}={}) {
-  let count=0, record=null;
+function checkpoints({failSave=false, failAdmission=false}={}) {
+  let count=0, record=null, active=null;
   return {
     get record(){return record;},
     async invoke(name,args) {
-      if(name==='set_batch_resume_running')return;
+      if(name==='set_batch_resume_running'){
+        if(!args.active)active=null;
+        return;
+      }
+      if(name==='begin_batch_resume_run'){
+        if(failSave || active)throw Error('record unavailable');
+        if(args.revision && args.revision!==record?.revision)return null;
+        if(!args.revision && record)throw Error('prior record exists');
+        const plan=structuredClone(args.revision?record.plan:args.plan);
+        active={version:2,revision:String(++count),plan};
+        record=null;
+        return structuredClone(active);
+      }
+      if(name==='admit_batch_archive'){
+        if(failAdmission)throw Error('record unavailable');
+        assert.ok(active);
+        assert.equal(active.plan.entries[args.admission.index].status,'pending');
+        active.plan.entries[args.admission.index].status='interrupted';
+        return;
+      }
       if(name==='load_batch_resume')return record?{state:'ready',record:structuredClone(record)}:{state:'empty'};
       if(name==='save_batch_resume') {
         if(failSave||args.previous!==(record?.revision??null))throw Error('record unavailable');
-        record={revision:String(++count),plan:structuredClone(args.plan)};
+        active=null;
+        record={version:1,revision:String(++count),plan:structuredClone(args.plan)};
         return structuredClone(record);
       }
       assert.equal(name,'take_batch_resume');
@@ -243,7 +263,7 @@ test('normal exit while claiming a paused queue does not dispatch another archiv
   let claiming=false;
   const paused=new Promise(resolve=>{release=resolve;});
   const store={async invoke(name,args) {
-    if(name==='take_batch_resume'){claiming=true;await paused;}
+    if(name==='begin_batch_resume_run'&&args.revision){claiming=true;await paused;}
     return first.store.invoke(name,args);
   }};
   const reopened=scenario([{status:'complete'}], 'extract', store);
@@ -270,4 +290,41 @@ test('an unchanged pending-record read leaves existing task history nodes intact
   assert.match(current.context.batchResultsMarkup(),/待继续的批量解压/);
   await current.context.loadBatchResume();
   assert.equal(current.renders,1);
+});
+
+test('a failed durable admission stops before any archive can be sent to the engine', async () => {
+  const {calls,context,plan,s,store}=scenario([],'extract',checkpoints({failAdmission:true}));
+  await context.runBatch(plan);
+  assert.deepEqual(calls,[]);
+  assert.deepEqual(store.record.plan.entries.map(entry=>entry.status),['pending','pending','pending']);
+  assert.match(context.batchResultsMarkup(),/未能安全更新/);
+});
+
+test('crashed archive entries are excluded from resume even if partial outputs may exist', async () => {
+  const record={version:2,revision:'before-force-exit',plan:{
+    destination:'D:\\out', overwrite:'error', entries:[
+      {path:'a.zip',dest:'D:\\out\\1-a',status:'complete',hasOutput:true},
+      {path:'b.zip',dest:'D:\\out\\2-b',status:'interrupted',hasOutput:false},
+      {path:'c.zip',dest:'D:\\out\\3-c',status:'pending',hasOutput:false},
+    ],
+  }};
+  let accepted=false;
+  const store={async invoke(name,args){
+    if(name==='load_batch_resume')return {state:'ready',record:structuredClone(record)};
+    if(name==='begin_batch_resume_run'){
+      assert.equal(args.revision,record.revision);
+      return structuredClone(record);
+    }
+    if(name==='admit_batch_archive'){
+      assert.equal(args.admission.index,2);
+      accepted=true;
+    }
+  }};
+  const {context,s,calls}=scenario([{status:'complete'}],'extract',store);
+  await context.loadBatchResume();
+  assert.match(context.batchResultsMarkup(),/意外退出/);
+  assert.deepEqual(calls,[]);
+  await context.useBatchResume(s.savedBatch);
+  assert.ok(accepted);
+  assert.deepEqual(calls.map(request=>request.path),['c.zip']);
 });
