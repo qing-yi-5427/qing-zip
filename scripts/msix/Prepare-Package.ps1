@@ -13,8 +13,23 @@ $repo=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $component=(Resolve-Path -LiteralPath $ComponentDirectory).Path
 $output=[IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) { throw 'OutputDirectory must be new; existing output is never overwritten' }
+$Architecture=$Architecture.ToLowerInvariant()
+$expectedMachine=if ($Architecture -eq 'x64') { 0x8664 } else { 0xAA64 }
 foreach ($file in @('qing-shell.dll','qing-shell-host.exe')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $component $file) -PathType Leaf)) { throw "Missing component: $file" }
+    $path=Join-Path $component $file
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing component: $file" }
+    # MakeAppx /nv cannot inspect binaries in the external location.
+    $reader=[IO.BinaryReader]::new([IO.File]::OpenRead($path))
+    try {
+        if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Invalid DOS signature in $file" }
+        $reader.BaseStream.Position=0x3C
+        $reader.BaseStream.Position=$reader.ReadUInt32()
+        if ($reader.ReadUInt32() -ne 0x4550) { throw "Invalid PE signature in $file" }
+        $machine=$reader.ReadUInt16()
+        if ($machine -ne $expectedMachine) {
+            throw ('{0} has PE machine 0x{1:X4}, expected {2} (0x{3:X4})' -f $file,$machine,$Architecture,$expectedMachine)
+        }
+    } finally { $reader.Dispose() }
 }
 foreach ($part in $Version.Split('.')) { if ([uint64]$part -gt 65535) { throw 'Version component exceeds 65535' } }
 if (-not $Publisher.StartsWith('CN=') -or $Publisher.Contains("`n") -or $Publisher.Contains("`r")) { throw 'Use the exact signing certificate Subject as Publisher' }
