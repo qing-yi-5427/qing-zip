@@ -25,3 +25,7 @@
 ## 64 MiB 普通 stored 内包
 
 [托管 run 45146592216](https://github.com/qing-yi-5427/qing-zip/actions/runs/45146592216) 对同一候选加入固定种子的 67,108,864 字节普通 stored 成员。真实另存的 ZIP 与中断前编辑副本 SHA-256 均为 `9580dee4be93b59ab2caeee870d06d60ac0bb3603ac273bf54606a44105248c6`，成员及来源、原包和哨兵核验通过，成功保存后第二次冷启动为零条。该轮构造样本 0.471 秒、编辑 0.875 秒、原生另存 5.679 秒；最后一项含自动化与系统对话框等待，仅为单轮诊断，不是跨版本性能比较。[逐项回执](candidate-large.json)。
+
+## 同一会话连续两次编辑
+
+[托管 run 45148196066](https://github.com/qing-yi-5427/qing-zip/actions/runs/45148196066) 使用同一固定候选 b6201de，在实际内层标签连续将 `before.txt` 改名为 `after.txt`、再改名为 `final.txt`。仅结束本测试 GUI 后冷启动，通过真实 Windows 对话框另存；输出 SHA-256 `71cbe9d36ea04b232daa10a238ce28f9900a1c360159608ea1ffd5e7bd4fb5c1` 与第二次编辑后的工作副本完全相同、不同于第一代，成员仅有 `final.txt` 和 `unchanged.txt`。原外包、同内容兄弟内包、外层成员和磁盘哨兵保持完整；再次启动后恢复记录从 1 条变为 0 条。[机器回执](double-edit.json)记录两代成员、哈希与 PID。本项单独运行，没有混入性能测量或重复截图。
