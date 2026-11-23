@@ -308,11 +308,78 @@ def exercise_midwrite(cli, work, env, root, marker, identity, result):
     result["status"] = "passed"
 
 
+def zip_members(path):
+    with zipfile.ZipFile(path) as archive:
+        members = {}
+        for name in archive.namelist():
+            check(name not in members, "Duplicate member in archive")
+            with archive.open(name) as member:
+                members[name] = hashlib.file_digest(member, "sha256").hexdigest()
+        return members
+
+
+def exercise_update(case, cli, work, env, root, marker, identity, result):
+    destination = root / ("qa-" + marker) / case
+    destination.mkdir()
+    inputs = work / case
+    inputs.mkdir()
+    added = inputs / "added.bin"
+    replacement = inputs / "replace.txt"
+    added.write_bytes(random.Random(23).randbytes(PAYLOAD))
+    replacement.write_bytes(b"The newer replacement")
+    archive = destination / "editing.zip"
+    sentinel = destination / "unrelated.txt"
+    sentinel.write_bytes(b"An unrelated neighbour")
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_STORED) as original:
+        original.writestr("keep.bin", random.Random(45).randbytes(MIB))
+        original.writestr(zipfile.ZipInfo("replace.txt", (2015, 1, 1, 0, 0, 0)), b"old")
+    members = zip_members(archive)
+    before, sources = snapshot(destination), snapshot(inputs)
+    args = (archive, replacement, added, "--threads", "1")
+    filler = destination.parent / (case + "-reserve.bin")
+    result.update(state_before=before, sources_before=sources, members_before=members)
+    try:
+        if case == "update-full":
+            fill(filler, root, marker, identity, result)
+        else:
+            reserve_for_midwrite(filler, root, marker, identity, 6 * MIB)
+        result["free_at_start"] = verify_volume(root, marker, identity).free
+        if case == "update-limited":
+            check(5 * MIB < result["free_at_start"] <= 6 * MIB, "Incorrect limited free space")
+        result["status"] = "failed"
+        result["failure"] = invoke(cli, work, env, "add", args)
+        result["state_after_failure"] = snapshot(destination)
+        result["sources_after_failure"] = snapshot(inputs)
+        result["members_after_failure"] = zip_members(archive)
+    finally:
+        if filler.exists():
+            verify_volume(root, marker, identity)
+            filler.unlink()
+            result["free_after_release"] = verify_volume(root, marker, identity).free
+
+    check(result["state_after_failure"] == before and result["sources_after_failure"] == sources
+          and result["members_after_failure"] == members,
+          "Failed update changed the archive, inputs, sibling, or staging directory")
+    check(result["free_after_release"] > 2 * PAYLOAD, "Insufficient space to retry ZIP update")
+    result["retry"] = invoke(cli, work, env, "add", args)
+    result["state_after_retry"] = snapshot(destination)
+    result["sources_after_retry"] = snapshot(inputs)
+    result["members_after_retry"] = zip_members(archive)
+    expected = {**members, **sources}
+    check(result["retry"]["exit"] == 0 and result["members_after_retry"] == expected
+          and result["sources_after_retry"] == sources
+          and result["state_after_retry"] == {**before, archive.name: sha(archive)},
+          "ZIP update retry did not preserve the unchanged member and publish both inputs")
+    check(result["failure"]["exit"] == 1 and result["failure"]["space_diagnostic"],
+          "Update did not return a handled disk-space diagnostic")
+    result["status"] = "passed"
+
+
 def main():
     check(os.name == "nt" and all(os.environ.get(key) == value for key, value in HOSTED.items()),
           "Requires a disposable GitHub-hosted Windows x64 job")
     job, letter, label, marker, source_commit, mode = sys.argv[1:]
-    check(mode in {'workspace', 'historical', 'midwrite'}, 'Invalid test mode')
+    check(mode in {'workspace', 'historical', 'midwrite', 'update'}, 'Invalid test mode')
     job = Path(job).resolve(strict=True)
     check(job.parent == Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
           and job.name.startswith("qz-capacity-"), "Expected exact job-owned runner temp root")
@@ -342,7 +409,7 @@ def main():
             owned = work / name
             owned.mkdir(exist_ok=True)
             env[variable] = str(owned)
-        if mode != 'midwrite':
+        if mode in ('historical', 'workspace'):
             source = work / "payload.bin"
             source.write_bytes(random.Random(112).randbytes(PAYLOAD))
             with zipfile.ZipFile(work / "source.zip", "x", compression=zipfile.ZIP_STORED) as fixture:
@@ -361,11 +428,19 @@ def main():
                     "error": str(error).replace(str(job), "<qa-root>").replace(str(root), "<qa-volume>/"),
                 }
             save()
-        for case in ("midwrite",) if mode == 'midwrite' else ("create", "extract"):
+        if mode == "update":
+            cases = ("update-full", "update-limited")
+        elif mode == "midwrite":
+            cases = ("midwrite",)
+        else:
+            cases = ("create", "extract")
+        for case in cases:
             result = {"status": "blocked"}
             report["cases"][case] = result
             try:
-                if case == "midwrite":
+                if mode == "update":
+                    exercise_update(case, cli, work, env, root, marker, identity, result)
+                elif case == "midwrite":
                     exercise_midwrite(cli, work, env, root, marker, identity, result)
                 else:
                     exercise(case, cli, work, env, root, marker, identity, result)

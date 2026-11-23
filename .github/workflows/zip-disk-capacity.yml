@@ -11,7 +11,7 @@ on:
       trial:
         description: Select historical, final package, or incomplete-write acceptance
         type: choice
-        options: [historical, round2, midwrite]
+        options: [historical, round2, midwrite, update]
         default: historical
       baseline_build_run:
         description: Replacement hardened run for the pinned baseline source
@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        trial: ${{ fromJSON(inputs.trial == 'midwrite' && '["midwrite"]' || inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
+        trial: ${{ fromJSON(inputs.trial == 'update' && '["update"]' || inputs.trial == 'midwrite' && '["midwrite"]' || inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - name: Verify isolated VHD and exercise ZIP creation and overwrite extraction
+      - name: Verify isolated VHD and run the selected ZIP operations
         shell: pwsh
         env:
           TRIAL: ${{ matrix.trial }}
@@ -58,6 +58,7 @@ jobs:
             'combined' { $env:COMBINED_RUN }
             'round2' { $env:ROUND2_RUN }
             'midwrite' { $env:ROUND2_RUN }
+            'update' { $env:ROUND2_RUN }
           }
           if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
           else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }
