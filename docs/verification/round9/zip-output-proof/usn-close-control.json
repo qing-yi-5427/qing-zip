@@ -1,0 +1,18 @@
+{
+  "system-temp": {
+    "journal_query_supported": true,
+    "same_journal_generation": true,
+    "unchanged_usn_after_clearing_disposition": true,
+    "usn_changed_after_unmodified_close": true,
+    "change_time_unchanged_after_unmodified_close": true,
+    "usn_changed_after_external_ordinary_write": true
+  },
+  "ordinary-repository-scratch": {
+    "journal_query_supported": true,
+    "same_journal_generation": true,
+    "unchanged_usn_after_clearing_disposition": true,
+    "usn_changed_after_unmodified_close": true,
+    "change_time_unchanged_after_unmodified_close": true,
+    "usn_changed_after_external_ordinary_write": true
+  }
+}

@@ -1,0 +1,442 @@
+{
+  "os": "Windows-11-10.0.26300-SP0",
+  "cli_sha256": {
+    "previous": "d026a7a22394621c164e7556e3cee130eb6da9f22e5dddd1dacd3bc5b5ab1fec",
+    "candidate": "aea1230a384702d292a4e4b65b11c99c2e81c815417f741c880c731bf8ab7768"
+  },
+  "cache": "one warm-up pair, five alternating pairs, OS cache retained; independent verification outside timer",
+  "cases": [
+    {
+      "mib": 128,
+      "operation": "add",
+      "source_sha256": "02b9fab6fb8762868d65f983ac08265cb6c9e27e42e080d12f668c552e5b23b7",
+      "diagnostic": {
+        "ms": 344.623,
+        "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd",
+        "candidate_bytes": 134220552,
+        "proof_reread_bytes": 2824
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 285.49,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          },
+          "candidate": {
+            "ms": 294.475,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 292.547,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          },
+          "previous": {
+            "ms": 291.648,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          }
+        },
+        {
+          "previous": {
+            "ms": 279.558,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          },
+          "candidate": {
+            "ms": 303.332,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 308.111,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          },
+          "previous": {
+            "ms": 292.775,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          }
+        },
+        {
+          "previous": {
+            "ms": 295.877,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          },
+          "candidate": {
+            "ms": 296.995,
+            "zip_sha256": "cc83a96e2728517aecbe8eb17f57210f29acc992ca83bc702ed365ca88c415bd"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": 0.8990000000000009,
+        "median": 8.985000000000014,
+        "max": 23.774
+      },
+      "medians_ms": {
+        "previous": 291.648,
+        "candidate": 296.995
+      }
+    },
+    {
+      "mib": 128,
+      "operation": "rename",
+      "source_sha256": "02b9fab6fb8762868d65f983ac08265cb6c9e27e42e080d12f668c552e5b23b7",
+      "diagnostic": {
+        "ms": 295.149,
+        "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2",
+        "candidate_bytes": 134220412,
+        "proof_reread_bytes": 0
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 300.533,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          },
+          "candidate": {
+            "ms": 280.573,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 274.339,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          },
+          "previous": {
+            "ms": 286.907,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          }
+        },
+        {
+          "previous": {
+            "ms": 306.271,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          },
+          "candidate": {
+            "ms": 281.219,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 274.416,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          },
+          "previous": {
+            "ms": 299.859,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          }
+        },
+        {
+          "previous": {
+            "ms": 294.735,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          },
+          "candidate": {
+            "ms": 276.446,
+            "zip_sha256": "8420c448e358162f0f3b99eb053206e95cac049c94ead4c8d4b0629a28e9abc2"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": -25.442999999999984,
+        "median": -19.960000000000036,
+        "max": -12.567999999999984
+      },
+      "medians_ms": {
+        "previous": 299.859,
+        "candidate": 276.446
+      }
+    },
+    {
+      "mib": 128,
+      "operation": "delete",
+      "source_sha256": "02b9fab6fb8762868d65f983ac08265cb6c9e27e42e080d12f668c552e5b23b7",
+      "diagnostic": {
+        "ms": 278.921,
+        "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560",
+        "candidate_bytes": 134217850,
+        "proof_reread_bytes": 0
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 291.863,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          },
+          "candidate": {
+            "ms": 291.586,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 271.423,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          },
+          "previous": {
+            "ms": 295.623,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          }
+        },
+        {
+          "previous": {
+            "ms": 287.053,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          },
+          "candidate": {
+            "ms": 291.577,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 294.81,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          },
+          "previous": {
+            "ms": 302.885,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          }
+        },
+        {
+          "previous": {
+            "ms": 287.535,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          },
+          "candidate": {
+            "ms": 278.868,
+            "zip_sha256": "0d301593574b2ebb41e153cbfb7bc9063ce958849e5593114e3a36023494e560"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": -24.19999999999999,
+        "median": -8.074999999999989,
+        "max": 4.524000000000001
+      },
+      "medians_ms": {
+        "previous": 291.863,
+        "candidate": 291.577
+      }
+    },
+    {
+      "mib": 512,
+      "operation": "add",
+      "source_sha256": "e7386e8a7656c27148d314a34da7a3b5bee5956652536a3c8f7ff881d204b220",
+      "diagnostic": {
+        "ms": 679.941,
+        "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1",
+        "candidate_bytes": 536873736,
+        "proof_reread_bytes": 2824
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 654.234,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          },
+          "candidate": {
+            "ms": 673.053,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 676.342,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          },
+          "previous": {
+            "ms": 631.155,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          }
+        },
+        {
+          "previous": {
+            "ms": 649.947,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          },
+          "candidate": {
+            "ms": 688.427,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 689.323,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          },
+          "previous": {
+            "ms": 625.048,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          }
+        },
+        {
+          "previous": {
+            "ms": 629.813,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          },
+          "candidate": {
+            "ms": 677.135,
+            "zip_sha256": "e88e8aa4b2c8a5ab98fe02febf93534408f3f32e2ff0c51497dddee1090831b1"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": 18.81899999999996,
+        "median": 45.18700000000001,
+        "max": 64.27499999999998
+      },
+      "medians_ms": {
+        "previous": 631.155,
+        "candidate": 677.135
+      }
+    },
+    {
+      "mib": 512,
+      "operation": "rename",
+      "source_sha256": "e7386e8a7656c27148d314a34da7a3b5bee5956652536a3c8f7ff881d204b220",
+      "diagnostic": {
+        "ms": 664.72,
+        "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42",
+        "candidate_bytes": 536873596,
+        "proof_reread_bytes": 0
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 826.52,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          },
+          "candidate": {
+            "ms": 702.006,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 685.912,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          },
+          "previous": {
+            "ms": 733.098,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          }
+        },
+        {
+          "previous": {
+            "ms": 911.964,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          },
+          "candidate": {
+            "ms": 673.879,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 676.697,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          },
+          "previous": {
+            "ms": 716.336,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          }
+        },
+        {
+          "previous": {
+            "ms": 728.824,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          },
+          "candidate": {
+            "ms": 652.924,
+            "zip_sha256": "6ff2f6d764a4d8b13afbd27536a7be5e486237703a897900f824235a61813a42"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": -238.08500000000004,
+        "median": -75.89999999999998,
+        "max": -39.63900000000001
+      },
+      "medians_ms": {
+        "previous": 733.098,
+        "candidate": 676.697
+      }
+    },
+    {
+      "mib": 512,
+      "operation": "delete",
+      "source_sha256": "e7386e8a7656c27148d314a34da7a3b5bee5956652536a3c8f7ff881d204b220",
+      "diagnostic": {
+        "ms": 663.865,
+        "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c",
+        "candidate_bytes": 536871034,
+        "proof_reread_bytes": 0
+      },
+      "pairs": [
+        {
+          "previous": {
+            "ms": 737.21,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          },
+          "candidate": {
+            "ms": 678.302,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 697.121,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          },
+          "previous": {
+            "ms": 733.689,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          }
+        },
+        {
+          "previous": {
+            "ms": 735.785,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          },
+          "candidate": {
+            "ms": 684.359,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          }
+        },
+        {
+          "candidate": {
+            "ms": 679.071,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          },
+          "previous": {
+            "ms": 726.89,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          }
+        },
+        {
+          "previous": {
+            "ms": 713.307,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          },
+          "candidate": {
+            "ms": 680.136,
+            "zip_sha256": "4e47874244e34031ed0ce8296695d84841ce0ae95f244ac321abc941097cdb0c"
+          }
+        }
+      ],
+      "paired_delta_ms": {
+        "min": -58.908000000000015,
+        "median": -47.81899999999996,
+        "max": -33.17100000000005
+      },
+      "medians_ms": {
+        "previous": 733.689,
+        "candidate": 680.136
+      }
+    }
+  ]
+}

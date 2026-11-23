@@ -1,0 +1,18 @@
+{
+  "cli_sha256": "d54a170c40c9194d3741dab9ab79dc59ceeb83bdd03e6f1635687ec98e3ee097",
+  "source_and_input_sha256_preserved": true,
+  "cases": {
+    "matching": {
+      "worker_sha256": "0a5653714ab074f627b0e14289187fd09293acd4d76acab8600463de0e4e0ebd",
+      "native_worker_used": true,
+      "output_proof_used": true,
+      "zip_sha256": "b1606236e0d4c47429e9e796ae8875c0e32b513044c7c3be8c8ad29181c8d121"
+    },
+    "legacy": {
+      "worker_sha256": "261adf10e3ab18d623b42d3ae97aa5bb0a5892dc5261c99e6cf3ca28fdf65ca5",
+      "native_worker_used": true,
+      "output_proof_used": false,
+      "zip_sha256": "b1606236e0d4c47429e9e796ae8875c0e32b513044c7c3be8c8ad29181c8d121"
+    }
+  }
+}
