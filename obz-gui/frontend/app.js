@@ -808,13 +808,14 @@ async function runBatch(plan,guarded=false){
   const anchor=s.jobs.at(-1);
   if(plan.closing)await batchResumeSave;
   else await sealBatchResume(plan);
-  s.activeBatchPlan=null;
-  s.batchRunning=false;
-  try{
+  try{if(guarded)await invoke('set_batch_resume_running',{active:false});}
+  finally{
+   s.activeBatchPlan=null;
+   s.batchRunning=false;
    s.batchResult={...describeBatch(plan,lastJob),anchor};
    renderBatchResults();
    renderProgress();
-  }finally{if(guarded)await invoke('set_batch_resume_running',{active:false});}
+  }
  }
 }
 function batchExtractionTarget(dest,path,index){
