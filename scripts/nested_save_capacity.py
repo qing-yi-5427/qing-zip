@@ -29,6 +29,31 @@ def inspect_inner(content):
         return {name: hashlib.sha256(inner.read(name)).hexdigest() for name in inner.namelist()}
 
 
+def save_copy_on_another_volume(page, app, destination, evidence, result):
+    from pywinauto import Desktop
+
+    page.locator('.oa-nested-bar [data-action="save-as"]').click()
+    picker = Desktop(backend="uia").window(process=app.pid, class_name="#32770")
+    picker.wait("visible", timeout=20)
+    result["save_as_dialog_title"] = picker.window_text()
+    try:
+        # The standard Windows file dialog exposes its file-name box under
+        # FileNameControlHost. Its dialog button ID stays stable across locales.
+        filename = picker.child_window(auto_id="FileNameControlHost").child_window(control_type="Edit")
+        filename.wait("visible", timeout=10)
+        filename.set_edit_text(str(destination))
+        picker.capture_as_image().save(evidence / "nested-save-as-dialog.png")
+        picker.child_window(auto_id="1", control_type="Button").click_input()
+        expect(page.locator("#qa-toast")).to_contain_text("已另存为", timeout=30000)
+    except Exception:
+        if picker.exists(timeout=1):
+            result["native_save_controls"] = [
+                [control.element_info.control_type, control.element_info.automation_id, control.window_text()]
+                for control in picker.descendants()
+            ][:80]
+        raise
+
+
 def exercise_nested_save(exe, work, env, root, marker, identity, result,
                          fill, verify_volume, sha, snapshot, expect_feedback):
     if os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted" or os.environ.get("RUNNER_OS") != "Windows":
@@ -97,6 +122,7 @@ def exercise_nested_save(exe, work, env, root, marker, identity, result,
                 if inspect_inner(working.read_bytes()) != expected or snapshot(folder) != before:
                     raise RuntimeError("Editing the inner tab changed the wrong archive")
                 result["edited_copy_sha256"] = edited
+                close = page.locator('#qa-overlay:not([hidden]) .qa-dialog-footer [data-action="close"]')
                 filler = folder.parent / "nested-reserve.bin"
                 try:
                     fill(filler, root, marker, identity, result)
@@ -121,12 +147,25 @@ def exercise_nested_save(exe, work, env, root, marker, identity, result,
                     result["working_after_failure"] = sha(working)
                     if result["outer_after_failure"] != before or result["working_after_failure"] != edited:
                         raise RuntimeError("Failed nested save changed the outer archive, neighbour, or edited working copy")
+                    if expect_feedback:
+                        close.click()
+                        destination = work / "saved-inner.zip"
+                        if destination.exists() or destination.drive.casefold() == root.drive.casefold():
+                            raise RuntimeError("Expected a fresh copy on the fixture volume")
+                        save_copy_on_another_volume(page, app, destination, evidence, result)
+                        result["saved_as_sha256"] = sha(destination)
+                        result["saved_as_members"] = inspect_inner(destination.read_bytes())
+                        result["free_after_save_as"] = verify_volume(root, marker, identity).free
+                        if (result["saved_as_sha256"] != edited or result["saved_as_members"] != expected
+                                or result["free_after_save_as"] != 0 or snapshot(folder) != before
+                                or sha(working) != edited):
+                            raise RuntimeError("Save As on another volume did not preserve all data")
+                        page.screenshot(path=evidence / "nested-save-as-complete.png")
                 finally:
                     if filler.exists():
                         verify_volume(root, marker, identity)
                         filler.unlink()
                         result["free_after_release"] = verify_volume(root, marker, identity).free
-                close = page.locator('#qa-overlay:not([hidden]) .qa-dialog-footer [data-action="close"]')
                 if close.is_visible():
                     close.click()
                 save.click()
