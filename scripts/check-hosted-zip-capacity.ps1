@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet('baseline', 'combined')]
-    [string]$Trial
+    [string]$Trial,
+    [ValidatePattern('^[0-9]{1,20}$')]
+    [string]$BuildRun
 )
 $ErrorActionPreference = 'Stop'
 if (!$IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
@@ -15,6 +17,7 @@ $runs = @{
     combined = @{ id = '45116763549'; source = 'e9eeecd414fa7379fc959967fb1645ced24eeb62' }
 }
 $trialRun = $runs[$Trial]
+if ($BuildRun) { $trialRun.id = $BuildRun }
 $tempRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
 if ($tempRoot -notmatch '^[A-Za-z]:\\[^"\r\n]+$') { throw 'Expected local runner temp path' }
 $marker = [guid]::NewGuid().ToString('N')
@@ -102,7 +105,7 @@ try {
     $createScript = Join-Path $job 'create-vhd.txt'
     ('create vdisk file="{0}" type=fixed maximum=96' -f $image) | Set-Content -LiteralPath $createScript -Encoding ascii
     & (Join-Path $env:SystemRoot 'System32/diskpart.exe') /s $createScript | Out-File -LiteralPath (Join-Path $job 'diskpart.log')
-    $length = (Get-Item - LiteralPath $image).Length
+    $length = (Get-Item -LiteralPath $image).Length
     if ($LASTEXITCODE -or $length -ne ($capacity + 512)) { throw 'DiskPart did not create the expected fixed VHD' }
     $context.vhd_backing_bytes = $length
 
@@ -137,6 +140,7 @@ try {
     if ($productExit -ne 0 -or $context.status -ne 'passed') { throw 'ZIP disk capacity assertions did not all pass; inspect per-case receipt' }
 }
 catch {
+    $context.error_line = $_.InvocationInfo.ScriptLineNumber
     $context.error = $_.Exception.Message.Replace($job, '<qa-root>')
     throw
 }
