@@ -8,12 +8,21 @@ on:
       - '.github/workflows/zip-disk-capacity.yml'
   workflow_dispatch:
     inputs:
+      trial:
+        description: Select historical, final package, or incomplete-write acceptance
+        type: choice
+        options: [historical, round2, midwrite]
+        default: historical
       baseline_build_run:
         description: Replacement hardened run for the pinned baseline source
         type: string
         required: false
       combined_build_run:
         description: Replacement hardened run for the pinned combined source
+        type: string
+        required: false
+      round2_build_run:
+        description: Replacement hardened run for the pinned round-two source
         type: string
         required: false
 permissions:
@@ -27,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        trial: [baseline, combined]
+        trial: ${{ fromJSON(inputs.trial == 'midwrite' && '["midwrite"]' || inputs.trial == 'round2' && '["round2"]' || '["baseline","combined"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -41,9 +50,15 @@ jobs:
           TRIAL: ${{ matrix.trial }}
           BASELINE_RUN: ${{ inputs.baseline_build_run }}
           COMBINED_RUN: ${{ inputs.combined_build_run }}
+          ROUND2_RUN: ${{ inputs.round2_build_run }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $buildRun = if ($env:TRIAL -eq 'baseline') { $env:BASELINE_RUN } else { $env:COMBINED_RUN }
+          $buildRun = switch ($env:TRIAL) {
+            'baseline' { $env:BASELINE_RUN }
+            'combined' { $env:COMBINED_RUN }
+            'round2' { $env:ROUND2_RUN }
+            'midwrite' { $env:ROUND2_RUN }
+          }
           if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
           else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }
       - name: Upload product, volume and cleanup receipts
