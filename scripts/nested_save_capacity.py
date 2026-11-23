@@ -3,6 +3,7 @@ from contextlib import suppress
 import hashlib
 import io
 import os
+import platform
 from pathlib import Path
 import random
 import re
@@ -70,6 +71,42 @@ def save_copy_on_another_volume(page, app, destination, evidence, result):
                 for control in picker.descendants()
             ][:80]
         raise
+
+
+def measure_full_volume_dialog(page, save, close, message, result):
+    samples = []
+    result["dialog_measurement"] = {
+        "order": int(os.environ["QZ_DIALOG_TIMING_ORDER"]),
+        "os": platform.platform(),
+        "cpu": platform.processor(),
+        "browser": page.evaluate("navigator.userAgent"),
+        "viewport": page.evaluate("[innerWidth, innerHeight, devicePixelRatio]"),
+        "unit": "ms from actual Save click event to first animation frame with visible space error",
+        "samples": samples,
+    }
+    # The first failure completed before this function. Keep it as warm-up
+    # and measure five subsequent real writes to the same full private disk.
+    for _ in range(5):
+        close.click()
+        save.evaluate("""button => {
+            window.qingQaDialogLatency = null;
+            button.addEventListener('click', () => {
+                const started = performance.now();
+                function observe() {
+                    const card = document.querySelector('#qa-overlay:not([hidden]) .qa-jobcard');
+                    if (card?.getClientRects().length && /空间不足|not enough space|os error 112/i.test(card.innerText)) {
+                        window.qingQaDialogLatency = performance.now() - started;
+                    } else if (performance.now() - started < 30000) {
+                        requestAnimationFrame(observe);
+                    }
+                }
+                requestAnimationFrame(observe);
+            }, {capture: true, once: true});
+        }""")
+        save.click()
+        expect(message.first).to_be_visible(timeout=30000)
+        page.wait_for_function("Number.isFinite(window.qingQaDialogLatency)", timeout=30000)
+        samples.append(round(page.evaluate("window.qingQaDialogLatency"), 3))
 
 
 def exercise_nested_save(exe, work, env, root, marker, identity, result,
@@ -165,6 +202,11 @@ def exercise_nested_save(exe, work, env, root, marker, identity, result,
                     result["working_after_failure"] = sha(working)
                     if result["outer_after_failure"] != before or result["working_after_failure"] != edited:
                         raise RuntimeError("Failed nested save changed the outer archive, neighbour, or edited working copy")
+                    if os.environ.get("QZ_DIALOG_TIMING_ORDER"):
+                        measure_full_volume_dialog(page, save, close, message, result)
+                        if (verify_volume(root, marker, identity).free != 0 or snapshot(folder) != before
+                                or sha(working) != edited):
+                            raise RuntimeError("A timed save modified the original, working copy, or test volume")
                     if expect_feedback:
                         close.click()
                         destination = work / "saved-inner.zip"
