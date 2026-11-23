@@ -1692,8 +1692,9 @@ function changeCompressionFormat(){
 }
 function compressionPasswordPresent(){return !!($('qa-new-password').value||$('oa-password-again').value);}
 function syncCompressionPassword(){
- const canEncrypt=compressionCanEncrypt($('qa-format').value),panel=$('oa-password-panel'),retry=panel.closest('.qa-dialog').dataset.retryPasswordRequired==='true',pending=compressionPasswordPresent()||retry;
+ const format=$('qa-format').value,canEncrypt=compressionCanEncrypt(format),panel=$('oa-password-panel'),retry=panel.closest('.qa-dialog').dataset.retryPasswordRequired==='true',pending=compressionPasswordPresent()||retry;
  $('oa-password-unsupported').hidden=canEncrypt||!pending;
+ $('oa-zip-password-notice').hidden=format!=='zip';
  $('oa-password-button').disabled=!canEncrypt&&!pending;
  $('oa-password-button').textContent=pending?'密码已填写':'设置密码';
  $('oa-encryption').disabled=!canEncrypt;
@@ -1923,6 +1924,7 @@ function compress(profile,inputs=[]){
   </div>
   <div id="oa-password-unsupported" class="oa-form-notice" role="status" hidden><span>当前格式不支持加密，已保留填写的密码。</span>${btn('确认不加密','compression-clear-password','quiet')}</div>
   <div id="oa-password-panel" class="oa-compression-options" hidden>
+   <p id="oa-zip-password-notice" class="qa-sub" hidden>ZIP 密码保护文件内容，文件名仍可见。</p>
    <div class="qa-fieldrow">
    <label class="qa-field">密码<input id="qa-new-password" type="password" autocomplete="off"></label>
    <label class="qa-field">再次输入密码<input id="oa-password-again" type="password" autocomplete="off"></label>
