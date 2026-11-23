@@ -129,6 +129,12 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
           python scripts/check-public-package.py $portable[0].FullName
           exit $LASTEXITCODE
+      - name: Verify packaged native ZIP cache and cancellation
+        shell: pwsh
+        run: |
+          $portable = @(Get-ChildItem -LiteralPath dist/x64 -Filter '*-portable.zip' -File)
+          if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
+          ./scripts/check-selected-zip-cache.ps1 -Portable $portable[0].FullName -TargetDirectory target/hardened
       - name: Check native ZIP creation and real file symbolic links
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
