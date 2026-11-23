@@ -12,6 +12,10 @@ on:
         description: 'Run disposable signed Windows 11 Explorer review'
         type: boolean
         default: false
+      hosted_portable_lifecycle:
+        description: 'Exercise portable relocation and final unregistration instead of the three-menu review'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -63,7 +67,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Exercise a signed temporary sparse package on disposable Windows 11
         shell: pwsh
-        run: ./scripts/msix/hosted-explorer-review.ps1
+        env:
+          PORTABLE_LIFECYCLE: ${{ inputs.hosted_portable_lifecycle }}
+        run: ./scripts/msix/hosted-explorer-review.ps1 -PortableLifecycle:($env:PORTABLE_LIFECYCLE -eq 'true')
       - name: Upload Explorer observations and cleanup receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

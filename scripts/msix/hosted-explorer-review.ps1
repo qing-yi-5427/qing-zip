@@ -1,3 +1,5 @@
+param([switch]$PortableLifecycle)
+
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'ARM64' -or $env:GITHUB_REPOSITORY -cne 'qing-yi-5427/qing-zip' -or [Environment]::OSVersion.Version.Build -lt 22000) { throw 'Disposable hosted Windows 11 ARM64 required' }
 New-Item -ItemType Directory -Force explorer-evidence | Out-Null
@@ -7,13 +9,18 @@ $cert=$null; $thumb=$null; $ownedKeys=@(); $publisher='CN=QingZip Disposable Exp
 Save-Receipt
 try {
   if (@(Get-AppxPackage -Name 'QingYi.QingZip.Shell').Count) { throw 'Existing product identity; refusing to change it' }
-  $run=gh api repos/qing-yi-5427/qing-zip/actions/runs/45119972417 | ConvertFrom-Json
-  if ($LASTEXITCODE -or $run.head_sha -cne 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' -or $run.conclusion -cne 'success') { throw 'Unexpected product build' }
-  gh run download 45119972417 --repo qing-yi-5427/qing-zip --name qing-zip-0.12.23-windows-arm64-trial --dir (Join-Path $job 'download')
+  $buildRun,$buildSource,$portableSha = if ($PortableLifecycle) {
+    '45128040730','fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6','cc0e06dafef5d4caf7f8905ee87c5396f8e3f022c03c2a6f382dada4321f3bbe'
+  } else {
+    '45119972417','b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b','39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e'
+  }
+  $run=gh api "repos/qing-yi-5427/qing-zip/actions/runs/$buildRun" | ConvertFrom-Json
+  if ($LASTEXITCODE -or $run.head_sha -cne $buildSource -or $run.conclusion -cne 'success') { throw 'Unexpected product build' }
+  gh run download $buildRun --repo qing-yi-5427/qing-zip --name qing-zip-0.12.23-windows-arm64-trial --dir (Join-Path $job 'download')
   if ($LASTEXITCODE) { throw 'Package download failed' }
   $package=@(Get-ChildItem (Join-Path $job 'download') -Recurse -File -Filter '*-arm64-portable.zip')
-  if ($package.Count -ne 1 -or (Get-FileHash $package[0].FullName).Hash.ToLowerInvariant() -cne '39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e') { throw 'Package hash mismatch' }
-  $receipt.portable_sha256='39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e'; $receipt.product_source=$run.head_sha
+  if ($package.Count -ne 1 -or (Get-FileHash $package[0].FullName).Hash.ToLowerInvariant() -cne $portableSha) { throw 'Package hash mismatch' }
+  $receipt.portable_sha256=$portableSha; $receipt.product_source=$run.head_sha; $receipt.product_run=$buildRun
   $stage=Join-Path $job 'stage'; Expand-Archive $package[0].FullName $stage
   $app=@(Get-ChildItem $stage -Recurse -File -Filter qing-zip.exe); if ($app.Count -ne 1) { throw 'Expected one app' }
   $build=Join-Path $job 'component'; ./scripts/msix/Build-Component.ps1 -Architecture ARM64 -BuildDirectory $build
@@ -43,6 +50,13 @@ try {
   if ($openCommand -ine ('"'+$exe+'" "%1"')) { throw 'Product shell command path mismatch' }
   python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1 psutil==7.0.0
   if ($LASTEXITCODE) { throw 'UI dependencies unavailable' }
+  if ($PortableLifecycle) {
+    $receipt.test_settings='product CLI shell-enable for the matching executable'
+    $receipt.registration='passed'; $receipt.package_full_name=$pkg[0].PackageFullName; $receipt.stage='portable-lifecycle'; Save-Receipt
+    ./scripts/msix/hosted-explorer-lifecycle.ps1 -Root $job -OldApp $exe -Msix $msix -Publisher $publisher -PackageFullName $pkg[0].PackageFullName -SignTool "$sdk/signtool.exe"
+    $receipt.stage='completed'
+    return
+  }
   python scripts/msix/hosted-explorer-settings.py $exe $job
   if ($LASTEXITCODE) { throw 'Product GUI settings failed' }
   $receipt.test_settings='product CLI shell-enable and GUI file compression switch'
