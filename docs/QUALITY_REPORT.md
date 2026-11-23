@@ -31,9 +31,11 @@ python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --seven
 
 **PASS · 经典 RAR 单卷和两卷。** 同一台 Windows 11 x64 上另取有来源记录的 RAR 1.5 压缩样本和 RAR 3.00 两卷样本。从首卷 `.rar` 提取，三款程序均自动读取旁边的 `.r00`。单卷得到 21 字节的 `payload.txt`，两卷得到 65,536 字节的 `bigtext_64k.bin`。两者都比对了上游已知的原文或原文件 SHA-256，每款程序退出后还逐卷核对来源哈希。本轮总计 9 组正常样本、27 次提取。[样本及许可来源](../obz-rs/tests/fixtures/deep/rar15/SOURCE.json) · [逐样本结果](verification/common-rar-results.jsonl)
 
-**FAIL · 一组参考样本。** 评估上游 `rars_generated/split-store` 三卷样本时，7-Zip 26.00 返回 CRC 错误（退出码 2），目录内仍有 21 字节文件。qing-zip 返回 1，Bandizip 7.36 Beta 返回 2，两者的目标目录均为空。单独列出此结果；它尚不能证明 qing-zip 存在独有的兼容差异。此样本的结果不计入上述 27 次成功提取。[上游样本](https://github.com/bitplane/rars/tree/c07b3e68b564489202afc0ac9fa1ab5ff82db6a6/crates/rars/tests/fixtures/rar15_40/rars_generated)
+**FAIL · 已确认的经典 RAR 分卷兼容差异。** 上游 `rars_generated/split-store` 三卷可由 RARLAB 官方 UnRAR 7.30 beta 2 x64 正常还原为已知的 21 字节原文，退出码为 0。qing-zip 返回 1，目标目录为空。7-Zip 26.00 报 CRC 错误并留下 21 字节文件，Bandizip 7.36 Beta 返回 2 且目标为空。qing-zip 随包的两个解码器在各自独立的完整性检查中也报告了 CRC 错误。该样本单列为待修差异；修复需要验证分卷完整性与输出 CRC。原包各卷哈希在每次运行后均一致。[上游样本](https://github.com/bitplane/rars/tree/c07b3e68b564489202afc0ac9fa1ab5ff82db6a6/crates/rars/tests/fixtures/rar15_40/rars_generated) · [四程序实测结果](verification/rar-reference-difference.jsonl)
 
-**SKIP** · 本机未发现 WinRAR 命令行。各格式的其他压缩方法、旧 RAR 加密、缺卷及其他命名方式仍需分别验证。[测试矩阵](TEST_MATRIX.md)
+参考工具取自 RARLAB 免费 Windows UnRAR 包，下载包的 Authenticode 状态为 Valid，签名者为 win.rar GmbH，解包后的 UnRAR.exe SHA-256 为 `ad9f3ae3210f987fed43fbc7dc343ee95e9ce6b03ce24c635bb8d3162f0b9308`。对照工具独立运行。增加 `--unrar <UnRAR.exe>` 可验证前述三个常规 RAR 样本（共增加 3 次 PASS）。同时传入 `--include-rar15-split` 可复跑有差异的三卷，脚本记录每款工具的退出码、已写出文件和状态，有失败时最终返回 1。[官方工具来源](https://www.rarlab.com/rar_add.htm)
+
+**SKIP** · WinRAR 桌面程序本轮未安装。各格式的其他压缩方法、旧 RAR 加密、缺卷及其他命名方式仍需分别验证。[测试矩阵](TEST_MATRIX.md)
 
 **PASS，未完成下载。** 便携包冒烟测试从正常 ZIP 和 7z 各复制前一半字节到新文件。完整性检查以及选了覆盖的解压操作均返回可处理的错误，已有目标文件、目录清单、原包及未下载完的副本逐字节保全。[可复跑的包内测试](../scripts/check-public-package.py)
 

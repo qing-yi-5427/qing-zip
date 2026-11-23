@@ -237,3 +237,105 @@ fn cli_repair_dispatch_preserves_original() {
     assert_eq!(report["recovered"],json!(["data.txt"])); assert_eq!(report["complete"],false); assert_eq!(fs::read(archive).unwrap(),broken);
     assert_eq!(call(p,json!({"operation":"test","path":fixed})).unwrap()["valid"],true);
 }
+
+#[cfg(windows)]
+#[test]
+fn cli_classic_stored_rar_volumes_are_verified_before_publication() {
+    const VOLUMES: [(&str, &[u8]); 3] = [
+        ("split-store.rar", include_bytes!("fixtures/deep/rar15/split-store.rar")),
+        ("split-store.r00", include_bytes!("fixtures/deep/rar15/split-store.r00")),
+        ("split-store.r01", include_bytes!("fixtures/deep/rar15/split-store.r01")),
+    ];
+    const PAYLOAD: &[u8] = b"rar15 oracle payload\n";
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let archive = root.join(VOLUMES[0].0);
+    for (name, bytes) in VOLUMES {
+        fs::write(root.join(name), bytes).unwrap();
+    }
+    let listing = call(root, json!({"operation":"list", "path":archive})).unwrap();
+    let entries = listing["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["name"], "payload.txt");
+    assert_eq!(entries[0]["size"], PAYLOAD.len());
+    assert_eq!(entries[0]["crc"], "C945A8B6");
+    assert_eq!(call(root, json!({"operation":"test", "path":archive})).unwrap()["valid"], true);
+    for (directory, selected) in [("full", vec![]), ("selected", vec!["payload.txt"])] {
+        let destination = root.join(directory);
+        let result = call(root, json!({"operation":"extract", "path":archive, "dest":destination,
+            "options":{"selected":selected}})).unwrap();
+        assert_eq!(result["files"], 1);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        assert_eq!(fs::read(destination.join("payload.txt")).unwrap(), PAYLOAD);
+    }
+    for (name, bytes) in VOLUMES {
+        assert_eq!(fs::read(root.join(name)).unwrap(), bytes);
+    }
+
+    // Add a normal independent member at the end of a copy of the last volume
+    // to verify that a selected extraction leaves other verified members out.
+    let extra_archive = rars::rar15_40::write_stored_archive(
+        &[rars::rar15_40::StoredEntry {
+            name: b"notes.txt",
+            data: b"another ordinary member\n",
+            file_time: 0,
+            file_attr: 0x20,
+            host_os: 3,
+            password: None,
+            file_comment: None,
+        }],
+        rars::rar15_40::WriterOptions::new(rars::ArchiveVersion::Rar15, rars::FeatureSet::store_only()),
+    ).unwrap();
+    let parsed = rars::ArchiveReader::read(&extra_archive).unwrap();
+    let extra = parsed.as_rar15_40().unwrap().files().next().unwrap();
+    let two_members = root.join("two-members");
+    fs::create_dir(&two_members).unwrap();
+    for (name, bytes) in VOLUMES {
+        fs::write(two_members.join(name), bytes).unwrap();
+    }
+    let mut last = VOLUMES[2].1.to_vec();
+    last.extend_from_slice(&extra_archive[extra.block.offset..extra.packed_range.end]);
+    fs::write(two_members.join(VOLUMES[2].0), &last).unwrap();
+    let two_archive = two_members.join(VOLUMES[0].0);
+    let two_list = call(root, json!({"operation":"list", "path":two_archive})).unwrap();
+    assert_eq!(two_list["entries"].as_array().unwrap().len(), 2);
+    let picked = root.join("picked");
+    let picked_result = call(root, json!({"operation":"extract", "path":two_archive, "dest":picked,
+        "options":{"selected":["notes.txt"]}})).unwrap();
+    assert_eq!(picked_result["files"], 1);
+    assert_eq!(fs::read(picked.join("notes.txt")).unwrap(), b"another ordinary member\n");
+    assert!(!picked.join("payload.txt").exists());
+
+    let last_volume = root.join(VOLUMES[2].0);
+    fs::rename(&last_volume, root.join("last.saved")).unwrap();
+    let absent = root.join("missing-volume-output");
+    assert!(call(root, json!({"operation":"test", "path":archive})).is_err());
+    assert!(call(root, json!({"operation":"extract", "path":archive, "dest":absent})).is_err());
+    assert!(!absent.exists());
+    fs::rename(root.join("last.saved"), &last_volume).unwrap();
+
+    let middle_volume = root.join(VOLUMES[1].0);
+    let mut damaged_header = VOLUMES[1].1.to_vec();
+    damaged_header[7] ^= 1; // The main header's stored checksum no longer matches.
+    fs::write(&middle_volume, &damaged_header).unwrap();
+    let bad_header = call(root, json!({"operation":"test", "path":archive})).unwrap_err();
+    assert!(bad_header.contains("CRC"), "{bad_header}");
+    assert_eq!(fs::read(&middle_volume).unwrap(), damaged_header);
+
+    let mut changed = VOLUMES[1].1.to_vec();
+    *changed.last_mut().unwrap() = b'X'; // Ordinary data damage, while the original headers stay intact.
+    fs::write(&middle_volume, &changed).unwrap();
+    let existing = root.join("existing-output");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("payload.txt"), b"existing output").unwrap();
+    let test_error = call(root, json!({"operation":"test", "path":archive})).unwrap_err();
+    assert!(test_error.contains("CRC"), "{test_error}");
+    let extract_error = call(root, json!({"operation":"extract", "path":archive, "dest":existing,
+        "options":{"overwrite":"overwrite", "selected":["payload.txt"]}})).unwrap_err();
+    assert!(extract_error.contains("CRC"), "{extract_error}");
+    assert_eq!(fs::read_dir(&existing).unwrap().count(), 1);
+    assert_eq!(fs::read(existing.join("payload.txt")).unwrap(), b"existing output");
+    assert_eq!(fs::read(&middle_volume).unwrap(), changed);
+    assert_eq!(fs::read(&archive).unwrap(), VOLUMES[0].1);
+    assert_eq!(fs::read(&last_volume).unwrap(), VOLUMES[2].1);
+}
