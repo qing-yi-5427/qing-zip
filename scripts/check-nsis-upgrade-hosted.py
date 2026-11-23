@@ -94,13 +94,18 @@ def main():
     try:
         check(root.is_relative_to(runner_temp) and inst.parent==root and not inst.exists(),'installation target must be a fresh owned temporary path')
         check(not any(char.isspace() for char in str(inst)),'NSIS /D path must not require quoting')
+        shipped={p.relative_to(stage).as_posix():sha(p) for p in stage.rglob('*') if p.is_file()}
         with zipfile.ZipFile(old_portable) as archive:
             old_hashes={name:hashlib.sha256(archive.read(name)).hexdigest() for name in ('qing-zip.exe','obz.exe','obz-worker.exe')}
+            old_only={name:hashlib.sha256(archive.read(name)).hexdigest() for name in archive.namelist()
+                      if not name.endswith('/') and name not in shipped}
         run([old_setup,'/S',f'/D={inst}'],root)
         installed_version('0.12.20',inst)
         check(executable_version(inst/'qing-zip.exe')=='0.12.20.0','unexpected old executable version')
         check(all(sha(inst/name)==digest for name,digest in old_hashes.items()),'installed old binaries differ from official portable')
         check((shortcuts/'qing-zip.lnk').is_file() and (shortcuts/'卸载.lnk').is_file(),'expected Start menu shortcuts missing')
+        check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in old_only.items()),'old-only release files missing or changed immediately after old install')
+        report['old_only_installed']=[{'relative_path':name,'sha256':digest} for name,digest in sorted(old_only.items())]
         passed('official_release_installed_to_owned_directory')
         user=inst/'用户保留';user.mkdir();source=root/'样本.txt';source.write_bytes(('普通输入与个人数据哨兵\n'*4096).encode('utf-8'))
         sentinel=user/'无关文件.txt';sentinel.write_bytes(b'unrelated user file, preserve\n')
@@ -112,7 +117,6 @@ def main():
         run([candidate_setup,'/S',f'/D={inst}'],root)
         installed_version('0.12.23',inst)
         check(executable_version(inst/'qing-zip.exe')=='0.12.23.0','unexpected candidate executable version')
-        shipped={p.relative_to(stage).as_posix():sha(p) for p in stage.rglob('*') if p.is_file()}
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in shipped.items()),'upgraded payload differs from candidate portable stage')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'upgrade changed user data')
         passed('in_place_upgrade_payload_and_user_data_verified')
@@ -136,7 +140,8 @@ def main():
                 digest=sha(inst/name)
                 from_old=name in old_names and hashlib.sha256(previous.read(name)).hexdigest()==digest
                 report['remaining_after_uninstall'].append({'relative_path':name,'sha256':digest,
-                    'classification':'synthetic_user_file' if name in expected_remaining else 'unchanged_previous_release_file' if from_old else 'unexpected'})
+                    'classification':'synthetic_user_file' if name in expected_remaining else 'unchanged_previous_release_file' if from_old else 'unexpected',
+                    'verified_old_only_at_install':name in old_only and old_only[name]==digest})
         save()
         check(remaining==expected_remaining,'unexpected remaining files after uninstall; see receipt')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(extracted)==source_sha
