@@ -4,6 +4,14 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
+## 已安装主线 9c9258c
+
+| 实际操作 | 结果 |
+| --- | --- |
+| 本地 NTFS、随包 NanaZip、普通单卷明文 ZIP，写入期间强退 | PASS 原包保全、重试与并发任务。改名、删除各三轮均回收原包旁的候选。新增成员三轮 FAIL 候选回收。[三种操作的原始回执](verification/round6/installed-main/README.md) |
+| 选择性解压的重名策略、父目录冲突与重试 | PASS 安装版 11 个真实窗口用例，保留选定范围并核对输出文件。[用例与结果](verification/round6/installed-main/selected-extraction.json) |
+| 384 MiB 选定成员，任务运行时取消 | PASS 任务终态已取消，原有选中及未选目标的清单和哈希保持一致。[终态及文件](verification/round6/installed-main/selected-cancel.json) |
+
 ## 普通批量解压
 
 | Windows 11 x64 实际操作 | 结果 |
