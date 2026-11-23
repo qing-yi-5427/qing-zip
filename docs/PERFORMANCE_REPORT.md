@@ -81,6 +81,62 @@ ZIP 使用 Deflate 等级 5，7z 使用固实 LZMA2 等级 5。创建、校验�
 
 三组配对差值的四分位区间都跨零。局部样本尚不足以判定总体吞吐变化。复跑时给两个带配套运行时的 CLI 传入 `python scripts/measure-extract-conflicts.py --baseline <原版obz.exe> --candidate <候选obz.exe>`。[逐轮数据](verification/extraction-conflict-timings.jsonl)
 
+## 大目录列表、检索与单文件选取
+
+2026-11-23 10:51（UTC+8）在同一 Windows 11 26300、9800X3D、48 GiB 和 NVMe 主机补测。本节以 PR 3 提交 `51a68cc32bafcd535eac6cef8eee5169a54adcbe` 为源码口径，其 CLI、桌面前端和打包运行时与 `0cc51aa` 相同。复用前文同一加固便携包 `obz.exe`。主机采样 8 次，CPU 总利用率为 14.9%–33.1%，各次均未观察到 Rust 或 MSVC 编译进程。
+
+普通 Deflate ZIP 各含 10,000 或 50,000 个 33 字节文本成员。一半放在同一个目录，其余分布在两级目录。每个操作预热一次后测五次，CLI 每次用新进程，缓存保持自然状态。完整列表核对所有路径和字节数，选取一次只解压一个成员，核对输出树、输出 SHA-256 和原包 SHA-256。CLI 计时包含进程与 stdout 接收，校验在计时外。
+
+| ZIP 成员 | ZIP 大小 / 完整列表 JSON | CLI 列表，ms | 单文件选取解压，ms | CLI 主进程峰值工作集，列表 / 单文件，MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 1.59 / 3.51 MiB | 91.27（90.70–95.90） | 335.44（329.79–349.61） | 14.37（12.99–14.38） / 15.06（15.05–15.07） |
+| 50,000 | 7.96 / 17.57 MiB | 220.21（219.56–226.52） | 1,402.35（1,395.23–1,416.56） | 29.68（29.65–29.82） / 35.06（35.05–35.08） |
+
+工作集为 `GetProcessMemoryInfo` 返回的进程峰值工作集在采样期间的最高值。50,000 条列表和单文件解压的主进程私有提交采样中位数分别为 26.09 MiB（25.60–26.33）和 26.75 MiB（25.93–27.28）。这些数值只覆盖 `obz.exe`，引擎子进程与系统总内存需另测。
+
+用 Microsoft Edge 157.0.4341.60 无头执行实际前端的 `QingArchiveListing.read`、目录投影、检索排序、行位置索引、行模板和 `ArchiveRowWindow`。每轮从同一份 CLI JSON 重新解码，创建新的条目数组，先打开根目录，再打开宽目录，依次输入当前目录精确词、全包精确词、全包宽泛词及无匹配词。全包宽泛词复用前一查询缓存。视口高 576 CSS px，计数包含虚拟列表的预取数据行，表格同步挂载和布局时长单独计时。应用启动、Tauri IPC、桌面紧凑列表传输和 WebView2 绘制不在这个诊断范围。
+
+| 前端阶段 | 10,000 条，ms | 50,000 条，ms |
+| --- | ---: | ---: |
+| CLI 列表 UTF-8 解码与 JSON 解析 | 3.8（3.6–4.2） | 21.4（19.5–22.0） |
+| 根目录首次投影和位置索引 | 2.7（2.3–3.5） | 16.0（13.2–18.0） |
+| 宽目录投影和位置索引，5,000 / 25,000 行 | 1.6（1.3–2.9） | 8.1（6.6–9.0） |
+| 宽目录同步挂载首个虚拟窗口，各 26 行 | 1.9（1.6–7.5） | 2.4（2.3–2.5） |
+| 当前目录精确词，首次查询 | 1.7（1.6–2.2） | 9.2（7.9–9.9） |
+| 全包精确词，首次查询 | 2.7（2.5–3.5） | 14.5（13.3–17.0） |
+| 全包宽泛词，重复查询缓存，返回 9,999 / 49,999 行 | 1.2（1.1–1.2） | 6.0（5.9–6.4） |
+
+50,000 条样本的单文件选取耗时约为完整列表的 6.4 倍。优先对目录验证、解码和发布做阶段计时，再决定优化环节。当前测得的首窗 DOM 行数随目录从 5,000 增至 25,000 保持 26。真实 WebView 首个可交互结果及完整进程树峰值仍待采样。
+
+```powershell
+$cli = '<便携包解包目录>/obz.exe'
+$edge = "${env:ProgramFiles(x86)}/Microsoft/Edge/Application/msedge.exe"
+$browseReceipt = Join-Path $env:TEMP ('qing-browse-' + [guid]::NewGuid() + '.json')
+python scripts/benchmark-archive-browse.py --cli $cli --edge $edge --rounds 5 --receipt $browseReceipt
+```
+
+逐轮收据保留预热、主进程内存采样、前端数据行数和合成包 SHA-256。浏览器 JavaScript 堆读数包含诊断载入材料与垃圾回收波动，可用于复核本脚本，桌面内存结论仍需采集进程树。[逐轮数据](verification/archive-browse-timings.json)
+
+## 压缩取消与资源释放
+
+使用 0.12.23 核心的 Rust Release 测试。每次用普通临时目录创建 2,048 个小文本文件和一个 16 MiB 数据文件，ZIP 等级 9、单线程。测试确认进入 `compressing` 并看到第一条有百分比的进度后触发 `JobControl.cancel()`。六次均在显示 0% 的早期采样点，计时从取消信号到调用结束，首次预热另存。
+
+| helper 布局 | 五次取消返回，ms | 中位数（最小–最大），ms |
+| --- | --- | ---: |
+| 独立 `obz-worker.exe` 缺席，保留 `obz.exe` | 41.17 / 33.11 / 34.79 / 33.27 / 33.12 | 33.27（33.11–41.17） |
+| 独立 `obz-worker.exe` 在临时测试包内 | 36.75 / 36.33 / 30.63 / 35.32 / 35.86 | 35.86（30.63–36.75） |
+
+每次取消后均未发现目标 ZIP 或创建暂存目录，合成来源可重新打开。独立 worker 场景的临时 worker 映像在压缩期间无法取得写访问，取消后立即可取得，测试只打开文件句柄。两种布局都能从同一测试源重试并通过 ZIP 完整性检查。此处覆盖引擎早期取消与检查到的句柄、暂存资源；GUI 点击到取消完成、解压取消、发布尾段、进程树的内存回收和退出后恢复均需独立测量。
+
+```powershell
+$env:QING_REPORT_CANCEL_TIMINGS = '1'
+for ($round = 0; $round -le 5; $round++) {
+    cargo test --release --locked --manifest-path obz-rs/Cargo.toml --test verified_zip_create `
+        regular_create_reports_progress_and_cancels_without_publication -- --exact --nocapture
+    if ($LASTEXITCODE) { throw 'Cancellation test failed' }
+}
+```
+
 ## 复现与后续采样
 
 ```powershell
