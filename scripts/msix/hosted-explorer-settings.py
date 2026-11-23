@@ -28,7 +28,7 @@ with hosted_debug_session(exe,receipt) as debug:
   if js("!!window.__TAURI__?.core && !!document.querySelector('[data-action=app-menu]')"):break
   time.sleep(.1)
  else:raise RuntimeError('GUI not ready')
- js("action('settings')")
+ js("document.querySelector('[data-view=settings]').click()")
  for _ in range(100):
   if js("!!document.querySelector('#oa-file-menu')"):break
   time.sleep(.1)
