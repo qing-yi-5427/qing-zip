@@ -25,7 +25,7 @@ if args.arm64_runtime:
 version = json.loads((root / 'obz-gui/tauri.conf.json').read_text())['version']
 components = [
     ('nanazip', 'nanazip-7.0.1882.0/NanaZip-7.0.1882.0-source.zip'),
-    ('7zip', '7zip-26.05/7z2605-src.7z'),
+    ('7zip', '7zip-26.06/7z2606-src.7z'),
 ]
 sources = []
 for component, relative in components:

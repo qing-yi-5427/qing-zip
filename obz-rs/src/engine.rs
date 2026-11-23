@@ -499,7 +499,7 @@ pub fn capabilities() -> Capabilities {
     } else { &[] };
     Capabilities { engine:executable.as_ref().map(|p|p.display().to_string()).unwrap_or_default(), available:executable.is_ok(),
       backend:if extended {"NanaZip"} else {"7-Zip"}.into(),
-      version:if extended {"7.0.1882.0 (core 26.05)"} else {"bundled 26.05 or installed fallback"}.into(),
+      version:if extended {"7.0.1882.0 (core 26.05)"} else {"bundled 26.06 or installed fallback"}.into(),
       read_formats:["7z","zip","zipx (supported methods)","rar","rar5","tar","gzip","bzip2","xz","zstd","iso","udf","cab","wim","msi","nsis","arj","lzh","deb","rpm","dmg","vhd","vhdx","sfx","split"].iter().chain(extended_read_formats.iter()).map(|s|s.to_string()).collect(),
       write_formats:["zip","7z","tar","gzip","bzip2","xz","wim","sfx","tgz","tbz2","txz","zipx"].iter().map(|s|s.to_string()).collect(),
       features:["AES-256 ZIP/7z","optional encrypted 7z headers","split volumes","ZIP64","compression/extraction thread limits","7z dictionary and solid settings","selected extraction","archive integrity test","add/delete/rename","bounded preview","cancel/progress","codepage override","overwrite policies","source Zone.Identifier propagation"].iter().map(|s|s.to_string()).collect(),

@@ -68,4 +68,4 @@ x64 版面向 Windows 10 2004（19041）及以上版本和 Windows 11。含 `arm
 
 项目原创代码使用 [MIT License](LICENSE)。第三方组件遵循各自许可，详见 [第三方声明](licenses/THIRD-PARTY-NOTICES.txt)；NanaZip、7-Zip、嵌入式 Python 和 ZPAQ 的许可与对应源码信息随包提供。
 
-归档引擎采用 NanaZip 7.0.1882.0（7-Zip 核心 26.05），保留官方 7-Zip 26.05 作为兼容后端。原始组件许可和对应源码地址随包提供，Release 中的 `qing-zip-版本-engine-sources.zip` 提供确切版本的源码。
+归档引擎采用 NanaZip 7.0.1882.0（7-Zip 核心 26.05），保留官方 7-Zip 26.06 作为兼容后端。原始组件许可和对应源码地址随包提供，Release 中的 `qing-zip-版本-engine-sources.zip` 提供确切版本的源码。

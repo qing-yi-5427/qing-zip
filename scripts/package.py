@@ -117,8 +117,8 @@ def main():
         # The common notice tree ships x64 build descriptions. Keep the legal
         # texts, and replace just the architecture-specific build records.
         shutil.copyfile(runtime_source / "zpaq/SOURCE.json", stage / "licenses/zpaq-7.15/SOURCE.json")
-        seven_notes = stage / "licenses/7zip-26.05/README.txt"
-        seven_notes.write_text("7-Zip 26.05 for Windows ARM64\n"
+        seven_notes = stage / "licenses/7zip-26.06/README.txt"
+        seven_notes.write_text("7-Zip 26.06 for Windows ARM64\n"
             "7z.exe and 7z.dll are the official ARM64 binaries; 7z.sfx is built from the official SFXWin source.\n"
             "See License.txt and runtime/7zip/provenance.json for licenses, exact sources, hashes and build command.\n",
             encoding="utf-8")
