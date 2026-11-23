@@ -154,7 +154,13 @@ try:
     if proc.info['exe'] and os.path.normcase(proc.info['exe'])==os.path.normcase(str(a.app.resolve())):proc.terminate();proc.wait(10)
    except (psutil.Error,OSError):pass
   target.Quit()
- report['stage']='finished';report['passed']=len(report['scenarios'])==3 and all(v.get('menu_visible') and v.get('handoff_observed') and v.get('archive_preserved') and v.get('plain_preserved') and v.get('sentinel_preserved') and v.get('output_directory_exact') for v in report['scenarios'].values())
+  if key=='compress' and entry.get('compression_verified'):
+   with zipfile.ZipFile(folder/'plain.txt.zip') as verify:
+    entry['after_window_exit_member_matches'] = verify.namelist()==['plain.txt'] and hashlib.sha256(verify.read('plain.txt')).hexdigest()==plain_hash
+   entry['after_window_exit_zip_sha256']=hashlib.sha256((folder/'plain.txt.zip').read_bytes()).hexdigest()
+   entry['after_window_exit_matches']=entry['after_window_exit_member_matches'] and entry['after_window_exit_zip_sha256']==entry['created_zip_sha256']
+   save()
+ report['stage']='finished';report['passed']=len(report['scenarios'])==3 and all(v.get('menu_visible') and v.get('handoff_observed') and v.get('archive_preserved') and v.get('plain_preserved') and v.get('sentinel_preserved') and v.get('output_directory_exact') and (k!='compress' or v.get('after_window_exit_matches')) for k,v in report['scenarios'].items())
 except Exception as e:
  report['error']=repr(e)
  try:snapshot('failure')
