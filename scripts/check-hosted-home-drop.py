@@ -20,7 +20,7 @@ def until(find, description):
     raise RuntimeError(f"Timed out waiting for {description}")
 
 
-def exercise(executable, output, scratch, report):
+def exercise(executable, output, scratch, report, debug):
     from pywinauto import Desktop, mouse
     from win32com.client import Dispatch
     import win32gui
@@ -55,7 +55,11 @@ def exercise(executable, output, scratch, report):
         def owner(point):
             return user32.GetAncestor(user32.WindowFromPoint(wintypes.POINT(*point)), 2)
 
-        browser.start(executable, scratch / "profile")
+        browser.start(executable, scratch / "profile", debug=debug)
+        identity = browser.command("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
+                                   returnByValue=True, awaitPromise=True)
+        if Path(identity["result"]["value"]).resolve() != executable:
+            raise RuntimeError("The attached WebView2 page belongs to a different application")
         desktop = Desktop(backend="uia")
         app = until(lambda: next((win for win in desktop.windows(process=browser.process.pid) if win.is_visible()), None),
                     "a visible qing-zip window")
@@ -129,8 +133,11 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     report = {"status": "FAIL"}
     try:
+        from arm_gui_lifecycle import hosted_debug_session
+        exe = args.exe.resolve(strict=True)
         with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"], prefix="qing-home-", ignore_cleanup_errors=True) as scratch:
-            exercise(args.exe.resolve(strict=True), output, Path(scratch), report)
+            with hosted_debug_session(exe, output / "desktop-session.json") as debug:
+                exercise(exe, output, Path(scratch), report, debug)
     except Exception as error:
         report["error"] = str(error)
         raise

@@ -33,7 +33,7 @@ class Browser:
         self.socket = None
         self.sequence = 0
 
-    def start(self, executable, scratch, archive=None):
+    def start(self, executable, scratch, archive=None, debug=None):
         profile = scratch / "webview"
         local = scratch / "local-app-data"
         local.mkdir(parents=True)
@@ -48,19 +48,24 @@ class Browser:
             TMP=str(scratch),
         )
         self.env = env
+        if debug:
+            env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = debug["arguments"]
         args = [str(executable)]
         if archive:
             args.append(str(archive))
         self.process = subprocess.Popen(args, env=env, cwd=scratch)
+        if debug:
+            debug["proc"] = self.process
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             expect(self.process.poll() is None, f"GUI exited during launch: {self.process.returncode}")
             marker = next(profile.rglob("DevToolsActivePort"), None)
-            if marker:
+            if marker or debug:
                 try:
-                    port = int(marker.read_text().splitlines()[0])
+                    port = debug["port"] if debug else int(marker.read_text().splitlines()[0])
                     with urlopen(f"http://127.0.0.1:{port}/json", timeout=1) as response:
-                        tab = next(item for item in json.load(response) if item["type"] == "page")
+                        tab = next(item for item in json.load(response) if item["type"] == "page"
+                                   and (not debug or "tauri.localhost" in item.get("url", "")))
                     self.socket = connect(tab["webSocketDebuggerUrl"], open_timeout=3, max_size=16 * 1024 * 1024)
                     break
                 except (OSError, StopIteration, ValueError):
