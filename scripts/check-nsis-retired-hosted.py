@@ -324,8 +324,15 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             offered = set(next(d["candidates"] for d in traces if d["dialog"] == "offer"))
             old.check(offered == set(manifest) - {MODIFIED, SAME_NAME} and SAME_BYTES in offered,
                       "candidate list included modified or excluded byte-identical unclaimed files")
-            old.check(any(d.get("moved") == sorted(MOVE) and d.get("retained") == sorted([CHANGED_AFTER_PREVIEW, LOCKED_AFTER_PREVIEW]) for d in traces),
+            result = next((d for d in traces if d["dialog"] == "summary"), None)
+            old.check(result is not None and result["moved"] == sorted(MOVE)
+                      and result["retained"] == sorted([CHANGED_AFTER_PREVIEW, LOCKED_AFTER_PREVIEW]),
                       "missing mixed success and safe retention in the in-place result")
+            user_outcome, separator, technical = result["text"].partition("\r\n\r\n技术信息\r\n")
+            old.check(f"未移动  {LOCKED_AFTER_PREVIEW}\r\n文件正被其他程序使用，已保留在原位置。" in user_outcome
+                      and separator and f"{LOCKED_AFTER_PREVIEW}\r\npin selected retired file:" in technical
+                      and "(os error 32)" in technical and "(os error 32)" not in user_outcome,
+                      "occupied-file result did not explain retention and separate the native diagnostic")
             recovery = recoveries[0]
             report["recovered"] = tree(recovery, old.sha)
             old.check(report["recovered"] == {name: expected[name] for name in selected}, "wrong recovery content")

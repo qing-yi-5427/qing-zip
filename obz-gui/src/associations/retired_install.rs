@@ -158,17 +158,29 @@ fn show_result(window: HWND, state: &DialogState<'_>, selected: &[usize]) {
             Err("旧版安装登记发生变化，所有文件保留在原位置。".into())
         }
     });
-    let text = match applied {
+    let mut technical = Vec::new();
+    let mut text = match applied {
         Ok(report) => report
             .into_iter()
             .map(|(name, result)| match result {
                 Ok(()) => format!("已移动  {name}"),
+                Err(reason)
+                    if reason.starts_with("pin selected retired file:")
+                        && reason.ends_with("(os error 32)") =>
+                {
+                    technical.push(format!("{name}\r\n{reason}"));
+                    format!("未移动  {name}\r\n文件正被其他程序使用，已保留在原位置。")
+                }
                 Err(reason) => format!("未移动  {name}\r\n{reason}"),
             })
             .collect::<Vec<_>>()
             .join("\r\n"),
         Err(reason) => format!("未移动文件。\r\n{reason}"),
     };
+    if !technical.is_empty() {
+        text.push_str("\r\n\r\n技术信息\r\n");
+        text.push_str(&technical.join("\r\n"));
+    }
     set_text(window, INTRO, "处理结果。未选中的文件保留在原位置。\n已移动的文件保留原相对路径，卸载后可从下方目录恢复。");
     set_text(window, RESULTS, &text);
     for id in
