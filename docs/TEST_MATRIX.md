@@ -4,6 +4,15 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
+## 第九轮批次恢复与高对比
+
+| 场景 | 实际结果 |
+| --- | --- |
+| #63 固定 x64 正式候选批量恢复 | 九案 PASS：强退后新批次、已续跑批次和末项；受控残尾；正常停止、替换确认、不可写、损坏与未来格式、关窗交接。进程强退、模拟残尾和延迟 IPC 分别标注。[逐案回执](verification/round9/final-acceptance/README.md) |
+| #64 / #65 同会话替换确认 | 基线无确认直接替换；修复后普通与续跑目录不可写两案均 PASS，返回保全输出、明确确认后才替换。[托管已打包窗口](https://github.com/qing-yi-5427/qing-zip/actions/runs/45273334807) · [本机回执](verification/round9/same-session-overwrite/README.md) |
+| #61 主按钮真实系统高对比 | Win11 ARM64、100% PASS。正式候选的实际系统高对比、减少动画、禁用态、Tab 焦点与普通浅深窗口已核对；设置恢复。[截图及回执](verification/round9/final-acceptance/README.md) |
+| 真实 200% 系统缩放 | BLOCKED。Windows 11 ARM64 系统仅提供 100%/125%；临时账户凭据进程与 runner 均属同一会话，未注销或模拟倍率。[会话记录](verification/round9/final-acceptance/system-200-user-session.json) |
+
 ## 第九轮 ZIP 条目计数边界
 
 | 场景 | 结果 |
@@ -25,7 +34,7 @@
 | 独立校验和普通 ZIP 追加后校验 | 强退后的校验进程回收门禁，旧版两项 FAIL，修复后两项 PASS。普通 TAR 选取提取的额外校验已用真实子进程核对，输出只含所选文件。[实现与门禁](verification/round8/verifier-lifetime/README.md) |
 | 真实 150% 下创建表单的错误字段 | 浅、深两种主题 PASS。窄窗中非法线程数得到焦点且输入框完整可见，改正后可按 Tab 继续。[实际截图与回执](verification/create-error-focus/README.md) |
 
-真实断电、Windows 10 实机、真实 200% 显示在这轮均为 NOT RUN。
+真实断电、Windows 10 实机为 NOT RUN；真实 200% 系统缩放为 BLOCKED。
 
 ## 已安装主线 9c9258c
 

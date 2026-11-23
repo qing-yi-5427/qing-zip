@@ -1,0 +1,18 @@
+[
+  {
+    "portable_sha256": "33e0aef289ee903c7ef8a01d4dbd6747463197821954df1797ee5f181499f91c",
+    "source": "6e29fad4cfaca19975bae7f93343dae5f5fabee3",
+    "run": "45253326818",
+    "label": "baseline",
+    "artifact_id": 14859710729,
+    "artifact_digest": "sha256:06190e8dfff5024710f3c89b76749725211df97f63ddf4de19f646a878c35c17"
+  },
+  {
+    "portable_sha256": "491e199254ef729fb6afe4e31dbfdcf2489baa8998bef4fd2dfbd1ded6c4c9ca",
+    "source": "509ae794ad3fe4eb9cf2600ceecbd2c7eafda980",
+    "run": "45261746814",
+    "label": "candidate",
+    "artifact_id": 14860499695,
+    "artifact_digest": "sha256:ab88a81bcbe26ce6768c7fad68bcce8f4960a7db053515cd6f4a75fb069a3180"
+  }
+]

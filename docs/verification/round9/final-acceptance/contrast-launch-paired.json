@@ -1,0 +1,415 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "arch": "ARM64",
+  "status": "PASS",
+  "description": "fresh process and profile, forced colors; start process to visible home DOM; process-tree private bytes after 1s home and 1s open create form",
+  "gui_sha256": {
+    "baseline": "55359dd380047c221868f872cace3b410ade6369ad2cd1385a4200e6e9461e39",
+    "candidate": "495ed134b759e3af67966afb666f6e63c111f7aa761a63bdefd12fcc2a0d9458"
+  },
+  "warmups": [
+    {
+      "homeReadyMs": 1925.5,
+      "nativeWindow": {
+        "window_dpi": 96,
+        "awareness": 2,
+        "window_title": "qing-zip",
+        "visible_package_windows": 3,
+        "monitor_pixels": [
+          1024,
+          768
+        ],
+        "remote_session": false,
+        "primary_monitor": true
+      },
+      "webview": {
+        "visible": "visible",
+        "forced": true,
+        "dpr": 1
+      },
+      "home": {
+        "processes": 7,
+        "privateBytes": 127762432
+      },
+      "form": {
+        "processes": 7,
+        "privateBytes": 130158592
+      },
+      "variant": "baseline"
+    },
+    {
+      "homeReadyMs": 1737.9,
+      "nativeWindow": {
+        "window_dpi": 96,
+        "awareness": 2,
+        "window_title": "qing-zip",
+        "visible_package_windows": 3,
+        "monitor_pixels": [
+          1024,
+          768
+        ],
+        "remote_session": false,
+        "primary_monitor": true
+      },
+      "webview": {
+        "visible": "visible",
+        "forced": true,
+        "dpr": 1
+      },
+      "home": {
+        "processes": 7,
+        "privateBytes": 122523648
+      },
+      "form": {
+        "processes": 7,
+        "privateBytes": 127356928
+      },
+      "variant": "candidate"
+    }
+  ],
+  "pairs": [
+    {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "samples": [
+        {
+          "homeReadyMs": 1362.7,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 131465216
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 136163328
+          },
+          "variant": "baseline"
+        },
+        {
+          "homeReadyMs": 1506.6,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 128327680
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 133132288
+          },
+          "variant": "candidate"
+        }
+      ]
+    },
+    {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "samples": [
+        {
+          "homeReadyMs": 1395.7,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 130682880
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 135413760
+          },
+          "variant": "candidate"
+        },
+        {
+          "homeReadyMs": 1372.4,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 126803968
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 131690496
+          },
+          "variant": "baseline"
+        }
+      ]
+    },
+    {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "samples": [
+        {
+          "homeReadyMs": 1439.1,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 126341120
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 131084288
+          },
+          "variant": "baseline"
+        },
+        {
+          "homeReadyMs": 1442.5,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 125820928
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 130748416
+          },
+          "variant": "candidate"
+        }
+      ]
+    },
+    {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "samples": [
+        {
+          "homeReadyMs": 1408.3,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 127692800
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 132423680
+          },
+          "variant": "candidate"
+        },
+        {
+          "homeReadyMs": 1445.8,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 130076672
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 134774784
+          },
+          "variant": "baseline"
+        }
+      ]
+    },
+    {
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "samples": [
+        {
+          "homeReadyMs": 1572.6,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 126599168
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 131682304
+          },
+          "variant": "baseline"
+        },
+        {
+          "homeReadyMs": 1495.5,
+          "nativeWindow": {
+            "window_dpi": 96,
+            "awareness": 2,
+            "window_title": "qing-zip",
+            "visible_package_windows": 3,
+            "monitor_pixels": [
+              1024,
+              768
+            ],
+            "remote_session": false,
+            "primary_monitor": true
+          },
+          "webview": {
+            "visible": "visible",
+            "forced": true,
+            "dpr": 1
+          },
+          "home": {
+            "processes": 7,
+            "privateBytes": 127365120
+          },
+          "form": {
+            "processes": 7,
+            "privateBytes": 132046848
+          },
+          "variant": "candidate"
+        }
+      ]
+    }
+  ],
+  "restored": true,
+  "original": {
+    "high": false,
+    "animations": true
+  },
+  "applied": {
+    "os_high": true,
+    "os_animations": true
+  },
+  "restoration": {
+    "os_high": false,
+    "os_animations": true
+  }
+}
