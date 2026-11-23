@@ -121,16 +121,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--driver', type=Path, required=True)
     parser.add_argument('--baseline', type=Path, required=True)
-    parser.add_argument('--sha-recovery', type=Path, required=True)
+    parser.add_argument('--sha-recovery', type=Path)
     parser.add_argument('--candidate', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--pairs', type=int, default=5)
+    parser.add_argument('--fixture-mib', type=int, help='Run one size with #36 and the candidate only')
     args = parser.parse_args()
+    if args.fixture_mib is None and args.sha_recovery is None:
+        parser.error('--sha-recovery is required for the standard three-version groups')
+    if args.fixture_mib is not None and args.fixture_mib < 1:
+        parser.error('--fixture-mib must be positive')
     args.out.mkdir(parents=True, exist_ok=False)
     harness = runpy.run_path(str(args.driver))
-    binaries = {'baseline':args.baseline.resolve(strict=True),
-                'sha_recovery':args.sha_recovery.resolve(strict=True),
-                'candidate':args.candidate.resolve(strict=True)}
+    binaries = {'baseline':args.baseline.resolve(strict=True)}
+    if args.fixture_mib is None:
+        binaries['sha_recovery'] = args.sha_recovery.resolve(strict=True)
+    binaries['candidate'] = args.candidate.resolve(strict=True)
     expected_digests = {'baseline':None, 'sha_recovery':'sha256', 'candidate':'blake3'}
     hashes = {label:{name:hashlib.sha256(exe.with_name(name).read_bytes()).hexdigest()
                     for name in ('qing-zip.exe','obz.exe','obz-worker.exe')} for label, exe in binaries.items()}
@@ -142,16 +148,21 @@ def main():
     def save():
         receipt.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
-    for name, size, renames, labels in [('4', 4, 1, tuple(binaries)), ('64', 64, 1, tuple(binaries)),
-                                        ('64-continuous', 64, 3, tuple(binaries))]:
+    labels = tuple(binaries)
+    if args.fixture_mib is None:
+        groups = [('4', 4, 1), ('64', 64, 1), ('64-continuous', 64, 3)]
+        orders = (labels, labels[::-1], labels[1:]+labels[:1], labels[:1]+labels[:0:-1],
+                  labels[2:]+labels[:2], labels[1:2]+labels[:1]+labels[2:])
+    else:
+        groups = [(str(args.fixture_mib), args.fixture_mib, 1)]
+        orders = (labels, labels[::-1])
+    for name, size, renames in groups:
         group = {'stored_member_mib':size,'renames_per_open':renames,'samples':[], 'warmup':{}}
         report['sample_groups'][name] = group
         with tempfile.TemporaryDirectory(prefix='qing-zip-recovery-perf-input-', dir=args.out) as folder:
             source, payload_sha = fixture(Path(folder), size * 1024 * 1024)
             group['payload_sha256'] = payload_sha
             for iteration in range(args.pairs + 1):
-                orders = (labels, labels[::-1], labels[1:]+labels[:1], labels[:1]+labels[:0:-1],
-                          labels[2:]+labels[:2], labels[1:2]+labels[:1]+labels[2:])
                 order = orders[iteration % len(orders)]
                 pair = {label:sample(harness, binaries[label], source, payload_sha, args.out.resolve(), renames,
                                      expected_digests[label]) for label in order}
@@ -170,7 +181,7 @@ def main():
                 selectors[f'rename_{index+1}_ms'] = lambda sample, slot=index: sample['versions'][slot]['duration_ms']
         for metric, read in selectors.items():
             by_label = {label:[read(sample['metrics'][label]) for sample in group['samples']] for label in labels}
-            for ref in ('baseline','sha_recovery'):
+            for ref in (label for label in labels if label != 'candidate'):
                 by_label[f'candidate_minus_{ref}'] = [a - b for a, b in zip(by_label['candidate'], by_label[ref], strict=True)]
             group['summary'][metric] = {label:{'median':statistics.median(values),'min':min(values),'max':max(values)}
                                         for label, values in by_label.items()}

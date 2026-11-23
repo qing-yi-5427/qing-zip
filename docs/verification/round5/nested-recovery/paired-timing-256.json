@@ -1,0 +1,491 @@
+{
+  "status": "passed",
+  "metric": "trusted production WebView action until the target entry is rendered",
+  "binaries_sha256": {
+    "baseline": {
+      "qing-zip.exe": "326d088930c92c302d7fd6207a97a932c8ff45b67cfcd25a534fbe27fc3ae571",
+      "obz.exe": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+      "obz-worker.exe": "91f8afb33209fc157b038e1bbc8ee3505db43165ae94cdf62313992525aa35f6"
+    },
+    "candidate": {
+      "qing-zip.exe": "d68b7e0714053748b4eb0ee566876e620655148f4537680bf14e5a5497f453f0",
+      "obz.exe": "bbe9389490095554610f9671555d1147e03f5a7b4fe79dd493d080e0cc1f9153",
+      "obz-worker.exe": "91f8afb33209fc157b038e1bbc8ee3505db43165ae94cdf62313992525aa35f6"
+    }
+  },
+  "sample_groups": {
+    "256": {
+      "stored_member_mib": 256,
+      "renames_per_open": 1,
+      "samples": [
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "metrics": {
+            "candidate": {
+              "open_ms": 317.8,
+              "rename_ms": 518.7,
+              "open_plus_first_rename_ms": 836.5,
+              "rename_total_ms": 518.7,
+              "versions": [
+                {
+                  "duration_ms": 518.7,
+                  "name": "after-0.txt",
+                  "proof_digest": [
+                    190,
+                    42,
+                    221,
+                    90,
+                    116,
+                    118,
+                    115,
+                    134,
+                    228,
+                    99,
+                    58,
+                    243,
+                    95,
+                    241,
+                    234,
+                    27,
+                    8,
+                    62,
+                    91,
+                    5,
+                    132,
+                    212,
+                    235,
+                    142,
+                    51,
+                    172,
+                    210,
+                    242,
+                    102,
+                    240,
+                    57,
+                    162
+                  ]
+                }
+              ]
+            },
+            "baseline": {
+              "open_ms": 398.6,
+              "rename_ms": 464.9,
+              "open_plus_first_rename_ms": 863.5,
+              "rename_total_ms": 464.9,
+              "versions": [
+                {
+                  "duration_ms": 464.9,
+                  "name": "after-0.txt",
+                  "proof_digest": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "metrics": {
+            "baseline": {
+              "open_ms": 407.3,
+              "rename_ms": 454.2,
+              "open_plus_first_rename_ms": 861.5,
+              "rename_total_ms": 454.2,
+              "versions": [
+                {
+                  "duration_ms": 454.2,
+                  "name": "after-0.txt",
+                  "proof_digest": null
+                }
+              ]
+            },
+            "candidate": {
+              "open_ms": 324.5,
+              "rename_ms": 503.2,
+              "open_plus_first_rename_ms": 827.7,
+              "rename_total_ms": 503.2,
+              "versions": [
+                {
+                  "duration_ms": 503.2,
+                  "name": "after-0.txt",
+                  "proof_digest": [
+                    190,
+                    42,
+                    221,
+                    90,
+                    116,
+                    118,
+                    115,
+                    134,
+                    228,
+                    99,
+                    58,
+                    243,
+                    95,
+                    241,
+                    234,
+                    27,
+                    8,
+                    62,
+                    91,
+                    5,
+                    132,
+                    212,
+                    235,
+                    142,
+                    51,
+                    172,
+                    210,
+                    242,
+                    102,
+                    240,
+                    57,
+                    162
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "metrics": {
+            "candidate": {
+              "open_ms": 326.8,
+              "rename_ms": 539.5,
+              "open_plus_first_rename_ms": 866.3,
+              "rename_total_ms": 539.5,
+              "versions": [
+                {
+                  "duration_ms": 539.5,
+                  "name": "after-0.txt",
+                  "proof_digest": [
+                    190,
+                    42,
+                    221,
+                    90,
+                    116,
+                    118,
+                    115,
+                    134,
+                    228,
+                    99,
+                    58,
+                    243,
+                    95,
+                    241,
+                    234,
+                    27,
+                    8,
+                    62,
+                    91,
+                    5,
+                    132,
+                    212,
+                    235,
+                    142,
+                    51,
+                    172,
+                    210,
+                    242,
+                    102,
+                    240,
+                    57,
+                    162
+                  ]
+                }
+              ]
+            },
+            "baseline": {
+              "open_ms": 408.1,
+              "rename_ms": 469.1,
+              "open_plus_first_rename_ms": 877.2,
+              "rename_total_ms": 469.1,
+              "versions": [
+                {
+                  "duration_ms": 469.1,
+                  "name": "after-0.txt",
+                  "proof_digest": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "order": [
+            "baseline",
+            "candidate"
+          ],
+          "metrics": {
+            "baseline": {
+              "open_ms": 409.4,
+              "rename_ms": 453.4,
+              "open_plus_first_rename_ms": 862.8,
+              "rename_total_ms": 453.4,
+              "versions": [
+                {
+                  "duration_ms": 453.4,
+                  "name": "after-0.txt",
+                  "proof_digest": null
+                }
+              ]
+            },
+            "candidate": {
+              "open_ms": 316.9,
+              "rename_ms": 529.4,
+              "open_plus_first_rename_ms": 846.3,
+              "rename_total_ms": 529.4,
+              "versions": [
+                {
+                  "duration_ms": 529.4,
+                  "name": "after-0.txt",
+                  "proof_digest": [
+                    190,
+                    42,
+                    221,
+                    90,
+                    116,
+                    118,
+                    115,
+                    134,
+                    228,
+                    99,
+                    58,
+                    243,
+                    95,
+                    241,
+                    234,
+                    27,
+                    8,
+                    62,
+                    91,
+                    5,
+                    132,
+                    212,
+                    235,
+                    142,
+                    51,
+                    172,
+                    210,
+                    242,
+                    102,
+                    240,
+                    57,
+                    162
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "order": [
+            "candidate",
+            "baseline"
+          ],
+          "metrics": {
+            "candidate": {
+              "open_ms": 331.5,
+              "rename_ms": 529.4,
+              "open_plus_first_rename_ms": 860.9,
+              "rename_total_ms": 529.4,
+              "versions": [
+                {
+                  "duration_ms": 529.4,
+                  "name": "after-0.txt",
+                  "proof_digest": [
+                    190,
+                    42,
+                    221,
+                    90,
+                    116,
+                    118,
+                    115,
+                    134,
+                    228,
+                    99,
+                    58,
+                    243,
+                    95,
+                    241,
+                    234,
+                    27,
+                    8,
+                    62,
+                    91,
+                    5,
+                    132,
+                    212,
+                    235,
+                    142,
+                    51,
+                    172,
+                    210,
+                    242,
+                    102,
+                    240,
+                    57,
+                    162
+                  ]
+                }
+              ]
+            },
+            "baseline": {
+              "open_ms": 394.4,
+              "rename_ms": 452.2,
+              "open_plus_first_rename_ms": 846.6,
+              "rename_total_ms": 452.2,
+              "versions": [
+                {
+                  "duration_ms": 452.2,
+                  "name": "after-0.txt",
+                  "proof_digest": null
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "warmup": {
+        "baseline": {
+          "open_ms": 405.1,
+          "rename_ms": 453,
+          "open_plus_first_rename_ms": 858.1,
+          "rename_total_ms": 453,
+          "versions": [
+            {
+              "duration_ms": 453,
+              "name": "after-0.txt",
+              "proof_digest": null
+            }
+          ]
+        },
+        "candidate": {
+          "open_ms": 327.8,
+          "rename_ms": 506.4,
+          "open_plus_first_rename_ms": 834.2,
+          "rename_total_ms": 506.4,
+          "versions": [
+            {
+              "duration_ms": 506.4,
+              "name": "after-0.txt",
+              "proof_digest": [
+                190,
+                42,
+                221,
+                90,
+                116,
+                118,
+                115,
+                134,
+                228,
+                99,
+                58,
+                243,
+                95,
+                241,
+                234,
+                27,
+                8,
+                62,
+                91,
+                5,
+                132,
+                212,
+                235,
+                142,
+                51,
+                172,
+                210,
+                242,
+                102,
+                240,
+                57,
+                162
+              ]
+            }
+          ]
+        }
+      },
+      "payload_sha256": "e617fa36e75148738daf4a5985912102c1e1fda4ad012d887a1142b531352fd8",
+      "summary": {
+        "open_ms": {
+          "baseline": {
+            "median": 407.3,
+            "min": 394.4,
+            "max": 409.4
+          },
+          "candidate": {
+            "median": 324.5,
+            "min": 316.9,
+            "max": 331.5
+          },
+          "candidate_minus_baseline": {
+            "median": -81.30000000000001,
+            "min": -92.5,
+            "max": -62.89999999999998
+          }
+        },
+        "rename_ms": {
+          "baseline": {
+            "median": 454.2,
+            "min": 452.2,
+            "max": 469.1
+          },
+          "candidate": {
+            "median": 529.4,
+            "min": 503.2,
+            "max": 539.5
+          },
+          "candidate_minus_baseline": {
+            "median": 70.39999999999998,
+            "min": 49.0,
+            "max": 77.19999999999999
+          }
+        },
+        "open_plus_first_rename_ms": {
+          "baseline": {
+            "median": 862.8,
+            "min": 846.6,
+            "max": 877.2
+          },
+          "candidate": {
+            "median": 846.3,
+            "min": 827.7,
+            "max": 866.3
+          },
+          "candidate_minus_baseline": {
+            "median": -16.5,
+            "min": -33.799999999999955,
+            "max": 14.299999999999955
+          }
+        },
+        "rename_total_ms": {
+          "baseline": {
+            "median": 454.2,
+            "min": 452.2,
+            "max": 469.1
+          },
+          "candidate": {
+            "median": 529.4,
+            "min": 503.2,
+            "max": 539.5
+          },
+          "candidate_minus_baseline": {
+            "median": 70.39999999999998,
+            "min": 49.0,
+            "max": 77.19999999999999
+          }
+        }
+      }
+    }
+  }
+}

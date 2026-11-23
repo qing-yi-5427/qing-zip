@@ -18,6 +18,8 @@
 
 单位为毫秒。64 MiB 连续组比 #36 每次多约 15 至 20 ms。花费包括读取实际提交状态的完整摘要并持久登记。SHA-256 组的第一组连续样本耗时明显高于其余四组，原始回执保留了该样本。本机数据是单台 Windows x64 的合成存储包结果，未推断 ARM64 或其他磁盘的耗时。
 
+另做 256 MiB 热缓存存储 ZIP 五对。#36 与 BLAKE3 候选的打开中位为 407.3 与 324.5 ms，改名为 454.2 与 529.4 ms，打开及改名合计为 862.8 与 846.3 ms。三项的候选逐对差值分别为 −81.3 [−92.5, −62.9]、+70.4 [+49.0, +77.2]、−16.5 [−33.8, +14.3] ms。较大内容的单次改名成本随需要核对的容器字节增加。每轮重新打开同一个合成样本。[256 MiB 逐轮计时](paired-timing-256.json)
+
 同机的单线程文件分段微测每组八轮并交错执行。256 KiB 缓冲的 64 MiB 读取加摘要中位为 SHA-256 31.75 ms、Windows CNG SHA-256 32.05 ms、官方默认 BLAKE3 11.57 ms。纯 Rust 特性另测为 19.85 ms。4 MiB 的默认 BLAKE3 为 0.73 ms，同轮 SHA-256 为 2.00 ms。x64 发布构建保持原有 PE 加固检查，GUI 体积增加 22,528 字节，DLL 导入集合一致。[哈希原始计时](hash-timing.json)
 
 ## 复跑窗口比较
@@ -32,3 +34,15 @@ python docs/verification/round5/nested-recovery/measure.py `
 ```
 
 计时脚本使用 Win32 私有桌面和独立应用配置，不打开资源管理器的另存窗口。真正的强退、旧索引及系统另存在一次性托管机独立复跑。
+
+仅比较稳定版和候选的 256 MiB 样本时，用 `--fixture-mib 256` 替代 `--sha-recovery`，其余参数相同。
+
+## 托管 Windows 验收
+
+以下三组使用源码 `20b857fe19457cd2cf638d62ff3cc8206f6094d0` 的同一 x64 便携包。另存通过真实 Windows 文件对话框，成功导出的 ZIP 按 SHA-256 与已编辑副本比较。常规 Windows x64 与原生 ARM64 均构建并通过。[机器回执](hosted-receipt.json) · [x64](https://github.com/qing-yi-5427/qing-zip/actions/runs/45162252196) · [ARM64](https://github.com/qing-yi-5427/qing-zip/actions/runs/45162252206)
+
+- 普通 64 MiB 包正常保存、显式放弃和强退后冷启动另存通过。AES 外包的恢复入口为零项，原密码仍可解密，外包和哨兵保持完整。同名三层的两个项目均可分辨。取消系统另存和一次直接后端保存失败都保留两项，随后各自导出。 [原生 64 MiB、AES 与双来源](https://github.com/qing-yi-5427/qing-zip/actions/runs/45165237807/artifacts/14812429472)
+- 在同一个内包里实际编辑两次。冷启动后只导出最新一代，另存后的 ZIP 含 `final.txt`，再次启动恢复列表为空。 [第二次编辑与原生另存](https://github.com/qing-yi-5427/qing-zip/actions/runs/45165249589/artifacts/14814812612)
+- 由旧 `b5a6e13` 进程实际写入缺少 `digest` 的 SHA-256 恢复记录，强退后用新版冷启动。同一个工作副本能从列表独立另存，外包保持原样。恢复列表从一项变为零项。 [旧索引跨版本原生另存](https://github.com/qing-yi-5427/qing-zip/actions/runs/45165260500/artifacts/14813028642)
+
+在 Windows regression 手动运行时，以 `nested_restart_capture` 和 `nested_expect_recovery` 启用上述验收，提供候选源码、构建 run 及便携 ZIP 的准确 SHA-256。分别选择 `nested_large_fixture`、`nested_double_edit` 或 `nested_legacy_record`。AES 验收约束恢复列表和索引，临时副本的加密擦除属于另一个问题。
