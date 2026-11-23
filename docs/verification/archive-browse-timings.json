@@ -1,0 +1,850 @@
+{
+  "source_commit": "51a68cc32bafcd535eac6cef8eee5169a54adcbe",
+  "product_version": "0.12.23",
+  "assessment_utc_offset": "+08:00",
+  "browse_started_local": "2026-11-23T10:51:03",
+  "browse_finished_local": "2026-11-23T10:51:20",
+  "windows_build": 26300,
+  "cpu": "AMD Ryzen 7 9800X3D",
+  "installed_ram_gib": 48,
+  "edge_version": "157.0.4341.60",
+  "browse_host_samples": [
+    {
+      "cpu_percent": 19.7,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 22.1,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 14.9,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 17.5,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 19.3,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 24.0,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 20.8,
+      "compiler_processes": 0
+    },
+    {
+      "cpu_percent": 33.1,
+      "compiler_processes": 0
+    }
+  ],
+  "cli_sha256": "b0f30fb6440caf0bd98cb67fc448adfcdaa6cf4903f79c20f310584ce09277f9",
+  "status": "PASS",
+  "cases": [
+    {
+      "members": 10000,
+      "archive_bytes": 1670022,
+      "archive_sha256": "878de32ce7c8fc325d4641656a5d078e013927cbf8b05008323120b97cfa8bbc",
+      "selected_sha256": "1672880ef28197faa96982f55af6d80a7bb7d9cb9b5f17028858036c3a32c75e",
+      "listing_json_bytes": 3685022,
+      "native_warmup": {
+        "list": {
+          "ms": 101.087,
+          "peak_working_set_bytes": 15122432,
+          "max_sampled_private_commit_bytes": 8003584,
+          "memory_samples": 5
+        },
+        "extract_one": {
+          "ms": 348.168,
+          "peak_working_set_bytes": 15798272,
+          "max_sampled_private_commit_bytes": 6979584,
+          "memory_samples": 22
+        }
+      },
+      "native_samples": [
+        {
+          "list": {
+            "ms": 95.904,
+            "peak_working_set_bytes": 15060992,
+            "max_sampled_private_commit_bytes": 7184384,
+            "memory_samples": 5
+          },
+          "extract_one": {
+            "ms": 335.436,
+            "peak_working_set_bytes": 15806464,
+            "max_sampled_private_commit_bytes": 6955008,
+            "memory_samples": 21
+          }
+        },
+        {
+          "list": {
+            "ms": 91.271,
+            "peak_working_set_bytes": 15073280,
+            "max_sampled_private_commit_bytes": 8024064,
+            "memory_samples": 5
+          },
+          "extract_one": {
+            "ms": 330.344,
+            "peak_working_set_bytes": 15790080,
+            "max_sampled_private_commit_bytes": 6959104,
+            "memory_samples": 20
+          }
+        },
+        {
+          "list": {
+            "ms": 91.036,
+            "peak_working_set_bytes": 13623296,
+            "max_sampled_private_commit_bytes": 6176768,
+            "memory_samples": 5
+          },
+          "extract_one": {
+            "ms": 329.785,
+            "peak_working_set_bytes": 15781888,
+            "max_sampled_private_commit_bytes": 6967296,
+            "memory_samples": 20
+          }
+        },
+        {
+          "list": {
+            "ms": 90.696,
+            "peak_working_set_bytes": 15069184,
+            "max_sampled_private_commit_bytes": 8019968,
+            "memory_samples": 5
+          },
+          "extract_one": {
+            "ms": 349.607,
+            "peak_working_set_bytes": 15806464,
+            "max_sampled_private_commit_bytes": 7204864,
+            "memory_samples": 22
+          }
+        },
+        {
+          "list": {
+            "ms": 94.382,
+            "peak_working_set_bytes": 15069184,
+            "max_sampled_private_commit_bytes": 7303168,
+            "memory_samples": 6
+          },
+          "extract_one": {
+            "ms": 340.403,
+            "peak_working_set_bytes": 15781888,
+            "max_sampled_private_commit_bytes": 6950912,
+            "memory_samples": 21
+          }
+        }
+      ],
+      "browser": {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+        "warmup": {
+          "utf8_json_ms": 2.8,
+          "root": {
+            "lookup_ms": 4.7,
+            "mount_ms": 10.6,
+            "logical_rows": 11,
+            "dom_rows": 11
+          },
+          "wide": {
+            "lookup_ms": 2,
+            "mount_ms": 4,
+            "logical_rows": 5000,
+            "dom_rows": 26
+          },
+          "current_match": {
+            "lookup_ms": 2.3,
+            "mount_ms": 0.7,
+            "logical_rows": 1,
+            "dom_rows": 1
+          },
+          "archive_match": {
+            "lookup_ms": 3.6,
+            "mount_ms": 0.2,
+            "logical_rows": 1,
+            "dom_rows": 1
+          },
+          "archive_broad": {
+            "lookup_ms": 1.6,
+            "mount_ms": 2.2,
+            "logical_rows": 9999,
+            "dom_rows": 26
+          },
+          "archive_no_match": {
+            "lookup_ms": 0.3,
+            "mount_ms": 0.1,
+            "logical_rows": 0,
+            "dom_rows": 0
+          },
+          "js_heap_bytes": 112919259
+        },
+        "samples": [
+          {
+            "utf8_json_ms": 4.2,
+            "root": {
+              "lookup_ms": 3.1,
+              "mount_ms": 0.5,
+              "logical_rows": 11,
+              "dom_rows": 11
+            },
+            "wide": {
+              "lookup_ms": 2.9,
+              "mount_ms": 2.1,
+              "logical_rows": 5000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 1.8,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 2.7,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 1.1,
+              "mount_ms": 2.1,
+              "logical_rows": 9999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 0.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 86812775
+          },
+          {
+            "utf8_json_ms": 3.8,
+            "root": {
+              "lookup_ms": 2.7,
+              "mount_ms": 0.6,
+              "logical_rows": 11,
+              "dom_rows": 11
+            },
+            "wide": {
+              "lookup_ms": 1.6,
+              "mount_ms": 1.9,
+              "logical_rows": 5000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 2.2,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 3.1,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 1.1,
+              "mount_ms": 2.1,
+              "logical_rows": 9999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 0.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 102110927
+          },
+          {
+            "utf8_json_ms": 4,
+            "root": {
+              "lookup_ms": 3.5,
+              "mount_ms": 0.7,
+              "logical_rows": 11,
+              "dom_rows": 11
+            },
+            "wide": {
+              "lookup_ms": 2.4,
+              "mount_ms": 7.5,
+              "logical_rows": 5000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 1.7,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 2.6,
+              "mount_ms": 0.1,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 1.2,
+              "mount_ms": 2,
+              "logical_rows": 9999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 0.2,
+              "mount_ms": 0,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 25159861
+          },
+          {
+            "utf8_json_ms": 3.6,
+            "root": {
+              "lookup_ms": 2.3,
+              "mount_ms": 0.5,
+              "logical_rows": 11,
+              "dom_rows": 11
+            },
+            "wide": {
+              "lookup_ms": 1.3,
+              "mount_ms": 1.6,
+              "logical_rows": 5000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 1.7,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 2.5,
+              "mount_ms": 0.1,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 1.2,
+              "mount_ms": 1.8,
+              "logical_rows": 9999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 0.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 43617835
+          },
+          {
+            "utf8_json_ms": 3.8,
+            "root": {
+              "lookup_ms": 2.4,
+              "mount_ms": 0.6,
+              "logical_rows": 11,
+              "dom_rows": 11
+            },
+            "wide": {
+              "lookup_ms": 1.3,
+              "mount_ms": 1.7,
+              "logical_rows": 5000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 1.6,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 3.5,
+              "mount_ms": 0,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 1.2,
+              "mount_ms": 1.8,
+              "logical_rows": 9999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 0.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 33001003
+          }
+        ]
+      }
+    },
+    {
+      "members": 50000,
+      "archive_bytes": 8350022,
+      "archive_sha256": "991b92a538b13a987e8f025f14e5c7a6d28d1a72d4c36ddea946d8deeafb54ac",
+      "selected_sha256": "1672880ef28197faa96982f55af6d80a7bb7d9cb9b5f17028858036c3a32c75e",
+      "listing_json_bytes": 18425022,
+      "native_warmup": {
+        "list": {
+          "ms": 226.026,
+          "peak_working_set_bytes": 31145984,
+          "max_sampled_private_commit_bytes": 26566656,
+          "memory_samples": 14
+        },
+        "extract_one": {
+          "ms": 1405.037,
+          "peak_working_set_bytes": 36753408,
+          "max_sampled_private_commit_bytes": 28217344,
+          "memory_samples": 89
+        }
+      },
+      "native_samples": [
+        {
+          "list": {
+            "ms": 219.561,
+            "peak_working_set_bytes": 31109120,
+            "max_sampled_private_commit_bytes": 26845184,
+            "memory_samples": 14
+          },
+          "extract_one": {
+            "ms": 1400.759,
+            "peak_working_set_bytes": 36753408,
+            "max_sampled_private_commit_bytes": 27787264,
+            "memory_samples": 89
+          }
+        },
+        {
+          "list": {
+            "ms": 220.205,
+            "peak_working_set_bytes": 31092736,
+            "max_sampled_private_commit_bytes": 27357184,
+            "memory_samples": 14
+          },
+          "extract_one": {
+            "ms": 1411.55,
+            "peak_working_set_bytes": 36749312,
+            "max_sampled_private_commit_bytes": 28053504,
+            "memory_samples": 89
+          }
+        },
+        {
+          "list": {
+            "ms": 226.518,
+            "peak_working_set_bytes": 31117312,
+            "max_sampled_private_commit_bytes": 27459584,
+            "memory_samples": 13
+          },
+          "extract_one": {
+            "ms": 1416.559,
+            "peak_working_set_bytes": 36765696,
+            "max_sampled_private_commit_bytes": 28061696,
+            "memory_samples": 90
+          }
+        },
+        {
+          "list": {
+            "ms": 219.772,
+            "peak_working_set_bytes": 31117312,
+            "max_sampled_private_commit_bytes": 27254784,
+            "memory_samples": 14
+          },
+          "extract_one": {
+            "ms": 1395.23,
+            "peak_working_set_bytes": 36777984,
+            "max_sampled_private_commit_bytes": 28602368,
+            "memory_samples": 89
+          }
+        },
+        {
+          "list": {
+            "ms": 223.345,
+            "peak_working_set_bytes": 31272960,
+            "max_sampled_private_commit_bytes": 27607040,
+            "memory_samples": 13
+          },
+          "extract_one": {
+            "ms": 1402.346,
+            "peak_working_set_bytes": 36782080,
+            "max_sampled_private_commit_bytes": 27189248,
+            "memory_samples": 89
+          }
+        }
+      ],
+      "browser": {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+        "warmup": {
+          "utf8_json_ms": 14.6,
+          "root": {
+            "lookup_ms": 16.2,
+            "mount_ms": 12.9,
+            "logical_rows": 51,
+            "dom_rows": 51
+          },
+          "wide": {
+            "lookup_ms": 13.1,
+            "mount_ms": 3.4,
+            "logical_rows": 25000,
+            "dom_rows": 26
+          },
+          "current_match": {
+            "lookup_ms": 10.1,
+            "mount_ms": 0.9,
+            "logical_rows": 1,
+            "dom_rows": 1
+          },
+          "archive_match": {
+            "lookup_ms": 16.6,
+            "mount_ms": 0.4,
+            "logical_rows": 1,
+            "dom_rows": 1
+          },
+          "archive_broad": {
+            "lookup_ms": 6.4,
+            "mount_ms": 3,
+            "logical_rows": 49999,
+            "dom_rows": 26
+          },
+          "archive_no_match": {
+            "lookup_ms": 1.2,
+            "mount_ms": 0.1,
+            "logical_rows": 0,
+            "dom_rows": 0
+          },
+          "js_heap_bytes": 210828355
+        },
+        "samples": [
+          {
+            "utf8_json_ms": 20.2,
+            "root": {
+              "lookup_ms": 16,
+              "mount_ms": 3.2,
+              "logical_rows": 51,
+              "dom_rows": 51
+            },
+            "wide": {
+              "lookup_ms": 9,
+              "mount_ms": 2.5,
+              "logical_rows": 25000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 9.2,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 17,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 5.9,
+              "mount_ms": 2.4,
+              "logical_rows": 49999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 1.3,
+              "mount_ms": 0.2,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 227502827
+          },
+          {
+            "utf8_json_ms": 19.5,
+            "root": {
+              "lookup_ms": 18,
+              "mount_ms": 3.3,
+              "logical_rows": 51,
+              "dom_rows": 51
+            },
+            "wide": {
+              "lookup_ms": 7.1,
+              "mount_ms": 2.3,
+              "logical_rows": 25000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 9.9,
+              "mount_ms": 0.4,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 13.7,
+              "mount_ms": 0.2,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 6,
+              "mount_ms": 2.3,
+              "logical_rows": 49999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 1.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 259480215
+          },
+          {
+            "utf8_json_ms": 21.9,
+            "root": {
+              "lookup_ms": 13.7,
+              "mount_ms": 3.2,
+              "logical_rows": 51,
+              "dom_rows": 51
+            },
+            "wide": {
+              "lookup_ms": 8.1,
+              "mount_ms": 2.4,
+              "logical_rows": 25000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 8,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 14.5,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 5.9,
+              "mount_ms": 2.3,
+              "logical_rows": 49999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 1.4,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 274245939
+          },
+          {
+            "utf8_json_ms": 21.4,
+            "root": {
+              "lookup_ms": 16.3,
+              "mount_ms": 3.4,
+              "logical_rows": 51,
+              "dom_rows": 51
+            },
+            "wide": {
+              "lookup_ms": 6.6,
+              "mount_ms": 2.5,
+              "logical_rows": 25000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 9.6,
+              "mount_ms": 0.4,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 13.3,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 6.4,
+              "mount_ms": 2.5,
+              "logical_rows": 49999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 1.6,
+              "mount_ms": 0.2,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 305256163
+          },
+          {
+            "utf8_json_ms": 22,
+            "root": {
+              "lookup_ms": 13.2,
+              "mount_ms": 3.2,
+              "logical_rows": 51,
+              "dom_rows": 51
+            },
+            "wide": {
+              "lookup_ms": 8.4,
+              "mount_ms": 2.4,
+              "logical_rows": 25000,
+              "dom_rows": 26
+            },
+            "current_match": {
+              "lookup_ms": 7.9,
+              "mount_ms": 0.4,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_match": {
+              "lookup_ms": 14.5,
+              "mount_ms": 0.3,
+              "logical_rows": 1,
+              "dom_rows": 1
+            },
+            "archive_broad": {
+              "lookup_ms": 6,
+              "mount_ms": 2.1,
+              "logical_rows": 49999,
+              "dom_rows": 26
+            },
+            "archive_no_match": {
+              "lookup_ms": 1.3,
+              "mount_ms": 0.1,
+              "logical_rows": 0,
+              "dom_rows": 0
+            },
+            "js_heap_bytes": 320162859
+          }
+        ]
+      }
+    }
+  ],
+  "cancel": {
+    "build": "Rust 1.99.0 Release test and copied helpers",
+    "warmup": [
+      {
+        "adjacent_worker": false,
+        "cancel_ms": 32.790600000000005,
+        "percent": 0,
+        "phase": "compressing",
+        "staging_absent": true,
+        "target_absent": true,
+        "worker_file_released": null
+      },
+      {
+        "adjacent_worker": true,
+        "cancel_ms": 34.3057,
+        "percent": 0,
+        "phase": "compressing",
+        "staging_absent": true,
+        "target_absent": true,
+        "worker_file_released": true
+      }
+    ],
+    "samples": [
+      [
+        {
+          "adjacent_worker": false,
+          "cancel_ms": 41.1673,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": null
+        },
+        {
+          "adjacent_worker": true,
+          "cancel_ms": 36.75,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": true
+        }
+      ],
+      [
+        {
+          "adjacent_worker": false,
+          "cancel_ms": 33.1092,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": null
+        },
+        {
+          "adjacent_worker": true,
+          "cancel_ms": 36.3253,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": true
+        }
+      ],
+      [
+        {
+          "adjacent_worker": false,
+          "cancel_ms": 34.7868,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": null
+        },
+        {
+          "adjacent_worker": true,
+          "cancel_ms": 30.6335,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": true
+        }
+      ],
+      [
+        {
+          "adjacent_worker": false,
+          "cancel_ms": 33.268499999999996,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": null
+        },
+        {
+          "adjacent_worker": true,
+          "cancel_ms": 35.3236,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": true
+        }
+      ],
+      [
+        {
+          "adjacent_worker": false,
+          "cancel_ms": 33.1206,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": null
+        },
+        {
+          "adjacent_worker": true,
+          "cancel_ms": 35.8624,
+          "percent": 0,
+          "phase": "compressing",
+          "staging_absent": true,
+          "target_absent": true,
+          "worker_file_released": true
+        }
+      ]
+    ]
+  }
+}
