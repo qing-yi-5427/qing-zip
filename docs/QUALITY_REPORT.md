@@ -4,7 +4,9 @@
 
 ## 主线安装版的 ZIP 中断与解压反馈
 
-Windows 11 x64 安装版 `9c9258c` 在新增成员的写入过程中遭强退，三轮重开、重试后分别留有 3、3、2 MiB 临时文件。三轮均保全原包、来源、另一个并发任务的成品，重试内容正确。新增成员的后续修正已在普通单卷 ZIP 写入阶段独立验收，三轮原包旁的候选均回收到 0 字节。[普通新增回归及边界](verification/round7/ordinary-zip-add/README.md)普通单卷明文 Store/Deflate ZIP 的改名和删除在同一安装版各测三轮，六次均回收了原包旁已写入的候选。引擎范围及写完到提交间的中断仍需单列。[安装版逐轮回执](verification/round6/installed-main/README.md)
+Windows 11 x64 安装版 `9c9258c` 在新增成员的写入过程中遭强退，三轮重开、重试后分别留有 3、3、2 MiB 临时文件。三轮均保全原包、来源、另一个并发任务的成品，重试内容正确。新增成员的后续修正已在普通单卷 ZIP 写入阶段独立验收，三轮原包旁的候选均回收到 0 字节。[普通新增回归及边界](verification/round7/ordinary-zip-add/README.md)
+
+普通单卷明文 Store/Deflate ZIP 的改名和删除在同一安装版各测三轮，六次均回收了原包旁已写入的候选。引擎范围及写完到提交间的中断仍需单列。[安装版逐轮回执](verification/round6/installed-main/README.md)
 
 选择性解压中遇到普通文件挡住父目录时，任务和重试表单现显示具体路径，并提示另选保存位置。安装版在新目的地仅提取先前选中的成员。[真实重试窗口](verification/round6/installed-main/parent-retry.png)
 
@@ -12,7 +14,7 @@ Windows 11 x64 安装版 `9c9258c` 在新增成员的写入过程中遭强退，
 
 在原位安装的 0.12.23 中，批量解压三个 ZIP，第二项和已有文件冲突，第一、三项均已正确输出。小窗最后只显示第三项「已完成」和整批 66%。再试一次，在第二项点击「取消任务」会同时停止第三项，界面没有给出第三项的状态。手动重填第三个 ZIP 会将预计目录从 `3-third` 改成 `1-third`。两次操作均逐项核对原包、已有文件及输出。
 
-批量页和任务中心现显示最近一批成功、部分完成、失败、已取消及未开始的实际数量。点击「继续未开始的项目」沿用这批任务提交时的顺序、目标和冲突策略。已取消的项目可在记录中辨认，不随队尾重新提交。继续入口保留到开始新批次或退出程序，此前已运行项目的单项记录仍可在本次会话查看。[批量修复及验收 #41](https://github.com/qing-yi-5427/qing-zip/pull/41)
+批量页和任务中心现显示最近一批成功、部分完成、失败、已取消及未开始的实际数量。点击「继续未开始的项目」沿用这批任务提交时的顺序、目标和冲突策略。已取消的项目可在记录中辨认，不随队尾重新提交。单项记录在本次会话可查看。主线支持在正常退出后重开程序继续已保存的普通批次，保留一份未开始项目清单。替换策略需要再次确认，存储失败时提示在当前会话继续。[普通批次续跑和文件回执](verification/round7/batch-resume/README.md) [批量修复及验收 #41](https://github.com/qing-yi-5427/qing-zip/pull/41)
 
 ## 嵌套编辑、关闭与重开
 
@@ -106,4 +108,4 @@ python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --seven
 
 ## 后续验收
 
-普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。在操作开始时已满的卷上，普通 ZIP 创建与覆盖解压都明确报错，并在腾出空间后重试成功。另两次覆盖提取在暂存文件已写约 28 MiB 后才遇空间不足，原包、已有目标、无关文件及暂存目录清单均保全。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) 普通 ZIP 更新和嵌套写回也通过空间不足后的保全与同会话重试。[普通更新](https://github.com/qing-yi-5427/qing-zip/pull/26) · [嵌套写回](https://github.com/qing-yi-5427/qing-zip/pull/30) 后续关注正式安装版的一级菜单、Windows 10、跨会话恢复、批量中断和过期候选回收。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)
+普通样本已覆盖主窗口、首页选择与 Explorer 物理拖入、批量和深度解压。独立 Windows 11 ARM64 菜单已通过真实系统高对比度与减少动画。在操作开始时已满的卷上，普通 ZIP 创建与覆盖解压都明确报错，并在腾出空间后重试成功。另两次覆盖提取在暂存文件已写约 28 MiB 后才遇空间不足，原包、已有目标、无关文件及暂存目录清单均保全。[写入期间耗尽的复跑](https://github.com/qing-yi-5427/qing-zip/actions/runs/45121239407) 普通 ZIP 更新和嵌套写回也通过空间不足后的保全与同会话重试。[普通更新](https://github.com/qing-yi-5427/qing-zip/pull/26) · [嵌套写回](https://github.com/qing-yi-5427/qing-zip/pull/30) 后续关注正式安装版的一级菜单、Windows 10、批次尚在运行时异常退出、候选写完至提交间的中断，以及其他格式的恢复。[私有卷验收](https://github.com/qing-yi-5427/qing-zip/pull/22) · [产品路线](OPTIMIZATION_ROADMAP.md)

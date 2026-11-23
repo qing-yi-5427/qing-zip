@@ -18,7 +18,7 @@
 | --- | --- |
 | 三个 ZIP，中间与已有文件冲突 | PASS。候选显示两项成功、一项失败，可查明冲突原因。成功文件内容正确，原包、已有文件和哨兵的哈希均相同。[前后对照](verification/round5/ordinary-batch/README.md) |
 | 在第二项停止，再点「继续未开始的项目」 | PASS。在相同会话中，第三项写入原计划的第三个目录。第一项文件的身份、时间和长度不变，第二项保留已取消状态。[窗口与文件回执](verification/round5/ordinary-batch/candidate/receipt.json) |
-| 关闭并重开程序后继续普通批次 | NOT RUN。当前继续入口针对本次会话。 |
+| 关闭并重开程序后继续普通批次 | PASS。在主线 `c52c4ce` 的 Windows 11 x64 安装版上，正常关窗再开后保留未开始项的原编号、输出目录与策略。实跑了再次停止、覆盖前确认、保存时关窗、写入失败和记录恢复。[普通批次续跑和文件回执](verification/round7/batch-resume/README.md) |
 | 普通批量完整性检查，第二个路径缺失 | PASS。检查弹窗与批量页均显示两项成功、一项失败。展开可查缺失项，两个有效 ZIP 和旁文件均原样保全。[窗口及文件回执](verification/round5/ordinary-batch/candidate/integrity.json) |
 
 ## 嵌套编辑窗口、关闭与恢复
@@ -79,7 +79,7 @@
 | 托管 Windows x64 NSIS 安装、升级及候选卸载 | 官方 v0.12.20 全新安装至一次性 runner 临时目录，原位升级至 0.12.23，核对登记与候选文件哈希，校验并解压旧 ZIP。卸载时移除候选发行文件、登记和开始菜单快捷方式。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) | PASS（所列阶段） |
 | 托管 x64 卸载前后合成用户数据 | 独立候选补测的来源、原 ZIP、解压结果和安装目录内外两个哨兵，五项前后 SHA-256 相等。[补测收据](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) | PASS（五项） |
 | 托管 x64 卸载后的旧版残留 | 卸载后仍有十个旧版独有文件，与初装和正式发行文件的哈希一致。候选发行文件全部移除。当前提案保守保留无逐文件归属记录的历史文件。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) · [补测结果](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) · [清单及迁移提案](https://github.com/qing-yi-5427/qing-zip/pull/21) | FAIL（严格残留断言） |
-| 默认安装目录、ARM64 安装和文件关联 | 普通 NSIS 用例仅覆盖托管 x64 的临时路径。默认路径、ARM64 安装、升级及卸载、真实用户数据、安装所设文件关联及升级后保留未验收。 | NOT RUN |
+| 默认安装目录、ARM64 安装和文件关联 | 双架构已验收沿用登记的临时初装目录，见下方双架构升级回执。首次安装的默认路径和文件关联的升级保留仍待验收。 | NOT RUN |
 | Windows 11 ARM64 菜单及系统无障碍 | 系统实际 100% 缩放、运行中切换高对比度和减少动画，7 项菜单一直可见，纯色/渐变及媒体查询符合系统，最后恢复系统原值。[四次截图与回执](https://github.com/qing-yi-5427/qing-zip/pull/13) | PASS |
 | Windows 11 现代右键 | 一次性 Windows 11 ARM64 以临时签名注册，真实点击「解压到此处」与「智能解压」，分别在同级和同名目录得到两个预期成员。普通文件的压缩入口保存了 ZIP，独立读取唯一成员与来源 SHA-256 相同。原包、来源和哨兵保全。[动作与截图](https://github.com/qing-yi-5427/qing-zip/actions/runs/45133376060) | PASS（三项操作）。正式发行签名及升级集成待验收。 |
 | Windows 11 ARM64 便携菜单生命周期 | 仅移动外置目录时注册仍指旧路径，一级分组消失。按顺序注销、移动、重注册后，实际点击从新路径解压。最终保留应用开关仅注销包，新 Explorer 窗口无 qing-zip 分组，注册和测试证书清理通过。[WinRT 路径和实际菜单](https://github.com/qing-yi-5427/qing-zip/actions/runs/45132964898) | PASS（临时测试签名包） |
