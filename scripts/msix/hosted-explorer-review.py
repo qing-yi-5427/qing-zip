@@ -30,8 +30,8 @@ def text_controls():
   except Exception: pass
  return items
 try:
- root=a.root/'ui-fixtures';root.mkdir(); file=root/'sample.txt';file.write_text('synthetic explorer fixture\n',encoding='utf8')
- archive=root/'sample.zip'
+ root=a.root/'ui-fixtures';root.mkdir(); file=root/'plain.txt';file.write_text('synthetic explorer fixture\n',encoding='utf8')
+ archive=root/'archive.zip'
  with zipfile.ZipFile(archive,'w') as z:z.writestr('inside.txt','synthetic archive content\n')
  report['source_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
  desktop=Desktop(backend='uia')
@@ -66,7 +66,7 @@ try:
     if os.path.normcase(w.Document.Folder.Self.Path)==os.path.normcase(str(root)): return w
    except Exception: pass
  target=wait(explorer); hwnd=int(target.HWND);window=desktop.window(handle=hwnd).wrapper_object();window.set_focus();report['stage']='explorer_opened';save()
- for key,filename,label in [('open','sample.zip','用 qing-zip 打开'),('extract','sample.zip','解压到此处'),('compress','sample.txt','用 qing-zip 压缩…')]:
+ for key,filename,label in [('open','archive','用 qing-zip 打开'),('extract','archive','解压到此处'),('compress','plain','用 qing-zip 压缩…')]:
   entry=report['scenarios'][key]={'menu_visible':False,'activated':False,'handoff_observed':False};save()
   window.set_focus();item=wait(lambda: next((x for x in window.descendants(control_type='ListItem') if x.element_info.name==filename),None))
   item.click_input(button='right');time.sleep(2); snapshot(key+'-menu');entry['menu_controls']=text_controls()
