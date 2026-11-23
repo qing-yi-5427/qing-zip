@@ -227,6 +227,71 @@ mod tests {
     }
 
     #[test]
+    fn selected_tar_integrity_check_uses_its_owning_job() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        let archive = root.join("ordinary selection.tar");
+        let mut bundle = tar::Builder::new(File::create(&archive).unwrap());
+        for (member, bytes) in [
+            ("docs/keep.txt", b"selected member".as_slice()),
+            ("other.txt", b"unselected member".as_slice()),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(1_700_000_000);
+            bundle.append_data(&mut header, member, bytes).unwrap();
+        }
+        bundle.finish().unwrap();
+        drop(bundle);
+        let original = fs::read(&archive).unwrap();
+        let destination = root.join("selected");
+        let neighbor = root.join("unrelated.txt");
+        fs::write(&neighbor, b"ordinary neighbor").unwrap();
+
+        // Observe the actual external child at launch. Even a tiny TAR can
+        // finish before a process poll, but the launch still holds its handle.
+        let expected_archive = archive.clone();
+        AFTER_LAUNCH.with(|hook| {
+            hook.replace(Some(Box::new(move |child, command| {
+                assert_eq!(command.get_args().next(), Some(OsStr::new("t")));
+                assert!(command
+                    .get_args()
+                    .any(|arg| Path::new(arg) == expected_archive));
+                let process = child.process.as_raw_handle();
+                let job = child.job.as_ref().unwrap().as_raw_handle();
+                let mut member = 0;
+                assert_ne!(unsafe { IsProcessInJob(process, job, &mut member) }, 0);
+                assert_ne!(member, 0);
+            })))
+        });
+        let opts = EngineOptions {
+            selected: vec!["docs/keep.txt".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::engine::extract(
+                archive.to_str().unwrap(),
+                destination.to_str().unwrap(),
+                &opts,
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read(destination.join("docs/keep.txt")).unwrap(),
+            b"selected member"
+        );
+        assert!(!destination.join("other.txt").exists());
+        assert_eq!(fs::read(&archive).unwrap(), original);
+        assert_eq!(fs::read(&neighbor).unwrap(), b"ordinary neighbor");
+        assert!(
+            AFTER_LAUNCH.with(|hook| hook.borrow_mut().take().is_none()),
+            "the selected TAR integrity checker was not bound to a caller-owned job"
+        );
+    }
+
+    #[test]
     fn ordinary_zip_cancel_reaps_its_bound_engine_before_returning() {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();

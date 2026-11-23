@@ -633,17 +633,7 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    // A verifier can still be reading a complete proposal when the editing
-    // process exits. Use the same job lifetime for explicit integrity tests.
-    #[cfg(nana_selected_worker)]
-    let lifetime = if args.first().is_some_and(|command| command == "t") {
-        EngineLifetime::OwnedByCaller
-    } else {
-        EngineLifetime::Ordinary
-    };
-    #[cfg(not(nana_selected_worker))]
-    let lifetime = EngineLifetime::Ordinary;
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, lifetime)
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, EngineLifetime::Ordinary)
         .map(|(log, _)| log)
 }
 fn run_staged_decode(
@@ -722,7 +712,16 @@ fn run_program_log_with_directory(
     lifetime: EngineLifetime,
 ) -> Result<(File, Option<Vec<Entry>>), String> {
     let _timer = PhaseTimer::new("engine-process");
-    let archive_command = !matches!(args.first().map(String::as_str), Some("h" | "i"));
+    let command = args.first().map(String::as_str);
+    // This also covers the verifier launched by selective extraction through
+    // run_staged_decode, in addition to explicit tests and archive updates.
+    #[cfg(nana_selected_worker)]
+    let lifetime = if command == Some("t") && stream_input.is_none() {
+        EngineLifetime::OwnedByCaller
+    } else {
+        lifetime
+    };
+    let archive_command = !matches!(command, Some("h" | "i"));
     let policy = archive_command.then(crate::machine_policy::scope);
     if let Some(policy) = &policy {
         if policy.restricted() && program != policy.official_executable()? {
@@ -735,7 +734,7 @@ fn run_program_log_with_directory(
     let mut logs = tempfile::tempfile().map_err(|e| format!("cannot create engine output log: {e}"))?;
     let mut errors = tempfile::NamedTempFile::new().map_err(|e| format!("cannot create engine progress log: {e}"))?;
     let mut live_progress = engine_progress::LiveProgress::open(
-        args.first().map(String::as_str),
+        command,
         &errors,
         output.as_ref().zip(output_size),
     );

@@ -6,4 +6,4 @@ Windows 11 x64、普通本地 NTFS。已安装的 c52c4ce 在更新普通 ZIP �
 
 另以合成密码核对 AES ZIP 和加密文件名的 7z，旧版与候选在正确密码时均成功、错误密码时均报错，原包哈希均保持。[八项结果](verifier-password-controls.json)
 
-常规 Windows x64 和 ARM64 打包工作流均复跑 scripts/check-verifier-exit.py。该变更管理外部完整性校验进程的生命周期。已写完但尚未提交的候选文件回收另有独立问题。
+常规 Windows x64 和 ARM64 打包工作流均复跑 scripts/check-verifier-exit.py。另对普通 USTAR 选取解压在外部校验器启动时检查 Windows 作业对象，核对选中成员、未选成员、原包和同目录独立文件。该变更管理外部完整性校验进程的生命周期。已写完但尚未提交的候选文件回收另有独立问题。

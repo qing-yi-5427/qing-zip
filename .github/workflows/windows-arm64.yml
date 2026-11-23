@@ -148,6 +148,7 @@ jobs:
         run: |
           $tests = @(
             'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning',
+            'engine::owned_update::tests::selected_tar_integrity_check_uses_its_owning_job',
             'engine::edit_source::tests::disposable_zip_candidate_reclaims_only_its_new_file',
             'engine::update_modes_tests::reject_unreadable_zip_rename_proposal_and_keep_original'
           )
@@ -156,7 +157,7 @@ jobs:
             $code = $LASTEXITCODE
             Write-Output $result
             if ($code) { exit $code }
-            if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing ZIP update test: $testName" }
+            if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing archive lifecycle test: $testName" }
           }
       - name: Native CLI, policy and verified split extraction
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
