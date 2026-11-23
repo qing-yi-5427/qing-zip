@@ -4,6 +4,22 @@ use super::*;
 
 const ROLLBACK_FILES: usize = 4096;
 
+#[repr(C)]
+#[derive(Default)]
+struct WorkerIoCounters {
+    read_operations: u64,
+    write_operations: u64,
+    other_operations: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+    other_bytes: u64,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetProcessIoCounters(process: std::os::windows::io::RawHandle, counters: *mut WorkerIoCounters) -> i32;
+}
+
 pub(in crate::engine) struct Pending {
     session: Session,
     _runtime: Vec<crate::engine_stream::PinnedSource>,
@@ -555,6 +571,12 @@ impl Pending {
             Ok(count)
         })();
         let mode = self.mode;
+        if mode == 2 && PhaseTimer::enabled() {
+            let mut io = WorkerIoCounters::default();
+            if unsafe { GetProcessIoCounters(self.session.child.as_raw_handle(), &mut io) } != 0 {
+                eprintln!("OA_DIRECT_ZIP_READ_OPERATIONS {}", io.read_operations);
+            }
+        }
         drop(self); // Reap the decoder before abandoning the last writable handle or rolling back.
         drop(active);
         drop(completed);

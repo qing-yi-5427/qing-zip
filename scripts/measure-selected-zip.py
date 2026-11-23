@@ -1,14 +1,17 @@
 """Attribute or pair timings for single-file extraction from an ordinary wide ZIP."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import re
 import runpy
 import subprocess
 import tempfile
 import time
+import zipfile
 
 
 def sample(cli, work, archive, target, target_hash, archive_hash, run, profile):
@@ -61,12 +64,26 @@ def solid_fixture(cli, work, archive):
     return "wide/target-needle.txt", sha256(target_data)
 
 
+def large_fixture(archive):
+    target = "wide/target-needle.txt"
+    block = random.Random(2606).randbytes(1024 * 1024)
+    expected = hashlib.sha256()
+    with zipfile.ZipFile(archive, "x", zipfile.ZIP_STORED) as output:
+        output.writestr("wide/sentinel.txt", b"ordinary unselected member")
+        with output.open(target, "w") as member:
+            for _ in range(100):
+                member.write(block)
+                expected.update(block)
+    return target, expected.hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True, help="Staged baseline obz.exe")
     parser.add_argument("--candidate", type=Path, help="Staged candidate obz.exe for paired timing")
     parser.add_argument("--profile", action="store_true", help="Require extraction phase timings")
     parser.add_argument("--controls", action="store_true", help="Also time a small ZIP and a solid 7z")
+    parser.add_argument("--large-control", action="store_true", help="Also extract a 100 MiB stored member")
     parser.add_argument("--rounds", type=int, choices=range(3, 13), default=7, metavar="3-12")
     parser.add_argument("--receipt", type=Path, required=True, help="New JSON file")
     args = parser.parse_args()
@@ -83,9 +100,13 @@ def main():
         cases = [(10000, "zip"), (50000, "zip")]
         if args.controls:
             cases = [(100, "zip"), *cases, (100, "7z")]
+        if args.large_control:
+            cases.append((2, "zip"))
         for count, format_name in cases:
             archive = work / f"wide-{count}.{format_name}"
-            if format_name == "zip":
+            if count == 2:
+                target, target_hash = large_fixture(archive)
+            elif format_name == "zip":
                 _, target, target_hash = fixture(archive, count)
             else:
                 target, target_hash = solid_fixture(binaries["baseline"], work, archive)

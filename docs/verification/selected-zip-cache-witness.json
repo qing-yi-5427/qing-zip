@@ -1,0 +1,88 @@
+{
+  "architecture": "x64",
+  "windows_build": 26300,
+  "native_worker_validation": {
+    "source_fixture_entries": 50000,
+    "cancel_after_selected_member_ordinal": 25001,
+    "scope": "Local test ZIP with freshly hardened authored binaries and the same NanaZip runtime",
+    "threshold_reads_exclusive": 3000,
+    "with_read_ahead": {
+      "status": "PASS",
+      "test_pass_count": 1,
+      "worker_sha256": "003e5ccb422e5a43307dac40ac95cd28099fd67a02a65c271bb8dc5749682731",
+      "read_operations": 91
+    },
+    "without_read_ahead": {
+      "status": "EXPECTED_FAIL",
+      "worker_sha256": "1442fbf863c610a30e9541f15ae030d02dcc5751eb5627d22b04e0efd6bdbfb5",
+      "read_operations": 108286
+    }
+  },
+  "large_selected_member": {
+    "selected_bytes": 104857600,
+    "binaries": {
+      "baseline": {
+        "cli_sha256": "c839cd02fbd51ee615a101a16c23b9186da3bae51c81c7d7504fff54e0cdb870",
+        "worker_sha256": "1442fbf863c610a30e9541f15ae030d02dcc5751eb5627d22b04e0efd6bdbfb5"
+      },
+      "candidate": {
+        "cli_sha256": "5dea40c6c7cf8ad6cf813bc3e43b5db298ad2b33fee4d7874bac55af38692565",
+        "worker_sha256": "003e5ccb422e5a43307dac40ac95cd28099fd67a02a65c271bb8dc5749682731"
+      }
+    },
+    "entries": 2,
+    "format": "zip",
+    "archive_sha256": "0fd5a9e47ea434229b91fb428a17a8205b214be271f816fe4281ca06b76490f2",
+    "selected_sha256": "363ee8dbd14dc56c048b27f311cb8d59b4844422256db9ff38e0cddce1cf6e19",
+    "warmup": {
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "candidate": {
+        "wall_ms": 131.7
+      },
+      "baseline": {
+        "wall_ms": 125.391
+      }
+    },
+    "samples": [
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "wall_ms": 132.432
+        },
+        "candidate": {
+          "wall_ms": 127.487
+        }
+      },
+      {
+        "order": [
+          "candidate",
+          "baseline"
+        ],
+        "candidate": {
+          "wall_ms": 127.488
+        },
+        "baseline": {
+          "wall_ms": 126.351
+        }
+      },
+      {
+        "order": [
+          "baseline",
+          "candidate"
+        ],
+        "baseline": {
+          "wall_ms": 134.799
+        },
+        "candidate": {
+          "wall_ms": 135.672
+        }
+      }
+    ]
+  }
+}

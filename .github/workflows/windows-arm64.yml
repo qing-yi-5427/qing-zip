@@ -168,6 +168,13 @@ jobs:
           $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
           python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
           exit $LASTEXITCODE
+      - name: Verify packaged native ZIP cache and cancellation
+        shell: pwsh
+        run: |
+          $portable = @(Get-ChildItem -LiteralPath dist/arm64 -Filter '*-portable.zip' -File)
+          if ($portable.Count -ne 1) { throw 'Expected exactly one ARM64 portable archive' }
+          ./scripts/check-selected-zip-cache.ps1 -Portable $portable[0].FullName -Target aarch64-pc-windows-msvc `
+            -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
       - name: Invoke the classic Explorer action on native ARM64
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh

@@ -223,7 +223,8 @@ HRESULT __stdcall read_at(void *context, uint32_t index, uint64_t offset, void *
       DWORD available = 0;
       const auto requested = static_cast<DWORD>(std::min<uint64_t>(
           zip_read_ahead_size, w.volumes[index].fixed_size - offset));
-      if (read(w.zip_read_ahead.get(), requested, &available) == S_OK && available >= size) {
+      if (read(w.zip_read_ahead.get(), requested, &available) == S_OK &&
+          available >= size && available <= requested) {
         w.zip_read_offset = offset;
         w.zip_read_size = available;
         memcpy(buffer, w.zip_read_ahead.get(), size);
@@ -273,7 +274,8 @@ HRESULT __stdcall accept_manifest(void *context, const QzSelectedItem *items, ui
       if(w.hashing)w.sizes[i]=items[i].size;
     }
     r.end();
-    if (w.direct && w.single_mode == 2 && partial_zip && public_zip && w.password.empty()) {
+    if (w.direct && w.single_mode == 2 && w.sources.size() == 1 && partial_zip &&
+        public_zip && w.password.empty()) {
       std::lock_guard<std::mutex> lock(w.source_lock);
       w.zip_read_ahead.reset(new (std::nothrow) uint8_t[zip_read_ahead_size]);
     }
