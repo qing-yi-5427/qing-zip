@@ -29,7 +29,11 @@
 python scripts/compare-common-extraction.py --cli <便携目录>/obz.exe --sevenzip <7-Zip目录>/7z.exe --bandizip <Bandizip目录>/bz.x64.exe
 ```
 
-**SKIP** · 本机未发现 WinRAR 命令行。旧版 RAR、各格式全部压缩方法和加密组合仍需分别验证。上述三工具对照集中在普通样本的最终文件名和字节，分卷、固实、异常分支与目录元数据另按矩阵记录。[测试矩阵](TEST_MATRIX.md)
+**PASS · 经典 RAR 单卷和两卷。** 同一台 Windows 11 x64 上另取有来源记录的 RAR 1.5 压缩样本和 RAR 3.00 两卷样本。从首卷 `.rar` 提取，三款程序均自动读取旁边的 `.r00`。单卷得到 21 字节的 `payload.txt`，两卷得到 65,536 字节的 `bigtext_64k.bin`。两者都比对了上游已知的原文或原文件 SHA-256，每款程序退出后还逐卷核对来源哈希。本轮总计 9 组正常样本、27 次提取。[样本及许可来源](../obz-rs/tests/fixtures/deep/rar15/SOURCE.json) · [逐样本结果](verification/common-rar-results.jsonl)
+
+**FAIL · 一组参考样本。** 评估上游 `rars_generated/split-store` 三卷样本时，7-Zip 26.00 返回 CRC 错误（退出码 2），目录内仍有 21 字节文件。qing-zip 返回 1，Bandizip 7.36 Beta 返回 2，两者的目标目录均为空。单独列出此结果；它尚不能证明 qing-zip 存在独有的兼容差异。此样本的结果不计入上述 27 次成功提取。[上游样本](https://github.com/bitplane/rars/tree/c07b3e68b564489202afc0ac9fa1ab5ff82db6a6/crates/rars/tests/fixtures/rar15_40/rars_generated)
+
+**SKIP** · 本机未发现 WinRAR 命令行。各格式的其他压缩方法、旧 RAR 加密、缺卷及其他命名方式仍需分别验证。[测试矩阵](TEST_MATRIX.md)
 
 **PASS，未完成下载。** 便携包冒烟测试从正常 ZIP 和 7z 各复制前一半字节到新文件。完整性检查以及选了覆盖的解压操作均返回可处理的错误，已有目标文件、目录清单、原包及未下载完的副本逐字节保全。[可复跑的包内测试](../scripts/check-public-package.py)
 
