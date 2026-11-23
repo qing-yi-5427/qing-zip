@@ -88,8 +88,9 @@ impl Candidate {
 pub type MoveReport = Vec<(&'static str, Result<(), String>)>;
 
 pub struct Review {
-    // Preserve ancestry and installation directory identity through selection.
-    install: Vec<File>,
+    install_path: PathBuf,
+    install_id: (u32, u64),
+    parent_id: (u32, u64),
     recovery: PathBuf,
     candidates: Vec<Candidate>,
 }
@@ -110,6 +111,8 @@ impl Review {
         );
         let recovery = root.with_file_name(leaf);
         let source = install.last().unwrap();
+        let install_id = engine::directory_identity(source)?;
+        let parent_id = engine::directory_identity(&install[install.len() - 2])?;
         let candidates = RELEASE
             .iter()
             .filter_map(|entry| {
@@ -118,7 +121,9 @@ impl Review {
             })
             .collect();
         Ok(Self {
-            install,
+            install_path: root.to_owned(),
+            install_id,
+            parent_id,
             recovery,
             candidates,
         })
@@ -138,8 +143,16 @@ impl Review {
         if selected.is_empty() {
             return Ok(Vec::new());
         }
-        let source = self.install.last().unwrap();
-        let sibling_parent = &self.install[self.install.len() - 2];
+        // No held directory handles while the user may be reading the list.
+        // Reopen and revalidate both directories before touching the filesystem.
+        let install = pin_install_root(&self.install_path)?;
+        let source = install.last().unwrap();
+        let sibling_parent = &install[install.len() - 2];
+        if engine::directory_identity(source)? != self.install_id
+            || engine::directory_identity(sibling_parent)? != self.parent_id
+        {
+            return Err("原安装目录或上级目录发生变化，文件保留在原位置".into());
+        }
         let leaf = self.recovery.file_name().ok_or("恢复目录没有名称")?;
         let recovery = create_directory(sibling_parent, leaf)?;
         let mut dirs = HashMap::from([(PathBuf::new(), recovery)]);

@@ -19,6 +19,7 @@ MODIFIED = "licenses/python-3.14.9/LICENSE.txt"
 SAME_BYTES = "licenses/rust/url-2.5.8/LICENSE-MIT"
 SAME_NAME = "runtime/zpaq/zpaq64.exe"
 CHANGED_AFTER_PREVIEW = "licenses/rust/form_urlencoded-1.2.2/LICENSE-MIT"
+LOCKED_AFTER_PREVIEW = "licenses/7zip-26.05/License.txt"
 FIRST_FILE, RECOVERY_EDIT, RESULTS = 200, 102, 103
 
 
@@ -62,6 +63,8 @@ class Dialogs:
         self.kernel.OpenProcess.argtypes = [win.DWORD, win.BOOL, win.DWORD]
         self.kernel.OpenProcess.restype = win.HANDLE
         self.kernel.CloseHandle.argtypes = [win.HANDLE]
+        self.kernel.CreateFileW.argtypes = [win.LPCWSTR, win.DWORD, win.DWORD, ctypes.c_void_p, win.DWORD, win.DWORD, win.HANDLE]
+        self.kernel.CreateFileW.restype = win.HANDLE
         self.kernel.QueryFullProcessImageNameW.argtypes = [win.HANDLE, win.DWORD, win.LPWSTR, ctypes.POINTER(win.DWORD)]
 
     def windows(self, parent=None):
@@ -128,6 +131,12 @@ class Dialogs:
         if self.message(checkbox, 0x00F0) != 1:
             raise AssertionError("native checkbox did not become checked")
 
+    def lock_reader(self, path):
+        handle = self.kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0, None)
+        if handle == win.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return handle
+
     def screenshot(self, window, filename):
         from PIL import ImageGrab
         self.user.SetForegroundWindow(window)
@@ -147,6 +156,7 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_
     process = subprocess.Popen([str(setup), f"/D={inst}"], cwd=root, stdin=subprocess.DEVNULL)
     handled = False
     result_closed = False
+    locked = None
     try:
         deadline = time.monotonic() + 150
         while process.poll() is None and time.monotonic() < deadline:
@@ -168,6 +178,9 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_
                         if not ui.click(window, 2):
                             raise AssertionError("result close button is unavailable")
                         result_closed = True
+                        if locked:
+                            ui.kernel.CloseHandle(locked)
+                            locked = None
                 elif not handled:
                     items = {}
                     for index in range(len(old_paths)):
@@ -189,7 +202,7 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_
                     ui.screenshot(window, evidence / f"{mode}-offer.png")
                     if mode == "repeat":
                         raise AssertionError("repeat unexpectedly offered the old migration")
-                    choices = MOVE | {CHANGED_AFTER_PREVIEW} if mode == "selected" else set(sorted(items)[:1])
+                    choices = MOVE | {CHANGED_AFTER_PREVIEW, LOCKED_AFTER_PREVIEW} if mode == "selected" else set(sorted(items)[:1])
                     if not choices <= items.keys():
                         raise AssertionError("requested test candidate missing from the window")
                     for name in sorted(choices):
@@ -199,6 +212,7 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_
                     ui.screenshot(window, evidence / f"{mode}-choices.png")
                     if mode == "selected":
                         edit_after_preview()
+                        locked = ui.lock_reader(inst / LOCKED_AFTER_PREVIEW)
                     trace.append({"dialog": "commit" if mode == "selected" else "cancel",
                                   "checked": sorted(choices)})
                     if not ui.click(window, 1 if mode == "selected" else 2):
@@ -228,6 +242,8 @@ def interactive_setup(setup, root, inst, mode, old_paths, trace, evidence, edit_
         if process.returncode:
             raise RuntimeError(f"NSIS setup exited {process.returncode}")
     finally:
+        if locked:
+            ui.kernel.CloseHandle(locked)
         if process.poll() is None:
             process.kill()
             process.wait()
@@ -308,7 +324,7 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             offered = set(next(d["candidates"] for d in traces if d["dialog"] == "offer"))
             old.check(offered == set(manifest) - {MODIFIED, SAME_NAME} and SAME_BYTES in offered,
                       "candidate list included modified or excluded byte-identical unclaimed files")
-            old.check(any(d.get("moved") == sorted(MOVE) and d.get("retained") == [CHANGED_AFTER_PREVIEW] for d in traces),
+            old.check(any(d.get("moved") == sorted(MOVE) and d.get("retained") == sorted([CHANGED_AFTER_PREVIEW, LOCKED_AFTER_PREVIEW]) for d in traces),
                       "missing mixed success and safe retention in the in-place result")
             recovery = recoveries[0]
             report["recovered"] = tree(recovery, old.sha)
@@ -383,7 +399,7 @@ def main():
         with zipfile.ZipFile(args.old_portable) as prior:
             manifest = {name: old.hashlib.sha256(prior.read(name)).hexdigest()
                         for name in prior.namelist() if not name.endswith("/") and name not in shipped}
-        old.check(len(manifest) == 10 and MOVE | {MODIFIED, SAME_BYTES, SAME_NAME, CHANGED_AFTER_PREVIEW} <= set(manifest),
+        old.check(len(manifest) == 10 and MOVE | {MODIFIED, SAME_BYTES, SAME_NAME, CHANGED_AFTER_PREVIEW, LOCKED_AFTER_PREVIEW} <= set(manifest),
                   "unexpected official retired inventory")
         for mode in ("quiet", "decline", "selected"):
             case = report["cases"][mode] = {}
