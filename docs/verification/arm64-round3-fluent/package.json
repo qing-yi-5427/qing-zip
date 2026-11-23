@@ -1,0 +1,9 @@
+{
+  "artifact_digest": "sha256:989977dbb2a99ac7474021e44ec285e8598bc64351820caee4aec759e7728b83",
+  "artifact_id": 14797785139,
+  "harness": "77f6f072cba937ef1e99dc83f4b4276a2cb2c649",
+  "run": 45128040730,
+  "runner_arch": "ARM64",
+  "package_sha256": "cc0e06dafef5d4caf7f8905ee87c5396f8e3f022c03c2a6f382dada4321f3bbe",
+  "source": "fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6"
+}

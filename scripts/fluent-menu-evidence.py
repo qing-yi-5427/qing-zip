@@ -3,6 +3,7 @@
 Requires Python websockets; outputs contain no user files or paths.
 """
 import argparse, base64, json, os, subprocess, tempfile, time, urllib.request
+from contextlib import ExitStack
 from pathlib import Path
 from websockets.sync.client import connect
 
@@ -10,31 +11,44 @@ p = argparse.ArgumentParser()
 p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--out', type=Path, required=True)
 p.add_argument('--candidate', action='store_true')
+p.add_argument('--native-accessibility', action='store_true',
+               help='Verify real Windows accessibility settings on a disposable GitHub-hosted desktop')
 p.add_argument('--launch-sample', action='store_true',
                help='Measure one fresh launch and two process-tree private-byte samples (requires psutil)')
 a = p.parse_args()
+if a.native_accessibility:
+    from native_menu_accessibility import check_host, verify_menu
+    check_host()
 if a.launch_sample:
     import psutil
     app_names = {a.exe.name.lower(), 'qing-zip.exe', 'obz-gui.exe', 'menu-baseline.exe'}
     if any((p.info['name'] or '').lower() in app_names for p in psutil.process_iter(['name'])):
         raise RuntimeError('Close the existing qing-zip instance before collecting a launch sample')
 a.out.mkdir(parents=True, exist_ok=False)
-with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) as tmp:
+with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) as tmp, ExitStack() as resources:
     root = Path(tmp)
     profile = root / 'profile'
     env = dict(os.environ, LOCALAPPDATA=str(root / 'local'), WEBVIEW2_USER_DATA_FOLDER=str(profile), WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=0 --remote-debugging-address=127.0.0.1')
+    debug = None
+    if a.native_accessibility:
+        from arm_gui_lifecycle import hosted_debug_session
+        debug = resources.enter_context(hosted_debug_session(a.exe, a.out / 'desktop-session.json'))
+        env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = debug['arguments']
     started = time.perf_counter()
     proc = subprocess.Popen([str(a.exe.resolve())], cwd=root, env=env)
+    if debug:
+        debug['proc'] = proc
     ws = None
     try:
         for _ in range(450):
             assert proc.poll() is None, 'application exited'
             ports = list(profile.rglob('DevToolsActivePort'))
-            if ports:
+            if ports or debug:
                 try:
-                    port = int(ports[0].read_text().splitlines()[0])
+                    port = debug['port'] if debug else int(ports[0].read_text().splitlines()[0])
                     pages = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json', timeout=1))
-                    ws = connect(next(x['webSocketDebuggerUrl'] for x in pages if x.get('type') == 'page'), max_size=20_000_000)
+                    ws = connect(next(x['webSocketDebuggerUrl'] for x in pages if x.get('type') == 'page'
+                                      and (not debug or 'tauri.localhost' in x.get('url', ''))), max_size=20_000_000)
                     break
                 except Exception:
                     pass
@@ -57,6 +71,13 @@ with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) 
             if js('!!document.querySelector("[data-action=app-menu]") && !!window.__TAURI__?.core'): break
             time.sleep(.1)
         else: raise RuntimeError('UI not ready')
+        if a.native_accessibility:
+            observed = js("window.__TAURI__.core.invoke('current_executable')", True)
+            if Path(observed).resolve() != a.exe.resolve():
+                raise RuntimeError('The running WebView2 page belongs to a different executable')
+            verify_menu(call, js, a.out, a.exe)
+            resources.close()
+            raise SystemExit(0)
         if a.launch_sample:
             for _ in range(250):
                 if js("document.visibilityState==='visible' && !!document.querySelector('#oa-home-smart-drop')?.getBoundingClientRect().width"):
