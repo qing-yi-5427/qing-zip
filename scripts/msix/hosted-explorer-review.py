@@ -5,6 +5,7 @@ assert os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENV
 from PIL import ImageGrab
 from pywinauto import Desktop, mouse, keyboard
 from win32com.client import Dispatch
+import psutil
 p=argparse.ArgumentParser(); p.add_argument('--root',type=Path,required=True);p.add_argument('--app',type=Path,required=True);a=p.parse_args()
 out=Path('explorer-evidence');out.mkdir(exist_ok=True)
 report={'stage':'initialize','scenarios':{},'passed':False,'not_observed':['portable_move','unregistration_menu']}
@@ -30,10 +31,10 @@ def text_controls():
   except Exception: pass
  return items
 try:
- root=a.root/'ui-fixtures';root.mkdir(); file=root/'plain.txt';file.write_text('synthetic explorer fixture\n',encoding='utf8')
- archive=root/'archive.zip'
- with zipfile.ZipFile(archive,'w') as z:z.writestr('inside.txt','synthetic archive content\n')
- report['source_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
+ root=a.root/'ui-fixtures';root.mkdir()
+ data={'first.txt':b'first synthetic member\n','second.txt':b'second synthetic member\n'}
+ expected={name:hashlib.sha256(value).hexdigest() for name,value in data.items()}
+ report['expected_member_sha256']=expected
  desktop=Desktop(backend='uia')
  # Hosted Windows 11 ARM images can start behind first-run privacy setup.
  # Complete it only on this disposable machine before interacting with Explorer.
@@ -59,16 +60,23 @@ try:
   if not (b>120 and b>g and g>r+30): break
   mouse.click(coords=(867,656)); report['first_run_actions'].append('physical first-run button');time.sleep(3)
  snapshot('desktop-after-first-run');save()
- shell=Dispatch('Shell.Application');shell.Open(str(root))
- def explorer():
-  for w in shell.Windows():
-   try:
-    if os.path.normcase(w.Document.Folder.Self.Path)==os.path.normcase(str(root)): return w
-   except Exception: pass
- target=wait(explorer); hwnd=int(target.HWND);window=desktop.window(handle=hwnd).wrapper_object();window.set_focus();report['stage']='explorer_opened';save()
- for key,filename,label in [('open','archive','用 qing-zip 打开'),('extract','archive','解压到此处'),('compress','plain','用 qing-zip 压缩…')]:
-  entry=report['scenarios'][key]={'menu_visible':False,'activated':False,'handoff_observed':False};save()
-  window.set_focus();item=wait(lambda: next((x for x in window.descendants(control_type='ListItem') if x.element_info.name==filename),None))
+ shell=Dispatch('Shell.Application')
+ for key,label in [('here','解压到此处'),('smart','智能解压'),('compress','用 qing-zip 压缩…')]:
+  folder=root/key;folder.mkdir(); archive=folder/'archive.zip'; plain=folder/'plain.txt'
+  plain.write_bytes(b'ordinary compression source\n')
+  with zipfile.ZipFile(archive,'w') as z:
+   for name,contents in data.items():z.writestr(name,contents)
+  archive_hash=hashlib.sha256(archive.read_bytes()).hexdigest();plain_hash=hashlib.sha256(plain.read_bytes()).hexdigest()
+  shell.Open(str(folder))
+  def explorer():
+   for w in shell.Windows():
+    try:
+     if os.path.normcase(w.Document.Folder.Self.Path)==os.path.normcase(str(folder)): return w
+    except Exception: pass
+  target=wait(explorer);window=desktop.window(handle=int(target.HWND)).wrapper_object();window.set_focus();report['stage']='explorer_opened';save()
+  filename='plain' if key=='compress' else 'archive'
+  entry=report['scenarios'][key]={'menu_visible':False,'activated':False,'handoff_observed':False,'archive_sha256_before':archive_hash,'plain_sha256_before':plain_hash};save()
+  item=wait(lambda: next((x for x in window.descendants(control_type='ListItem') if x.element_info.name==filename),None))
   item.click_input(button='right');time.sleep(2); snapshot(key+'-menu');entry['menu_controls']=text_controls()
   group=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name=='qing-zip' and x.element_info.control_type=='MenuItem' and x.is_visible()),None)
   if group:
@@ -77,12 +85,27 @@ try:
   menu=next((x for w in desktop.windows() if w.is_visible() for x in w.descendants() if x.element_info.name==label and x.is_visible()),None)
   if not menu:
    entry['error']='Command not observed after opening qing-zip submenu';keyboard.send_keys('{ESC}');save();continue
-  entry['menu_visible']=True;menu.click_input();entry['activated']=True;time.sleep(3);snapshot(key+'-after');
-  processes=subprocess.run(['powershell','-NoProfile','-Command',"Get-CimInstance Win32_Process -Filter \"name = 'qing-zip.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],capture_output=True,text=True,timeout=15)
-  entry['gui_process_present']=bool(processes.stdout.strip());entry['handoff_observed']=entry['gui_process_present']
+  entry['menu_visible']=True;menu.click_input();entry['activated']=True
+  destination=folder/('archive' if key=='smart' else '')
+  def valid_outputs():
+   return all((destination/name).is_file() and hashlib.sha256((destination/name).read_bytes()).hexdigest()==digest for name,digest in expected.items())
+  for _ in range(100):
+   if key!='compress' and valid_outputs():break
+   time.sleep(.2)
+  snapshot(key+'-after')
+  entry['output_matches_expected']=valid_outputs() if key!='compress' else None
+  entry['relative_output_directory']='archive' if key=='smart' else ('.' if key=='here' else None)
+  entry['archive_preserved']=hashlib.sha256(archive.read_bytes()).hexdigest()==archive_hash
+  entry['plain_preserved']=hashlib.sha256(plain.read_bytes()).hexdigest()==plain_hash
+  entry['gui_windows']=[w.element_info.name for w in desktop.windows() if w.is_visible() and 'qing' in w.element_info.name.lower()]
+  entry['handoff_observed']=entry['output_matches_expected'] if key!='compress' else False
+  if key=='compress':entry['error']='Compression form and output not yet verified'
   save()
-  for proc in subprocess.run(['powershell','-NoProfile','-Command',"Get-Process qing-zip -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],capture_output=True,text=True).stdout.split():
-   if proc.isdigit():subprocess.run(['taskkill','/PID',proc,'/T','/F'],capture_output=True)
+  for proc in psutil.process_iter(['pid','exe','name']):
+   try:
+    if proc.info['exe'] and os.path.normcase(proc.info['exe'])==os.path.normcase(str(a.app.resolve())):proc.terminate();proc.wait(10)
+   except (psutil.Error,OSError):pass
+  target.Quit()
  report['stage']='finished';report['passed']=all(v['menu_visible'] and v['handoff_observed'] for v in report['scenarios'].values())
 except Exception as e:
  report['error']=repr(e)

@@ -41,7 +41,7 @@ try {
   if ($LASTEXITCODE) { throw 'Product shell-enable failed' }
   $openCommand=(Get-Item -LiteralPath ($roots[0]+'\command')).GetValue('')
   if ($openCommand -ine ('"'+$exe+'" "%1"')) { throw 'Product shell command path mismatch' }
-  python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1
+  python -m pip install pywinauto==0.6.9 pillow==11.3.0 websockets==15.0.1 psutil==7.0.0
   if ($LASTEXITCODE) { throw 'UI dependencies unavailable' }
   python scripts/msix/hosted-explorer-settings.py $exe $job
   if ($LASTEXITCODE) { throw 'Product GUI settings failed' }
