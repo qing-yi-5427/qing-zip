@@ -720,6 +720,10 @@ function taskError(e){
  if(/^(?:Error:\s*)?single-stream format requires exactly one regular file; create a TAR first for multiple files$/i.test(text)){
   return '所选格式只能压缩单个文件，不能直接压缩文件夹。请改用 TAR.GZ、ZIP 或 7z 等格式，或只保留文件来源。';
  }
+ const exists=/^(?:Error:\s*)?(?:output archive already exists; use update to modify it|(?:ISO )?output (?:archive |volume )?already exists|output exists: (.+))$/i.exec(text);
+ if(exists)return '目标位置已出现同名文件（可能在检查名称后由其他程序创建），已保留该文件，未覆盖。'+(exists[1]?'\n'+exists[1]:'')+'\n重试时会重新检查并选用其他名称，也可更改保存位置。';
+ const engine=engineFileProblems(text);
+ if(engine)return engine;
  if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';
  if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：create private stage: [^\r\n]* \(os error (?:39|112)\)$/i.test(text)){
   return '磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
@@ -729,6 +733,25 @@ function taskError(e){
   return '外层压缩包或其中的文件已被修改。工作副本已保留，请从有未保存更改的标签另存为。';
  }
  return text;
+}
+// 7-Zip console failures carry a banner, scan log and progress before the
+// WARNING/ERROR lines that name the file. Keep only those lines.
+function engineFileProblems(text){
+ const failed=/^(?:Error:\s*)?archive engine failed \((-?\d+)\):([\s\S]*)$/i.exec(text);
+ if(!failed)return '';
+ const lines=failed[2].split(/\r?\n/).map(line=>line.trim()),found=[];
+ const add=line=>{if(line&&!found.includes(line))found.push(line);};
+ for(let i=0;i<lines.length;i++){
+  const marker=/^(?:WARNING|ERROR|System ERROR):\s*(.*)$/i.exec(lines[i]);
+  if(!marker)continue;
+  add(marker[1]);
+  const next=lines.slice(i+1).find(Boolean);
+  if(!marker[1]&&next)add(next);
+  else if(next&&/^(?:[A-Za-z]:[\\/]|\\\\)/.test(next))add(next);
+ }
+ if(!found.length)return '';
+ const locked=found.some(line=>/另一个程序正在使用|being used by another process|cannot access the file/i.test(line));
+ return `归档引擎未能完成（代码 ${failed[1]}）：\n${found.join('\n')}`+(locked?'\n请关闭正在使用该文件的程序后重试。':'');
 }
 function showPreservationNotice(message){dialog('操作提示',`<p>${esc(message)}</p>`,btn('关闭','close'));}
 function error(e){
