@@ -153,3 +153,5 @@ python scripts/check-archive-interop.py `
 仓库的前台基准使用 `compare-final-desktops.py` 与 `bind-final-desktops.py`，绑定候选包、参考程序和固定 ZIP，以可见 UI Automation 内容为就绪口径，并采样进程树内存。该脚本限定可丢弃的 hosted Windows 环境，本轮标记 `NOT RUN`。吞吐归档样本和合成引擎输出均使用本机 CLI。查看 [前台测量脚本](../scripts/compare-final-desktops.py) 与 [输入绑定脚本](../scripts/bind-final-desktops.py)。
 
 回归比较时固定数据、线程、档案设置、存储位置与系统负载，交替执行两个精确版本，同时报告范围及预热。GUI 启动、预览与内存单独比较，在相同 DPI、显示状态与 WebView2 版本下记录从操作到可交互的耗时及进程树私有提交内存。
+
+另已在真实 Tauri/WebView2 窗口中配对测量 10,000 和 50,000 文件 ZIP 的可见首行、检索、排序、滚动及进程树内存。主机未授予测试窗口 Win32 前台焦点，验收口径和逐轮数据见 [真实 WebView2 大归档浏览采样](verification/WEBVIEW_ARCHIVE_BROWSING.md)。
