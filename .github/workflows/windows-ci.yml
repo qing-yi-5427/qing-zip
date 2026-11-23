@@ -147,7 +147,7 @@ jobs:
       - name: Set up the hosted desktop tests
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check pywinauto==0.6.9 websockets==15.0.1
+          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1
           exit $LASTEXITCODE
       - name: Verify extraction and restore a script-owned ZIP from the Windows Recycle Bin
         shell: pwsh

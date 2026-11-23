@@ -14,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 CONTENTS = {"one.txt": b"first published file\n", "two.txt": b"second published file\n"}
 EXISTING = b"pre-existing destination data\n"
+RECYCLED_MESSAGE = "原压缩包已移入回收站"
 # FMTID_Displaced / PID_DISPLACED_FROM in the Windows SDK, shlguid.h.
 ORIGINAL_FOLDER = "{9B174B33-40FF-11D2-A27E-00C04FC38A71} 2"
 
@@ -44,6 +45,7 @@ def recycled_item(shell, archive, observations=None):
         except com_error as error:
             values["sdk_property_hresult"] = f"0x{error.hresult & 0xffffffff:08X}"
         try:
+            # The hosted Windows Recycle Bin displays Original Location in column 1.
             values["original_location_column"] = folder.GetDetailsOf(item, 1)
         except com_error as error:
             values["original_location_hresult"] = f"0x{error.hresult & 0xffffffff:08X}"
@@ -99,7 +101,9 @@ def shell_control(shell, archive, sha, snapshot):
         except AssertionError as error:
             snapshot["restore_error"] = str(error)
         else:
-            snapshot["restored_hash_matches"] = sha(control) == original
+            snapshot["restored_sha256"] = sha(control)
+            snapshot["restored_hash_matches"] = snapshot["restored_sha256"] == original
+    snapshot["source_before_sha256"] = original
 
 
 def choose_skip(browser):
@@ -167,8 +171,12 @@ def exercise(name, executable, case, output, shell, debug, gui, report, with_con
         browser.click('[data-view="history"]')
         browser.wait(f'document.querySelector({json.dumps(status)})?.getClientRects().length')
         result_selector = json.dumps(card + " .qa-jobresult")
-        condition = '.includes("原压缩包已移入回收站")' if name == "full" else ''
-        browser.wait(f'document.querySelector({result_selector})?.textContent{condition}')
+        result_text = f'document.querySelector({result_selector})?.textContent'
+        if name == "full":
+            browser.wait(f'{result_text}.includes({json.dumps(RECYCLED_MESSAGE)}) || '
+                         f'{result_text}.includes("但原压缩包未移入回收站")')
+        else:
+            browser.wait(result_text)
         result = browser.evaluate(f'document.querySelector({result_selector}).textContent')
         snapshot["result"] = result.replace(str(case), "<fixture>")
         snapshot["terminal"] = terminal
@@ -186,12 +194,14 @@ def exercise(name, executable, case, output, shell, debug, gui, report, with_con
         if name == "full":
             snapshot["bin_after"] = volume_recycle_counts(archive)
             snapshot["recycle_matches"] = []
-            if archive.exists() or "原压缩包已移入回收站" not in result:
+            if archive.exists() or RECYCLED_MESSAGE not in result:
                 raise AssertionError("Complete extraction did not report a Recycle Bin move")
             restore_fixture(shell, archive, snapshot["recycle_matches"])
             snapshot["restored_from_recycle_bin"] = True
-        elif not archive.is_file() or recycled_item(shell, archive) is not None:
-            raise AssertionError(f"{name}: an ineligible source was recycled")
+            if with_control and not snapshot["ordinary_shell_same_parent_control"].get("restored_hash_matches"):
+                raise AssertionError("The independent same-parent Shell control did not restore the test bytes")
+        elif not archive.is_file() or RECYCLED_MESSAGE in result or recycled_item(shell, archive) is not None:
+            raise AssertionError(f"{name}: an ineligible source was recycled or reported as recycled")
         snapshot["source_final_sha256"] = sha(archive)
         if snapshot["source_final_sha256"] != original:
             raise AssertionError(f"{name}: the archive bytes changed")
