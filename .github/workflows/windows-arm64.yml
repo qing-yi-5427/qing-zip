@@ -168,6 +168,23 @@ jobs:
           $build = ./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc -TargetDirectory (Join-Path $env:RUNNER_TEMP 'qing-arm64-hardened')
           python scripts/package.py --architecture arm64 --runtime-directory (Join-Path $env:RUNNER_TEMP 'qing-arm64-runtime') --binary-directory $build.BinaryDirectory --output-directory dist/arm64
           exit $LASTEXITCODE
+      - name: Verify the running ARM64 menu against native desktop accessibility settings
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check websockets==15.0.1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = @(Get-ChildItem -LiteralPath dist/arm64 -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected one packaged ARM64 GUI' }
+          python scripts/fluent-menu-evidence.py --exe $exe[0].FullName --out evidence/native-menu --native-accessibility
+          exit $LASTEXITCODE
+      - name: Preserve native settings, menu screenshots and observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-arm64-menu
+          path: evidence/native-menu/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Invoke the classic Explorer action on native ARM64
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh

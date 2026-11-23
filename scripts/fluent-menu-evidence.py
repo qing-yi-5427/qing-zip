@@ -10,9 +10,14 @@ p = argparse.ArgumentParser()
 p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--out', type=Path, required=True)
 p.add_argument('--candidate', action='store_true')
+p.add_argument('--native-accessibility', action='store_true',
+               help='Verify real Windows accessibility settings on a disposable GitHub-hosted desktop')
 p.add_argument('--launch-sample', action='store_true',
                help='Measure one fresh launch and two process-tree private-byte samples (requires psutil)')
 a = p.parse_args()
+if a.native_accessibility:
+    from native_menu_accessibility import check_host, verify_menu
+    check_host()
 if a.launch_sample:
     import psutil
     app_names = {a.exe.name.lower(), 'qing-zip.exe', 'obz-gui.exe', 'menu-baseline.exe'}
@@ -57,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix='qz-menu-', ignore_cleanup_errors=True) 
             if js('!!document.querySelector("[data-action=app-menu]") && !!window.__TAURI__?.core'): break
             time.sleep(.1)
         else: raise RuntimeError('UI not ready')
+        if a.native_accessibility:
+            verify_menu(call, js, a.out, a.exe)
+            raise SystemExit(0)
         if a.launch_sample:
             for _ in range(250):
                 if js("document.visibilityState==='visible' && !!document.querySelector('#oa-home-smart-drop')?.getBoundingClientRect().width"):
