@@ -21,7 +21,7 @@
 | 常用格式三程序解压对照 | ZIP、7z、TAR、GZIP、BZ2、XZ、RAR5。qing-zip 0.12.23 加固便携、7-Zip 26.00 x64、Bandizip 7.36 Beta x64。比较相对文件名、输出文件 SHA-256 和每次读取后原包 SHA-256。 | PASS（7 格式 × 3 CLI） |
 | WinRAR 对照 | 当前环境未安装 WinRAR。 | SKIP |
 | 经典 RAR 普通读取 | RAR 1.5 单卷、RAR 3.00 两卷（`.rar` / `.r00`）。7-Zip、qing-zip、Bandizip 按上游明文哈希逐文件、逐卷对照。 | PASS（2 × 3） |
-| 经典 RAR 参考样本分歧 | 上游另一个合成 `split-store` 三卷样本。三款工具均返回错误，7-Zip 报 CRC 错误；qing-zip 与 Bandizip 无输出文件。 | FAIL（此样本按正常解压预期） |
+| 经典 RAR 参考样本分歧 | 上游 `split-store` 三卷。RARLAB 官方 UnRAR 7.30 beta 2 输出 21 字节预期文件并退出 0；qing-zip、7-Zip、Bandizip 返回错误。全部原卷哈希保全。 | FAIL（qing-zip 的分卷兼容性），PASS（UnRAR 参考工具） |
 | x64 Shell 隔离验证 | M4 独立验证相同起始提交。CMake Release、MSVC 19.44、SDK 10.0.26100.0。参数往返、隔离 COM、普通文件选择均通过（3/3）。未签名包验证外置文件哈希及架构检查。 | PASS |
 | 托管 x64 / ARM64 Shell 组件 | M4 提交 `9c27936`。x64 `windows-latest` 和 ARM64 `windows-11-arm` 均验证原生 Shell 组件和未签名稀疏 MSIX，各检查三个外置文件哈希、拒绝两种混用产物。 | PASS（独立 CI） |
 | 前台桌面、DPI 和真实 Explorer | M3 跟踪前台应用与 DPI；正式安装后关联、旧式右键和真实拖出的验收需独立环境。 | NOT RUN（本矩阵） |

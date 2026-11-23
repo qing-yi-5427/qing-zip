@@ -26,7 +26,7 @@ def run(args, cwd):
                            + result.stdout.decode(errors="replace")[-1200:])
 
 
-def cases(root, sevenzip):
+def cases(root, sevenzip, include_rar15_split):
     data = "压缩互读\n".encode() * 230
     files = {"资料/item.txt": data, "other/item.txt": b"other bytes", "empty.txt": b""}
     expected = {name: sha(value) for name, value in files.items()}
@@ -61,10 +61,13 @@ def cases(root, sevenzip):
     classic = fixture.parent / "rar15"
     hashes = json.loads((classic / "SOURCE.json").read_text(encoding="utf-8"))["sha256"]
     payload = {"payload.txt": sha(b"rar15 oracle payload\n")}
-    for names, expected_files in (
+    samples = [
         (("compressed.rar",), payload),
         (("multivol_oldnaming_rar300.rar", "multivol_oldnaming_rar300.r00"), bigtext),
-    ):
+    ]
+    if include_rar15_split:
+        samples.append((("split-store.rar", "split-store.r00", "split-store.r01"), payload))
+    for names, expected_files in samples:
         for name in names:
             member = classic / name
             if sha(member.read_bytes()) != hashes[name]:
@@ -74,12 +77,16 @@ def cases(root, sevenzip):
 
 
 def compare(args):
+    failures = 0
     with tempfile.TemporaryDirectory(prefix="qing-zip-common-formats-") as work:
         root = Path(work)
-        for volumes, expected in cases(root, args.sevenzip):
+        for volumes, expected in cases(root, args.sevenzip, args.include_rar15_split):
             archive = volumes[0]
             before = {part.name: sha(part.read_bytes()) for part in volumes}
             tools = ["7-Zip", "qing-zip"] + (["Bandizip"] if args.bandizip else [])
+            if args.unrar and archive.suffix == ".rar":
+                tools.append("RARLAB UnRAR")
+            outcomes = {}
             for tool in tools:
                 output = root / (archive.name + "-" + tool)
                 output.mkdir()
@@ -87,15 +94,23 @@ def compare(args):
                     command = [args.sevenzip, "x", "-y", f"-o{output}", archive]
                 elif tool == "Bandizip":
                     command = [args.bandizip, "x", "-y", f"-o:{output}", archive]
+                elif tool == "RARLAB UnRAR":
+                    command = [args.unrar, "x", "-y", archive, str(output) + "\\"]
                 else:
                     command = [args.cli, "extract", archive, output]
-                run(command, root)
+                result = subprocess.run(command, cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
                 actual = {p.relative_to(output).as_posix(): sha(p.read_bytes())
                           for p in output.rglob("*") if p.is_file()}
-                if actual != expected or any(sha(part.read_bytes()) != before[part.name] for part in volumes):
-                    raise ValueError(f"Unexpected output or changed source: {tool}, {archive.name}, {actual}")
-            print(json.dumps({"archive": archive.name, "engines": tools, "files": expected, "sources": before},
+                if any(sha(part.read_bytes()) != before[part.name] for part in volumes):
+                    raise ValueError(f"Source changed: {tool}, {archive.name}")
+                passed = result.returncode == 0 and actual == expected
+                failures += int(not passed)
+                outcomes[tool] = {"status": "PASS" if passed else "FAIL", "exit": result.returncode}
+                if not passed:
+                    outcomes[tool]["written"] = actual
+            print(json.dumps({"archive": archive.name, "engines": tools, "files": expected, "sources": before, "outcomes": outcomes},
                              ensure_ascii=True))
+    return int(failures > 0)
 
 
 if __name__ == "__main__":
@@ -103,4 +118,6 @@ if __name__ == "__main__":
     parser.add_argument("--cli", required=True, type=lambda p: Path(p).resolve(strict=True))
     parser.add_argument("--sevenzip", required=True, type=lambda p: Path(p).resolve(strict=True))
     parser.add_argument("--bandizip", type=lambda p: Path(p).resolve(strict=True), help="Optional bz console")
-    compare(parser.parse_args())
+    parser.add_argument("--unrar", type=lambda p: Path(p).resolve(strict=True), help="Optional RARLAB Windows UnRAR")
+    parser.add_argument("--include-rar15-split", action="store_true", help="Also test the legacy three-volume sample with a known decoder discrepancy")
+    raise SystemExit(compare(parser.parse_args()))
