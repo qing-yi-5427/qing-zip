@@ -132,7 +132,7 @@ def main():
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in old_only.items()),'old-only release files missing or changed immediately after old install')
         report['old_only_installed']=[{'relative_path':name,'sha256':digest} for name,digest in sorted(old_only.items())]
         report['first_install_used_directory_override']=len(old_options)>1
-        report['registered_install_directory_matches_default']=Path(value(arp,'InstallLocation')).samefile(default_location) if args.use_default_location else False
+        report['registered_install_directory_matches_default']=Path(value(arp,'InstallLocation')) == default_location
         passed('official_release_installed_to_owned_directory')
         user=inst/'用户保留';user.mkdir();source=root/'样本.txt';source.write_bytes(('普通输入与个人数据哨兵\n'*4096).encode('utf-8'))
         sentinel=user/'无关文件.txt';sentinel.write_bytes(b'unrelated user file, preserve\n')
