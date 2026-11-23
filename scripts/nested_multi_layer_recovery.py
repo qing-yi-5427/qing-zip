@@ -140,6 +140,20 @@ def exercise(args, root, receipt, qa):
         assert len(labels) == 1 and "project-a" in labels[0].casefold() and "project-b" not in labels[0].casefold(), labels
         receipt['after_export_remaining_labels'] = labels
         receipt['successful_save_consumed_only_project_b'] = True
+        # The remaining A is still actually exportable after the canceled dialog.
+        first_export = root / "export" / "recovered-project-a.zip"
+        save_retained_copy(page, process, first_export, args.out)
+        _, _, modified_name = originals["project-a"]
+        receipt['export_after_cancel_project_a'] = verify_export(first_export, receipt['cases']['project-a'], modified_name, qa)
+        receipt['both_exportable_after_cancel'] = True
+        stop_own(process, browser)
+
+    with launch(args.exe, root, "cold-after-both", first, args.out) as (process, browser, page):
+        expect(page.locator('[data-entry="middle.zip"]')).to_be_visible(timeout=60000)
+        last_menu = retained_dialog(page, args.out, "cold-after-both")
+        assert last_menu['reports_no_retained_copies']
+        assert page.locator('#oa-retained-edit option').count() == 0
+        receipt['no_records_after_both_exports'] = True
         stop_own(process, browser)
 
     for tag, (initial, sibling, _) in originals.items():
