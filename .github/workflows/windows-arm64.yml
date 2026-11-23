@@ -6,10 +6,22 @@ on:
   workflow_dispatch:
     inputs:
       round2_fluent_capture:
-        description: 'Capture accessibility states against the pinned round-two ARM64 package only'
+        description: 'Capture native accessibility states against a verified ARM64 portable package'
         type: boolean
         required: false
         default: false
+      capture_build_run:
+        description: 'Optional successful same-repository ARM64 workflow run'
+        type: string
+        required: false
+      capture_source:
+        description: 'Exact revision for the optional build'
+        type: string
+        required: false
+      capture_package_sha:
+        description: 'SHA-256 of the expected ARM64 portable ZIP for the optional build'
+        type: string
+        required: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -244,16 +256,29 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify pinned package and capture native accessibility states
         shell: pwsh
+        env:
+          CAPTURE_BUILD: ${{ inputs.capture_build_run }}
+          CAPTURE_SOURCE: ${{ inputs.capture_source }}
+          CAPTURE_PACKAGE: ${{ inputs.capture_package_sha }}
         run: |
           if ($env:RUNNER_ARCH -ne 'ARM64' -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') { throw 'Native ARM64 required' }
-          $run = gh api repos/qing-yi-5427/qing-zip/actions/runs/45119972417 | ConvertFrom-Json
-          if ($LASTEXITCODE -or $run.head_sha -cne 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b' -or $run.conclusion -cne 'success' -or $run.name -cne 'Windows ARM64 native validation') { throw 'Pinned build provenance mismatch' }
-          $artifact = @(gh api repos/qing-yi-5427/qing-zip/actions/runs/45119972417/artifacts | ConvertFrom-Json | ForEach-Object artifacts | Where-Object { $_.name -ceq 'qing-zip-0.12.23-windows-arm64-trial' -and !$_.expired })
-          if ($artifact.Count -ne 1 -or $artifact[0].digest -cne 'sha256:eaa7d974800ae0e37204ea2d3d98c4c000d98a95fe33e7435d4eaf75a77a8ad4') { throw 'Pinned artifact mismatch' }
-          gh run download 45119972417 --repo qing-yi-5427/qing-zip --name qing-zip-0.12.23-windows-arm64-trial --dir downloaded
+          $specified = @(@($env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE) | Where-Object { $_ })
+          $build = '45119972417'
+          $source = 'b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b'
+          $expectedPackage = '39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e'
+          if ($specified.Count) {
+            if ($env:CAPTURE_BUILD -cnotmatch '^[1-9][0-9]*$' -or $env:CAPTURE_SOURCE -cnotmatch '^[0-9a-f]{40}$' -or $env:CAPTURE_PACKAGE -cnotmatch '^[0-9a-f]{64}$') { throw 'Supply the build run, exact source SHA and portable SHA-256 together' }
+            $build, $source, $expectedPackage = $env:CAPTURE_BUILD, $env:CAPTURE_SOURCE, $env:CAPTURE_PACKAGE
+          }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$build" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_repository.full_name -cne $env:GITHUB_REPOSITORY -or $run.head_sha -cne $source -or $run.conclusion -cne 'success' -or $run.path -cne '.github/workflows/windows-arm64.yml' -or $run.event -notin @('push','workflow_dispatch')) { throw 'Pinned build provenance mismatch' }
+          $artifact = @(gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$build/artifacts" | ConvertFrom-Json | ForEach-Object artifacts | Where-Object { $_.name -cmatch '^qing-zip-[0-9]+\.[0-9]+\.[0-9]+-windows-arm64-trial$' -and !$_.expired })
+          if ($LASTEXITCODE -or $artifact.Count -ne 1 -or $artifact[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'Missing single source-bound ARM64 artifact' }
+          if (!$specified.Count -and $artifact[0].digest -cne 'sha256:eaa7d974800ae0e37204ea2d3d98c4c000d98a95fe33e7435d4eaf75a77a8ad4') { throw 'Historical artifact mismatch' }
+          gh run download $build --repo $env:GITHUB_REPOSITORY --name $artifact[0].name --dir downloaded
           if ($LASTEXITCODE) { throw 'Artifact download failed' }
           $package = @(Get-ChildItem downloaded -Recurse -File -Filter '*-arm64-portable.zip')
-          if ($package.Count -ne 1 -or (Get-FileHash -LiteralPath $package[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne '39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e') { throw 'Pinned portable SHA-256 mismatch' }
+          if ($package.Count -ne 1 -or (Get-FileHash -LiteralPath $package[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedPackage) { throw 'Pinned portable SHA-256 mismatch' }
           New-Item -ItemType Directory -Force evidence | Out-Null
           @{ source = $run.head_sha; run = $run.id; artifact_id = $artifact[0].id; artifact_digest = $artifact[0].digest; package_sha256 = (Get-FileHash -LiteralPath $package[0].FullName).Hash.ToLowerInvariant(); harness = (git rev-parse HEAD).Trim(); runner_arch = $env:RUNNER_ARCH } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/package.json
           Expand-Archive -LiteralPath $package[0].FullName -DestinationPath staged
