@@ -1,6 +1,35 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const QingProgress=require('../frontend/progress.js');
 const src=fs.readFileSync(require.resolve('../frontend/app.js'),'utf8');
+test('cancellation keeps completed counts but stops presenting speed and ETA',()=>{
+ const context={QingProgress,performance:{now:()=>1100},size:n=>`${n} B`,esc:String,btn:()=>'',s:{},deepExtract:{jobActions:()=>''},compressionDrafts:new Map()};
+ vm.createContext(context);
+ vm.runInContext(src.slice(src.indexOf('const ordinaryRetries='),src.indexOf('function jobs()')),context);
+ const job={id:1,label:'解压',status:'running',cancelRequested:true,startedAt:0,phase:'extracting',work:{items_done:2,items_total:10,bytes_done:200,bytes_total:1000},rate:{bps:100,time:1000}};
+ const rendered=context.jobCard(job);
+ assert.match(rendered,/2 \/ 10 个文件/);
+ assert.doesNotMatch(rendered,/\/秒|本阶段约/);
+ assert.match(rendered,/正在取消/);
+ job.cancelRequested=false;
+ const active=context.jobCard(job);
+ assert.match(active,/100 B\/秒/);
+ assert.match(active,/本阶段约 8 秒/);
+});
+test('byte-only engine progress does not invent a zero-file total',()=>{
+ const context={QingProgress,performance:{now:()=>1000},size:n=>`${n} B`};
+ vm.createContext(context);
+ vm.runInContext(src.slice(src.indexOf('function jobMeasurements('),src.indexOf('function elapsedTime(')),context);
+ const text=context.jobMeasurements({status:'running',work:{items_done:0,items_total:0,bytes_done:40,bytes_total:100}});
+ assert.equal(text,'40 B / 100 B');
+});
+test('compressed TAR decoding exposes its actual phase in the task card',()=>{
+ const context={QingProgress,performance:{now:()=>1000},size:n=>`${n} B`,esc:String,btn:()=>'',s:{},deepExtract:{jobActions:()=>''},compressionDrafts:new Map()};
+ vm.createContext(context);
+ vm.runInContext(src.slice(src.indexOf('const ordinaryRetries='),src.indexOf('function jobs()')),context);
+ const rendered=context.jobCard({id:1,label:'解压',status:'running',startedAt:0,phase:'decompressing',message:'Reading compressed TAR stream'});
+ assert.match(rendered,/解压压缩流/);
+ assert.doesNotMatch(rendered,/Reading compressed TAR stream/);
+});
 test('progress replacement restores logical action, falls back on completion, never steals outside focus',()=>{
  let focused=null;const cancel={dataset:{action:'canceljob'},focus(){focused='cancel'}},output={dataset:{action:'reveal-output'},focus(){focused='output'}},close={dataset:{action:'close'},focus(){focused='close'}};
  let controls=[cancel],inside=true;const content={contains:()=>inside,querySelectorAll:()=>controls,querySelector:selector=>selector.includes('reveal-output')?controls.find(b=>b===output):null};

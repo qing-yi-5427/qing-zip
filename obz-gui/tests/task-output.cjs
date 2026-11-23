@@ -23,7 +23,16 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   vm.runInContext(taskSource(source),context);
   context.error(Error('operation cancelled'));
   assert.equal(context.taskError(Error('destination conflict: D:/中文/既有内容.txt')), '目标位置已有同名项目。\nD:/中文/既有内容.txt');
+  assert.equal(context.taskError('incorrect password or damaged encrypted archive'), '密码不正确，或加密压缩包已损坏。');
+  assert.equal(context.taskError(Error('incorrect password or damaged encrypted archive')), '密码不正确，或加密压缩包已损坏。');
+  assert.equal(context.taskError('incorrect password or damaged encrypted archive: detail'), 'incorrect password or damaged encrypted archive: detail');
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
+  context.overlay.hidden=true;
+  context.error(Error('incorrect password or damaged encrypted archive'));
+  assert.equal(notices.at(-1),'密码不正确，或加密压缩包已损坏。');
+  context.s.jobs=[{label:'解压',status:'failed',error:'incorrect password or damaged encrypted archive'}];
+  for(const name of ['jobs','historyPage']) assert.match(context[name](),/密码不正确，或加密压缩包已损坏。/);
+  context.overlay.hidden=false;
   const nested='写回失败，内层工作副本已保留，可重试或另存为：operation cancelled';
   context.error(Error(nested));
   assert.equal(notices.at(-1),'任务已取消。内层工作副本已保留，可重试或另存为。');
@@ -38,6 +47,69 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   assert.ok(context.jobs().includes(detail));
   context.error(Error(detail));assert.equal(field.textContent,'Error: '+detail);
   assert.equal(context.s.jobs[0].error,detail);
+});
+
+test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const cause='写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)';
+  const advice='磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
+  const field={textContent:''},card={textContent:advice};
+  const context=makeContext({
+    s:{view:'jobs'},esc:String,btn:()=>'',overlay:{hidden:false,dataset:{page:'jobs'},querySelector:()=>card},$:()=>field,
+  });
+  vm.runInContext(taskSource(source),context);
+  vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
+  assert.equal(context.taskError(cause),advice);
+  assert.equal(context.taskError(Error(cause)),advice);
+  assert.equal(context.taskError(cause.replace('There is not enough space on the disk.', '磁盘空间不足。')),advice);
+  assert.equal(context.taskError(cause+'; rollback requires attention'),cause+'; rollback requires attention');
+  assert.equal(context.taskError('CRC failed: '+cause),'CRC failed: '+cause);
+  assert.match(context.jobCard({id:1,label:'保存至外层压缩包',status:'failed',error:cause}), /role="alert"[^>]*>磁盘空间不足/);
+  context.error(Error(cause));
+  assert.equal(field.textContent,'');
+  card.textContent='another task failed';
+  context.error(Error(cause));
+  assert.equal(field.textContent,advice);
+});
+
+test('nested parent conflict names the changed source and announces the recovery action once', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8');
+  const cause = '写回失败，内层工作副本已保留，可重试或另存为：parent archive or its member changed since opening';
+  const expected = '外层压缩包或其中的文件已被修改。工作副本已保留，请从有未保存更改的标签另存为。';
+  const field = { textContent: '' };
+  const context = makeContext({
+    s: { view: 'jobs' }, esc: String, btn: () => '',
+    overlay: { hidden: false, dataset: { page: 'jobs' }, querySelector: () => ({ textContent: expected }) },
+    $: () => field,
+  });
+  vm.runInContext(taskSource(source), context);
+  vm.runInContext(source.slice(source.indexOf('function taskError('), source.indexOf('async function copySelectedFiles(')), context);
+  const card = context.jobCard({ id: 1, label: '保存至外层压缩包', status: 'failed', error: cause });
+  assert.ok(card.includes(expected));
+  assert.equal(context.taskError(Error(cause)), expected);
+  context.error(Error(cause));
+  assert.equal(field.textContent, '');
+  const compound = cause + ' (failed to verify the working copy)';
+  assert.equal(context.taskError(compound), compound);
+});
+
+test('nested save shows the real outer archive and the path of each enclosed member', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const outer={archive:'D:/archives/outer.zip'};
+  const child={nestedId:1,archive:'D:/temp/private1/inside.zip',parentArchive:outer.archive,nestedMember:'dir/inside.zip'};
+  const leaf={nestedId:2,archive:'D:/temp/private2/inside.zip',parentArchive:child.archive,nestedMember:'nested/inside.zip'};
+  const context=makeContext({archiveTabs:[outer,child,leaf],archiveKey:p=>p.toLowerCase(),filename:p=>p.split('/').pop()});
+  const start=source.indexOf('function nestedSaveDisplayPath(');
+  assert.ok(start>=0);
+  vm.runInContext(source.slice(start,source.indexOf('async function saveNested(',start)),context);
+  assert.equal(context.nestedSaveDisplayPath(leaf),'D:/archives/outer.zip › dir/inside.zip › nested/inside.zip');
+  vm.runInContext(taskSource(source),context);
+  Object.assign(context,{s:{view:'jobs'},esc:String,btn:()=>''});
+  const card=context.jobCard({id:1,label:'保存至外层',status:'complete',path:leaf.archive,displayPath:context.nestedSaveDisplayPath(leaf)});
+  assert.match(card,/D:\/archives\/outer.zip › dir\/inside.zip › nested\/inside.zip/);
+  assert.doesNotMatch(card,/private2/);
+  context.archiveTabs=[];
+  assert.equal(context.nestedSaveDisplayPath(leaf),'inside.zip › nested/inside.zip');
 });
 
 test('clicking a task result reveals that task output, including numeric native job IDs', async () => {
@@ -159,7 +231,7 @@ test('native extraction follows the password preference and never saves for temp
       }
       if (command === 'wait_operation') {
         return {status: 'complete', progress: {}, result: {
-          files: 1, destination: 'C:/test-output', password_book_error: 'fixture backend detail',
+          files: 1, destination: 'C:/test-output', output_directory: 'C:/test-output/BUNDLE', password_book_error: 'fixture backend detail',
         }};
       }
     },
@@ -172,6 +244,8 @@ test('native extraction follows the password preference and never saves for temp
   await context.run(request, 'extract', {silent: true});
   await context.run({operation:'deep-extract'}, 'deep extract', {silent: true});
   assert.deepEqual(rememberPassword, [false, true, false, false]);
+  assert.equal(context.s.jobs[1].outputPath, 'C:/test-output/BUNDLE');
+  assert.match(context.s.jobs[1].summary, /C:\/test-output\/BUNDLE/);
   assert.match(context.s.jobs[1].summary, /解压密码未能保存到密码本/);
   assert.doesNotMatch(context.s.jobs[1].summary, /fixture/);
 });

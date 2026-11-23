@@ -4,6 +4,22 @@ use super::*;
 
 const ROLLBACK_FILES: usize = 4096;
 
+#[repr(C)]
+#[derive(Default)]
+struct WorkerIoCounters {
+    read_operations: u64,
+    write_operations: u64,
+    other_operations: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+    other_bytes: u64,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetProcessIoCounters(process: std::os::windows::io::RawHandle, counters: *mut WorkerIoCounters) -> i32;
+}
+
 pub(in crate::engine) struct Pending {
     session: Session,
     _runtime: Vec<crate::engine_stream::PinnedSource>,
@@ -19,6 +35,7 @@ pub(in crate::engine) fn prepare(
     opts: &EngineOptions,
     ctl: &JobControl,
 ) -> Result<Option<(Vec<Entry>, Pending)>, String> {
+    let probe = PhaseTimer::new("direct-extract-probe");
     if opts.codepage.is_some()
         || crate::machine_policy::scope().restricted()
         || !using_process_token()
@@ -72,6 +89,7 @@ pub(in crate::engine) fn prepare(
     if unsafe { BCryptGenRandom(std::ptr::null_mut(), nonce.as_mut_ptr(), 16, 2) } < 0 {
         return Err("direct extraction worker nonce failed".into());
     }
+    drop(probe);
     let _timer = PhaseTimer::new("direct-extract-manifest");
     let mut pending = Pending {
         session: Session::start_reader(&exe, 3, true)?,
@@ -144,6 +162,7 @@ pub(in crate::engine) fn prepare(
                 thread_ack = true;
             }
             26 if thread_ack => {
+                let _timer = PhaseTimer::new("direct-manifest-parse");
                 let entries = full_worker::parse_manifest(&body, &nonce, false, true)?;
                 if password_requested && units != 0 {
                     if let Some(evidence) = &opts.extraction_password_use {
@@ -298,6 +317,7 @@ impl Pending {
         ctl: &JobControl,
     ) -> Result<usize, String> {
         let _timer = PhaseTimer::new("direct-extract");
+        let setup = PhaseTimer::new("direct-prepare-decode");
         let policy = crate::machine_policy::scope();
         let selection = Selection::new(&opts.selected);
         let chosen = entries
@@ -361,6 +381,8 @@ impl Pending {
             let mut decoded = 0u64;
             let mut receipt = None;
             ctl.report_decoding("", count, file_count, decoded, total);
+            drop(setup);
+            let decode = PhaseTimer::new("direct-decode-and-publish");
             while let Some((kind, body)) = self.session.next(ctl)? {
                 let mut data = Fields(&body);
                 if data.take(16)? != self.nonce || receipt.is_some() {
@@ -368,6 +390,7 @@ impl Pending {
                 }
                 match kind {
                     27 if active.is_none() => {
+                        let _timer = PhaseTimer::new("direct-open-output");
                         let index = data.u32()? as usize;
                         data.end()?;
                         let entry = entries.get(index).ok_or("invalid direct output index")?;
@@ -438,6 +461,7 @@ impl Pending {
                 // ACK while the verified previous file is finalized. At most
                 // two unpublished outputs are held by the parent.
                 if let Some((index, target, mut output)) = completed.take() {
+                    let _timer = PhaseTimer::new("direct-commit-output");
                     let entry = &entries[index];
                     if output
                         .as_file()
@@ -466,7 +490,12 @@ impl Pending {
                     }
                 }
             }
-            let exit = self.session.wait_exit(ctl)?;
+            drop(decode);
+            let exit = {
+                let _timer = PhaseTimer::new("direct-worker-exit");
+                self.session.wait_exit(ctl)?
+            };
+            let _finalize = PhaseTimer::new("direct-finalize");
             let receipt =
                 receipt.ok_or("direct extraction worker exited without verification receipt")?;
             if exit != 0
@@ -542,6 +571,12 @@ impl Pending {
             Ok(count)
         })();
         let mode = self.mode;
+        if mode == 2 && PhaseTimer::enabled() {
+            let mut io = WorkerIoCounters::default();
+            if unsafe { GetProcessIoCounters(self.session.child.as_raw_handle(), &mut io) } != 0 {
+                eprintln!("OA_DIRECT_ZIP_READ_OPERATIONS {}", io.read_operations);
+            }
+        }
         drop(self); // Reap the decoder before abandoning the last writable handle or rolling back.
         drop(active);
         drop(completed);

@@ -299,25 +299,28 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
             let projection = r.allow_unencrypted_projection && r.options.password.is_none();
             if r.smart {
                 let archive = std::path::Path::new(&r.path);
-                if archive.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip") || extension.eq_ignore_ascii_case("rar"))
+                let (files, layout) = if archive.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip") || extension.eq_ignore_ascii_case("rar"))
                     && archive.is_file()
                     && (restricted || crate::installer::recognize(&r.path)?.is_none())
                 {
-                    let (files, destination) = engine::extract_smart_engine(&r.path, &r.dest, &r.options, projection)?;
-                    return Ok(json!({"files":files,"destination":destination}));
-                }
-                return engine::with_zip_source(&r.path, &r.options, |source| {
+                    engine::extract_smart_engine(&r.path, &r.dest, &r.options, projection)?
+                } else { engine::with_zip_source(&r.path, &r.options, |source| {
                     let mut options = r.options.clone();
                     let password_evidence = options.extraction_password_use.take();
                     let entries = list_archive(source, &options)?;
-                    let destination = crate::smart_extract::destination(&r.path, &r.dest, &entries, &options)?;
+                    let layout = crate::smart_extract::layout(&r.path, &r.dest, &entries, &options)?;
                     options.extraction_password_use = password_evidence;
                     if options.zone_identifier.is_none() {
                         options.zone_identifier = Some(crate::motw::archive_context(std::path::Path::new(&r.path))?);
                     }
-                    let files = extract_archive_inner(source, &destination, &options, false, projection)?;
-                    Ok(json!({"files":files,"destination":destination}))
-                });
+                    let files = extract_archive_inner(source, &layout.directory, &options, false, projection)?;
+                    Ok((files, layout))
+                })? };
+                let mut result = json!({"files":files,"destination":layout.directory});
+                if let Some(directory) = layout.retained_directory {
+                    result["output_directory"] = json!(directory);
+                }
+                return Ok(result);
             }
             let count = extract_archive_inner(&r.path, &r.dest, &r.options, false, projection)?;
             Ok(json!({"files": count, "destination": r.dest}))

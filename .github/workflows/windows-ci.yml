@@ -5,6 +5,34 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      nested_restart_capture:
+        description: 'Capture nested archive restart behavior using the pinned R3 package'
+        type: boolean
+        default: false
+      nested_product_run:
+        description: 'Pinned successful Windows regression build run'
+        type: string
+        default: '45128040411'
+      nested_product_source:
+        description: 'Full product source commit SHA'
+        type: string
+        default: 'fa5ecd5de3c3826a5422a54c3bbc8f038481f6d6'
+      nested_package_sha256:
+        description: 'Expected portable ZIP SHA-256'
+        type: string
+        default: 'b09d5089eaa0e8bcb5f376598c03be99e5773a716f008e17d49f696450bee6d5'
+      nested_double_edit:
+        description: 'Only verify recovery of the second successive inner edit'
+        type: boolean
+        default: false
+      nested_large_fixture:
+        description: 'Use one 64 MiB stored inner ZIP member in each ordinary scenario'
+        type: boolean
+        default: false
+      nested_expect_recovery:
+        description: 'Require recovery list, Save As and second-restart verification'
+        type: boolean
+        default: false
       run_deep_tests:
         description: 'Run native filesystem, link, ADS and failure-path regressions on an explicitly approved disposable runner'
         type: boolean
@@ -14,6 +42,7 @@ permissions:
   contents: read
 jobs:
   public-regressions:
+    if: github.event_name != 'workflow_dispatch' || !inputs.nested_restart_capture
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -41,6 +70,9 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/test-arm64-package-only.py
           exit $LASTEXITCODE
+      - name: Archive update, encryption, filename and nested write-back regressions
+        shell: pwsh
+        run: ./scripts/check-daily-archive-regressions.ps1
       - name: Selected pure listing and serialization regressions
         shell: pwsh
         run: |
@@ -54,6 +86,7 @@ jobs:
             'engine::selected_worker::zip_listing::tests::zip_member_times_reject_wrong_types_counts_and_existing_unsafe_metadata',
             'engine::selected_worker::zip_listing::tests::zip_member_times_protocol_v2_is_synchronized_and_rejects_v1',
             'engine::parent_round_robin_preserves_every_index_and_parent_order',
+            'engine::rar15_stored::tests::ordinary_volume_headers_share_one_metadata_budget',
             'engine::parent_round_robin_requires_owned_direct_memory_error_publication'
             'engine::release_helpers_use_only_the_bundled_runtime'
           )
@@ -73,6 +106,39 @@ jobs:
           }
           cargo test --locked --manifest-path obz-rs/Cargo.toml --test deep_extract -- --test-threads=1
           exit $LASTEXITCODE
+      - name: Ordinary extraction conflict regressions
+        shell: pwsh
+        run: |
+          $tests = @(
+            'cli_auto_rename_reserves_actual_extraction_paths',
+            'cli_file_colliding_with_directory_honors_safe_conflict_policies'
+            'cli_smart_extraction_reports_the_retained_top_level_directory'
+          )
+          foreach ($testName in $tests) {
+            $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test operations_integration $testName -- --exact 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            Write-Output $result
+            if ($code) { exit $code }
+            if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing extraction test: $testName" }
+          }
+      - name: Classic stored RAR volume verification and extraction
+        shell: pwsh
+        run: |
+          $testName = 'cli_classic_stored_rar_volumes_are_verified_before_publication'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --test operations_integration $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing RAR test: $testName" }
+      - name: Cancel and retry an ordinary ZIP update
+        shell: pwsh
+        run: |
+          $testName = 'engine::owned_update::tests::ordinary_zip_cancel_reaps_its_bound_engine_before_returning'
+          $result = (cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $testName -- --exact 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected exactly one passing ZIP update test: $testName" }
       - name: Explorer argument, COM and filesystem selection tests
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
@@ -129,6 +195,47 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
           python scripts/check-public-package.py $portable[0].FullName
           exit $LASTEXITCODE
+      - name: Verify packaged native ZIP cache and cancellation
+        shell: pwsh
+        run: |
+          $portable = @(Get-ChildItem -LiteralPath dist/x64 -Filter '*-portable.zip' -File)
+          if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
+          ./scripts/check-selected-zip-cache.ps1 -Portable $portable[0].FullName -TargetDirectory target/hardened
+      - name: Set up the hosted desktop tests
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pywin32==312 pywinauto==0.6.9 websockets==15.0.1
+          exit $LASTEXITCODE
+      - name: Verify extraction and restore a script-owned ZIP from the Windows Recycle Bin
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected the packaged x64 GUI' }
+          python scripts/check-hosted-recycle.py --exe $exe[0].FullName --out target/recycle-acceptance
+          exit $LASTEXITCODE
+      - name: Save Recycle Bin acceptance screenshots and receipt
+        if: always() && hashFiles('target/recycle-acceptance/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-recycle-acceptance
+          path: target/recycle-acceptance
+          retention-days: 21
+          if-no-files-found: error
+      - name: Drop an ordinary archive from Explorer into the home window
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected the packaged x64 GUI' }
+          python scripts/check-hosted-home-drop.py --exe $exe[0].FullName --out target/home-drop
+          exit $LASTEXITCODE
+      - name: Save native Explorer drop screenshots and file receipt
+        if: always() && hashFiles('target/home-drop/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x64-home-explorer-drop
+          path: target/home-drop
+          retention-days: 21
+          if-no-files-found: error
       - name: Check native ZIP creation and real file symbolic links
         if: github.event_name == 'workflow_dispatch' && inputs.run_deep_tests
         shell: pwsh
@@ -149,3 +256,61 @@ jobs:
             dist/x64/*-portable.zip
             target/hardened/x86_64-pc-windows-msvc/release/hardened-build.json
             target/hardened/x86_64-pc-windows-msvc/release/pe-security.json
+
+  nested-restart-capture:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.nested_restart_capture
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NESTED_PRODUCT_RUN: ${{ inputs.nested_product_run }}
+      NESTED_PRODUCT_SOURCE: ${{ inputs.nested_product_source }}
+      NESTED_PACKAGE_SHA256: ${{ inputs.nested_package_sha256 }}
+      NESTED_EXPECT_RECOVERY: ${{ inputs.nested_expect_recovery }}
+      NESTED_LARGE_FIXTURE: ${{ inputs.nested_large_fixture }}
+      NESTED_DOUBLE_EDIT: ${{ inputs.nested_double_edit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify R3 build and run isolated nested restart scenarios
+        shell: pwsh
+        run: |
+          if ($env:NESTED_PRODUCT_RUN -notmatch '^\d{1,20}$' -or $env:NESTED_PRODUCT_SOURCE -notmatch '^[0-9a-f]{40}$' -or $env:NESTED_PACKAGE_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Explicit source and package pins required' }
+          $run=gh api "repos/qing-yi-5427/qing-zip/actions/runs/$env:NESTED_PRODUCT_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $run.head_sha -cne $env:NESTED_PRODUCT_SOURCE -or $run.conclusion -cne 'success' -or $run.name -cne 'Windows regression') { throw 'Unexpected product build' }
+          gh run download $env:NESTED_PRODUCT_RUN --repo qing-yi-5427/qing-zip --name qing-zip-windows-x64-trial --dir download
+          if ($LASTEXITCODE) { throw 'R3 artifact unavailable' }
+          $package=@(Get-ChildItem download -Recurse -File -Filter '*-portable.zip')
+          if ($package.Count -ne 1) { throw 'Expected one portable package' }
+          if ((Get-FileHash -LiteralPath $package[0].FullName).Hash.ToLowerInvariant() -cne $env:NESTED_PACKAGE_SHA256) { throw 'Portable package hash mismatch' }
+          Expand-Archive -LiteralPath $package[0].FullName -DestinationPath staged
+          $exe=@(Get-ChildItem staged -Recurse -File -Filter qing-zip.exe)
+          if ($exe.Count -ne 1) { throw 'Expected one GUI executable' }
+          New-Item -ItemType Directory -Force nested-restart-evidence | Out-Null
+          @{ product_source=$run.head_sha; product_run=$run.id; package_sha256=(Get-FileHash $package[0].FullName).Hash.ToLowerInvariant(); gui_sha256=(Get-FileHash $exe[0].FullName).Hash.ToLowerInvariant(); harness=(git rev-parse HEAD).Trim() } | ConvertTo-Json | Set-Content -Encoding utf8 nested-restart-evidence/package.json
+          python -m pip install --disable-pip-version-check playwright==1.55.0 pywinauto==0.6.9 Pillow==11.3.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $captureArgs=@('--exe', $exe[0].FullName)
+          if ($env:NESTED_EXPECT_RECOVERY -eq 'true') { $captureArgs += '--expect-recovery' }
+          if ($env:NESTED_LARGE_FIXTURE -eq 'true') { $captureArgs += '--large' }
+          if ($env:NESTED_DOUBLE_EDIT -eq 'true') { $captureArgs += '--double-edit-only' }
+          python scripts/nested_restart_gui.py @captureArgs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($env:NESTED_EXPECT_RECOVERY -eq 'true' -and $env:NESTED_DOUBLE_EDIT -ne 'true') {
+            python scripts/nested_multi_layer_recovery.py --exe $exe[0].FullName
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          exit 0
+      - name: Preserve real GUI observations and cleanup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nested-restart-gui-evidence
+          path: nested-restart-evidence/
+          if-no-files-found: warn
+          retention-days: 30

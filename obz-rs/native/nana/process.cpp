@@ -103,3 +103,64 @@ extern "C" DWORD qing_spawn_full_worker(const wchar_t *exe, HANDLE *process, HAN
 extern "C" DWORD qing_spawn_rar_list_worker(const wchar_t *exe, HANDLE *process, HANDLE *input, HANDLE *output) noexcept {
   return spawn_archive_worker(exe, nullptr, 0, process, input, output, 4);
 }
+
+extern "C" DWORD qing_spawn_owned_update(const wchar_t *exe, wchar_t *command, const wchar_t *cwd,
+                                         HANDLE input, HANDLE output, HANDLE error,
+                                         HANDLE *process, HANDLE *owner) noexcept {
+  *process = *owner = nullptr;
+  try {
+    // The caller alone owns this unnamed, non-inheritable handle. The kernel
+    // assigns the child to the job during CreateProcess, before it can run.
+    Handle job;
+    job.value = CreateJobObjectW(nullptr, nullptr);
+    if (!job.value) return GetLastError();
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+      return GetLastError();
+
+    Handle child_in, child_out, child_err;
+    const HANDLE self = GetCurrentProcess();
+    const auto duplicate = [self](HANDLE source, Handle &target) {
+      return DuplicateHandle(self, source, self, &target.value, 0, TRUE, DUPLICATE_SAME_ACCESS);
+    };
+    if (input) {
+      if (!duplicate(input, child_in)) return GetLastError();
+    } else {
+      SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+      child_in.value = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (child_in.value == INVALID_HANDLE_VALUE) return GetLastError();
+    }
+    if (!duplicate(output, child_out) || !duplicate(error, child_err)) return GetLastError();
+
+    SIZE_T length = 0;
+    InitializeProcThreadAttributeList(nullptr, 2, 0, &length);
+    if (!length) return GetLastError();
+    std::vector<unsigned char> buffer(length);
+    auto list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer.data());
+    if (!InitializeProcThreadAttributeList(list, 2, 0, &length)) return GetLastError();
+    HANDLE allowed[] = {child_in.value, child_out.value, child_err.value};
+    HANDLE job_list[] = {job.value};
+    Attributes attributes{list};
+    if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, allowed,
+                                   sizeof(allowed), nullptr, nullptr) ||
+        !UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, job_list,
+                                   sizeof(job_list), nullptr, nullptr)) return GetLastError();
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = child_in.value;
+    startup.StartupInfo.hStdOutput = child_out.value;
+    startup.StartupInfo.hStdError = child_err.value;
+    startup.lpAttributeList = list;
+    PROCESS_INFORMATION child{};
+    if (!CreateProcessW(exe, command, nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                        nullptr, cwd, &startup.StartupInfo, &child)) return GetLastError();
+    CloseHandle(child.hThread);
+    *process = child.hProcess;
+    *owner = job.take();
+    return ERROR_SUCCESS;
+  } catch (...) { return ERROR_OUTOFMEMORY; }
+}

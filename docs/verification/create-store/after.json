@@ -1,0 +1,10 @@
+{
+  "mode": "candidate",
+  "gui_sha256": "26c498a3b0cef2041481c51e517c89bc10defd436f95b15fc7a641f7392df676",
+  "form_method": "Store",
+  "level": 0,
+  "actual_zip_method": 0,
+  "unpacked_bytes": 225000,
+  "packed_bytes": 225000,
+  "content_sha256": "46d23027c8be96f2d6e2b025ba26dc080dae5ced2cf5e47409ede3683cfdda3e"
+}

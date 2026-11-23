@@ -84,7 +84,7 @@ window.QingDeepExtract=({passwordBook,root,s,pref,esc,btn,dialog,$,run,invoke,ap
     <div class="oa-extract-modes"><label class="qa-check" title="包内已有同名顶层目录时，沿用这层目录"><input id="oa-deep-smart" type="checkbox" ${s.sameFolder?'checked':''}>智能解压</label></div>
     <label class="oa-extract-conflict">同名文件<select id="oa-deep-conflict" aria-describedby="oa-deep-conflict-help">${conflictChoices(s.overwrite)}</select></label>
    </div>
-   <p id="oa-deep-plan-help" class="qa-sub oa-extract-hint">每个原包使用独立目录。目录重名时会自动编号，分卷归并后使用同一目录。</p>
+   <p id="oa-deep-plan-help" class="qa-sub oa-extract-hint">每个原包使用独立目录。展开后确定实际目录，重名时自动编号。分卷归并后使用同一目录。</p>
    <p id="oa-deep-conflict-help" class="qa-sub oa-extract-hint" role="status"></p>
    ${passwordMarkup('oa-deep-password','填写解压密码')}
    <details class="oa-extract-advanced oa-deep-paste">

@@ -1,0 +1,79 @@
+name: Disposable Windows NSIS upgrade acceptance
+on:
+  pull_request:
+    paths:
+      - 'scripts/installer.nsi'
+      - 'scripts/check-nsis-upgrade-hosted.py'
+      - 'scripts/test-hosted-installer-guard.py'
+      - '.github/workflows/nsis-upgrade-acceptance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  hosted-install-upgrade-uninstall:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Assert disposable x64 runner and record source
+        shell: pwsh
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory evidence | Out-Null
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
+          @{source=(git rev-parse HEAD).Trim();pr_head=$env:PR_HEAD;runner=$env:RUNNER_OS;arch=$env:RUNNER_ARCH;run=$env:GITHUB_RUN_ID;stage='build-pending'} | ConvertTo-Json | Set-Content evidence/bootstrap.json -Encoding utf8
+          python scripts/test-hosted-installer-guard.py
+          if ($LASTEXITCODE) { throw 'Installer guard test failed' }
+      - name: Fetch and verify pinned NSIS and prior official release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-nsis-inputs'
+          New-Item -ItemType Directory $inputs | Out-Null
+          $nsisArchive=Join-Path $inputs 'nsis-3.13.zip'
+          curl.exe --fail --location --retry 2 --output $nsisArchive 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip'
+          if ($LASTEXITCODE) { throw 'NSIS download failed' }
+          if ((Get-FileHash $nsisArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8') { throw 'NSIS digest mismatch' }
+          Expand-Archive -LiteralPath $nsisArchive -DestinationPath (Join-Path $inputs 'nsis')
+          gh release download v0.12.20 --repo qing-yi-5427/qing-zip --pattern 'qing-zip-0.12.20-setup.exe' --pattern 'qing-zip-0.12.20-portable.zip' --dir $inputs
+          if ($LASTEXITCODE) { throw 'Release download failed' }
+          if ((Get-FileHash (Join-Path $inputs 'qing-zip-0.12.20-setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -ne '83a08671edde7bb53ff37582f4d82fd880c968029ddcd39001119efc11a979e1') { throw 'Prior setup digest mismatch' }
+          if ((Get-FileHash (Join-Path $inputs 'qing-zip-0.12.20-portable.zip') -Algorithm SHA256).Hash.ToLowerInvariant() -ne '6acef9b5a4ae726b6e6bd9bad4eecda5b4238d5f60296cc4b5d74e7671efb84a') { throw 'Prior portable digest mismatch' }
+      - name: Build hardened candidate installer with the project build script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-nsis-inputs'
+          $nsis=Join-Path $inputs 'nsis/nsis-3.13/makensis.exe'
+          if (!(Test-Path -LiteralPath $nsis)) { throw 'Pinned NSIS executable missing' }
+          $buildDir=Join-Path $env:RUNNER_TEMP 'qz-nsis-build'
+          $dist=Join-Path $env:RUNNER_TEMP 'qz-nsis-dist'
+          ./scripts/build.ps1 -NsisPath $nsis -TargetDirectory $buildDir -OutputDirectory $dist
+          if ($LASTEXITCODE) { throw 'Candidate build failed' }
+          Copy-Item (Join-Path $buildDir 'x86_64-pc-windows-msvc/release/hardened-build.json') evidence/hardened-build.json
+          Copy-Item (Join-Path $buildDir 'x86_64-pc-windows-msvc/release/pe-security.json') evidence/pe-security.json
+      - name: Install official release, upgrade, verify, and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
+          $inputs=Join-Path $env:RUNNER_TEMP 'qz-nsis-inputs'
+          $dist=Join-Path $env:RUNNER_TEMP 'qz-nsis-dist'
+          python scripts/check-nsis-upgrade-hosted.py --old-setup (Join-Path $inputs 'qing-zip-0.12.20-setup.exe') --old-portable (Join-Path $inputs 'qing-zip-0.12.20-portable.zip') --candidate-setup (Join-Path $dist 'qing-zip-0.12.23-setup.exe') --candidate-stage (Join-Path $dist 'qing-zip-0.12.23-portable') --out evidence/acceptance
+          if ($LASTEXITCODE) { throw 'Installer acceptance failed; inspect saved receipt' }
+      - name: Upload pass or failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nsis-upgrade-acceptance-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          path: evidence/

@@ -1,0 +1,80 @@
+name: Explorer review package
+on:
+  pull_request:
+    paths:
+      - 'qing-shell/**'
+      - 'scripts/msix/**'
+      - 'obz-gui/frontend/app-icon.png'
+      - '.github/workflows/shell-package.yml'
+  workflow_dispatch:
+    inputs:
+      hosted_explorer:
+        description: 'Run disposable signed Windows 11 Explorer review'
+        type: boolean
+        default: false
+      hosted_portable_lifecycle:
+        description: 'Exercise portable relocation and final unregistration instead of the three-menu review'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  unsigned-package:
+    if: github.event_name != 'workflow_dispatch' || !inputs.hosted_explorer
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, architecture: x64 }
+          - { runner: windows-11-arm, architecture: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build native Explorer commands and verify the unsigned package
+        shell: pwsh
+        env:
+          SHELL_ARCH: ${{ matrix.architecture }}
+        run: |
+          $arch = $env:SHELL_ARCH
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $arch) {
+            throw "Runner OS architecture must be $arch"
+          }
+          $build = Join-Path $env:RUNNER_TEMP 'qing-shell-build'
+          $platform = if ($arch -eq 'arm64') { 'ARM64' } else { 'x64' }
+          ./scripts/msix/Build-Component.ps1 -Architecture $platform -BuildDirectory $build
+          $kits = (Get-ItemProperty 'HKLM:/SOFTWARE/Microsoft/Windows Kits/Installed Roots').KitsRoot10
+          $sdk = Get-ChildItem (Join-Path $kits 'bin') -Directory |
+            Where-Object Name -match '^10\.0\.\d+\.\d+$' |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object {
+              Join-Path $_.FullName $arch
+              if ($arch -ne 'x64') { Join-Path $_.FullName 'x64' }
+            } |
+            Where-Object { (Test-Path "$_/makeappx.exe") -and (Test-Path "$_/mt.exe") } |
+            Select-Object -First 1
+          if (!$sdk) { throw 'Windows SDK packaging tools missing' }
+          python scripts/msix/test-review-package.py "$build/Release" $arch $sdk
+          exit $LASTEXITCODE
+
+  hosted-explorer:
+    if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.hosted_explorer
+    runs-on: windows-11-arm
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Exercise a signed temporary sparse package on disposable Windows 11
+        shell: pwsh
+        env:
+          PORTABLE_LIFECYCLE: ${{ inputs.hosted_portable_lifecycle }}
+        run: ./scripts/msix/hosted-explorer-review.ps1 -PortableLifecycle:($env:PORTABLE_LIFECYCLE -eq 'true')
+      - name: Upload Explorer observations and cleanup receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-explorer-review
+          path: explorer-evidence/
+          if-no-files-found: error
+          retention-days: 30

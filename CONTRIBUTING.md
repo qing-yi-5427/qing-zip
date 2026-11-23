@@ -19,6 +19,8 @@ cargo check --locked --manifest-path obz-gui/Cargo.toml
 
 ## 测试与提交
 
+在对应版本的源码检出中，`docs/PRODUCT_VISION.md` 和 `docs/OPTIMIZATION_ROADMAP.md` 说明选题依据。复现问题或比较候选版本时，查阅同目录的 `QUALITY_REPORT.md`、`TEST_MATRIX.md` 和 `PERFORMANCE_REPORT.md`。[源码仓库](https://github.com/qing-yi-5427/qing-zip)
+
 - 在 PR 中写明可见变化、验证步骤和实际结果。处理归档修改、取消、解压和覆盖时，记录原包及输出的状态。
 - 本机验证优先使用普通临时文件。涉及 NTFS 备用数据流写入、事务、特殊文件系统边界的验证请在获准的可丢弃环境中执行。Windows 回归工作流保留独立的手动入口。
 - 前端位于 `obz-gui/frontend`，桌面命令在 `obz-gui/src`，归档核心和 CLI 位于 `obz-rs`，Explorer 组件位于 `qing-shell`。组件许可证和发布清单位于 `licenses` 与 `runtime`。

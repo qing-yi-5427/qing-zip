@@ -40,6 +40,14 @@ fn regular_create_reports_progress_and_cancels_without_publication() {
             errors.contains("OA_CREATE_WORKER status=complete"),
             "{errors}"
         );
+        if std::env::var_os("QING_REPORT_CANCEL_TIMINGS").is_some() {
+            let output = String::from_utf8_lossy(&result.stdout);
+            let timing = output
+                .lines()
+                .find(|line| line.starts_with("QING_CANCEL "))
+                .expect("expected timing from the child process");
+            println!("{timing}");
+        }
         }
         return;
     }
@@ -100,14 +108,32 @@ fn regular_create_reports_progress_and_cancels_without_publication() {
         // The small image remains pinned while the acknowledged worker encodes.
         assert!(fs::File::options().write(true).open(&helper).is_err());
     }
+    let progress = control.snapshot();
+    let cancel_started = Instant::now();
     control.cancel();
     assert!(job.join().unwrap().unwrap_err().contains("cancelled"));
+    let cancel_ms = cancel_started.elapsed().as_secs_f64() * 1000.0;
     assert!(!target.exists());
     assert!(!fs::read_dir(tmp.path()).unwrap().any(|e| e
         .unwrap()
         .file_name()
         .to_string_lossy()
         .starts_with(".qing-zip-create-")));
+    if helper.exists() {
+        // This helper is a private ordinary copy created by the test host.
+        fs::File::options().write(true).open(&helper).unwrap();
+    }
+    if std::env::var_os("QING_REPORT_CANCEL_TIMINGS").is_some() {
+        println!("QING_CANCEL {}", serde_json::json!({
+            "adjacent_worker": helper.exists(),
+            "phase": progress.phase,
+            "percent": progress.percent,
+            "cancel_ms": cancel_ms,
+            "target_absent": true,
+            "staging_absent": true,
+            "worker_file_released": helper.exists().then_some(true),
+        }));
+    }
     fs::write(&file, b"after cancellation").unwrap();
     let new = JobControl::new();
     engine::create_with_control(

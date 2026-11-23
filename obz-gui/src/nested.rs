@@ -71,7 +71,26 @@ fn update_dirty(sessions: &BTreeMap<u64, Session>) {
 pub fn dirty() -> bool {
     DIRTY.load(Ordering::SeqCst)
 }
-pub fn cleanup() {
+pub fn cleanup_if_idle() -> Option<bool> {
+    // Dropping workspaces can touch disk. Only the registry decision and
+    // detachment need to happen under the job-admission lock.
+    let removed = crate::jobs::if_idle(take_clean_sessions)?;
+    Some(removed.is_some())
+}
+fn take_clean_sessions() -> Option<BTreeMap<u64, Session>> {
+    if dirty() {
+        return None;
+    }
+    let mut sessions = registry().lock().ok()?;
+    if sessions.values().any(|session| session.dirty || session.editor.is_some()) {
+        return None;
+    }
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    DIRTY.store(false, Ordering::SeqCst);
+    Some(std::mem::take(&mut *sessions))
+}
+#[cfg(test)]
+fn cleanup() {
     let mut sessions = registry().lock().unwrap_or_else(|e| e.into_inner());
     GENERATION.fetch_add(1, Ordering::Relaxed);
     sessions.clear();
@@ -211,9 +230,11 @@ pub async fn close_nested(ids: Vec<u64>, discard: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 fn close_sessions(ids: Vec<u64>, discard: bool) -> Result<(), String> {
-    if crate::jobs::running() {
-        return Err("请等待当前任务完成".into());
-    }
+    crate::jobs::if_idle(|| close_idle_sessions(ids, discard))
+        .unwrap_or_else(|| Err("请等待当前任务完成".into()))?;
+    Ok(())
+}
+fn close_idle_sessions(ids: Vec<u64>, discard: bool) -> Result<Vec<Session>, String> {
     let mut sessions = registry().lock().map_err(|_| "内层归档会话不可用")?;
     let paths = ids
         .iter()
@@ -240,11 +261,9 @@ fn close_sessions(ids: Vec<u64>, discard: bool) -> Result<(), String> {
     {
         return Err("请通过外部编辑会话确认写回或结束编辑".into());
     }
-    for id in ids {
-        sessions.remove(&id);
-    }
+    let removed = ids.into_iter().filter_map(|id| sessions.remove(&id)).collect();
     update_dirty(&sessions);
-    Ok(())
+    Ok(removed)
 }
 pub fn validate_request(request: &Request, recycle: bool) -> Result<(), String> {
     if !recycle {
@@ -599,6 +618,8 @@ mod tests {
         assert!(!dirty());
         assert!(session_views().iter().all(|s| !s.conflict));
         rename(&a.path, "content.txt", "a-edited.txt");
+        assert_eq!(cleanup_if_idle(), Some(false));
+        assert!(std::path::Path::new(&a.path).exists());
         assert!(close_sessions(vec![a.id], false).is_err());
         // A genuine outside writer changes the same object. No receipt can authorize it.
         std::fs::write(&outer, "outside version").unwrap();

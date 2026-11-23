@@ -67,6 +67,14 @@ test('smart and here retain exact request rules and inherit completion preferenc
  assert.equal(f.calls.filter(c=>c[0]==='window_action').length,1);
  assert.equal(f.calls.at(-1)[0],'window_action');
 });
+test('smart shell extraction opens the retained top-level directory',async()=>{
+ const f=fixture({openAfter:true});
+ const native=f.context.run;
+ f.context.run=async (...args)=>({...await native(...args),output_directory:'C:\\archives\\Bundle'});
+ f.queue('C:\\archives\\bundle.zip',true);
+ await f.context.pumpShellExtractions();
+ assert.equal(f.calls.find(([command])=>command==='reveal_path')[1].path,'C:\\archives\\Bundle');
+});
 test('the first completed job progress dialog permits the next extraction but never a user confirmation',async()=>{
  for(const modal of ['jobs','close-confirm']){
   const f=fixture();

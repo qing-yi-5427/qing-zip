@@ -1,0 +1,24 @@
+{
+  "phase": "relocated",
+  "passed": true,
+  "menu_samples": [
+    {
+      "modern_popup_present": true,
+      "qing_zip_group_present": true
+    }
+  ],
+  "input_sha256": {
+    "archive.zip": "fb3bfc687142d49532bc1979fce80e5fd409533a640bd9617625e493d0558fc9",
+    "keep.txt": "95a80968d5138e1e8e3bea4d0181a1959903c5cb544f4ebb68a838abccd5b140"
+  },
+  "first_run_actions": [],
+  "fresh_explorer_window": true,
+  "extract_here_clicked": true,
+  "relocated_executable_launched": true,
+  "output_sha256": {
+    "first.txt": "131ca4ad21ba48994163333e9f527935473b97b97be81bf4880a95111f5e1ec8",
+    "second.txt": "b68bdef72c085ef54d27ae8ac464c42d177dd3a29db2464d7b65443e58550e79"
+  },
+  "inputs_preserved": true,
+  "output_directory_exact": true
+}

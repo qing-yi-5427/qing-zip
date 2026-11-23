@@ -122,7 +122,7 @@ pub(super) fn create_stream(
     thread::scope(|scope| -> Result<(), String> {
         let encoder = scope.spawn(move || run(&tar, None, opts, Some(writer)));
         let compressed = run_program_log_with_directory(
-            executable()?, &compressor, None, opts, None, false, false, None, Some(reader),
+            executable()?, &compressor, None, opts, None, false, false, None, Some(reader), EngineLifetime::Ordinary,
         ).and_then(|(log, _)| read_engine_output(log));
         let encoded = encoder.join().map_err(|_| "TAR encoder stopped unexpectedly".to_owned())?;
         ctl.check()?;

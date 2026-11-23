@@ -19,24 +19,42 @@ pub(crate) fn archive_name(path: &str) -> Result<String,String> {
     Ok(name)
 }
 
-pub fn destination(archive: &str, base: &str, entries: &[Entry], opts: &EngineOptions) -> Result<String,String> {
+pub(crate) struct Layout {
+    pub directory: String,
+    pub retained_directory: Option<String>,
+}
+
+pub(crate) fn layout(archive: &str, base: &str, entries: &[Entry], opts: &EngineOptions) -> Result<Layout, String> {
     let stem=archive_name(archive)?;
     let folder=crate::extract::relative_path(&stem)?;
     let mut already_wrapped=true;
     let selection = engine::Selection::new(&opts.selected);
     let mut matched=false;
+    let mut wrapper = None;
     for entry in entries {
         let safe=engine::validate_name(&entry.name)?;
         if !selection.contains(&entry.name) { continue; }
         matched=true;
         let mut parts=safe.components();
-        let top=parts.next().ok_or("invalid archive entry")?.as_os_str().to_string_lossy();
+        let top = parts.next().ok_or("invalid archive entry")?.as_os_str();
         // An implicit directory (only child entries) counts as a top-level folder too.
-        if !top.eq_ignore_ascii_case(&stem) || (!entry.is_dir && parts.next().is_none()){already_wrapped=false;}
+        if !top.to_string_lossy().eq_ignore_ascii_case(&stem) || (!entry.is_dir && parts.next().is_none()) {
+            already_wrapped = false;
+        } else if wrapper.is_none() {
+            wrapper = Some(top.to_os_string());
+        }
     }
     if !matched && !opts.selected.is_empty() { return Err("selected archive entries were not found".into()); }
     already_wrapped &= matched;
-    Ok(if already_wrapped {PathBuf::from(base)} else {PathBuf::from(base).join(folder)}.to_string_lossy().into_owned())
+    let base = PathBuf::from(base);
+    let retained_directory = wrapper.filter(|_| already_wrapped)
+        .map(|wrapper| base.join(wrapper).to_string_lossy().into_owned());
+    let directory = if already_wrapped { base } else { base.join(folder) };
+    Ok(Layout { directory: directory.to_string_lossy().into_owned(), retained_directory })
+}
+
+pub fn destination(archive: &str, base: &str, entries: &[Entry], opts: &EngineOptions) -> Result<String, String> {
+    Ok(layout(archive, base, entries, opts)?.directory)
 }
 
 #[cfg(test)]
