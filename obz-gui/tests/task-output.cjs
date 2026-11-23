@@ -23,7 +23,16 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   vm.runInContext(taskSource(source),context);
   context.error(Error('operation cancelled'));
   assert.equal(context.taskError(Error('destination conflict: D:/中文/既有内容.txt')), '目标位置已有同名项目。\nD:/中文/既有内容.txt');
+  assert.equal(context.taskError('incorrect password or damaged encrypted archive'), '密码不正确，或加密压缩包已损坏。');
+  assert.equal(context.taskError(Error('incorrect password or damaged encrypted archive')), '密码不正确，或加密压缩包已损坏。');
+  assert.equal(context.taskError('incorrect password or damaged encrypted archive: detail'), 'incorrect password or damaged encrypted archive: detail');
   assert.deepEqual(notices,['任务已取消']);assert.equal(field.textContent,'');
+  context.overlay.hidden=true;
+  context.error(Error('incorrect password or damaged encrypted archive'));
+  assert.equal(notices.at(-1),'密码不正确，或加密压缩包已损坏。');
+  context.s.jobs=[{label:'解压',status:'failed',error:'incorrect password or damaged encrypted archive'}];
+  for(const name of ['jobs','historyPage']) assert.match(context[name](),/密码不正确，或加密压缩包已损坏。/);
+  context.overlay.hidden=false;
   const nested='写回失败，内层工作副本已保留，可重试或另存为：operation cancelled';
   context.error(Error(nested));
   assert.equal(notices.at(-1),'任务已取消。内层工作副本已保留，可重试或另存为。');

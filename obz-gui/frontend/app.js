@@ -716,6 +716,7 @@ function taskError(e){
  if(directoryError)return directoryError;
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);
  if(conflict)return '目标位置已有同名项目。\n'+conflict[1];
+ if(/^(?:Error:\s*)?incorrect password or damaged encrypted archive[.!。]?$/i.test(text))return '密码不正确，或加密压缩包已损坏。';
  if(/^(?:Error:\s*)?(?:operation cancelled|任务已取消)[.!。]?$/i.test(text))return '任务已取消';
  if(/^(?:Error:\s*)?写回失败，内层工作副本已保留，可重试或另存为：operation cancelled[.!。]?$/i.test(text))return '任务已取消。内层工作副本已保留，可重试或另存为。';
  return text;
