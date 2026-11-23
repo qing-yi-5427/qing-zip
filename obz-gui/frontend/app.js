@@ -706,10 +706,12 @@ async function writeBatchResume(plan){
   return false;
  }
 }
+let batchReviewTarget;
 function showBatchResumeReview(result){
  if(!result)return;
+ batchReviewTarget={result,revision:result.revision||''};
  const pending=result.entries.filter(entry=>entry.status==='pending');
- dialog('确认继续批量解压',`<div id="oa-batch-resume-review" data-revision="${esc(result.revision)}">
+ dialog('确认继续批量解压',`<div id="oa-batch-resume-review" data-revision="${esc(result.revision||'')}">
   <p>继续时会读取以下路径上的当前压缩包。</p>
   <p>同名文件 · ${batchPolicies[result.overwrite]}</p>
   <p>继续后，目标中已有的同名文件会按原策略被替换。</p>
@@ -720,9 +722,17 @@ function showBatchResumeReview(result){
 }
 async function confirmBatchResume(){
  const revision=$('oa-batch-resume-review')?.dataset.revision;
- const reviewed=s.savedBatch;
- if(!revision||reviewed?.revision!==revision)throw Error('待继续项目已更改，请返回并重新查看。');
+ const reviewed=batchReviewTarget?.result;
+ if(revision===undefined||!reviewed||(reviewed!==s.savedBatch&&reviewed!==s.batchResult)
+    ||revision!==batchReviewTarget.revision||(reviewed.revision||'')!==revision)
+  throw Error('待继续项目已更改，请返回并重新查看。');
+ batchReviewTarget=null;
  await useBatchResume(reviewed);
+}
+async function requestBatchResume(result){
+ if(!result)return;
+ if(result.operation==='extract'&&result.overwrite==='overwrite')showBatchResumeReview(result);
+ else await useBatchResume(result);
 }
 async function backupDamagedBatchResume(){
  let backup;
@@ -2505,11 +2515,8 @@ case'batch-result':{
 }
 case'batch-output':if(s.batchResult?.hasOutput)await invoke('reveal_path',{path:s.batchResult.destination});break;
 case'batch-output-saved':if(s.savedBatch?.hasOutput)await invoke('reveal_path',{path:s.savedBatch.destination});break;
-case'batch-resume':if(s.batchResult?.entries.some(entry=>entry.status==='pending'))await useBatchResume(s.batchResult);break;
-case'batch-resume-saved':
- if(s.savedBatch?.overwrite==='overwrite')showBatchResumeReview(s.savedBatch);
- else await useBatchResume(s.savedBatch);
- break;
+case'batch-resume':if(s.batchResult?.entries.some(entry=>entry.status==='pending'))await requestBatchResume(s.batchResult);break;
+case'batch-resume-saved':await requestBatchResume(s.savedBatch);break;
 case'batch-confirm-resume':await confirmBatchResume();break;
 case'batch-backup-damaged':await backupDamagedBatchResume();break;
 case'batch-discard':await useBatchResume(s.savedBatch,true);break;
