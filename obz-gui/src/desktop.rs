@@ -27,7 +27,7 @@ fn wide(s: &str) -> Result<Vec<u16>, String> {
     }
     Ok(v)
 }
-fn no_links(path: &Path) -> Result<(), String> {
+pub(crate) fn no_links(path: &Path) -> Result<(), String> {
     for p in path.ancestors() {
         match fs::symlink_metadata(p) {
             Ok(m) => {
