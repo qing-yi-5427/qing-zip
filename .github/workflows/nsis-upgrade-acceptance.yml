@@ -2,6 +2,7 @@ name: Disposable Windows NSIS upgrade acceptance
 on:
   pull_request:
     paths:
+      - 'scripts/installer.nsi'
       - 'scripts/check-nsis-upgrade-hosted.py'
       - 'scripts/test-hosted-installer-guard.py'
       - '.github/workflows/nsis-upgrade-acceptance.yml'

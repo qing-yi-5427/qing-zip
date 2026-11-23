@@ -139,25 +139,29 @@ def main():
         save()
         check(not report['candidate_files_remaining'],'candidate shipped file survived uninstall; see receipt')
         passed('uninstall_removed_candidate_payload_registration_and_shortcuts')
-        remaining={p.relative_to(inst).as_posix() for p in inst.rglob('*') if p.is_file()}
-        expected_remaining={sentinel.relative_to(inst).as_posix(),archive.relative_to(inst).as_posix()}
+        remaining={p.relative_to(inst).as_posix():sha(p) for p in inst.rglob('*') if p.is_file()}
+        expected_user={sentinel.relative_to(inst).as_posix():sentinel_sha,archive.relative_to(inst).as_posix():original_sha}
+        # Silent upgrades never consent to moving historical files. Only the
+        # old-only files verified during the clean install may remain alongside
+        # the two synthetic user files, and every hash must still match.
+        expected_remaining={**old_only,**expected_user}
         report['remaining_after_uninstall']=[]
-        with zipfile.ZipFile(old_portable) as previous:
-            old_names=set(previous.namelist())
-            for name in sorted(remaining):
-                digest=sha(inst/name)
-                from_old=name in old_names and hashlib.sha256(previous.read(name)).hexdigest()==digest
-                report['remaining_after_uninstall'].append({'relative_path':name,'sha256':digest,
-                    'classification':'synthetic_user_file' if name in expected_remaining else 'unchanged_previous_release_file' if from_old else 'unexpected',
-                    'verified_old_only_at_install':name in old_only and old_only[name]==digest})
+        for name,digest in sorted(remaining.items()):
+            verified_old=old_only.get(name)==digest
+            classification=('synthetic_user_file' if expected_user.get(name)==digest else
+                            'unchanged_previous_release_file' if verified_old else 'unexpected')
+            report['remaining_after_uninstall'].append({'relative_path':name,'sha256':digest,
+                'classification':classification,'verified_old_only_at_install':verified_old})
         save()
-        check(remaining==expected_remaining,'unexpected remaining files after uninstall; see receipt')
+        check(remaining==expected_remaining,'silent upgrade and uninstall did not preserve exactly the expected files and hashes; see receipt')
+        passed('silent_upgrade_and_uninstall_preserved_verified_previous_release_files')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(extracted)==source_sha
               and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'uninstall changed user data')
         report.update({'old_executable_version':'0.12.20.0','candidate_executable_version':'0.12.23.0',
                        'source_sha256':source_sha,'archive_sha256':original_sha,'extracted_sha256':sha(extracted),
                        'inside_sentinel_sha256':sentinel_sha,'outside_sentinel_sha256':external_sha,
-                       'candidate_shipped_file_count':len(shipped),'remaining_user_file_count':len(remaining)})
+                       'candidate_shipped_file_count':len(shipped),'remaining_user_file_count':len(expected_user),
+                       'remaining_previous_release_file_count':len(old_only)})
         passed('uninstall_removed_payload_and_registration_preserved_user_files')
         report['status']='passed'
     except Exception as error:

@@ -64,8 +64,12 @@ jobs:
       - name: Verify ordinary recovery rename and occupied source
         shell: pwsh
         run: |
-          cargo test --locked --manifest-path obz-rs/Cargo.toml --lib retired_install::tests::ordinary_recovery_rename_allows_target_write_sharing_without_clobbering -- --exact
-          exit $LASTEXITCODE
+          $name = 'retired_install::tests::ordinary_recovery_rename_allows_target_write_sharing_without_clobbering'
+          $result = cargo test --locked --manifest-path obz-rs/Cargo.toml --lib $name -- --exact 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $result
+          if ($code) { exit $code }
+          if ($result -notmatch 'test result: ok\. 1 passed; 0 failed;') { throw "Expected one passing ordinary file test: $name" }
       - name: Upload installer and migration receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
