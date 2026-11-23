@@ -1,0 +1,86 @@
+{
+  "scenarios": {
+    "7z": {
+      "desktop": "private Win32 desktop; real WebView2 via CDP",
+      "gui_sha256": "0200fee7c28d0e5b68bff2f91d6a2f07a43f9e85eece4fd1a875c6cc74a48dbe",
+      "reference_sha256": "4a41aa37786c7eae7451e81c2c97458d5d1ae5a3a8154637a0d5f77adc05e619",
+      "source_sha256": "e3828c1a05f3ca2c29f5eb2ca496df23adab4f31df665878893cb31d01826580",
+      "sentinel_sha256": "df5cf0faf46f825867070ccbed483a77f68c3380f2add40a619079b5623641ca",
+      "tar_submission_blocked_no_output": true,
+      "source_and_sentinel_preserved": true,
+      "normal_gui_exit": true,
+      "archives": {
+        "7z": {
+          "archive_sha256": "e9510d057c7a46ef4226257f7bc0d8f19712167b24d4f7a115d9ad57aae9a358",
+          "encrypted_names": true,
+          "empty_list_exit_code": 2,
+          "wrong_list_exit_code": 2,
+          "correct_list_exit_code": 0,
+          "extractions": {
+            "empty": {
+              "exit_code": 2,
+              "files": 0,
+              "all_files_empty": true,
+              "matches_source": false
+            },
+            "wrong": {
+              "exit_code": 2,
+              "files": 0,
+              "all_files_empty": true,
+              "matches_source": false
+            },
+            "correct": {
+              "exit_code": 0,
+              "files": 1,
+              "all_files_empty": false,
+              "matches_source": true
+            }
+          }
+        }
+      }
+    },
+    "zip": {
+      "desktop": "private Win32 desktop; real WebView2 via CDP",
+      "gui_sha256": "0200fee7c28d0e5b68bff2f91d6a2f07a43f9e85eece4fd1a875c6cc74a48dbe",
+      "reference_sha256": "4a41aa37786c7eae7451e81c2c97458d5d1ae5a3a8154637a0d5f77adc05e619",
+      "source_sha256": "e3828c1a05f3ca2c29f5eb2ca496df23adab4f31df665878893cb31d01826580",
+      "sentinel_sha256": "df5cf0faf46f825867070ccbed483a77f68c3380f2add40a619079b5623641ca",
+      "tar_submission_blocked_no_output": null,
+      "source_and_sentinel_preserved": true,
+      "normal_gui_exit": true,
+      "archives": {
+        "zip": {
+          "archive_sha256": "c7272ebec49f66097d1d2608ad79f30596e0c5f407bbda5d5a8704628b3659f7",
+          "encrypted_names": false,
+          "empty_list_exit_code": 0,
+          "wrong_list_exit_code": 0,
+          "correct_list_exit_code": 0,
+          "extractions": {
+            "empty": {
+              "exit_code": 2,
+              "files": 1,
+              "all_files_empty": true,
+              "matches_source": false
+            },
+            "wrong": {
+              "exit_code": 2,
+              "files": 1,
+              "all_files_empty": true,
+              "matches_source": false
+            },
+            "correct": {
+              "exit_code": 0,
+              "files": 1,
+              "all_files_empty": false,
+              "matches_source": true
+            }
+          },
+          "zip_encryption_flag": true,
+          "zip_method": 99,
+          "aes_strength_bits": 256
+        }
+      }
+    }
+  },
+  "private_fixture_removed": true
+}

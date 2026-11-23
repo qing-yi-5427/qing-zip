@@ -4,6 +4,10 @@
 
 `PASS` 已执行并通过。`FAIL` 已执行且未达到预期。`SKIP` 明确跳过且有记录。`BLOCKED` 缺少执行所需的设备、环境或授权。`NOT RUN` 本轮未执行。历史 CI 和本轮实测分开记录。
 
+| 场景 | 实际结果 |
+| --- | --- |
+| 真实窗口创建带密码的 ZIP 和 7z | Windows 11 x64 安装版 PASS：ZIP→TAR 阻断→7z 加密文件名，以及独立 AES256 ZIP 创建；独立 7-Zip 核对空、错、正确密码与产物，ZIP 文件名仍可见。[范围与回执](verification/encrypted-create-gui/README.md) |
+
 ## 第九轮批次恢复与高对比
 
 | 场景 | 实际结果 |
