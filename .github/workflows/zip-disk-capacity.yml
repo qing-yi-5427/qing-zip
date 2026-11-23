@@ -6,6 +6,15 @@ on:
       - 'scripts/check-hosted-zip-capacity.ps1'
       - '.github/workflows/zip-disk-capacity.yml'
   workflow_dispatch:
+    inputs:
+      baseline_build_run:
+        description: Replacement hardened run for the pinned baseline source
+        type: string
+        required: false
+      combined_build_run:
+        description: Replacement hardened run for the pinned combined source
+        type: string
+        required: false
 permissions:
   contents: read
   actions: read
@@ -27,7 +36,15 @@ jobs:
           python-version: '3.12'
       - name: Verify isolated VHD and exercise ZIP creation and overwrite extraction
         shell: pwsh
-        run: ./scripts/check-hosted-zip-capacity.ps1 -Trial ${{ matrix.trial }}
+        env:
+          TRIAL: ${{ matrix.trial }}
+          BASELINE_RUN: ${{ inputs.baseline_build_run }}
+          COMBINED_RUN: ${{ inputs.combined_build_run }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildRun = if ($env:TRIAL -eq 'baseline') { $env:BASELINE_RUN } else { $env:COMBINED_RUN }
+          if ($buildRun) { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL -BuildRun $buildRun }
+          else { ./scripts/check-hosted-zip-capacity.ps1 -Trial $env:TRIAL }
       - name: Upload product, volume and cleanup receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
