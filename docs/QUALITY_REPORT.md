@@ -4,7 +4,7 @@
 
 ## 强退后仍在读包的校验进程
 
-旧版退出后，外部校验仍会读取原包。约 71.5 MB 的普通 ZIP 上，三轮额外使用了 219–234 ms CPU。修复覆盖主动测试归档、ZIP 编辑后的校验和选取提取 TAR 时的预检。对匹配的校验进程执行强退回归后，源归档完整，正常重试成功。[校验进程回执](verification/round8/verifier-lifetime/README.md)
+旧版在 ZIP 追加进程退出后，外部校验仍会读取刚写完的暂存候选。约 71.5 MB 的普通 ZIP 上，三轮额外使用了 219–234 ms CPU。修复覆盖主动测试归档、ZIP 编辑后的校验和选取提取 TAR 时的预检。对匹配的校验进程执行强退回归后，源归档完整，正常重试成功。[校验进程回执](verification/round8/verifier-lifetime/README.md)
 
 ## ZIP 写完后被中断
 

@@ -10,7 +10,7 @@
 | --- | --- |
 | 普通 ZIP 写完、还未替换原包时退出 | 原包及重试 PASS。安装基线三次均留有 1,561,325 字节完整候选，自动回收 FAIL。[实测](verification/round8/zip-commit/README.md) |
 | 提交期间原路径空闲，或被其他文件占用 | 两个明确的中断点 × 两种原路径状态，4/4 PASS。空闲时恢复原包；已被占用时保留占用文件及恢复副本。[逐案回执](verification/round8/zip-commit/commit-recovery-c52c4ce.json) |
-| 独立校验和普通 ZIP 追加后校验 | 旧版两项 FAIL，修复两项 PASS。普通 TAR 选取提取的额外校验已用真实子进程核对，输出只含所选文件。[实现与门禁](verification/round8/verifier-lifetime/README.md) |
+| 独立校验和普通 ZIP 追加后校验 | 强退后的校验进程回收门禁，旧版两项 FAIL，修复后两项 PASS。普通 TAR 选取提取的额外校验已用真实子进程核对，输出只含所选文件。[实现与门禁](verification/round8/verifier-lifetime/README.md) |
 | 真实 150% 下创建表单的错误字段 | 浅、深两种主题 PASS。窄窗中非法线程数得到焦点且输入框完整可见，改正后可按 Tab 继续。[实际截图与回执](verification/create-error-focus/README.md) |
 
 真实断电、Windows 10 实机、真实 200% 显示在这轮均为 NOT RUN。
