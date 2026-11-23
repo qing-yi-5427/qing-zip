@@ -24,9 +24,13 @@
 | WinRAR 对照 | 当前环境未安装 WinRAR。 | SKIP |
 | x64 Shell 隔离验证 | M4 独立验证相同起始提交。CMake Release、MSVC 19.44、SDK 10.0.26100.0。参数往返、隔离 COM、普通文件选择均通过（3/3）。未签名包验证外置文件哈希及架构检查。 | PASS |
 | 托管 x64 / ARM64 Shell 组件 | M4 提交 `9c27936`。x64 `windows-latest` 和 ARM64 `windows-11-arm` 均验证原生 Shell 组件和未签名稀疏 MSIX，各检查三个外置文件哈希、拒绝两种混用产物。 | PASS（独立 CI） |
-| 前台桌面、DPI 和真实 Explorer | M3 跟踪前台应用与 DPI；正式安装后关联、旧式右键和真实拖出的验收需独立环境。 | NOT RUN（本矩阵） |
+| 前台桌面、DPI 和真实 Explorer | M3 跟踪前台应用与 DPI。旧式右键和真实拖出仍需独立环境。 | NOT RUN（本矩阵） |
+| 托管 Windows x64 NSIS 安装、升级及候选卸载 | 官方 v0.12.20 全新安装至一次性 runner 临时目录，原位升级至 0.12.23，核对登记与候选文件哈希，校验并解压旧 ZIP。卸载时移除候选发行文件、登记和开始菜单快捷方式。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) | PASS（所列阶段） |
+| 托管 x64 卸载前后合成用户数据 | 独立候选补测的来源、原 ZIP、解压结果和安装目录内外两个哨兵，五项前后 SHA-256 相等。[补测收据](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) | PASS（五项） |
+| 托管 x64 卸载后的旧版残留 | 卸载后仍有十个旧版独有文件，与初装和正式发行文件的哈希一致。候选发行文件全部移除。当前提案保守保留无逐文件归属记录的历史文件。[首次验收](https://github.com/qing-yi-5427/qing-zip/actions/runs/45112224372) · [补测结果](https://github.com/qing-yi-5427/qing-zip/actions/runs/45113902845) · [清单及迁移提案](https://github.com/qing-yi-5427/qing-zip/pull/21) | FAIL（严格残留断言） |
+| 默认安装目录、ARM64 安装和文件关联 | 普通 NSIS 用例仅覆盖托管 x64 的临时路径。默认路径、ARM64 安装、升级及卸载、真实用户数据、安装所设文件关联及升级后保留未验收。 | NOT RUN |
 | Windows 11 ARM64 菜单及系统无障碍 | 系统实际 100% 缩放、运行中切换高对比度和减少动画，7 项菜单一直可见，纯色/渐变及媒体查询符合系统，最后恢复系统原值。[四次截图与回执](https://github.com/qing-yi-5427/qing-zip/pull/13) | PASS |
-| Windows 11 现代右键 | 包签名、当前用户注册后菜单、卸载后菜单消失和升级保留关联。 | BLOCKED（可信签名和可安装验收环境） |
+| Windows 11 现代右键 | 可信签名、当前用户注册后的一级菜单、真实点击转交、升级保留菜单及卸载后菜单消失。 | BLOCKED（可信签名和可安装验收环境） |
 | Windows 10 与 Windows 11 ARM64 | Windows 11 ARM64 托管菜单及组件已见上方实测。Windows 10、实际 Windows ARM64 设备和安装后 Explorer 的体验仍待验证。 | BLOCKED（所列未覆盖环境） |
 | 特殊文件系统与磁盘耗尽 | ADS/TxF、重解析及链接、真实盘满，另在获准的隔离环境验证。合成空间不足的预算模型已列在 Rust 单元行。 | BLOCKED（未启用隔离环境） |
 | 扩展格式、嵌套编辑及其他损坏模式 | 尚待扩大独立对照。普通嵌套写回已见上方日常回归。桌面保存嵌套编辑、ZIPX、传统加密 ZIP、ALZ/EGG、ISO、其他损坏类型与 ZIP 修复待扩大独立对照。 | NOT RUN |
