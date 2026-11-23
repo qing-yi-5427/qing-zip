@@ -1,0 +1,111 @@
+{
+  "os": "Windows-11-10.0.26300-SP0",
+  "cli_sha256": {
+    "previous": "e5b87919d19ea75f19f93ea04ebb20fb366b5b8176bc6f67b84c54f119faa520",
+    "candidate": "127e14510bf875b3dd624024abd3e3ef8a521633f97c3add22a30cf5dc1bccee"
+  },
+  "cache": "one warm-up then 7 samples per binary and case, alternate order; filesystem cache retained",
+  "cases": [
+    {
+      "neighbor_files": 0,
+      "samples_ms": [
+        {
+          "previous": 63.61,
+          "candidate": 65.412
+        },
+        {
+          "candidate": 64.816,
+          "previous": 64.375
+        },
+        {
+          "previous": 61.661,
+          "candidate": 74.469
+        },
+        {
+          "candidate": 73.701,
+          "previous": 61.49
+        },
+        {
+          "previous": 66.872,
+          "candidate": 62.595
+        },
+        {
+          "candidate": 62.351,
+          "previous": 62.533
+        },
+        {
+          "previous": 61.54,
+          "candidate": 62.784
+        }
+      ],
+      "stats_ms": {
+        "previous": {
+          "min": 61.49,
+          "median": 62.533,
+          "max": 66.872
+        },
+        "candidate": {
+          "min": 62.351,
+          "median": 64.816,
+          "max": 74.469
+        }
+      },
+      "paired_deltas_ms": {
+        "min": -4.277000000000001,
+        "median": 1.2439999999999998,
+        "max": 12.807999999999993
+      }
+    },
+    {
+      "neighbor_files": 10000,
+      "samples_ms": [
+        {
+          "previous": 77.318,
+          "candidate": 71.266
+        },
+        {
+          "candidate": 73.476,
+          "previous": 80.099
+        },
+        {
+          "previous": 73.977,
+          "candidate": 70.749
+        },
+        {
+          "candidate": 67.127,
+          "previous": 63.363
+        },
+        {
+          "previous": 61.723,
+          "candidate": 69.037
+        },
+        {
+          "candidate": 61.674,
+          "previous": 62.914
+        },
+        {
+          "previous": 63.628,
+          "candidate": 67.004
+        }
+      ],
+      "stats_ms": {
+        "previous": {
+          "min": 61.723,
+          "median": 63.628,
+          "max": 80.099
+        },
+        "candidate": {
+          "min": 61.674,
+          "median": 69.037,
+          "max": 73.476
+        }
+      },
+      "paired_deltas_ms": {
+        "min": -6.623000000000005,
+        "median": -1.240000000000002,
+        "max": 7.314000000000007
+      }
+    }
+  ],
+  "profile_contains_index": true
+}

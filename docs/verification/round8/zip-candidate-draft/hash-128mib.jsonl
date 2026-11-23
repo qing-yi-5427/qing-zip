@@ -1,0 +1,14 @@
+{"round":1,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":64.651}
+{"round":1,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":24.704}
+{"round":2,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":24.073}
+{"round":2,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":65.179}
+{"round":3,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":65.427}
+{"round":3,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":24.776}
+{"round":4,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":23.371}
+{"round":4,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":65.404}
+{"round":5,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":64.315}
+{"round":5,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":23.935}
+{"round":6,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":25.266}
+{"round":6,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":64.391}
+{"round":7,"algorithm":"SHA-256 sha2 0.10.9","length":134217728,"ms":65.683}
+{"round":7,"algorithm":"BLAKE3 1.8.7","length":134217728,"ms":23.653}
