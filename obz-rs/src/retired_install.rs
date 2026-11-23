@@ -231,7 +231,7 @@ fn pin_install_root(path: &Path) -> Result<Vec<File>, String> {
 
 fn create_directory(parent: &File, leaf: &OsStr) -> Result<File, String> {
     let created = private_stage::create_output_directory(parent, leaf)?;
-    let pinned = checked_directory(private_stage::open_checksum_child(parent, leaf, true)?)?;
+    let pinned = checked_directory(private_stage::open_retired_destination(parent, leaf)?)?;
     if engine::directory_identity(&created)? != engine::directory_identity(&pinned)? {
         return Err("恢复目录发生变化".into());
     }
