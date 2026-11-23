@@ -1924,6 +1924,7 @@ function compress(profile,inputs=[]){
   </div>
   <div id="oa-password-unsupported" class="oa-form-notice" role="status" hidden><span>当前格式不支持加密，已保留填写的密码。</span>${btn('确认不加密','compression-clear-password','quiet')}</div>
   <div id="oa-password-panel" class="oa-compression-options" hidden>
+   <p id="oa-zip-password-notice" class="qa-sub" hidden>ZIP 密码保护文件内容，文件名仍可见。</p>
    <div class="qa-fieldrow">
    <label class="qa-field">密码<input id="qa-new-password" type="password" autocomplete="off"></label>
    <label class="qa-field">再次输入密码<input id="oa-password-again" type="password" autocomplete="off"></label>
@@ -1933,7 +1934,6 @@ function compress(profile,inputs=[]){
     <label class="qa-check"><input id="oa-show-password" type="checkbox">显示密码</label>
     <label class="qa-check"><input id="oa-header-encryption" type="checkbox" checked>加密文件名</label>
    </div>
-   <p id="oa-zip-password-notice" class="oa-form-notice" hidden>ZIP 密码保护文件内容，文件名仍可见。</p>
   </div>
   ${compressionAdvancedFields()}`,
   '<label class="qa-check oa-compression-verify"><input id="oa-test-after" type="checkbox" checked>创建后检查完整性</label>'

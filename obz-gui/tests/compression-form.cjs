@@ -197,7 +197,7 @@ test('ZIP names notice belongs to the password disclosure and follows the form f
   const {context, fields} = fixture();
   const markup = app.slice(app.indexOf('<div id="oa-password-panel"'), app.indexOf('${compressionAdvancedFields()}'));
   assert.match(markup, /^<div id="oa-password-panel"[^>]* hidden>/);
-  assert.match(markup, /<p id="oa-zip-password-notice" class="oa-form-notice" hidden>ZIP 密码保护文件内容，文件名仍可见。<\/p>/);
+  assert.match(markup, /<p id="oa-zip-password-notice" class="qa-sub" hidden>ZIP 密码保护文件内容，文件名仍可见。<\/p>\s*<div class="qa-fieldrow">\s*<label[^>]*>密码<input id="qa-new-password"/);
   fields['qa-save'] = {dataset: {}};
   fields['oa-separate'] = {checked: false};
   context.refreshSources = () => {};
