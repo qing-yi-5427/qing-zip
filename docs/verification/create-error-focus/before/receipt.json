@@ -1,0 +1,57 @@
+{
+  "gui_sha256": "822d738e5efb524538c828e34ddb7fac00aa47cedc9dc04f8c22f7b8828349ce",
+  "cases": {
+    "light": {
+      "dpr": 1.5,
+      "viewport": [
+        780,
+        750
+      ],
+      "input": [
+        579,
+        611.8333358764648
+      ],
+      "body": [
+        126.66667175292969,
+        609.8333587646484
+      ],
+      "active": "qa-threads",
+      "error": "请为“CPU 线程数”输入1–256的整数。",
+      "visible": false,
+      "submit_to_error_ms": [
+        26.77,
+        16.73,
+        19.45,
+        18.65,
+        18.88
+      ]
+    },
+    "dark": {
+      "dpr": 1.5,
+      "viewport": [
+        780,
+        750
+      ],
+      "input": [
+        579,
+        611.8333358764648
+      ],
+      "body": [
+        126.66667175292969,
+        609.8333587646484
+      ],
+      "active": "qa-threads",
+      "error": "请为“CPU 线程数”输入1–256的整数。",
+      "visible": false,
+      "submit_to_error_ms": [
+        20.73,
+        19.54,
+        20.99,
+        21.49,
+        21.25
+      ]
+    }
+  },
+  "status": "PASS",
+  "fixture_cleanup_verified": true
+}

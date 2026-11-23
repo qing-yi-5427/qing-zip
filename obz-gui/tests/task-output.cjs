@@ -16,7 +16,7 @@ const historySource=source=>source.slice(source.indexOf('function historyPage()'
 test('cancelled tasks use a neutral message without hiding real failure details', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const field={textContent:''};const notices=[];
-  const context=makeContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false},$:()=>field,toast:value=>notices.push(value)});
+  const context=makeContext({s:{jobs:[]},esc:String,shellQueueStatus:()=>'',btn:()=>'',overlay:{hidden:false,querySelector:()=>null},$:()=>field,toast:value=>notices.push(value)});
   vm.runInContext(source.slice(source.indexOf('function archiveOpenMessage('),source.indexOf('function openDialog(')),context);
   vm.runInContext(historySource(source),context);
   vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
@@ -63,6 +63,20 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   context.error(Error('请输入有效的压缩包文件名。'));assert.equal(field.textContent,'请输入有效的压缩包文件名。');
   context.error('Error: backend text');assert.equal(field.textContent,'backend text');
   assert.equal(context.s.jobs[0].error,detail);
+});
+
+test('compression error scrolls the focused invalid field after showing the message', () => {
+  const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const field={textContent:''}, observed=[];
+  const invalid={scrollIntoView:options=>observed.push({message:field.textContent,options})};
+  const overlay={hidden:false,dataset:{},querySelector:selector=>selector.includes('aria-invalid')?invalid:null};
+  const context=makeContext({overlay,$:()=>field,toast(){},archiveDirectoryError:()=>''});
+  vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
+  context.error(Error('invalid value'));
+  assert.equal(field.textContent,'invalid value');
+  assert.equal(observed.length,1);
+  assert.equal(observed[0].message,'invalid value');
+  assert.equal(observed[0].options.block,'nearest');
 });
 
 test('restoring the compression draft shows the same actionable failure as the task card', () => {
@@ -132,7 +146,7 @@ test('nested disk space failure keeps the recovery advice and is announced once 
   const advice='磁盘空间不足。内层更改已保留，释放空间后可重试，也可另存为。';
   const field={textContent:''},card={textContent:advice};
   const context=makeContext({
-    s:{view:'jobs'},esc:String,btn:()=>'',overlay:{hidden:false,dataset:{page:'jobs'},querySelector:()=>card},$:()=>field,
+    s:{view:'jobs'},esc:String,btn:()=>'',overlay:{hidden:false,dataset:{page:'jobs'},querySelector:selector=>selector.includes('.qa-jobcard')?card:null},$:()=>field,
   });
   vm.runInContext(taskSource(source),context);
   vm.runInContext(source.slice(source.indexOf('function taskError('),source.indexOf('async function copySelectedFiles(')),context);
@@ -156,7 +170,7 @@ test('nested parent conflict names the changed source and announces the recovery
   const field = { textContent: '' };
   const context = makeContext({
     s: { view: 'jobs' }, esc: String, btn: () => '',
-    overlay: { hidden: false, dataset: { page: 'jobs' }, querySelector: () => ({ textContent: expected }) },
+    overlay: { hidden: false, dataset: { page: 'jobs' }, querySelector: selector => selector.includes('.qa-jobcard') ? { textContent: expected } : null },
     $: () => field,
   });
   vm.runInContext(taskSource(source), context);
