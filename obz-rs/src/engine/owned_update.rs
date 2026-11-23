@@ -1,4 +1,4 @@
-//! Console process lifecycle for the write step of a staged ZIP update.
+//! Tie ZIP update writers and archive integrity checkers to their calling process.
 use std::{
     ffi::OsStr,
     fs::File,

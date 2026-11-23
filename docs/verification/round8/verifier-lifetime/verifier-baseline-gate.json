@@ -1,0 +1,17 @@
+{
+  "cli_sha256": "e5b87919d19ea75f19f93ea04ebb20fb366b5b8176bc6f67b84c54f119faa520",
+  "cases": [
+    {
+      "operation": "add",
+      "suspended_verifier_exited_with_owner": false,
+      "original_archive_preserved": true,
+      "retry_and_member_hashes_verified": true
+    },
+    {
+      "operation": "test",
+      "suspended_verifier_exited_with_owner": false,
+      "original_archive_preserved": true,
+      "retry_and_member_hashes_verified": true
+    }
+  ]
+}

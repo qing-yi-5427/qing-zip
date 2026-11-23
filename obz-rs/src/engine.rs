@@ -633,7 +633,17 @@ fn run_program_log(
     output: Option<File>,
     allow_zealfs: bool,
 ) -> Result<File, String> {
-    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, EngineLifetime::Ordinary)
+    // A verifier can still be reading a complete proposal when the editing
+    // process exits. Use the same job lifetime for explicit integrity tests.
+    #[cfg(nana_selected_worker)]
+    let lifetime = if args.first().is_some_and(|command| command == "t") {
+        EngineLifetime::OwnedByCaller
+    } else {
+        EngineLifetime::Ordinary
+    };
+    #[cfg(not(nana_selected_worker))]
+    let lifetime = EngineLifetime::Ordinary;
+    run_program_log_with_directory(program, args, cwd, opts, output, allow_zealfs, false, None, None, lifetime)
         .map(|(log, _)| log)
 }
 fn run_staged_decode(
@@ -654,13 +664,13 @@ fn run_staged_decode(
 enum EngineLifetime {
     Ordinary,
     #[cfg(nana_selected_worker)]
-    OwnedZipUpdate,
+    OwnedByCaller,
 }
 
 enum EngineProcess {
     Standard(std::process::Child),
     #[cfg(nana_selected_worker)]
-    OwnedUpdate(owned_update::Process),
+    Owned(owned_update::Process),
 }
 
 impl EngineProcess {
@@ -668,7 +678,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => child.try_wait(),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => child.try_wait(),
+            Self::Owned(child) => child.try_wait(),
         }
     }
 
@@ -676,7 +686,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => wait_for_process(child, timeout),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => child.wait_ready(timeout),
+            Self::Owned(child) => child.wait_ready(timeout),
         }
     }
 
@@ -684,7 +694,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => { let _ = child.kill(); let _ = child.wait(); }
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => { let _ = child.kill(); let _ = child.wait(); }
+            Self::Owned(child) => { let _ = child.kill(); let _ = child.wait(); }
         }
     }
 
@@ -693,7 +703,7 @@ impl EngineProcess {
         match self {
             Self::Standard(child) => PasswordInput::spawn(child, password),
             #[cfg(nana_selected_worker)]
-            Self::OwnedUpdate(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
+            Self::Owned(child) => PasswordInput::spawn_writer(child.stdin.take().ok_or("engine password pipe missing")?, password),
         }
     }
 }
@@ -776,10 +786,10 @@ fn run_program_log_with_directory(
                 .map_err(|e| format!("cannot launch archive engine: {e}"))?)
         }
         #[cfg(nana_selected_worker)]
-        EngineLifetime::OwnedZipUpdate => {
-            if stream_input.is_some() { return Err("ZIP update cannot carry archive stream input".into()); }
-            EngineProcess::OwnedUpdate(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
-                .map_err(|e| format!("无法启动受本次 ZIP 更新控制的归档引擎：{e}"))?)
+        EngineLifetime::OwnedByCaller => {
+            if stream_input.is_some() { return Err("owned archive process cannot carry archive stream input".into()); }
+            EngineProcess::Owned(owned_update::Process::launch(&cmd, stdout, stderr, opts.password.is_some())
+                .map_err(|e| format!("无法启动受当前任务控制的归档引擎：{e}"))?)
         }
     };
     #[cfg(test)]
@@ -5979,7 +5989,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         #[cfg(not(nana_selected_worker))]
         let stdout = None;
         #[cfg(nana_selected_worker)]
-        let lifetime = if direct { EngineLifetime::OwnedZipUpdate } else { EngineLifetime::Ordinary };
+        let lifetime = if direct { EngineLifetime::OwnedByCaller } else { EngineLifetime::Ordinary };
         #[cfg(not(nana_selected_worker))]
         let lifetime = EngineLifetime::Ordinary;
         let (log, _) = run_program_log_with_directory(program, &a, cwd, opts, stdout, false, false, None, None, lifetime)?;
