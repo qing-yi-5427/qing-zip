@@ -28,10 +28,10 @@ with hosted_debug_session(exe,receipt) as debug:
   if js("!!window.__TAURI__?.core && !!document.querySelector('[data-action=app-menu]')"):break
   time.sleep(.1)
  else:raise RuntimeError('GUI not ready')
- js("document.querySelector('[data-view=settings]').click()")
- for _ in range(100):
+ for _ in range(150):
   if js("!!document.querySelector('#oa-file-menu')"):break
-  time.sleep(.1)
+  js("document.querySelector('[data-view=settings]').click()")
+  time.sleep(.2)
  else:raise RuntimeError('Settings page missing')
  js("document.querySelector('#oa-file-menu').click()")
  for _ in range(100):
