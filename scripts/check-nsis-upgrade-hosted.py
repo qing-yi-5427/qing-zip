@@ -143,7 +143,8 @@ def main():
         passed('old_archive_and_user_sentinels_created')
         run([candidate_setup,'/S'],root)
         installed_version(current,inst,arp,install)
-        check(default_location.is_absolute() and not os.path.lexists(default_location),'upgrade wrote to the default directory instead of the registered directory')
+        if not args.use_default_location:
+            check(not os.path.lexists(default_location),'custom-directory upgrade also wrote to default location')
         check(executable_version(inst/'qing-zip.exe')==current+'.0','unexpected candidate executable version')
         check(all((inst/name).is_file() and sha(inst/name)==digest for name,digest in shipped.items()),'upgraded payload differs from candidate portable stage')
         check(sha(archive)==original_sha and sha(source)==source_sha and sha(sentinel)==sentinel_sha and sha(external)==external_sha,'upgrade changed user data')
