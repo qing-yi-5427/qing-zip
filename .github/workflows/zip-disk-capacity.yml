@@ -1,0 +1,38 @@
+name: Disposable Windows ZIP disk capacity
+on:
+  pull_request:
+    paths:
+      - 'scripts/check-hosted-zip-capacity.py'
+      - 'scripts/check-hosted-zip-capacity.ps1'
+      - '.github/workflows/zip-disk-capacity.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  real-disk-capacity:
+    if: github.repository == 'qing-yi-5427/qing-zip' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: windows-2025
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [baseline, combined]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify isolated VHD and exercise ZIP creation and overwrite extraction
+        shell: pwsh
+        run: ./scripts/check-hosted-zip-capacity.ps1 -Trial ${{ matrix.trial }}
+      - name: Upload product, volume and cleanup receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zip-disk-capacity-${{ matrix.trial }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/qz-capacity-*/evidence/*.json
