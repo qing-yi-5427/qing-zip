@@ -550,8 +550,9 @@ function renderInlineTask(){
  $('oa-task-title').textContent=result?result.title:job.label;
  const progressLabel=percent!==null||running&&!job.cancelRequested?QingProgress.label(job,percent):'';
  const stageMetric=running&&job.overall&&!job.cancelRequested?QingProgress.label({status:'running'},job.percent):'';
- $('oa-task-compact-phase').textContent=[text,progressLabel,stageMetric].filter(Boolean).join(' · ');
- $('oa-task-phase').textContent=stageMetric?`${text} · ${stageMetric}`:text;
+ const registration=running&&job.id===s.active?s.activeBatchPlan?.registrationWarning:'';
+ $('oa-task-compact-phase').textContent=[text,registration,progressLabel,stageMetric].filter(Boolean).join(' · ');
+ $('oa-task-phase').textContent=[text,registration,stageMetric].filter(Boolean).join(' · ');
  $('oa-task-metric').textContent=progressLabel;
  const file=$('oa-task-file');
  file.hidden=!path;
@@ -630,15 +631,15 @@ function batchResultMarkup(result,compact=false,showOutput=true){
  const unresolved=compact?[]:result.entries.filter(entry=>entry.status!=='complete');
  const details=unresolved.length?`<details${saved?' open':''}><summary>查看 ${unresolved.length} 项明细</summary>
   <ul class="oa-batch-plan">${unresolved.map(entry=>`<li><strong>${entry.index+1}. ${esc(filename(entry.path))} · ${entry.label}</strong>
-  <span class="oa-extract-output">${esc(entry.path)}</span>${entry.status==='pending'&&entry.dest?`<span class="oa-extract-output">${esc(entry.dest)}</span>`:''}${entry.message?`<span class="qa-sub">${esc(entry.message)}</span>`:''}</li>`).join('')}</ul></details>`:'';
+  <span class="oa-extract-output">${esc(entry.path)}</span>${(entry.status==='pending'||result.unexpectedExit&&entry.status==='interrupted')&&entry.dest?`<span class="oa-extract-output">${esc(entry.dest)}</span>`:''}${entry.message?`<span class="qa-sub">${esc(entry.message)}</span>`:''}</li>`).join('')}</ul></details>`:'';
  const resume=unresolved.some(entry=>entry.status==='pending')?btn('继续未开始的项目',saved?'batch-resume-saved':'batch-resume','primary'):'';
- const clear=resume&&result.revision?btn('清除待继续项目','batch-discard','quiet'):'';
+ const clear=result.revision&&(resume||result.unexpectedExit)?btn(resume?'清除待继续项目':'清除中断记录','batch-discard','quiet'):'';
  const dest=!compact&&result.destination?`<div class="qa-sub oa-extract-output">输出目录 · ${esc(result.destination)}</div>`:'';
  const policy=resume&&result.operation==='extract'?`<p class="qa-sub">同名文件 · ${batchPolicies[result.overwrite]}</p>`:'';
  const warning=[result.admissionWarning,result.saveWarning].filter(Boolean).map(message=>`<p class="qa-sub" role="status">${esc(message)}</p>`).join('');
- const interrupted=result.unexpectedExit?'<p class="qa-sub">上次意外退出。已开始但结果未确认的项目可能留下部分文件，请检查对应目录。</p>':'';
+ const interrupted=result.unexpectedExit?'<p class="qa-sub">上次意外退出，或者最后结果尚未确认。已开始的项目可能留下部分文件，请检查对应目录。</p>':'';
  const current=saved&&resume?'<p class="qa-sub">继续时会读取列表中路径上的当前压缩包。</p>':'';
- const keep=clear?'<p class="qa-sub">停止新的批量解压时，新批次的待继续项目会替换这份记录。</p>':'';
+ const keep=clear&&!result.unexpectedExit?'<p class="qa-sub">停止新的批量解压时，新批次的待继续项目会替换这份记录。</p>':'';
  return `<section class="oa-batch-outcome"><strong>${result.title}</strong><p>${result.summary}</p>${dest}${policy}${warning}${interrupted}${current}${details}<div class="qa-actions">${resume}${review}${output}${clear}</div>${keep}</section>`;
 }
 const batchLabels={complete:'成功',partial:'部分完成',failed:'失败',cancelled:'已取消',interrupted:'已中断',pending:'未开始'};
@@ -647,7 +648,7 @@ function describeBatch(plan,lastJob){
  const counts={complete:0,partial:0,failed:0,cancelled:0,interrupted:0,pending:0};
  for(const entry of plan.entries){counts[entry.status]++;entry.label=batchLabels[entry.status];}
  const summary=Object.entries(counts).filter(([,count])=>count).map(([status,count])=>batchLabels[status]+' '+count).join(' · ');
- return {...plan,summary,title:plan.restored?'待继续的批量解压':plan.operation==='extract'?'批量解压结果':'批量检查结果',
+ return {...plan,summary,title:plan.restored?(plan.unexpectedExit&&!counts.pending?'中断的批量解压':'待继续的批量解压'):plan.operation==='extract'?'批量解压结果':'批量检查结果',
   attention:counts.complete!==plan.entries.length,hasOutput:plan.operation==='extract'&&plan.entries.some(entry=>entry.hasOutput),
   lastJob,anchor:s.jobs.at(-1)};
 }
@@ -661,7 +662,7 @@ function batchResultsMarkup(compact=false){
  if(s.savedBatch&&s.savedBatch.revision!==s.batchResult?.revision)results.push(s.savedBatch);
  const problem=s.batchResumeProblem;
  const messages={
-  damaged:'待继续记录已损坏。备份这份记录后，可以保存新的待继续项目。',
+  damaged:'待继续记录已损坏，无法确认哪些项目还未开始。可以备份这份记录，再开始新的批次。',
   unsupported:'此版本无法识别待继续记录。文件已保留，可用创建它的版本查看。仍可处理新批次。',
   unavailable:'暂时无法读取待继续项目。仍可处理新批次。',
  };
@@ -703,6 +704,7 @@ async function registerBatchRun(plan){
   plan.tracked=!!record;
   plan.activeRevision=record?.revision;
  }catch{
+  plan.registrationWarning=s.savedBatch?'已有待继续批次，本批未登记':'本批未登记异常续跑';
   plan.saveWarning='本批尚未登记。程序意外退出时，这一批可能无法找回。';
  }
 }
@@ -710,7 +712,7 @@ async function writeBatchResume(plan){
  await batchResumeLoad;
  await batchResumeBegin;
  try{
-  const record=await invoke('save_batch_resume',{previous:s.savedBatch?.revision??null,plan:batchReceipt(plan)});
+  const record=await invoke('save_batch_resume',{previous:s.savedBatch?.revision??null,activeRevision:plan.activeRevision??null,plan:batchReceipt(plan)});
   s.savedBatch=savedBatch(record);
   plan.revision=record.revision;
   delete plan.saveWarning;
@@ -817,7 +819,7 @@ async function runBatch(plan,guarded=false){
    if(s.batchStop)break;
    if(entry.status!=='pending')continue;
    if(plan.tracked){
-    try{await invoke('admit_batch_archive',{admission:{index:entry.index,previous:previousAdmission}});}
+    try{await invoke('admit_batch_archive',{activeRevision:plan.activeRevision,admission:{index:entry.index,previous:previousAdmission}});}
     catch{plan.admissionWarning='续跑记录未能安全更新。已停止开始新的压缩包。';break;}
     if(s.batchStop)break;
    }
@@ -840,7 +842,7 @@ async function runBatch(plan,guarded=false){
   const anchor=s.jobs.at(-1);
   if(plan.closing)await batchResumeSave;
   else await sealBatchResume(plan);
-  try{if(guarded)await invoke('set_batch_resume_running',{active:false});}
+  try{if(guarded)await invoke('set_batch_resume_running',{active:false,activeRevision:plan.activeRevision??null});}
   finally{
    s.activeBatchPlan=null;
    s.batchRunning=false;

@@ -27,14 +27,17 @@ pub(crate) fn running() -> bool {
 }
 
 #[tauri::command]
-pub(crate) fn set_batch_resume_running(active: bool) {
+pub(crate) fn set_batch_resume_running(active: bool, active_revision: Option<String>) {
     if !active {
-        if let Some(active) = JOURNAL
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
+        let mut slot = JOURNAL.lock().unwrap_or_else(|error| error.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|journal| !journal.owns(active_revision.as_deref()))
         {
-            active.finish();
+            return;
+        }
+        if let Some(journal) = slot.take() {
+            journal.finish();
         }
     }
     RUNNING.store(active, Ordering::SeqCst);
@@ -51,7 +54,7 @@ enum Status {
     Pending,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Overwrite {
     Error,
@@ -121,7 +124,6 @@ enum Record {
     Missing,
     Ready(SavedBatch),
     Running(SavedBatch),
-    Finished,
 
     Damaged(Vec<u8>),
     Unsupported,
@@ -146,16 +148,7 @@ fn read(root: &Path) -> Result<Record, String> {
     };
     if bytes.starts_with(journal::MARKER) {
         return Ok(match journal::decode(&bytes) {
-            Some(record)
-                if record
-                    .plan
-                    .entries
-                    .iter()
-                    .any(|entry| entry.status == Status::Pending) =>
-            {
-                Record::Running(record)
-            }
-            Some(_) => Record::Finished,
+            Some(record) => Record::Running(record),
             None => Record::Damaged(bytes),
         });
     }
@@ -245,7 +238,7 @@ fn save(root: &Path, plan: BatchPlan, previous: Option<&str>) -> Result<SavedBat
 fn take(root: &Path, revision: &str) -> Result<Option<SavedBatch>, String> {
     let _lock = lock(root)?;
     let record = match read(root)? {
-        Record::Missing | Record::Finished => return Ok(None),
+        Record::Missing => return Ok(None),
         Record::Ready(record) | Record::Running(record) => record,
         _ => return Err("当前待继续记录无法读取。".into()),
     };
@@ -277,10 +270,7 @@ fn load(root: &Path) -> Result<BatchResumeState, String> {
     let record = read(root)?;
     // Existing v1 records are readable during a short compare-and-swap.
     // A v2 record is offered only after the running GUI releases its lease.
-    let record = if matches!(
-        record,
-        Record::Running(_) | Record::Finished | Record::Damaged(_)
-    ) {
+    let record = if matches!(record, Record::Running(_) | Record::Damaged(_)) {
         let Ok(_guard) = lock(root) else {
             return Ok(BatchResumeState::Empty);
         };
@@ -289,7 +279,7 @@ fn load(root: &Path) -> Result<BatchResumeState, String> {
         record
     };
     Ok(match record {
-        Record::Missing | Record::Finished => BatchResumeState::Empty,
+        Record::Missing => BatchResumeState::Empty,
         Record::Ready(record) | Record::Running(record) => BatchResumeState::Ready { record },
         Record::Damaged(_) => BatchResumeState::Damaged,
         Record::Unsupported => BatchResumeState::Unsupported,
@@ -324,12 +314,16 @@ pub(crate) async fn begin_batch_resume_run(
 }
 
 #[tauri::command]
-pub(crate) async fn admit_batch_archive(admission: Admission) -> Result<(), String> {
+pub(crate) async fn admit_batch_archive(
+    active_revision: String,
+    admission: Admission,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         JOURNAL
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_mut()
+            .filter(|journal| journal.owns(Some(&active_revision)))
             .ok_or_else(|| "当前批量任务的续跑记录已关闭。".to_string())?
             .admit(admission)
     })
@@ -348,18 +342,21 @@ pub(crate) async fn backup_damaged_batch_resume() -> Result<PathBuf, String> {
 pub(crate) async fn save_batch_resume(
     plan: BatchPlan,
     previous: Option<String>,
+    active_revision: Option<String>,
 ) -> Result<SavedBatch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut active = JOURNAL.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(journal) = active.as_mut() {
-            if previous.is_some() {
+            if previous.is_some() || !journal.owns(active_revision.as_deref()) {
                 return Err("当前待继续记录已变更。".into());
             }
             let record = journal.seal(plan.normalize()?)?;
             active.take();
             Ok(record)
-        } else {
+        } else if active_revision.is_none() {
             save(&root()?, plan, previous.as_deref())
+        } else {
+            Err("当前批量续跑记录已结束。".into())
         }
     })
     .await
@@ -545,11 +542,35 @@ mod tests {
             .unwrap()
             .unwrap();
         journal.admit(next(0, None)).unwrap();
+        let mut different = plan().normalize().unwrap();
+        different.entries[0].dest.push_str("-other");
+        assert!(journal.seal(different).is_err());
         let stopped = journal.seal(plan().normalize().unwrap()).unwrap();
         assert!(take(root, &stopped.revision).is_err());
         drop(journal);
         let resumed = take(root, &stopped.revision).unwrap().unwrap();
         assert_eq!(resumed.version, 1);
         assert!(resumed.plan.entries[2].status == Status::Pending);
+    }
+    #[test]
+    fn crashing_after_the_last_admission_retains_an_inspectable_record() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        let (mut journal, _) = Journal::begin(root, Some(plan()), None).unwrap().unwrap();
+        journal.admit(next(2, None)).unwrap();
+        drop(journal);
+        let BatchResumeState::Ready { record } = load(root).unwrap() else {
+            panic!("missing inspection record");
+        };
+        assert!(record
+            .plan
+            .entries
+            .iter()
+            .all(|entry| entry.status != Status::Pending));
+        assert!(record.plan.entries[2].status == Status::Interrupted);
+        assert!(Journal::begin(root, None, Some(&record.revision))
+            .unwrap()
+            .is_none());
+        assert!(take(root, &record.revision).unwrap().is_some());
     }
 }

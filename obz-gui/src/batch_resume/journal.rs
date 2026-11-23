@@ -20,6 +20,7 @@ pub(super) struct Journal {
     root: PathBuf,
     writer: Option<File>,
     _lease: File,
+    revision: String,
     plan: BatchPlan,
     last: Option<usize>,
 }
@@ -57,6 +58,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<SavedBatch> {
     let mut record: SavedBatch = serde_json::from_slice(lines.next()?).ok()?;
     if record.version != VERSION
         || record.revision.is_empty()
+        || next_pending(&record.plan, None).is_none()
         || !Path::new(&record.plan.destination).is_absolute()
         || record.plan.entries.iter().any(|entry| {
             !Path::new(&entry.path).is_absolute() || !Path::new(&entry.dest).is_absolute()
@@ -83,17 +85,15 @@ impl Journal {
     ) -> Result<Option<(Self, SavedBatch)>, String> {
         let lease = lock(root)?;
         let plan = match (plan, revision, read(root)?) {
-            (Some(plan), None, Record::Missing | Record::Finished) => plan.normalize()?,
+            (Some(plan), None, Record::Missing) => plan.normalize()?,
             (None, Some(revision), Record::Ready(record) | Record::Running(record))
-                if record.revision == revision =>
+                if record.revision == revision && next_pending(&record.plan, None).is_some() =>
             {
                 record.plan
             }
-            (
-                None,
-                Some(_),
-                Record::Missing | Record::Finished | Record::Ready(_) | Record::Running(_),
-            ) => return Ok(None),
+            (None, Some(_), Record::Missing | Record::Ready(_) | Record::Running(_)) => {
+                return Ok(None)
+            }
             _ => return Err("当前待继续记录已存在或无法使用。".into()),
         };
         let record = SavedBatch {
@@ -106,10 +106,15 @@ impl Journal {
             root: root.to_path_buf(),
             _lease: lease,
             writer: Some(writer),
+            revision: record.revision.clone(),
             plan: record.plan.clone(),
             last: None,
         };
         Ok(Some((active, record)))
+    }
+
+    pub(super) fn owns(&self, revision: Option<&str>) -> bool {
+        revision == Some(self.revision.as_str())
     }
 
     pub(super) fn admit(&mut self, admission: Admission) -> Result<(), String> {
@@ -128,6 +133,17 @@ impl Journal {
     }
 
     pub(super) fn seal(&mut self, plan: BatchPlan) -> Result<SavedBatch, String> {
+        if plan.destination != self.plan.destination
+            || plan.overwrite != self.plan.overwrite
+            || plan.entries.len() != self.plan.entries.len()
+            || plan
+                .entries
+                .iter()
+                .zip(&self.plan.entries)
+                .any(|(left, right)| left.path != right.path || left.dest != right.dest)
+        {
+            return Err("当前批量项目与续跑记录的来源或目标不一致。".into());
+        }
         // Windows replacement requires releasing this file handle, but the
         // record lease still excludes another instance until the swap ends.
         self.writer.take();
