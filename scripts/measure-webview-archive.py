@@ -1,6 +1,7 @@
 """Measure archive browsing in packaged Tauri windows, using disposable profiles."""
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import base64
 import ctypes
 from ctypes import wintypes as wt
@@ -110,7 +111,9 @@ STATE = """(() => {
 
 
 class Window:
-    def __init__(self, exe, archive, isolated, allow_unfocused):
+    def __init__(self, exe, archive, isolated, allow_unfocused, session):
+        self.exe = exe
+        self.port = session.get("port")
         if any(name in {"qing-zip.exe", "obz-gui.exe"} for _, name in process_entries().values()):
             raise RuntimeError("Another qing-zip instance is active; its windows were left untouched")
         self.socket = None
@@ -122,24 +125,30 @@ class Window:
         self.local.mkdir(parents=True, exist_ok=True)
         for previous in self.profile.rglob("DevToolsActivePort"):
             previous.unlink()
-        env = dict(os.environ, LOCALAPPDATA=str(self.local), WEBVIEW2_USER_DATA_FOLDER=str(self.profile),
+        env = dict(os.environ, APPDATA=str(isolated / "roaming"), LOCALAPPDATA=str(self.local), WEBVIEW2_USER_DATA_FOLDER=str(self.profile),
                    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=(
-                       "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1"))
+                       session.get("arguments", "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1")))
         self.started = time.perf_counter()
         self.proc = subprocess.Popen([exe, archive], cwd=isolated, env=env)
+        session["proc"] = self.proc
 
     def connect(self):
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and self.proc.poll() is None:
-            port_file = next(self.profile.rglob("DevToolsActivePort"), None)
-            if port_file:
+            port_file = None if self.port else next(self.profile.rglob("DevToolsActivePort"), None)
+            if self.port or port_file:
                 try:
-                    port = int(port_file.read_text().splitlines()[0])
+                    port = self.port or int(port_file.read_text().splitlines()[0])
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as request:
                         pages = json.load(request)
                     page = next(p for p in pages if p.get("type") == "page" and "tauri.localhost" in p["url"])
                     self.socket = connect(page["webSocketDebuggerUrl"], max_size=2 * 1024 * 1024,
                                           open_timeout=2, close_timeout=1)
+                    bound = self.call("Runtime.evaluate", expression="window.__TAURI__.core.invoke('current_executable')",
+                                      awaitPromise=True, returnByValue=True)
+                    actual = bound["result"].get("value")
+                    if not actual or Path(actual).resolve() != self.exe:
+                        raise RuntimeError("The attached page does not report the expected executable")
                     self.hwnd = self.native_window()
                     if self.hwnd and not self.allow_unfocused and not self.is_foreground():
                         try:
@@ -255,8 +264,8 @@ def detect(window, action, predicate):
     return {"ms": round((time.perf_counter() - started) * 1000, 3), **state}
 
 
-def trial(exe, archive, count, isolated, allow_unfocused, screenshot=None):
-    window = Window(exe, archive, isolated, allow_unfocused)
+def trial(exe, archive, count, isolated, allow_unfocused, session, screenshot=None):
+    window = Window(exe, archive, isolated, allow_unfocused, session)
     wide_selector = 'button[data-entry="wide/"]'
     try:
         window.connect()
@@ -294,6 +303,24 @@ def trial(exe, archive, count, isolated, allow_unfocused, screenshot=None):
         window.close()
 
 
+@contextmanager
+def temporary_profiles():
+    profiles = tempfile.TemporaryDirectory(prefix="qing-native-browse-")
+    try:
+        yield Path(profiles.name).resolve()
+    finally:
+        # WebView2 may briefly retain profile files after the native GUI exits.
+        deadline = time.monotonic() + 12
+        while True:
+            try:
+                profiles.cleanup()
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -303,14 +330,15 @@ def main():
                         help="Measure a visible, non-minimized WebView and record actual Win32 focus")
     parser.add_argument("--screenshots", type=Path, help="New directory for warm-up first-screen evidence")
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--hosted", action="store_true",
+                        help="Use the existing per-executable override on a disposable hosted Windows runner")
     args = parser.parse_args()
     if args.screenshots:
         args.screenshots.mkdir()
     exes = {"baseline": args.baseline.resolve(strict=True), "candidate": args.candidate.resolve(strict=True)}
     evidence = {"gui_sha256": {label: sha256(exe.read_bytes()) for label, exe in exes.items()},
                 "allow_unfocused": args.allow_unfocused, "cases": []}
-    with tempfile.TemporaryDirectory(prefix="qing-native-browse-") as temporary:
-        work = Path(temporary).resolve()
+    with temporary_profiles() as work:
         for count in (10_000, 50_000):
             archive = work / f"wide-{count}.zip"
             fixture(archive, count)
@@ -318,10 +346,18 @@ def main():
             rounds = []
             for index in range(args.rounds + 1):
                 order = ["baseline", "candidate"] if index % 2 else ["candidate", "baseline"]
-                results = {label: trial(exes[label], archive, count, work / label, args.allow_unfocused,
-                                        args.screenshots / f"{count}-{label}.png"
-                                        if args.screenshots and index == 0 else None)
-                           for label in order}
+                results = {}
+                for label in order:
+                    if args.hosted:
+                        from arm_gui_lifecycle import hosted_debug_session
+                        session_log = args.receipt.parent / f"session-{count}-{index}-{label}.json"
+                        launch = hosted_debug_session(exes[label], session_log)
+                    else:
+                        launch = nullcontext({})
+                    screenshot = args.screenshots / f"{count}-{label}.png" if args.screenshots and index == 0 else None
+                    with launch as session:
+                        results[label] = trial(exes[label], archive, count, work / label,
+                                               args.allow_unfocused, session, screenshot)
                 if sha256(archive.read_bytes()) != original:
                     raise RuntimeError("Archive content changed")
                 print(f"{count} entries, round {index}: visible rows, navigation, filter, sort and scroll PASS", flush=True)

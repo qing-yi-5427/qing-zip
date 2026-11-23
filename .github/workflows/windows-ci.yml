@@ -399,7 +399,7 @@ jobs:
           }
           New-Item -ItemType Directory evidence
           [ordered]@{ cpu=(Get-CimInstance Win32_Processor).Name; os=(Get-CimInstance Win32_OperatingSystem).Caption; build=[Environment]::OSVersion.Version.ToString(); memory_bytes=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory; packages=$packages } | ConvertTo-Json -Depth 4 | Set-Content evidence/environment.json
-          python scripts/measure-webview-archive.py --baseline $exe.baseline --candidate $exe.candidate --rounds 5 --screenshots evidence/screens --receipt evidence/browse.json
+          python scripts/measure-webview-archive.py --hosted --baseline $exe.baseline --candidate $exe.candidate --rounds 5 --screenshots evidence/screens --receipt evidence/browse.json
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
