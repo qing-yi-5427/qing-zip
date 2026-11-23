@@ -1,0 +1,238 @@
+{
+  "hosted_run": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45112016947",
+  "portable_build_commit": "c6810ef6f9d668c7ed642b3a586ed57d2ad28940",
+  "volumes": {
+    "runner": {
+      "passed": true,
+      "gui_sha256": "393623fbc1fb51658ad2cfc300eb7e9d23156335234d0220b74c0ce6209974ce",
+      "fixture_volume": "D:",
+      "cases": {
+        "selected": {
+          "source_before_sha256": "674b2799e3331d75ac1aa27f1d685681e471e15ff43dc02643c79c5537a4bcc5",
+          "recycle_option_blocked": true,
+          "result": "已提取 1 个文件至 <fixture>\\output",
+          "terminal": "complete",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "674b2799e3331d75ac1aa27f1d685681e471e15ff43dc02643c79c5537a4bcc5",
+          "output_sha256": {
+            "one.txt": "6ada55025e370893b2990b559e2029c49d9d81c55542ac896c6ff0497994d346"
+          }
+        },
+        "skip": {
+          "source_before_sha256": "a69f34fee4681e0e608f041e095794aafb063b77f1d8b07fff2beebf178cb90a",
+          "recycle_option_blocked": true,
+          "result": "已提取 1 个文件至 <fixture>\\output",
+          "terminal": "complete",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "a69f34fee4681e0e608f041e095794aafb063b77f1d8b07fff2beebf178cb90a",
+          "output_sha256": {
+            "one.txt": "7d53703778d615c0d13ee908af2998ed609fc40b91520588a96b3ed738b180a3",
+            "two.txt": "4bac81c8e2351bd0ddbb1e58e8923f947e73b5170fa95d3a75f1f95e671b907f"
+          }
+        },
+        "conflict": {
+          "source_before_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "recycle_option_blocked": false,
+          "result": "目标位置已有同名项目。\n<fixture>\\output\\one.txt",
+          "terminal": "failed",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "output_sha256": {
+            "one.txt": "7d53703778d615c0d13ee908af2998ed609fc40b91520588a96b3ed738b180a3"
+          }
+        },
+        "full": {
+          "source_before_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "ordinary_shell_same_parent_control": {
+            "before": {
+              "volume": "D:",
+              "hresult": "0x00000000",
+              "items": 0,
+              "bytes": 0
+            },
+            "exit": 0,
+            "aborted": false,
+            "source_exists": false,
+            "after": {
+              "volume": "D:",
+              "hresult": "0x00000000",
+              "items": 1,
+              "bytes": 249
+            },
+            "matches": [
+              {
+                "unique_name_matches": true,
+                "origin_matches": true,
+                "properties": {
+                  "sdk_property": {
+                    "type": "NoneType",
+                    "value": "None"
+                  },
+                  "original_location_column": {
+                    "type": "str",
+                    "value": "<fixture>\\full"
+                  }
+                }
+              }
+            ],
+            "restored_hash_matches": true
+          },
+          "bin_before": {
+            "volume": "D:",
+            "hresult": "0x00000000",
+            "items": 0,
+            "bytes": 0
+          },
+          "recycle_option_blocked": false,
+          "result": "已提取 2 个文件至 <fixture>\\output；原压缩包已移入回收站。",
+          "terminal": "complete",
+          "source_present_after_extraction": false,
+          "bin_after": {
+            "volume": "D:",
+            "hresult": "0x00000000",
+            "items": 1,
+            "bytes": 249
+          },
+          "recycle_matches": [
+            {
+              "unique_name_matches": true,
+              "origin_matches": true,
+              "properties": {
+                "sdk_property": {
+                  "type": "NoneType",
+                  "value": "None"
+                },
+                "original_location_column": {
+                  "type": "str",
+                  "value": "<fixture>\\full"
+                }
+              }
+            }
+          ],
+          "restored_from_recycle_bin": true,
+          "source_final_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "output_sha256": {
+            "one.txt": "6ada55025e370893b2990b559e2029c49d9d81c55542ac896c6ff0497994d346",
+            "two.txt": "4bac81c8e2351bd0ddbb1e58e8923f947e73b5170fa95d3a75f1f95e671b907f"
+          }
+        }
+      }
+    },
+    "system": {
+      "passed": true,
+      "gui_sha256": "393623fbc1fb51658ad2cfc300eb7e9d23156335234d0220b74c0ce6209974ce",
+      "fixture_volume": "C:",
+      "cases": {
+        "selected": {
+          "source_before_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "recycle_option_blocked": true,
+          "result": "已提取 1 个文件至 <fixture>\\output",
+          "terminal": "complete",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "c97adee5d806d3d63141cf52cbbb863336175e8146457aea84bb54d814fab342",
+          "output_sha256": {
+            "one.txt": "6ada55025e370893b2990b559e2029c49d9d81c55542ac896c6ff0497994d346"
+          }
+        },
+        "skip": {
+          "source_before_sha256": "5f2b4f333f7e9f2dac9238394b17fdaceed29a5d112ccc65682e142897ef8b39",
+          "recycle_option_blocked": true,
+          "result": "已提取 1 个文件至 <fixture>\\output",
+          "terminal": "complete",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "5f2b4f333f7e9f2dac9238394b17fdaceed29a5d112ccc65682e142897ef8b39",
+          "output_sha256": {
+            "one.txt": "7d53703778d615c0d13ee908af2998ed609fc40b91520588a96b3ed738b180a3",
+            "two.txt": "4bac81c8e2351bd0ddbb1e58e8923f947e73b5170fa95d3a75f1f95e671b907f"
+          }
+        },
+        "conflict": {
+          "source_before_sha256": "6d82fdd7bd6097dcd989c0c8a0345ed1e92bac2d04331d097b5dc42239f13ad9",
+          "recycle_option_blocked": false,
+          "result": "目标位置已有同名项目。\n<fixture>\\output\\one.txt",
+          "terminal": "failed",
+          "source_present_after_extraction": true,
+          "source_final_sha256": "6d82fdd7bd6097dcd989c0c8a0345ed1e92bac2d04331d097b5dc42239f13ad9",
+          "output_sha256": {
+            "one.txt": "7d53703778d615c0d13ee908af2998ed609fc40b91520588a96b3ed738b180a3"
+          }
+        },
+        "full": {
+          "source_before_sha256": "8a0d44f18bbe00406054bd8b1269f62691ffb5dffd99cbaaa72647983c6e4ca7",
+          "ordinary_shell_same_parent_control": {
+            "before": {
+              "volume": "C:",
+              "hresult": "0x00000000",
+              "items": 0,
+              "bytes": 0
+            },
+            "exit": 0,
+            "aborted": false,
+            "source_exists": false,
+            "after": {
+              "volume": "C:",
+              "hresult": "0x00000000",
+              "items": 1,
+              "bytes": 249
+            },
+            "matches": [
+              {
+                "unique_name_matches": true,
+                "origin_matches": true,
+                "properties": {
+                  "sdk_property": {
+                    "type": "NoneType",
+                    "value": "None"
+                  },
+                  "original_location_column": {
+                    "type": "str",
+                    "value": "<fixture>\\full"
+                  }
+                }
+              }
+            ],
+            "restored_hash_matches": true
+          },
+          "bin_before": {
+            "volume": "C:",
+            "hresult": "0x00000000",
+            "items": 0,
+            "bytes": 0
+          },
+          "recycle_option_blocked": false,
+          "result": "已提取 2 个文件至 <fixture>\\output；原压缩包已移入回收站。",
+          "terminal": "complete",
+          "source_present_after_extraction": false,
+          "bin_after": {
+            "volume": "C:",
+            "hresult": "0x00000000",
+            "items": 1,
+            "bytes": 249
+          },
+          "recycle_matches": [
+            {
+              "unique_name_matches": true,
+              "origin_matches": true,
+              "properties": {
+                "sdk_property": {
+                  "type": "NoneType",
+                  "value": "None"
+                },
+                "original_location_column": {
+                  "type": "str",
+                  "value": "<fixture>\\full"
+                }
+              }
+            }
+          ],
+          "restored_from_recycle_bin": true,
+          "source_final_sha256": "8a0d44f18bbe00406054bd8b1269f62691ffb5dffd99cbaaa72647983c6e4ca7",
+          "output_sha256": {
+            "one.txt": "6ada55025e370893b2990b559e2029c49d9d81c55542ac896c6ff0497994d346",
+            "two.txt": "4bac81c8e2351bd0ddbb1e58e8923f947e73b5170fa95d3a75f1f95e671b907f"
+          }
+        }
+      }
+    }
+  }
+}
