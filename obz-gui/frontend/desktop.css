@@ -658,6 +658,17 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #qing-archive .qa-tool-frame { min-height:0; height:100%; flex:1; }
 #qing-archive .oa-history-heading { align-items:center; flex-wrap:wrap; gap:8px; }
 #qing-archive .oa-history-filter { color:var(--qa-sub); font-size:var(--qa-font-control); }
+/* Tint the flyout over the existing native window material. */
+@supports (color: color-mix(in srgb, black, white)) {
+  #qing-archive:is([data-material=acrylic],[data-material=mica]) #oa-menu {
+    background-color:color-mix(in srgb,var(--qa-panel) 28%,var(--qa-card));
+    background-image:linear-gradient(145deg,color-mix(in srgb,var(--qa-card) 48%,transparent),transparent 65%);
+    border-color:color-mix(in srgb,var(--qa-card) 72%,var(--qa-control-border));
+  }
+}
+@media (forced-colors: active) {
+  #qing-archive:is([data-material]) #oa-menu { background:Canvas; border-color:ButtonText; }
+}
 #qing-archive .qa-badge[data-state=complete] { color:light-dark(#196354,#a7dfca); background:light-dark(#e7f4ed,#273e39); }
 #qing-archive .qa-badge[data-state=failed] { color:var(--qa-danger); background:light-dark(#fae9eb,#482e38); }
 #qing-archive .qa-badge[data-state=attention] { color:light-dark(#77510c,#f0ce91); background:light-dark(#faf0d8,#433b2c); }
