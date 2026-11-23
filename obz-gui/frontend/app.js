@@ -1692,8 +1692,9 @@ function changeCompressionFormat(){
 }
 function compressionPasswordPresent(){return !!($('qa-new-password').value||$('oa-password-again').value);}
 function syncCompressionPassword(){
- const canEncrypt=compressionCanEncrypt($('qa-format').value),panel=$('oa-password-panel'),retry=panel.closest('.qa-dialog').dataset.retryPasswordRequired==='true',pending=compressionPasswordPresent()||retry;
+ const format=$('qa-format').value,canEncrypt=compressionCanEncrypt(format),panel=$('oa-password-panel'),retry=panel.closest('.qa-dialog').dataset.retryPasswordRequired==='true',pending=compressionPasswordPresent()||retry;
  $('oa-password-unsupported').hidden=canEncrypt||!pending;
+ $('oa-zip-password-notice').hidden=format!=='zip';
  $('oa-password-button').disabled=!canEncrypt&&!pending;
  $('oa-password-button').textContent=pending?'密码已填写':'设置密码';
  $('oa-encryption').disabled=!canEncrypt;
@@ -1932,6 +1933,7 @@ function compress(profile,inputs=[]){
     <label class="qa-check"><input id="oa-show-password" type="checkbox">显示密码</label>
     <label class="qa-check"><input id="oa-header-encryption" type="checkbox" checked>加密文件名</label>
    </div>
+   <p id="oa-zip-password-notice" class="oa-form-notice" hidden>ZIP 密码保护文件内容，文件名仍可见。</p>
   </div>
   ${compressionAdvancedFields()}`,
   '<label class="qa-check oa-compression-verify"><input id="oa-test-after" type="checkbox" checked>创建后检查完整性</label>'
