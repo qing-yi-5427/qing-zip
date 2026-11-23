@@ -14,6 +14,8 @@
 | Rust 深度解压集成 | 15 项经审阅的普通归档用例。多入口、错扩展名和无扩展名、ZIP/7z/RAR5、压缩 TAR、嵌套目录、分卷、选取、AES 密码续接、冲突重试和保留普通数字伴随文件。回收资格只读取会话报告，样本保留在临时目录。 | PASS |
 | Rust CLI 集成 | 解压和测试的线程参数 1 项。校验工具的目录递归、输入顺序、不可读输入和打开写句柄共 3 项。 | PASS |
 | Rust 引擎取消集成 | 取消后开始列包应返回取消。压缩普通 16 MiB 文件为 7z 的过程中触发取消，断言取消返回且目标包未发布。 | PASS（2 项） |
+| 日常归档回归 | ZIP/7z 加密与错误密码；三种压缩 TAR 的内容和修改时间；GBK 代码页；更新失败保全及两次并发添加；两层嵌套、同名兄弟、外层变更、加密写回；ZIP 与固实 7z 各自明文和加密状态的四种更新模式。 | PASS（10 项精确命名的 Rust 用例，包含 16 种更新组合） |
+| 真实文件占用与重试 | 普通 ZIP、7z 解压到已有文件，测试以 Windows 独占句柄持有该文件。选择覆盖应返回可处理错误，现有文件、目录和原包保持完整，释放句柄后再提取 1 个文件且内容正确。 | PASS（本地基线包和组合候选包分别复测） |
 | x64 加固产物 | Release CLI、worker、桌面程序。三者均为 x64，PE 审计通过 ASLR、高熵 VA、DEP、CFG、CET 兼容和可写可执行节检查。 | PASS |
 | x64 便携包实跑 | 解包后从包内 CLI 创建、列出、校验、解压 ZIP 与 7z。拒绝覆盖时比较已存在目标文件与原包字节。 | PASS |
 | x64 便携包处理下载不完整的普通归档 | 将生成的 ZIP、7z 各截去后半段，二者的完整性检查和启用覆盖的解压均返回退出码 1 和错误输出。比较完整原包、截断副本、原有目标文件字节和目标目录项。 | PASS |
@@ -133,6 +135,8 @@ python scripts/package.py --binary-directory $build.BinaryDirectory --output-dir
 python scripts/check-public-package.py "$output/qing-zip-0.12.23-portable.zip"
 python scripts/check-archive-interop.py --cli "$output/qing-zip-0.12.23-portable/obz.exe"
 ```
+
+日常归档回归可在仓库根目录运行 `./scripts/check-daily-archive-regressions.ps1`。每个名称必须实际执行并通过 1 项测试。文件占用与解锁重试复用上面的 `check-public-package.py`。两项均进入常规 Windows x64 工作流。
 
 ## 公开 CI 历史记录
 
