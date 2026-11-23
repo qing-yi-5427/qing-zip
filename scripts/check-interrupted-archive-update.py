@@ -81,7 +81,8 @@ def trial(cli, root, round_number, require_owned):
     job.mkdir()
     scratch = job / "temp"
     scratch.mkdir()
-    env = {**os.environ, "TEMP": str(scratch), "TMP": str(scratch)}
+    env = {**os.environ, "TEMP": str(scratch), "TMP": str(scratch),
+           "LOCALAPPDATA": str(scratch / "local"), "APPDATA": str(scratch / "roaming")}
     source = job / "addition.bin"
     source.write_bytes(random.Random(round_number).randbytes(128 * 1024 * 1024))
     original = b"existing archive member"

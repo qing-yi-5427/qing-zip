@@ -593,6 +593,18 @@ pub fn wait_for_process(child: &std::process::Child, timeout: Duration) -> std::
     { let _ = child; thread::sleep(timeout); Ok(()) }
 }
 
+#[cfg(nana_selected_worker)]
+static ARCHIVE_SPAWN: Mutex<()> = Mutex::new(());
+
+/// Keep first-party archive launches out of the temporary ZIP engine stdio
+/// inheritance window. This lock is released before any process I/O or wait.
+#[doc(hidden)]
+pub fn spawn_archive_process(command: &mut Command) -> std::io::Result<std::process::Child> {
+    #[cfg(nana_selected_worker)]
+    let _guard = ARCHIVE_SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.spawn()
+}
+
 fn run_program(
     program: PathBuf,
     args: &[String],
@@ -760,8 +772,8 @@ fn run_program_log_with_directory(
             let stdin = stream_input.map(Stdio::from).unwrap_or_else(|| {
                 if opts.password.is_some() { Stdio::piped() } else { Stdio::null() }
             });
-            EngineProcess::Standard(cmd.stdin(stdin).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr))
-                .spawn().map_err(|e| format!("cannot launch archive engine: {e}"))?)
+            EngineProcess::Standard(spawn_archive_process(cmd.stdin(stdin).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr)))
+                .map_err(|e| format!("cannot launch archive engine: {e}"))?)
         }
         #[cfg(nana_selected_worker)]
         EngineLifetime::OwnedZipUpdate => {

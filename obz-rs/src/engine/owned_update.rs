@@ -115,19 +115,24 @@ impl Process {
         let mut job = ptr::null_mut();
         // Native startup duplicates only these streams, with the guard job
         // supplied as a creation attribute instead of an inherited handle.
-        let status = unsafe {
-            qing_spawn_owned_update(
-                executable.as_ptr(),
-                line.as_mut_ptr(),
-                cwd.as_ref().map_or(ptr::null(), |wide| wide.as_ptr()),
-                input
-                    .as_ref()
-                    .map_or(ptr::null_mut(), AsRawHandle::as_raw_handle),
-                output.as_raw_handle(),
-                error.as_raw_handle(),
-                &mut process,
-                &mut job,
-            )
+        let status = {
+            let _guard = super::ARCHIVE_SPAWN
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            unsafe {
+                qing_spawn_owned_update(
+                    executable.as_ptr(),
+                    line.as_mut_ptr(),
+                    cwd.as_ref().map_or(ptr::null(), |wide| wide.as_ptr()),
+                    input
+                        .as_ref()
+                        .map_or(ptr::null_mut(), AsRawHandle::as_raw_handle),
+                    output.as_raw_handle(),
+                    error.as_raw_handle(),
+                    &mut process,
+                    &mut job,
+                )
+            }
         };
         if status != 0 {
             return Err(io::Error::from_raw_os_error(status as i32));
@@ -241,6 +246,15 @@ mod tests {
                 assert_ne!(in_job, 0);
                 assert_ne!(unsafe { GetHandleInformation(job, &mut flags) }, 0);
                 assert_eq!(flags & 1, 0, "engine job handle must not be inheritable");
+                let (ready, acquired) = std::sync::mpsc::channel();
+                let competitor = std::thread::spawn(move || {
+                    let _guard = crate::engine::ARCHIVE_SPAWN.lock().unwrap();
+                    let _ = ready.send(());
+                });
+                acquired
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("archive launch lock is available before the engine is reaped");
+                competitor.join().unwrap();
                 observed.replace(Some(child.process.try_clone().unwrap()));
                 cancel.cancel();
             })))
