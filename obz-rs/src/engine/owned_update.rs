@@ -8,10 +8,19 @@ use std::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
         process::ExitStatusExt,
     },
+    path::Path,
     process::{Command, ExitStatus},
     ptr,
     time::Duration,
 };
+
+pub(super) fn verified_bundled_nana_console(program: &Path) -> Option<crate::machine_policy::Backend> {
+    if program.file_name()? != "NanaZip.Universal.Console.exe" {
+        return None;
+    }
+    crate::machine_policy::verify_backend_at(program.parent()?)
+        .ok().filter(|verified| verified.exe == program)
+}
 
 extern "C" {
     fn qing_spawn_owned_update(
@@ -41,7 +50,7 @@ pub(super) struct Process {
 
 #[cfg(test)]
 thread_local! {
-    static AFTER_LAUNCH: std::cell::RefCell<Option<Box<dyn FnOnce(&Process)>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static AFTER_LAUNCH: std::cell::RefCell<Option<Box<dyn FnOnce(&Process, &Command)>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn wide_null(value: &OsStr) -> io::Result<Vec<u16>> {
@@ -152,7 +161,7 @@ impl Process {
         #[cfg(test)]
         AFTER_LAUNCH.with(|hook| {
             if let Some(observe) = hook.borrow_mut().take() {
-                observe(&child);
+                observe(&child, command);
             }
         });
         Ok(child)
@@ -237,7 +246,7 @@ mod tests {
         let handle = Rc::new(RefCell::new(None));
         let observed = handle.clone();
         AFTER_LAUNCH.with(|hook| {
-            hook.replace(Some(Box::new(move |child| {
+            hook.replace(Some(Box::new(move |child, _command| {
                 let process = child.process.as_raw_handle();
                 let job = child.job.as_ref().unwrap().as_raw_handle();
                 let mut in_job = 0;

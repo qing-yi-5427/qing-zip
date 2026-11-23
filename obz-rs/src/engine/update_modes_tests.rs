@@ -156,6 +156,38 @@ thread_local! {
     pub(super) static AFTER_ENGINE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(nana_selected_worker)]
+#[test]
+fn reject_unreadable_zip_rename_proposal_and_keep_original() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("direct.zip");
+    let mut writer = zip::ZipWriter::new(File::create(&archive).unwrap());
+    writer.start_file("old.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    writer.write_all(b"ordinary file").unwrap();
+    writer.finish().unwrap();
+    let original = fs::read(&archive).unwrap();
+    let names = ["old.txt".into(), "new.txt".into()];
+    let path = archive.to_str().unwrap();
+    let options = EngineOptions::default();
+    owned_update::AFTER_LAUNCH.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|_, command| {
+            assert!(command.get_args().any(|arg| arg == "-so"));
+        }));
+    });
+    AFTER_ENGINE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|candidate| fs::write(candidate, b"incomplete ZIP").unwrap()));
+    });
+    assert!(update(path, "rename", &names, &options).is_err());
+    assert!(!owned_update::AFTER_LAUNCH.with(|hook| hook.borrow().is_some()), "candidate writer was not launched");
+    assert!(!AFTER_ENGINE.with(|hook| hook.borrow().is_some()), "candidate writing did not finish");
+    assert_eq!(fs::read(&archive).unwrap(), original);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    update(path, "rename", &names, &options).unwrap();
+    assert_eq!(list(path, &options).unwrap()[0].name, "new.txt");
+}
+
 #[test]
 fn compression_update_verifies_existing_password_and_preserves_mixed_zip_encryption() {
     let dir = tempfile::tempdir().unwrap();

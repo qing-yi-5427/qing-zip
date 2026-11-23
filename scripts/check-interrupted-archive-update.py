@@ -58,7 +58,16 @@ def digest(data):
 
 def contents(archive):
     with zipfile.ZipFile(archive) as opened:
-        return {name: digest(opened.read(name)) for name in opened.namelist()}
+        found = {}
+        for name in opened.namelist():
+            with opened.open(name) as member:
+                found[name] = hashlib.file_digest(member, "sha256").hexdigest()
+        return found
+
+
+def file_digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def retained_files(job, scratch):
@@ -76,7 +85,22 @@ def retained_files(job, scratch):
     return counts
 
 
-def trial(cli, root, round_number, require_owned):
+def staged_candidate_size(job, argv):
+    candidate = next((Path(arg[3:]) for arg in argv if arg.startswith('-u!')), None)
+    if candidate is None or not candidate.is_relative_to(job):
+        return None
+    try:
+        # Named output is normally visible. Windows can hide the owned handle
+        # output during a live delete disposition, even through enumeration.
+        with os.scandir(candidate.parent) as entries:
+            size = next((item.stat(follow_symlinks=False).st_size for item in entries
+                         if item.name == candidate.name), None)
+            return size or None
+    except OSError:
+        return None
+
+
+def trial(cli, root, round_number, require_owned, action, require_reclaimed):
     job = root / f"update-{round_number}"
     job.mkdir()
     scratch = job / "temp"
@@ -84,26 +108,47 @@ def trial(cli, root, round_number, require_owned):
     env = {**os.environ, "TEMP": str(scratch), "TMP": str(scratch),
            "LOCALAPPDATA": str(scratch / "local"), "APPDATA": str(scratch / "roaming")}
     source = job / "addition.bin"
-    source.write_bytes(random.Random(round_number).randbytes(128 * 1024 * 1024))
+    fixture_mib = 128 if action == "add" else 256
+    generator = random.Random(round_number)
+    with source.open('wb') as file:
+        for _ in range(fixture_mib):
+            file.write(generator.randbytes(1024 * 1024))
     original = b"existing archive member"
     archive = job / "editing.zip"
     with zipfile.ZipFile(archive, "w") as opened:
         opened.writestr("keep.txt", original)
-    original_hash = digest(archive.read_bytes())
-    added_hash = digest(source.read_bytes())
+        if action != "add":
+            opened.write(source, "large.bin")
+            opened.writestr("retire.txt", b"ordinary item selected for deletion")
+    original_hash = file_digest(archive)
+    added_hash = file_digest(source)
     other_archive = job / "independent.zip"
     other_input = job / "other.txt"
     other_input.write_bytes(random.Random(1000 + round_number).randbytes(64 * 1024 * 1024))
-    command = [cli, "add", archive, source]
+    original_members = contents(archive)
+    expected_members = dict(original_members)
+    if action == "add":
+        members = [str(source)]
+        expected_members[source.name] = added_hash
+    elif action == "delete":
+        members = ["retire.txt"]
+        del expected_members["retire.txt"]
+    else:
+        members = ["large.bin", "renamed.bin"]
+        expected_members["renamed.bin"] = expected_members.pop("large.bin")
+    backend_action = {"add": "a", "delete": "d", "rename": "rn"}[action]
+    command = [cli, action, archive, *members]
     # Children inherit the temporary paths above. Only the explicit editing
     # process is terminated. Descendants are observed to measure actual cleanup.
     start_time = time.monotonic()
     with (job / "output.log").open("wb") as log:
-        with subprocess.Popen(command, cwd=job, env=env, stdin=subprocess.DEVNULL,
-                              stdout=log, stderr=subprocess.STDOUT) as edit:
-            with subprocess.Popen([cli, "create", other_archive, other_input, "--format", "zip"],
-                                  cwd=job, env=env, stdin=subprocess.DEVNULL,
-                                  stdout=log, stderr=subprocess.STDOUT) as other:
+        with subprocess.Popen([cli, "create", other_archive, other_input, "--format", "zip"],
+                              cwd=job, env=env, stdin=subprocess.DEVNULL,
+                              stdout=log, stderr=subprocess.STDOUT) as other:
+            # Copying compressed members is faster than adding them. Start
+            # the independent compression first so the write windows overlap.
+            with subprocess.Popen(command, cwd=job, env=env, stdin=subprocess.DEVNULL,
+                                  stdout=log, stderr=subprocess.STDOUT) as edit:
                 editor = psutil.Process(edit.pid)
                 seen = {}
                 active = None
@@ -130,11 +175,14 @@ def trial(cli, root, round_number, require_owned):
                             argv = child.cmdline()
                             key = f"{image.name}:{argv[1] if len(argv)>1 else ''}"
                             observations[key] = max(observations.get(key, 0), io.read_bytes)
-                            if (len(argv) > 1 and argv[1] == 'a' and str(archive).casefold() in [arg.casefold() for arg in argv]
-                                    and str(source).casefold() in [arg.casefold() for arg in argv]
+                            argv_folded = [arg.casefold() for arg in argv]
+                            if (len(argv) > 1 and argv[1] == backend_action and str(archive).casefold() in argv_folded
+                                    and all(member.casefold() in argv_folded for member in members)
                                     and io.read_bytes >= 2 * 1024 * 1024 and io.write_bytes >= 1024 * 1024):
-                                active = {"image": image.name, "command": "a", "read_bytes": io.read_bytes,
+                                active = {"image": image.name, "command": backend_action,
+                                          "handle_stdout": "-so" in argv, "read_bytes": io.read_bytes,
                                           "write_bytes": io.write_bytes, "arguments_match_fixture": True,
+                                          "observed_candidate_file_bytes": staged_candidate_size(job, argv),
                                           "observed_seconds": round(time.monotonic() - start_time, 3)}
                                 writer_pid = child.pid
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -155,7 +203,7 @@ def trial(cli, root, round_number, require_owned):
                         pass
                     if active and independent_active and other.poll() is None:
                         break
-                    time.sleep(0.01)
+                    time.sleep(0.005)
                 if not active or not independent_active or edit.poll() is not None or other.poll() is not None:
                     log.flush()
                     detail = (job / 'output.log').read_text(encoding='utf-8', errors='replace')[-2000:]
@@ -184,23 +232,28 @@ def trial(cli, root, round_number, require_owned):
                     raise RuntimeError("Unexpected completion state of interrupted or independent job")
                 independent_observed_done = time.monotonic()
     independent = contents(other_archive)
-    if independent != {"other.txt": digest(other_input.read_bytes())}:
+    if independent != {"other.txt": file_digest(other_input)}:
         raise RuntimeError("The independent job produced incorrect bytes")
     reopen_start = time.monotonic()
     reopened = subprocess.run([cli, "list", archive], cwd=job, env=env, capture_output=True,
                               stdin=subprocess.DEVNULL, timeout=60, check=True)
     reopen_seconds = time.monotonic() - reopen_start
-    if ([entry["name"] for entry in json.loads(reopened.stdout)["entries"]] != ["keep.txt"]
-            or digest(archive.read_bytes()) != original_hash or digest(source.read_bytes()) != added_hash):
+    if (sorted(entry["name"] for entry in json.loads(reopened.stdout)["entries"]) != sorted(original_members)
+            or file_digest(archive) != original_hash or file_digest(source) != added_hash):
         raise RuntimeError("The interrupted archive or the input changed")
     after_reopen = retained_files(job, scratch)
     retry_start = time.monotonic()
     subprocess.run(command, cwd=job, env=env, capture_output=True, stdin=subprocess.DEVNULL,
                    timeout=120, check=True)
     retry_seconds = time.monotonic() - retry_start
-    if contents(archive) != {"keep.txt": digest(original), source.name: added_hash} or digest(source.read_bytes()) != added_hash:
-        raise RuntimeError("Retried archive did not contain the expected original and added bytes")
-    return {"round": round_number, "observed": active, "independent_observed": independent_active,
+    if contents(archive) != expected_members or file_digest(source) != added_hash:
+        raise RuntimeError("Retried archive did not match the expected member hashes")
+    after_retry = retained_files(job, scratch)
+    reclaimed = all(state.get("archive_sibling", {}).get("bytes", 0) == 0 for state in (after_reopen, after_retry))
+    if require_reclaimed and (not active["handle_stdout"] or not reclaimed):
+        raise RuntimeError(f"Owned output was not used or retained data: {active}; reopened={after_reopen}; retried={after_retry}")
+    return {"round": round_number, "action": action, "fixture_mib": fixture_mib,
+            "observed": active, "independent_observed": independent_active,
             "interrupted_seconds": round(interrupted_at-start_time, 3),
             "independent_running_at_kill": independent_running_at_kill, "exit_code": exit_code,
             "independent_completion_observed_by_seconds": round(independent_observed_done-start_time, 3),
@@ -212,7 +265,8 @@ def trial(cli, root, round_number, require_owned):
             "writer_bytes_written_after_owner_exit": bytes_after_owner_exit,
             "archive_unchanged_after_reopen": True, "source_unchanged": True,
             "independent_job_verified": True, "retry_verified": True,
-            "retained_after_reopen": after_reopen, "retained_after_retry": retained_files(job, scratch)}
+            "retained_after_reopen": after_reopen, "retained_after_retry": after_retry,
+            "archive_sibling_candidate_bytes_reclaimed": reclaimed}
 
 
 if __name__ == "__main__":
@@ -220,6 +274,9 @@ if __name__ == "__main__":
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--out", type=Path, help="write sanitized JSONL to a new file")
     parser.add_argument("--require-owned", action="store_true", help="require the update writer to stop with its owner")
+    parser.add_argument("--action", choices=("add", "delete", "rename"), default="add")
+    parser.add_argument("--require-reclaimed", action="store_true",
+                        help="require ownership of the output handle and verify zero retained candidate bytes")
     args = parser.parse_args()
     cli = args.cli.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="qing-zip-interrupted-update-") as work:
@@ -228,7 +285,8 @@ if __name__ == "__main__":
             for number in range(1, 4):
                 line = json.dumps({"cli_sha256": digest(cli.read_bytes()), "script_sha256": digest(Path(__file__).read_bytes()),
                                    "platform": platform.platform(), "python": platform.python_version(),
-                                   "psutil": psutil.__version__, **trial(cli, Path(work), number, args.require_owned)})
+                                   "psutil": psutil.__version__,
+                                   **trial(cli, Path(work), number, args.require_owned, args.action, args.require_reclaimed)})
                 print(line, flush=True)
                 if receipt:
                     receipt.write(line+'\n'); receipt.flush()

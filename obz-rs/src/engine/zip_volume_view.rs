@@ -132,16 +132,16 @@ fn single_disk(file: &mut File) -> Result<bool, String> {
     Ok(single_disk_record(file)?.is_some())
 }
 
-pub(super) fn require_editable(path: &Path) -> Result<(), String> {
+pub(super) fn require_editable(path: &Path) -> Result<Option<SingleDisk>, String> {
     let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     if numeric_zip(path, extension) || disk_part(extension) {
         return Err("updating split ZIP archives is unsupported".into());
     }
-    if extension.eq_ignore_ascii_case("zip") && !single_disk(&mut *crate::engine_stream::pin(path)?)?
-    {
-        return Err("updating split or incomplete ZIP archives is unsupported".into());
+    if extension.eq_ignore_ascii_case("zip") {
+        return single_disk_record(&mut *crate::engine_stream::pin(path)?)?
+            .map(Some).ok_or_else(|| "updating split or incomplete ZIP archives is unsupported".into());
     }
-    Ok(())
+    Ok(None)
 }
 
 fn open_part(path: &Path) -> Result<Option<File>, String> {
