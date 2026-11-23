@@ -62,6 +62,44 @@ test('cancelled tasks use a neutral message without hiding real failure details'
   assert.equal(context.s.jobs[0].error,detail);
 });
 
+test('restoring the compression draft shows the same actionable failure as the task card', () => {
+  const source = fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+  const lockedPath = String.raw`D:\source\locked.txt`;
+  const collisionPath = String.raw`D:\destination\archive.zip`;
+  const locked = `archive engine failed (2):\nNanaZip console banner\nScanning the drive\nWARNING: 另一个程序正在使用此文件，进程无法访问。\n${lockedPath}\n\nSystem ERROR:\n另一个程序正在使用此文件，进程无法访问。`;
+  const conflict = `output exists: ${collisionPath}`;
+  const opaque = 'archive engine failed (255): Enter password (will not be echoed): Break signaled';
+  const field = {textContent:''};
+  const inputs = {value:''};
+  const focused = [];
+  const draft = {dataset:{},querySelector:selector=>selector==='#qa-formerror'?field:{focus:()=>focused.push(selector)}};
+  const restored = [];
+  const context = makeContext({
+    compressionDrafts:new WeakMap(),s:{},dialog(){},overlay:{replaceChildren:node=>restored.push(node)},
+    $:()=>inputs,refreshSources(){},syncCompressionPassword(){},renderInlineTask(){},archiveDirectoryError(){return '';},
+  });
+  vm.runInContext(source.slice(source.indexOf('function taskError('), source.indexOf('function showPreservationNotice(')), context);
+  vm.runInContext(source.slice(source.indexOf('function restoreCompressionDraft('), source.indexOf('async function recheckCompressionOutput(')), context);
+
+  for (const [error,hadPassword,expected] of [
+    [locked,false,`归档引擎未能完成（代码 2）：\n另一个程序正在使用此文件，进程无法访问。\n${lockedPath}\n请关闭正在使用该文件的程序后重试。`],
+    [conflict,false,`目标位置已出现同名文件（可能在检查名称后由其他程序创建），已保留该文件，未覆盖。\n${collisionPath}\n重试时会重新检查并选用其他名称，也可更改保存位置。`],
+    [opaque,false,opaque],
+    [undefined,false,''],
+    [undefined,true,'请重新输入密码。'],
+  ]) {
+    const job = {archives:[{state:error ? 'createFailed' : 'createCancelled',error}]};
+    context.compressionDrafts.set(job,{draft,hadPassword,inputs:[lockedPath]});
+    context.restoreCompressionDraft(job);
+    assert.equal(field.textContent,expected);
+    assert.equal(job.archives[0].error,error);
+    assert.equal(inputs.value,lockedPath);
+    assert.equal(restored.at(-1),draft);
+    assert.equal(focused.at(-1),hadPassword?'#qa-new-password':'#qa-save');
+    assert.equal(draft.dataset.retryPasswordRequired,String(hadPassword));
+  }
+});
+
 test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const cause='写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)';
