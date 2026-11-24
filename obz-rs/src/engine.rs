@@ -887,14 +887,14 @@ pub fn validate_name(name: &str) -> Result<PathBuf, String> {
         return Err("absolute archive path rejected".into());
     }
     if !name.split(['/', '\\']).any(|part| part == ".") {
-        return crate::extract::relative_path(name);
+        return crate::extract::member_path(name);
     }
     let normalized = name
         .split(['/', '\\'])
         .filter(|part| *part != ".")
         .collect::<Vec<_>>()
         .join("/");
-    crate::extract::relative_path(&normalized)
+    crate::extract::member_path(&normalized)
 }
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "engine returned invalid UTF-8")?;

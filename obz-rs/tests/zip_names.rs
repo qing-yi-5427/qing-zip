@@ -81,3 +81,37 @@ fn legacy_gbk_names_keep_the_system_code_page() {
     execute(request("extract", &archive, &out, Some(936))).unwrap();
     assert_eq!(fs::read(out.join("报表.txt")).unwrap(), b"data0");
 }
+
+#[test]
+fn windows_invalid_member_names_are_mapped_like_7zip() {
+    use std::io::Write;
+    let cases = [("what?.txt", "what_.txt"), ("a:b.txt", "a_b.txt"), ("CON.txt", "_CON.txt"),
+        ("name.", "name_"), ("dir. /x.txt", "dir__/x.txt"), ("fine.txt", "fine.txt")];
+    for (mapped, expected) in cases {
+        assert_eq!(obz_core::extract::member_path(mapped).unwrap(), Path::new(expected), "{mapped}");
+    }
+    for unsafe_name in ["../evil.txt", "/abs.txt", "a/../b", "a//b", "\\\\server\\x", "line\nPath = x"] {
+        assert!(obz_core::extract::member_path(unsafe_name).is_err(), "{unsafe_name}");
+    }
+    // User-chosen names stay strict.
+    assert!(obz_core::extract::relative_path("what?.txt").is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("odd.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for (name, _) in cases {
+        writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(name.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap();
+    let out = dir.path().join("out");
+    execute(request("extract", &archive, &out, None)).unwrap();
+    for (name, expected) in cases {
+        assert_eq!(fs::read(out.join(expected)).unwrap(), name.as_bytes(), "{name}");
+    }
+    // Selecting a mapped member still extracts it.
+    let selected = dir.path().join("selected");
+    let mut one = request("extract", &archive, &selected, None);
+    one.options.selected = vec!["what?.txt".into()];
+    execute(one).unwrap();
+    assert_eq!(fs::read(selected.join("what_.txt")).unwrap(), b"what?.txt");
+}

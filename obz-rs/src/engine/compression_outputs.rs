@@ -28,7 +28,8 @@ pub fn plan_compression_outputs(paths: &[String], format: &str, volume_bytes: Op
             output_parents.insert(parent.as_os_str().to_owned(), resolved);
         }
         let filename = path.file_name().and_then(|name| name.to_str()).ok_or("输出文件名无效")?;
-        validate_name(filename)?;
+        // A user-chosen file name is rejected, never silently mapped.
+        crate::extract::relative_path(filename)?;
         let directory_key = path_key(parent);
         if !directories.contains_key(&directory_key) {
             let mut exact = HashSet::new();
