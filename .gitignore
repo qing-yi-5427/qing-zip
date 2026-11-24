@@ -25,6 +25,7 @@
 /docs/archive-policy.schema.json
 /evidence/
 /evidence-*/
+/*-evidence/
 /openbandizip/
 /gui-screenshot*.png
 /BANDIZIP-SETUP-BETA.exe
