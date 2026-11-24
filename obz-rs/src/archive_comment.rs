@@ -152,10 +152,19 @@ fn inspect(file: &mut File, ctl: Option<&engine::JobControl>) -> Result<Director
     Err(last_error)
 }
 pub fn get(path: &str) -> Result<String, String> {
+    get_with_codepage(path, None)
+}
+
+pub(crate) fn get_with_codepage(path: &str, codepage: Option<u32>) -> Result<String, String> {
     let _policy = crate::machine_policy::native("ZIP comment editor")?;
     let mut file = File::open(path).map_err(|e| e.to_string())?;
-    String::from_utf8(inspect(&mut file, None)?.comment)
-        .map_err(|_| "ZIP comment is not UTF-8".into())
+    let bytes = inspect(&mut file, None)?.comment;
+    // EOCD has no encoding flag. Our writer stores UTF-8; older Windows tools use local bytes.
+    if let Ok(comment) = std::str::from_utf8(&bytes) {
+        return Ok(comment.to_owned());
+    }
+    crate::util::decode_codepage(&bytes, codepage.unwrap_or(1))
+        .map_err(|e| format!("Could not decode ZIP comment: {e}"))
 }
 pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::native("ZIP comment editor")?;

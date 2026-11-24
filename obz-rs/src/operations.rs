@@ -385,7 +385,7 @@ fn execute_json(r: Request, restricted: bool) -> Result<Value, String> {
         "checksum-files" => crate::checksum::checksum_files(&r.inputs, &r.hashes, &r.options),
         "checksum" => crate::checksum::checksum_selected(&r.path, &r.hashes, &r.options),
         "checksum-algorithms" => Ok(json!({"algorithms": crate::checksum::algorithms(&r.options)?})),
-        "comment-get" => Ok(json!({"comment":crate::archive_comment::get(&r.path)?})),
+        "comment-get" => Ok(json!({"comment":crate::archive_comment::get_with_codepage(&r.path, r.options.codepage)?})),
         "comment-set" => {crate::archive_comment::set(&r.path,&r.name,&r.options)?;Ok(json!({"updated":r.path}))},
         "vault-list" => Ok(json!(services::Vault::open(vault_path()?)?.list()?)),
         "vault-put" => {

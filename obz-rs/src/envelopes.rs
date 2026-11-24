@@ -149,40 +149,7 @@ fn encoded_text(bytes: &[u8], opts: &EngineOptions) -> Result<String, String> {
             return Ok(s.to_owned());
         }
     }
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn MultiByteToWideChar(
-                cp: u32,
-                flags: u32,
-                input: *const u8,
-                len: i32,
-                out: *mut u16,
-                capacity: i32,
-            ) -> i32;
-            fn GetACP() -> u32;
-        }
-        let cp = opts.codepage.unwrap_or_else(|| unsafe { GetACP() });
-        let len = i32::try_from(bytes.len()).map_err(|_| "encoded input too large")?;
-        let size =
-            unsafe { MultiByteToWideChar(cp, 8, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
-        if size == 0 {
-            return Err("encoded filename cannot be decoded with selected codepage".into());
-        }
-        let mut out = vec![0u16; size as usize];
-        let n = unsafe { MultiByteToWideChar(cp, 8, bytes.as_ptr(), len, out.as_mut_ptr(), size) };
-        if n != size {
-            return Err("filename decoding failed".into());
-        }
-        String::from_utf16(&out).map_err(|e| e.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        std::str::from_utf8(bytes)
-            .map(|s| s.to_owned())
-            .map_err(|_| "only UTF8 encoded filenames are supported on this platform".into())
-    }
+    crate::util::decode_codepage(bytes, opts.codepage.unwrap_or(0))
 }
 fn text_decode(text: &str, xx: bool) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut lines = text.lines();
