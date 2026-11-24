@@ -35,7 +35,7 @@ pub(super) fn parse_manifest(body: &[u8], nonce: &[u8;16], verification: bool, d
         let name=data.wide()?.replace('\\',"/");
         units=units.checked_add(name.encode_utf16().count()).filter(|n|*n<=max_names).ok_or("full worker name budget")?;
         let key=path_key(&validate_name(&name)?);
-        if !names.insert(key) {return Err("duplicate full worker member".into());}
+        if !names.insert(key) {return Err(format!("duplicate or case-colliding archive names: {name}"));}
         let size=data.u64()?;total=total.checked_add(size).ok_or("full worker size overflow")?;
         let is_dir=data.bit()?;let present=data.bit()?;let attrs=data.u32()?;
         let crc_present=data.bit()?;let crc=data.u32()?;

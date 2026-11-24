@@ -180,7 +180,7 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
     let mut seen = HashSet::new();
     for name in &normalized {
         if !seen.insert(name) {
-            return Err("duplicate or case-colliding archive names".into());
+            return Err(format!("duplicate or case-colliding archive names: {name}"));
         }
     }
     let files: HashSet<_> = out

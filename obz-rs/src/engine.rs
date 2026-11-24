@@ -1472,7 +1472,8 @@ struct CheckedDirectories {
     #[cfg(windows)]
     owned_roots: Vec<PathBuf>,
     #[cfg(windows)]
-    owned_dirs: HashSet<PathBuf>,
+    /// Lower-cased path keys: NTFS resolves `Docs` and `docs` to one directory.
+    owned_dirs: HashSet<String>,
     #[cfg(windows)]
     selected_output_root: Option<PathBuf>,
     #[cfg(windows)]
