@@ -863,6 +863,12 @@ fn run_program_log_with_directory(
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut err = String::new();
         errors.take(8192).read_to_string(&mut err).ok();
+        // Without a password the console prompts, reads EOF and stops with
+        // "Break signaled" (exit 255). Say what is needed instead.
+        if opts.password.is_none() && status.code() == Some(255)
+            && (String::from_utf8_lossy(&bytes).contains("Break signaled") || err.contains("Break signaled")) {
+            return Err("password required for encrypted archive".into());
+        }
         return Err(scrub(
             &format!(
                 "archive engine failed ({}): {} {}",
