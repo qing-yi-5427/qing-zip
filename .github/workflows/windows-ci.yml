@@ -85,6 +85,9 @@ jobs:
       - name: Archive update, encryption, filename and nested write-back regressions
         shell: pwsh
         run: ./scripts/check-daily-archive-regressions.ps1
+      - name: Legacy ZIP comment code page regression
+        shell: pwsh
+        run: cargo test --locked --manifest-path obz-rs/Cargo.toml --test archive_comment legacy_zip_comment_defaults_to_ansi_before_oem -- --exact --nocapture
       - name: Selected pure listing and serialization regressions
         shell: pwsh
         run: |

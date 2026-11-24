@@ -159,11 +159,12 @@ pub(crate) fn get_with_codepage(path: &str, codepage: Option<u32>) -> Result<Str
     let _policy = crate::machine_policy::native("ZIP comment editor")?;
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let bytes = inspect(&mut file, None)?.comment;
-    // EOCD has no encoding flag. Our writer stores UTF-8; older Windows tools use local bytes.
+    // EOCD has no encoding flag. Our writer stores UTF-8; legacy ZIP readers
+    // such as 7-Zip use the Windows ANSI code page (CP_ACP) for comments.
     if let Ok(comment) = std::str::from_utf8(&bytes) {
         return Ok(comment.to_owned());
     }
-    crate::util::decode_codepage(&bytes, codepage.unwrap_or(1))
+    crate::util::decode_codepage(&bytes, codepage.unwrap_or(0))
         .map_err(|e| format!("Could not decode ZIP comment: {e}"))
 }
 pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
