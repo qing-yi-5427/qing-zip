@@ -58,6 +58,9 @@ pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,St
     result
 }
 pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
+    list_archive_by_format(path,opts).map_err(|error|crate::volume_set::explain(path,error))
+}
+fn list_archive_by_format(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
     let detected=with_name_codepage(path,opts);
     let opts=detected.as_ref().unwrap_or(opts);
     let policy=crate::machine_policy::scope();
@@ -244,7 +247,11 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     if matches!(r.operation.as_str(),"test"|"extract"|"preview"|"archive-properties"|"delete"|"rename") {
         if let Some(options)=with_name_codepage(&r.path,&r.options) { r.options=options; }
     }
-    let mut result=execute_json(r, restricted)?;
+    let explain_volumes=matches!(r.operation.as_str(),"test"|"extract").then(|| r.path.clone());
+    let mut result=execute_json(r, restricted).map_err(|error| match &explain_volumes {
+        Some(path) => crate::volume_set::explain(path, error),
+        None => error,
+    })?;
     #[cfg(windows)]
     if let Some(report)=atime{let report=report.lock().unwrap_or_else(|e|e.into_inner());result["input_atime"]=serde_json::to_value(&*report).map_err(|e|e.to_string())?;result["input_atime"]["summary"]=report.summary().into();}
     Ok(OperationResponse::Json(result))
