@@ -133,8 +133,17 @@ pub(crate) fn confirm_single_volume(request: &Request, control: &JobControl) -> 
     check_cancel(control)
 }
 
+pub(crate) struct PinnedZipDirectory {
+    pub entries: usize,
+    pub bytes: u64,
+}
+
+pub(crate) fn pinned_zip_entries(file: &File) -> Result<Option<usize>, String> {
+    pinned_zip_directory(file).map(|directory| directory.map(|layout| layout.entries))
+}
+
 // Read the end record from the same pinned file held through publication.
-pub(crate) fn pinned_zip_entries(mut file: &File) -> Result<Option<usize>, String> {
+pub(crate) fn pinned_zip_directory(mut file: &File) -> Result<Option<PinnedZipDirectory>, String> {
     let mut signature = [0; 4];
     file.seek(SeekFrom::Start(0)).and_then(|_| file.read_exact(&mut signature))
         .map_err(|e| e.to_string())?;
@@ -195,12 +204,13 @@ pub(crate) fn pinned_zip_entries(mut file: &File) -> Result<Option<usize>, Strin
         {
             return Err(invalid());
         }
-        return usize::try_from(total).map(Some).map_err(|_| invalid());
+        let entries = usize::try_from(total).map_err(|_| invalid())?;
+        return Ok(Some(PinnedZipDirectory { entries, bytes: zip64_size }));
     }
     if count == u16::MAX || u64::from(offset) + u64::from(size) != classic_offset {
         return Err(invalid());
     }
-    Ok(Some(usize::from(count)))
+    Ok(Some(PinnedZipDirectory { entries: usize::from(count), bytes: u64::from(size) }))
 }
 pub(crate) fn commit_recycle(control: &JobControl) -> Result<(), String> {
     let mut phase=control.progress.lock().unwrap_or_else(|e|e.into_inner());
