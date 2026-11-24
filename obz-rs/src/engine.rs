@@ -37,7 +37,7 @@ mod bounded_archive_stage;
 pub mod benchmark;
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub mod deep_extract;
-mod zip_volume_view;
+pub(crate) mod zip_volume_view;
 mod zip_input_probe;
 #[cfg(windows)]
 pub(crate) mod edit_source;
@@ -738,6 +738,7 @@ fn run_program_log_with_directory(
         &errors,
         output.as_ref().zip(output_size),
     );
+    let binary_output = output.is_some();
     let pipe = collect_directory.then(directory_capture::pipe).and_then(Result::ok);
     let (stdout, capture_files) = if let Some((reader, writer)) = pipe {
         (writer, Some((reader, logs.try_clone().map_err(|e| e.to_string())?)))
@@ -749,6 +750,13 @@ fn run_program_log_with_directory(
         (stdout, None)
     };
     let mut guarded_args = args.to_vec();
+    if binary_output && opts.password.is_none() && matches!(command, Some("x" | "e"))
+        && !guarded_args.iter().any(|argument| argument.starts_with("-bso"))
+    {
+        // With -so, console messages are disabled by default. Route prompts
+        // to the diagnostics file while keeping stdout for decoded bytes.
+        guarded_args.insert(1, "-bso2".into());
+    }
     zip_volume_view::apply_read_hint(&mut guarded_args);
     if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
         && matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) {
@@ -863,10 +871,8 @@ fn run_program_log_with_directory(
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut err = String::new();
         errors.take(8192).read_to_string(&mut err).ok();
-        // Without a password the console prompts, reads EOF and stops with
-        // "Break signaled" (exit 255). Say what is needed instead.
         if opts.password.is_none() && status.code() == Some(255)
-            && (String::from_utf8_lossy(&bytes).contains("Break signaled") || err.contains("Break signaled")) {
+            && crate::engine_password::stopped_at_prompt(&bytes, err.as_bytes()) {
             return Err("password required for encrypted archive".into());
         }
         return Err(scrub(
@@ -6185,7 +6191,7 @@ pub(crate) fn bounded_preview_command(
     let program = executable()?;
     let mut args = base("x", opts)?;
     args.retain(|value| value != "-bsp2");
-    args.extend(["-so".into(), "-bso0".into(), "-bsp0".into()]);
+    args.extend(["-so".into(), "-bso2".into(), "-bsp0".into()]);
     if let Some(format) = format { args.push(format!("-t{format}")); }
     if !allow_zealfs && has_zealfs_handler(&program) && policy.handler_may_be_enabled("ZealFS") {
         args.push("-stxZealFS".into());

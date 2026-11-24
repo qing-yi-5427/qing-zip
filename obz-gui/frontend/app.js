@@ -970,10 +970,6 @@ function taskError(e){
  const colliding=/^duplicate or case-colliding archive names: (.+)$/.exec(text);
  if(colliding)return `压缩包里有两个条目在 Windows 上会保存为同一个文件（名称只差大小写，或含 Windows 不支持的字符）：\n${colliding[1]}\n为避免一个覆盖另一个，没有解压。请在原系统上改名后重新打包。`;
  if(/^password required for encrypted archive$/.test(text))return '此压缩包已加密，需要密码。请输入密码后重试。';
- const missingVolume=/^missing archive volume: (.+)$/.exec(text);
- if(missingVolume)return `分卷不完整，缺少：${missingVolume[1]}\n请把全部分卷放在同一文件夹后重试。`;
- const lastVolume=/^archive volumes may be incomplete after: (.+)$/.exec(text);
- if(lastVolume)return `分卷可能不完整：找到的最后一卷是 ${lastVolume[1]}，之后的分卷缺失或没有下载完整。\n请补齐全部分卷后重试。`;
  const denied=/^commit private output: .*\(os error 5\)$/.exec(text);
  if(denied)return '无法写入目标文件：拒绝访问。文件可能正被其他程序使用，或没有写入此文件夹的权限。关闭相关程序或换一个保存位置后重试。';
  const blocked=/^destination conflict:\s*output parent is a file:\s*(.+)$/i.exec(text);
@@ -1353,18 +1349,23 @@ async function openArchive(path,password='',{refresh=false,nested=null,folder=''
 
 
 function archiveDirectoryError(message){
+ const missingVolume=/^(?:Error:\s*)?missing archive volume: (.+)$/.exec(message);
+ if(missingVolume)return `分卷不完整，缺少：${missingVolume[1]}\n请把全部分卷放在同一文件夹后重试。`;
+ const lastVolume=/^(?:Error:\s*)?archive volumes may be incomplete after: (.+)$/.exec(message);
+ if(lastVolume)return `分卷可能不完整：找到的最后一卷是 ${lastVolume[1]}。请确认所有分卷都已下载完整，并放在同一文件夹后重试。`;
  if(/^(?:Error:\s*)?RAR directory exceeds supported entry limit$/i.test(message))return '压缩包目录的条目数超出支持上限，无法完整读取。';
  if(/^(?:Error:\s*)?(?:RAR directory exceeds supported metadata limit|engine listing exceeds supported limit)$/i.test(message))return '压缩包目录的元数据超出支持上限，无法完整读取。';
  if(/^(?:Error:\s*)?RAR archive is missing a required volume$/i.test(message))return '压缩包缺少必要分卷，请将所有分卷放在同一目录后重试。';
  return '';
 }
 function archivePasswordError(error){return /(?:wrong|incorrect|invalid|enter|empty) password|password (?:is )?(?:required|incorrect|empty)|cannot open encrypted archive|需要密码|请输入密码|密码错误|密码不正确/i.test(String(error));}
-function archiveOpenMessage(error,passwordProvided=false){const message=String(error);const directoryError=archiveDirectoryError(message);if(directoryError)return directoryError;if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
+function archiveOpenMessage(error,passwordProvided=false){const message=String(error);const directoryError=archiveDirectoryError(message);if(directoryError)return directoryError;if(/^(?:Error:\s*)?incorrect password or damaged encrypted archive$/i.test(message))return '密码不正确，或加密压缩包已损坏。';if(/wrong password|incorrect password|password is incorrect/i.test(message))return '密码不正确，请重新输入。';if(/enter password|password (?:is )?required|encrypted archive.*password/i.test(message))return passwordProvided?'无法使用此密码读取压缩包，请检查密码后重试。':'此压缩包的文件目录已加密，请输入密码后打开。';return message.replace(/^Error: /,'');}
 function repairableZip(path){return /\.(zip|zipx)$/i.test(path);}
 function offerRepairAfterOpenFailure(path,failure){
  const button=overlay.querySelector('[data-action=open-repair]');
  if(!button)return;
- const canOffer=repairableZip(path)&&!archivePasswordError(failure)&&taskError(failure)!=='任务已取消';
+ const reason=taskError(failure);
+ const canOffer=repairableZip(path)&&!archivePasswordError(failure)&&reason!=='任务已取消'&&!/^分卷(?:不完整|可能不完整)/.test(reason);
  button.hidden=!canOffer;
  button.dataset.failedPath=canOffer?path:'';
 }

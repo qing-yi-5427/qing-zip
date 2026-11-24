@@ -13,7 +13,7 @@ fn parse(file: &str) -> Option<(String, String, usize, usize)> {
         if digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit()) {
             return Some((file[..stem.len() + 1].to_owned(), String::new(), digits.parse().ok()?, digits.len()));
         }
-        if digits.len() == 3 && digits.starts_with('z') && digits[1..].bytes().all(|b| b.is_ascii_digit()) {
+        if digits.len() >= 3 && digits.starts_with('z') && digits[1..].bytes().all(|b| b.is_ascii_digit()) {
             return Some((file[..stem.len() + 1].to_owned() + "z", String::new(), digits[1..].parse().ok()?, 2));
         }
     }
@@ -34,25 +34,51 @@ fn name(prefix: &str, suffix: &str, number: usize, width: usize) -> String {
 pub fn problem(path: &str) -> Option<String> {
     let path = Path::new(path);
     let file = path.file_name()?.to_str()?;
-    let (prefix, suffix, _, width) = parse(file)?;
-    let parent = path.parent()?;
+    let terminal = path.extension()?.eq_ignore_ascii_case("zip");
+    let (prefix, suffix, current, width) = if terminal {
+        (format!("{}.z", path.file_stem()?.to_str()?), String::new(), 0, 2)
+    } else {
+        parse(file)?
+    };
+    let zip_disks = prefix.to_ascii_lowercase().ends_with(".z");
+    let width = if width > current.to_string().len() || terminal {
+        width
+    } else if zip_disks {
+        2
+    } else if suffix.is_empty() {
+        3
+    } else {
+        1
+    };
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut present = std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(parent).ok()?.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
         let Some(other) = entry.file_name().to_str().map(str::to_owned) else { continue };
-        if let Some((p, s, number, _)) = parse(&other) {
-            if p.eq_ignore_ascii_case(&prefix) && s.eq_ignore_ascii_case(&suffix) {
+        if let Some((p, s, number, digits)) = parse(&other) {
+            if number > 0 && digits == width.max(number.to_string().len())
+                && p.eq_ignore_ascii_case(&prefix) && s.eq_ignore_ascii_case(&suffix)
+            {
                 present.insert(number);
             }
         }
     }
     let last = *present.last()?;
+    if terminal && crate::engine_stream::open_source_leaf(path).ok().is_some_and(|mut file| {
+        crate::engine::zip_volume_view::single_disk_record(&mut file).is_ok_and(|record| record.is_some())
+    }) {
+        return None;
+    }
     if let Some(gap) = (1..last).find(|n| !present.contains(n)) {
         return Some(format!("missing archive volume: {}", name(&prefix, &suffix, gap, width)));
     }
     // WinZip-style sets end with name.zip after name.z01 .. name.zNN.
-    if prefix.to_ascii_lowercase().ends_with(".z") {
+    if zip_disks {
         let final_name = format!("{}zip", &prefix[..prefix.len() - 1]);
-        if !parent.join(&final_name).exists() {
+        if !terminal && !parent.join(&final_name).is_file() {
             return Some(format!("missing archive volume: {final_name}"));
         }
         return None;
@@ -65,13 +91,15 @@ pub fn problem(path: &str) -> Option<String> {
 pub fn explain(path: &str, error: String) -> String {
     // What a short or absent volume produces; listing failures also echo the
     // first volume's records ("Volume Index").
-    let truncated = ["Unexpected end of archive", "Cannot open the file as", "Can't open as archive", "Headers Error"]
+    let truncated = matches!(error.as_str(), "missing final ZIP volume" | "ZIP volume is outside the contiguous family")
+        || ["Unexpected end of archive", "Cannot open the file as", "Can't open as archive", "Headers Error"]
         .iter().any(|marker| error.contains(marker))
         || (error.starts_with("archive engine failed") && error.contains("Volume Index"));
     let damaged = truncated || ["CRC Failed", "Data Error"].iter().any(|marker| error.contains(marker));
+    if !damaged { return error; }
     match problem(path) {
         // A gap in the numbering explains any damage report.
-        Some(problem) if damaged && problem.starts_with("missing") => problem,
+        Some(problem) if problem.starts_with("missing") => problem,
         // Without a gap only a truncation report points at a missing last volume.
         Some(problem) if truncated => problem,
         _ => error,
@@ -95,6 +123,10 @@ mod tests {
         assert_eq!(problem(&path("r.part1.rar")).unwrap(), "missing archive volume: r.part2.rar");
         for name in ["w.z01", "w.z02"] { touch(name); }
         assert_eq!(problem(&path("w.z01")).unwrap(), "missing archive volume: w.zip");
+        assert_eq!(explain(&path("w.z01"), "missing final ZIP volume".into()), "missing archive volume: w.zip");
+        for name in ["x.zip", "x.z01", "x.z03"] { touch(name); }
+        std::fs::create_dir(path("x.z02")).unwrap();
+        assert_eq!(explain(&path("x.zip"), "Cannot open the file as archive".into()), "missing archive volume: x.z02");
         touch("plain.zip");
         assert!(problem(&path("plain.zip")).is_none());
         let engine = "archive engine failed (2): ERRORS:\nUnexpected end of archive".to_string();

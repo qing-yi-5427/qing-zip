@@ -66,6 +66,13 @@ fn macos_zip_names_are_listed_and_extracted_as_utf8() {
     let out = dir.path().join("out");
     execute(request("extract", &archive, &out, None)).unwrap();
     assert_eq!(fs::read(out.join("报表").join("数据.txt")).unwrap(), b"data0");
+    let path = archive.to_str().unwrap();
+    let options = EngineOptions { selected: vec!["报表/数据.txt".into()], ..Default::default() };
+    let selected = dir.path().join("selected");
+    obz_core::operations::extract_archive(path, selected.to_str().unwrap(), &options).unwrap();
+    assert_eq!(fs::read(selected.join("报表").join("数据.txt")).unwrap(), b"data0");
+    assert!(!selected.join("a.txt").exists());
+    assert_eq!(obz_core::operations::preview_archive(path, "报表/数据.txt", &EngineOptions::default()).unwrap(), b"data0");
     // An explicit code page is still the user's choice.
     let legacy = dir.path().join("legacy");
     execute(request("extract", &archive, &legacy, Some(936))).unwrap();
@@ -80,6 +87,21 @@ fn legacy_gbk_names_keep_the_system_code_page() {
     let out = dir.path().join("out");
     execute(request("extract", &archive, &out, Some(936))).unwrap();
     assert_eq!(fs::read(out.join("报表.txt")).unwrap(), b"data0");
+}
+
+#[cfg(windows)]
+#[test]
+fn nested_utf8_member_can_be_saved_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("outer.zip");
+    let member = "数据.txt";
+    unflagged_zip(&archive, &[member.as_bytes()]);
+    let options = EngineOptions::default();
+    let path = archive.to_str().unwrap();
+    let mut opened = obz_core::engine::nested::NestedArchive::open(path, member, &options).unwrap();
+    fs::write(opened.path(), b"new data").unwrap();
+    opened.save(&options).unwrap();
+    assert_eq!(obz_core::operations::preview_archive(path, member, &options).unwrap(), b"new data");
 }
 
 #[test]

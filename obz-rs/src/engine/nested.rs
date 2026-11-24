@@ -362,6 +362,8 @@ impl NestedArchive {
         source: &mut engine_stream::PinnedSource,
         whole_archive: bool,
     ) -> Result<[u8; 32], String> {
+        let detected = operations::with_name_codepage(utf8(parent)?, options);
+        let options = detected.as_ref().unwrap_or(options);
         if let Some(hash) = zip_member_digest(parent, member, options, source, whole_archive)? {
             Ok(hash)
         } else {
@@ -443,6 +445,8 @@ impl NestedArchive {
         let _lock = super::update_lock(&self.parent, &job)?;
         super::zip_volume_view::require_editable(&self.parent)?;
         let edit = EditSource::open_controlled(&self.parent, &job)?;
+        let detected = operations::with_name_codepage(utf8(&self.parent)?, options);
+        let options = detected.as_ref().unwrap_or(options);
         {
             let mut current = engine_stream::pin(&self.parent)?;
             if super::directory_identity(&current)? != super::directory_identity(&self.parent_identity)?

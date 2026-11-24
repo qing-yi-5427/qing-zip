@@ -74,11 +74,16 @@ fn list_archive_by_format(path:&str,opts:&EngineOptions)->Result<Vec<engine::Ent
 /// ZIPs whose unflagged names are all UTF-8 (macOS, Java, Linux tools) are read
 /// as UTF-8 unless the user chose a code page. Names then match in every
 /// operation: list, extract, test, preview, delete and rename.
-fn with_name_codepage(path:&str,opts:&EngineOptions)->Option<EngineOptions>{
+pub(crate) fn with_name_codepage(path:&str,opts:&EngineOptions)->Option<EngineOptions>{
     (opts.codepage.is_none() && crate::zip_names::implicit_utf8_names(path))
         .then(|| EngineOptions{codepage:Some(65001),..opts.clone()})
 }
 pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
+    let detected = with_name_codepage(path, opts);
+    test_archive_by_format(path, detected.as_ref().unwrap_or(opts))
+        .map_err(|error| crate::volume_set::explain(path, error))
+}
+fn test_archive_by_format(path:&str,opts:&EngineOptions)->Result<(),String>{
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return engine::test(path, opts); }
     if crate::rare::supports(path){return crate::rare::test(path,opts);}
@@ -95,6 +100,12 @@ pub(crate) fn extract_archive_for_export(path:&str,dest:&str,opts:&EngineOptions
     extract_archive_inner(path,dest,opts,true,false)
 }
 fn extract_archive_inner(path:&str,dest:&str,opts:&EngineOptions,export:bool,allow_unencrypted_projection:bool)->Result<usize,String>{
+    let detected = with_name_codepage(path, opts);
+    let opts = detected.as_ref().unwrap_or(opts);
+    extract_archive_by_format(path, dest, opts, export, allow_unencrypted_projection)
+        .map_err(|error| crate::volume_set::explain(path, error))
+}
+fn extract_archive_by_format(path:&str,dest:&str,opts:&EngineOptions,export:bool,allow_unencrypted_projection:bool)->Result<usize,String>{
     let policy = crate::machine_policy::scope();
     if policy.restricted() { return engine::extract_with_projection(path, dest, opts, allow_unencrypted_projection); }
     let mut inherited = opts.clone();
@@ -141,6 +152,8 @@ pub fn preview_archive(path:&str,name:&str,opts:&EngineOptions)->Result<Vec<u8>,
 
 pub fn preview_archive_limited(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
     if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid archive preview limit".into()); }
+    let detected = with_name_codepage(path, opts);
+    let opts = detected.as_ref().unwrap_or(opts);
     let policy = crate::machine_policy::scope();
     let bytes = if policy.restricted() {
         engine::preview_limited(path, name, opts, limit)
@@ -244,10 +257,12 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move"|"create") {
         let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));r.options.input_atime_report=Some(report.clone());Some(report)
     }else{None};
-    if matches!(r.operation.as_str(),"test"|"extract"|"preview"|"archive-properties"|"delete"|"rename") {
+    if matches!(r.operation.as_str(),"archive-properties"|"delete"|"rename"|"add"|"archive-add"|"archive-move")
+        || (r.operation == "extract" && r.smart)
+    {
         if let Some(options)=with_name_codepage(&r.path,&r.options) { r.options=options; }
     }
-    let explain_volumes=matches!(r.operation.as_str(),"test"|"extract").then(|| r.path.clone());
+    let explain_volumes=(r.operation == "extract" && r.smart).then(|| r.path.clone());
     let mut result=execute_json(r, restricted).map_err(|error| match &explain_volumes {
         Some(path) => crate::volume_set::explain(path, error),
         None => error,
