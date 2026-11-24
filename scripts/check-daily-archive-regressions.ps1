@@ -15,6 +15,17 @@ $suites = @(
             'engine_legacy_codepage_override'
             'engine_update_preserves_original_on_failure'
             'engine_concurrent_updates_preserve_both_additions'
+            'folders_differing_only_in_case_extract_into_one_folder'
+            'explicit_overwrite_replaces_read_only_files_and_other_policies_keep_them'
+            'encrypted_archive_without_password_reports_that_a_password_is_needed'
+        )
+    },
+    @{
+        Target = @('--test', 'zip_names')
+        Cases = @(
+            'macos_zip_names_are_listed_and_extracted_as_utf8'
+            'legacy_gbk_names_keep_the_system_code_page'
+            'windows_invalid_member_names_are_mapped_like_7zip'
         )
     },
     @{
