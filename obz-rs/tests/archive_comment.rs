@@ -113,3 +113,35 @@ fn embedded_eocd_signature_and_maximum_comment() {
     archive_comment::set(&path, &max, &opts).unwrap();
     assert_eq!(archive_comment::get(&path).unwrap(), max);
 }
+
+#[cfg(windows)]
+#[test]
+fn reads_gbk_zip_comment_without_rewriting_archive() {
+    use obz_core::operations::{execute, Request};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("invoice.zip");
+    let mut archive = ZipWriter::new(fs::File::create(&path).unwrap());
+    archive
+        .start_file("invoice.txt", SimpleFileOptions::default())
+        .unwrap();
+    // The four GBK bytes spell 发票.
+    archive
+        .set_raw_comment(Box::new([0xb7, 0xa2, 0xc6, 0xb1]))
+        .unwrap();
+    drop(archive.finish().unwrap());
+    let before = fs::read(&path).unwrap();
+    let response = execute(Request {
+        operation: "comment-get".into(),
+        path: p(&path),
+        options: EngineOptions {
+            codepage: Some(936),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(response["comment"], "发票");
+    assert_eq!(fs::read(path).unwrap(), before);
+}
