@@ -1,6 +1,6 @@
 """Windows x64 integration: python zip_aes_interop.py NEW_OBZ 7Z [OLD_OBZ] [WINRAR].
-The non-ASCII cross-reader case requires Windows OEM codepage 936. Passwords
-are public test fixtures; temporary files are removed automatically.
+A non-ASCII password is chosen for the current OEM codepage. Passwords are
+public test fixtures; temporary files are removed automatically.
 """
 import ctypes
 import hashlib
@@ -36,10 +36,22 @@ with tempfile.TemporaryDirectory(prefix="qz-aes-interop-") as tmp:
     source.write_bytes("互操作 fixture".encode())
     expected = hashlib.sha256(source.read_bytes()).digest()
     cases = [("ascii", "fixture123"), ("fallback", "密码🙂")]
-    if ctypes.windll.kernel32.GetOEMCP() == 936:
-        cases.append(("chinese", "中文密码"))
+    codepage = ctypes.windll.kernel32.GetOEMCP()
+    if codepage == 65001:
+        print("SKIP non-ASCII encoding difference: OEM is UTF-8")
     else:
-        print("SKIP Chinese independent-reader case: requires OEM codepage 936")
+        candidates = ["中文密码", "café", "日本語", "한국어", "пароль", "κωδικός", "şifre", "סיסמה", "كلمة", "รหัส"]
+        for candidate in candidates:
+            try:
+                encoded = candidate.encode(f"cp{codepage}", errors="strict")
+                if encoded.decode(f"cp{codepage}", errors="strict") == candidate and encoded != candidate.encode("utf-8"):
+                    cases.append(("oem", candidate))
+                    print(f"Testing non-ASCII password with OEM codepage {codepage}")
+                    break
+            except (LookupError, UnicodeError):
+                continue
+        else:
+            raise RuntimeError(f"No representable non-ASCII fixture for OEM codepage {codepage}")
     for name, password in cases:
         archive = root / (name + ".zip")
         create(new, archive, source, password)
@@ -50,11 +62,11 @@ with tempfile.TemporaryDirectory(prefix="qz-aes-interop-") as tmp:
             dest = root / (name + "-7z")
             run([seven, "x", str(archive), "-y", "-o" + str(dest), "-p" + password])
             check_output(dest / source.name, expected)
-            if winrar:
+            if winrar and (name == "ascii" or (name == "oem" and codepage == 936)):
                 dest = root / (name + "-rar")
                 run([winrar, "x", "-ibck", "-y", "-p" + password, str(archive), str(dest) + os.sep])
                 check_output(dest / source.name, expected)
-        if name == "chinese":
+        if name == "oem":
             archives = [("new", archive)]
             if old:
                 legacy = root / "legacy.zip"
