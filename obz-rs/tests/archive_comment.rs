@@ -115,22 +115,27 @@ fn embedded_eocd_signature_and_maximum_comment() {
 }
 
 #[cfg(windows)]
-#[test]
-fn reads_gbk_zip_comment_without_rewriting_archive() {
-    use obz_core::operations::{execute, Request};
+fn zip_with_legacy_comment(path: &Path, raw: &[u8]) {
     use zip::{write::SimpleFileOptions, ZipWriter};
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("invoice.zip");
-    let mut archive = ZipWriter::new(fs::File::create(&path).unwrap());
+    let mut archive = ZipWriter::new(fs::File::create(path).unwrap());
     archive
         .start_file("invoice.txt", SimpleFileOptions::default())
         .unwrap();
-    // The four GBK bytes spell 发票.
     archive
-        .set_raw_comment(Box::new([0xb7, 0xa2, 0xc6, 0xb1]))
+        .set_raw_comment(raw.to_vec().into_boxed_slice())
         .unwrap();
     drop(archive.finish().unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+fn reads_gbk_zip_comment_without_rewriting_archive() {
+    use obz_core::operations::{execute, Request};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("invoice.zip");
+    zip_with_legacy_comment(&path, b"\xb7\xa2\xc6\xb1"); // 发票
     let before = fs::read(&path).unwrap();
     let response = execute(Request {
         operation: "comment-get".into(),
@@ -144,4 +149,34 @@ fn reads_gbk_zip_comment_without_rewriting_archive() {
     .unwrap();
     assert_eq!(response["comment"], "发票");
     assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn legacy_zip_comment_defaults_to_ansi_before_oem() {
+    use obz_core::operations::{execute, Request};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("comment.zip");
+    let read = |codepage| {
+        execute(Request {
+            operation: "comment-get".into(),
+            path: p(&path),
+            options: EngineOptions {
+                codepage,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    };
+    for raw in [b"Caf\xe9".as_slice(), b"\xb7\xa2\xc6\xb1"] {
+        zip_with_legacy_comment(&path, raw);
+        let ansi = read(Some(0)); // CP_ACP
+        let oem = read(Some(1)); // CP_OEMCP
+        println!(
+            "Fixture {raw:x?} distinguishes ANSI and OEM: {}",
+            ansi != oem
+        );
+        assert_eq!(read(None), ansi);
+    }
 }
