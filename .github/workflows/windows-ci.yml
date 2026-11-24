@@ -224,6 +224,13 @@ jobs:
           if ($portable.Count -ne 1) { throw 'Expected exactly one x64 portable archive' }
           python scripts/check-public-package.py $portable[0].FullName
           exit $LASTEXITCODE
+      - name: ZIP AES independent 7-Zip interoperability
+        shell: pwsh
+        run: |
+          $cli = @(Get-ChildItem -LiteralPath dist/x64 -Recurse -File -Filter obz.exe)
+          if ($cli.Count -ne 1) { throw 'Expected one packaged CLI' }
+          python obz-rs/tests/zip_aes_interop.py $cli[0].FullName (Join-Path $cli[0].DirectoryName 'runtime/7zip/7z.exe')
+          exit $LASTEXITCODE
       - name: Interrupt an ordinary ZIP add and verify the original and retry
         shell: pwsh
         run: |
