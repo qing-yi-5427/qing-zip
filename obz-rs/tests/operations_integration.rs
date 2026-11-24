@@ -12,6 +12,43 @@ fn call(root: &Path, request: Value) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|e|e.to_string())
 }
 
+#[cfg(windows)]
+#[test]
+fn cli_reads_a_complete_classic_rar_from_the_later_volume() {
+    use sha2::{Digest, Sha256};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let first = root.join("archive.rar");
+    let later = root.join("archive.r00");
+    let first_bytes = include_bytes!("fixtures/deep/rar15/multivol_oldnaming_rar300.rar");
+    let later_bytes = include_bytes!("fixtures/deep/rar15/multivol_oldnaming_rar300.r00");
+    fs::write(&first, first_bytes).unwrap();
+    fs::write(&later, later_bytes).unwrap();
+
+    let dir = call(root, json!({"operation":"list","path":later})).unwrap();
+    assert_eq!(dir["entries"][0]["name"], "bigtext_64k.bin");
+    call(root, json!({"operation":"test","path":later})).unwrap();
+    let destination = root.join("output");
+    let result = call(
+        root,
+        json!({"operation":"extract","path":later,"dest":destination}),
+    ).unwrap();
+    assert_eq!(result["files"], 1);
+    let payload = fs::read(destination.join("bigtext_64k.bin")).unwrap();
+    assert_eq!(
+        Sha256::digest(payload).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "ed70a3812333daa70dfdbc167cb009049fd6aed3aeef0902ad5326d245892209"
+    );
+    assert_eq!(fs::read(&first).unwrap(), first_bytes);
+    assert_eq!(fs::read(&later).unwrap(), later_bytes);
+
+    fs::write(&first, include_bytes!("fixtures/deep/rar15/compressed.rar")).unwrap();
+    assert!(call(root, json!({"operation":"test","path":later})).is_err());
+    fs::remove_file(&first).unwrap();
+    assert!(call(root, json!({"operation":"test","path":later})).is_err());
+}
+
 #[test]
 fn cli_recovery_finds_only_valid_encrypted_passwords() {
     let t = tempfile::tempdir().unwrap(); let p=t.path(); let input=p.join("secret.txt"); fs::write(&input,b"encrypted fixture").unwrap();

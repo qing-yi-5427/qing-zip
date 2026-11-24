@@ -207,7 +207,6 @@ fn rar_leaf(name: &str) -> bool {
             && ext[1..].iter().all(u8::is_ascii_digit))
 }
 
-type Pins = Vec<crate::engine_stream::PinnedSource>;
 pub(in crate::engine) fn direct_volumes(
     path: &Path, source: &mut File, ctl: &JobControl,
 ) -> Result<Option<(u32, NamedPins)>, String> {
@@ -226,6 +225,81 @@ pub(in crate::engine) fn direct_volumes(
     }
 }
 pub(in crate::engine) type NamedPins = Vec<(String, crate::engine_stream::PinnedSource)>;
+
+pub(in crate::engine) struct LaterVolume {
+    pub first: PathBuf,
+    pub entries: Vec<Entry>,
+    _first_pin: crate::engine_stream::PinnedSource,
+    parts: NamedPins,
+}
+
+impl LaterVolume {
+    pub fn zone(
+        &self,
+        mut zone: crate::motw::ZoneIdentifier,
+    ) -> Result<crate::motw::ZoneIdentifier, String> {
+        let parent = self.first.parent().ok_or("RAR archive has no parent directory")?;
+        let paths = std::iter::once(self.first.clone())
+            .chain(self.parts.iter().map(|(name, _)| parent.join(name)));
+        for part in paths {
+            let candidate = crate::motw::archive_context(&part)?;
+            if candidate.more_restrictive_than(&zone) {
+                zone = candidate;
+            }
+        }
+        Ok(zone)
+    }
+}
+
+pub(in crate::engine) fn resolve_later_volume(
+    path: &str,
+    opts: &EngineOptions,
+) -> Result<Option<LaterVolume>, String> {
+    use crate::deep_volume_plan::{classify, Member};
+
+    if crate::machine_policy::scope().restricted() || opts.codepage.is_some() {
+        return Ok(None);
+    }
+    let path = absolute(path)?;
+    let Some(leaf) = path.file_name().and_then(OsStr::to_str) else {
+        return Ok(None);
+    };
+    let Member::Later { expected, .. } = classify(leaf, &[]) else {
+        return Ok(None);
+    };
+    if !rar_leaf(leaf) || !expected.ends_with(".rar") {
+        return Ok(None);
+    }
+    let ctl = control(opts);
+    ctl.check()?;
+    let mut selected = crate::engine_stream::pin(&path)?;
+    let Some((format, true)) = rar_format(&mut selected)? else {
+        return Ok(None);
+    };
+    let first = path.with_file_name(expected);
+    let Ok(mut first_pin) = crate::engine_stream::pin(&first) else {
+        return Ok(None);
+    };
+    if rar_format(&mut first_pin)? != Some((format, true)) {
+        return Ok(None);
+    }
+    // A matching name and signature are discovery hints. The decoder must
+    // open the complete pinned family without incomplete entries or warnings.
+    let first_path = first.to_str().ok_or("invalid RAR source path")?;
+    let Some((entries, parts)) = try_list(first_path, &mut first_pin, opts, &ctl)? else {
+        return Ok(None);
+    };
+    if !parts.iter().any(|(name, _)| name.eq_ignore_ascii_case(leaf)) {
+        return Ok(None);
+    }
+    Ok(Some(LaterVolume {
+        first,
+        entries,
+        _first_pin: first_pin,
+        parts,
+    }))
+}
+
 fn capture_siblings(
     path: &Path,
     leaf: &str,
@@ -278,7 +352,7 @@ pub(crate) fn try_list(
     source: &mut File,
     opts: &EngineOptions,
     ctl: &JobControl,
-) -> Result<Option<(Vec<Entry>, Pins)>, String> {
+) -> Result<Option<(Vec<Entry>, NamedPins)>, String> {
     let policy = crate::machine_policy::scope();
     if policy.restricted() || opts.codepage.is_some() {
         return Ok(None);
@@ -445,8 +519,5 @@ pub(crate) fn try_list(
     drop(metadata_phase);
     ctl.check()?;
     policy.unchanged()?;
-    Ok(Some((
-        entries,
-        parts.into_iter().map(|(_, file)| file).collect(),
-    )))
+    Ok(Some((entries, parts)))
 }
