@@ -17,6 +17,8 @@ cargo check --locked --manifest-path obz-gui/Cargo.toml
 
 使用 `cargo audit --file obz-rs/Cargo.lock` 和 `cargo audit --file obz-gui/Cargo.lock` 检查两份锁文件。更新依赖时同步更新受影响的锁文件与第三方声明。修改打包逻辑时，请从新输出目录构建，并检查便携包、安装包、引擎源码及它们的 SHA-256。
 
+常规 PR、推送和默认发布构建使用 Windows x64。需要 ARM64 整包时，在 GitHub Actions 手动运行 **Windows ARM64 native validation**。本地原生 ARM64 硬化程序可显式运行 `./scripts/build-hardened.ps1 -Target aarch64-pc-windows-msvc`。Explorer 组件的手动构建和签名验收需要在 **Explorer review package** 中选择架构 `arm64`。
+
 ## 测试与提交
 
 在对应版本的源码检出中，`docs/PRODUCT_VISION.md` 和 `docs/OPTIMIZATION_ROADMAP.md` 说明选题依据。复现问题或比较候选版本时，查阅同目录的 `QUALITY_REPORT.md`、`TEST_MATRIX.md` 和 `PERFORMANCE_REPORT.md`。[源码仓库](https://github.com/qing-yi-5427/qing-zip)

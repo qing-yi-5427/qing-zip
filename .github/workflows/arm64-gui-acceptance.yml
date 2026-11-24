@@ -1,7 +1,5 @@
 name: Published ARM64 GUI acceptance
 on:
-  push:
-    branches: [codex/arm64-gui-acceptance]
   workflow_dispatch:
 permissions:
   contents: read

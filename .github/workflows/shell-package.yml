@@ -8,6 +8,11 @@ on:
       - '.github/workflows/shell-package.yml'
   workflow_dispatch:
     inputs:
+      architecture:
+        description: 'Target architecture. Signed Explorer reviews require arm64.'
+        type: choice
+        options: [x64, arm64]
+        default: x64
       hosted_explorer:
         description: 'Run disposable signed Windows 11 Explorer review'
         type: boolean
@@ -21,20 +26,14 @@ permissions:
 jobs:
   unsigned-package:
     if: github.event_name != 'workflow_dispatch' || !inputs.hosted_explorer
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: windows-latest, architecture: x64 }
-          - { runner: windows-11-arm, architecture: arm64 }
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build native Explorer commands and verify the unsigned package
         shell: pwsh
         env:
-          SHELL_ARCH: ${{ matrix.architecture }}
+          SHELL_ARCH: ${{ github.event_name == 'workflow_dispatch' && inputs.architecture == 'arm64' && 'arm64' || 'x64' }}
         run: |
           $arch = $env:SHELL_ARCH
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $arch) {
@@ -59,19 +58,24 @@ jobs:
 
   hosted-explorer:
     if: github.repository == 'qing-yi-5427/qing-zip' && github.event_name == 'workflow_dispatch' && inputs.hosted_explorer
-    runs-on: windows-11-arm
+    runs-on: ${{ inputs.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 25
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Require an explicit ARM64 selection
+        if: inputs.architecture != 'arm64'
+        shell: pwsh
+        run: throw 'Select arm64 architecture for the signed Explorer review.'
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Exercise a signed temporary sparse package on disposable Windows 11
+        if: inputs.architecture == 'arm64'
         shell: pwsh
         env:
           PORTABLE_LIFECYCLE: ${{ inputs.hosted_portable_lifecycle }}
         run: ./scripts/msix/hosted-explorer-review.ps1 -PortableLifecycle:($env:PORTABLE_LIFECYCLE -eq 'true')
       - name: Upload Explorer observations and cleanup receipt
-        if: always()
+        if: always() && inputs.architecture == 'arm64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hosted-explorer-review
