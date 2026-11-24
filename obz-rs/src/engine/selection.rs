@@ -35,6 +35,12 @@ impl<'a> Selection<'a> {
         Self { exact, descendants }
     }
 
+    pub(crate) fn contains_entry(&self, entry: &crate::engine::Entry) -> bool {
+        self.contains(&entry.name)
+            || (entry.is_dir && !entry.name.ends_with(['/', '\\'])
+                && self.contains(&format!("{}/", entry.name)))
+    }
+
     pub(crate) fn contains(&self, name: &str) -> bool {
         if self.exact.is_empty() {
             return true;

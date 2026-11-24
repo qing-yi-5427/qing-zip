@@ -542,7 +542,10 @@ fn folders_differing_only_in_case_extract_into_one_folder() {
         writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
         writer.write_all(data).unwrap();
     }
-    writer.add_directory("docs/", zip::write::SimpleFileOptions::default()).unwrap();
+    let folder_options = zip::write::SimpleFileOptions::default().last_modified_time(
+        zip::DateTime::from_date_and_time(2020, 1, 2, 3, 4, 6).unwrap(),
+    );
+    writer.add_directory("docs/", folder_options).unwrap();
     writer.finish().unwrap();
     for (name, selected) in [
         ("full", vec![]),
@@ -553,6 +556,9 @@ fn folders_differing_only_in_case_extract_into_one_folder() {
         assert_eq!(engine::extract(&p(&archive), &p(&out), &opts).unwrap(), 2);
         let dirs = fs::read_dir(&out).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(dirs.len(), 1);
+        let folder_time = dirs[0].metadata().unwrap().modified().unwrap();
+        let cutoff = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_609_459_200);
+        assert!(folder_time < cutoff, "{name} lost the explicit directory timestamp");
         assert_eq!(fs::read(dirs[0].path().join("a.txt")).unwrap(), b"a");
         assert_eq!(fs::read(dirs[0].path().join("b.txt")).unwrap(), b"b");
     }

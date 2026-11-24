@@ -384,7 +384,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let selection = engine::Selection::new(&opts.selected);
     let chosen: Vec<_> = es
         .into_iter()
-        .filter(|e| selection.contains(&e.name))
+        .filter(|e| selection.contains_entry(e))
         .collect();
     if !opts.selected.is_empty() && chosen.is_empty() {
         return Err("selected archive entries were not found".into());

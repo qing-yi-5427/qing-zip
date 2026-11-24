@@ -322,7 +322,7 @@ impl Pending {
         let selection = Selection::new(&opts.selected);
         let chosen = entries
             .iter()
-            .map(|e| selection.contains(&e.name))
+            .map(|e| selection.contains_entry(e))
             .collect::<Vec<_>>();
         let file_count = entries
             .iter()

@@ -2589,7 +2589,7 @@ fn decode_selected_zip(
         ctl.check()?;
         let e = expected[&key];
         let target = root.join(validate_name(&e.name)?);
-        let keep = selection.contains(&e.name);
+        let keep = selection.contains_entry(e);
         let mut output = if keep && !e.is_dir {
             Some(create_staged_output(&target, guards)?)
         } else {
@@ -3203,7 +3203,7 @@ fn extract_raw_to(
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
         .iter()
-        .filter(|e| selection.contains(&e.name))
+        .filter(|e| selection.contains_entry(e))
         .collect();
     if !opts.selected.is_empty() && entries.is_empty() {
         return Err("selected archive entries were not found".into());

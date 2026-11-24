@@ -33,7 +33,7 @@ pub(crate) fn layout(archive: &str, base: &str, entries: &[Entry], opts: &Engine
     let mut wrapper = None;
     for entry in entries {
         let safe=engine::validate_name(&entry.name)?;
-        if !selection.contains(&entry.name) { continue; }
+        if !selection.contains_entry(entry) { continue; }
         matched=true;
         let mut parts=safe.components();
         let top = parts.next().ok_or("invalid archive entry")?.as_os_str();
