@@ -33,7 +33,7 @@ pub(crate) fn layout(archive: &str, base: &str, entries: &[Entry], opts: &Engine
     let mut wrapper = None;
     for entry in entries {
         let safe=engine::validate_name(&entry.name)?;
-        if !selection.contains(&entry.name) { continue; }
+        if !selection.contains_entry(entry) { continue; }
         matched=true;
         let mut parts=safe.components();
         let top = parts.next().ok_or("invalid archive entry")?.as_os_str();
@@ -116,7 +116,7 @@ mod tests {
     }
     #[test]
     fn unsafe_selected_and_unselected_paths_are_rejected() {
-        for bad in ["../outside.txt", "/absolute.txt", "C:\\outside.txt", "bundle/../../outside.txt"] {
+        for bad in ["../outside.txt", "/absolute.txt", "C:\\outside.txt", "\\\\server\\share.txt", "bundle/../../outside.txt"] {
             let entries = [e("bundle/a.txt", false), e(bad, false)];
             assert!(destination("bundle.zip", "output", &entries, &opts(&[bad])).is_err(), "{bad}");
             assert!(destination("bundle.zip", "output", &entries, &opts(&["bundle/a.txt"])).is_err(), "{bad}");

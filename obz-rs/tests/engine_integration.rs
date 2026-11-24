@@ -531,3 +531,91 @@ fn zipcrypto_password_validation_matches_the_writer() {
     engine::create(&p(&out), &[p(&source)], "zip", &accepted).unwrap();
     engine::test(&p(&out), &accepted).unwrap();
 }
+#[cfg(windows)]
+#[test]
+fn folders_differing_only_in_case_extract_into_one_folder() {
+    use std::io::Write;
+    let t = tempfile::tempdir().unwrap();
+    let archive = t.path().join("docs.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for (name, data) in [("Docs/a.txt", b"a"), ("docs/b.txt", b"b")] {
+        writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(data).unwrap();
+    }
+    let folder_options = zip::write::SimpleFileOptions::default().last_modified_time(
+        zip::DateTime::from_date_and_time(2020, 1, 2, 3, 4, 6).unwrap(),
+    );
+    writer.add_directory("docs/", folder_options).unwrap();
+    writer.finish().unwrap();
+    for (name, selected) in [
+        ("full", vec![]),
+        ("selected", vec!["Docs/a.txt".into(), "docs/".into()]),
+    ] {
+        let out = t.path().join(name);
+        let opts = EngineOptions { selected, ..Default::default() };
+        assert_eq!(engine::extract(&p(&archive), &p(&out), &opts).unwrap(), 2);
+        let dirs = fs::read_dir(&out).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(dirs.len(), 1);
+        let folder_time = dirs[0].metadata().unwrap().modified().unwrap();
+        let cutoff = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_609_459_200);
+        assert!(folder_time < cutoff, "{name} lost the explicit directory timestamp");
+        assert_eq!(fs::read(dirs[0].path().join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dirs[0].path().join("b.txt")).unwrap(), b"b");
+    }
+}
+#[cfg(windows)]
+#[test]
+fn explicit_overwrite_replaces_read_only_files_and_other_policies_keep_them() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("src");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("b.txt"), b"new").unwrap();
+    let archive = t.path().join("a.zip");
+    engine::create(&p(&archive), &[p(&source)], "zip", &EngineOptions::default()).unwrap();
+    for policy in ["overwrite", "skip", "rename", "blocked-overwrite"] {
+        let dest = t.path().join(policy);
+        let target = dest.join("src").join("b.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"mine").unwrap();
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = if policy == "blocked-overwrite" {
+            Some(fs::File::options().read(true).share_mode(1).open(&target).unwrap())
+        } else {
+            None
+        };
+        let overwrite = if held.is_some() { "overwrite" } else { policy };
+        let opts = EngineOptions { overwrite: overwrite.into(), ..Default::default() };
+        let result = engine::extract(&p(&archive), &p(&dest), &opts);
+        if held.is_some() { assert!(result.is_err()); } else { result.unwrap(); }
+        drop(held);
+        let expected: &[u8] = if policy == "overwrite" { b"new" } else { b"mine" };
+        assert_eq!(fs::read(&target).unwrap(), expected, "{policy}");
+        if policy != "overwrite" {
+            assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        }
+        if policy == "rename" {
+            assert_eq!(fs::read(target.with_file_name("b (1).txt")).unwrap(), b"new");
+        }
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).unwrap();
+    }
+}
+#[test]
+fn encrypted_archive_without_password_reports_that_a_password_is_needed() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("a.txt");
+    fs::write(&source, b"secret").unwrap();
+    for (format, header) in [("zip", None), ("7z", Some(true)), ("7z", Some(false))] {
+        let archive = t.path().join(format!("{format}-{header:?}.{format}"));
+        let opts = EngineOptions { password: Some("right".into()), header_encryption: header, ..Default::default() };
+        engine::create(&p(&archive), &[p(&source)], format, &opts).unwrap();
+        let error = engine::extract(&p(&archive), &p(&t.path().join(format!("out-{format}-{header:?}"))), &EngineOptions::default()).unwrap_err();
+        assert!(error.contains("password"), "{format} {header:?}: {error}");
+        assert!(!error.contains("Break signaled"), "{format} {header:?}: {error}");
+    }
+}

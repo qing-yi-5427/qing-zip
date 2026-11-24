@@ -24,7 +24,9 @@ fn is_device_name(part: &str) -> bool {
 }
 
 pub fn relative_path(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() || name.starts_with(['/', '\\']) {
+    if name.is_empty() || name.starts_with(['/', '\\'])
+        || matches!(name.as_bytes(), [b'A'..=b'Z' | b'a'..=b'z', b':', ..])
+    {
         return Err("unsafe archive path".into());
     }
     let mut path = PathBuf::new();
@@ -41,6 +43,39 @@ pub fn relative_path(name: &str) -> Result<PathBuf, String> {
             return Err(format!("unsafe archive path: {}", name.replace('\\', "/")));
         }
         path.push(part);
+    }
+    Ok(path)
+}
+
+/// Output path for an archive member. Like 7-Zip on Windows, names that are
+/// legal in the archive but not on Windows are mapped instead of rejected:
+/// `<>:"|?*` become `_`, trailing dots and spaces become `_`, and device names
+/// such as `CON.txt` gain a leading `_`. Rooted paths, Windows drive prefixes,
+/// empty components, `.`,
+/// `..` and control characters (which can forge listing lines) are still
+/// rejected, so nothing escapes the destination or spoofs another entry.
+pub fn member_path(name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() || name.starts_with(['/', '\\'])
+        || matches!(name.as_bytes(), [b'A'..=b'Z' | b'a'..=b'z', b':', ..])
+    {
+        return Err("unsafe archive path".into());
+    }
+    let mut path = PathBuf::new();
+    for part in name.trim_end_matches(['/', '\\']).split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." || part.chars().any(char::is_control) {
+            return Err(format!("unsafe archive path: {}", name.replace('\\', "/")));
+        }
+        let mut mapped: String = part.chars()
+            .map(|c| if "<>:\"|?*".contains(c) { '_' } else { c })
+            .collect();
+        let kept = mapped.trim_end_matches(['.', ' ']).len();
+        let trailing = mapped.len() - kept;
+        mapped.truncate(kept);
+        mapped.extend(std::iter::repeat_n('_', trailing));
+        if is_device_name(&mapped) {
+            mapped.insert(0, '_');
+        }
+        path.push(mapped);
     }
     Ok(path)
 }

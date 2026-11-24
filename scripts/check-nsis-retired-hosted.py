@@ -255,6 +255,7 @@ def tree(root, sha):
 
 def exercise(args, old, runner_temp, mode, shipped, manifest, report):
     root = Path(tempfile.mkdtemp(prefix=f"qz-retired-{mode}-", dir=runner_temp)).resolve()
+    current = json.loads((Path(__file__).resolve().parents[1] / "obz-gui/tauri.conf.json").read_text(encoding="utf-8"))["version"]
     direct = mode == "decline"
     drive_root = Path(runner_temp.anchor)
     inst = drive_root / ("qz-retired-cancel-" + uuid.uuid4().hex) if direct else root / "application"
@@ -313,7 +314,7 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
             old.run([args.candidate_setup, "/S", f"/D={inst}"], root)
         else:
             interactive_setup(args.candidate_setup, root, inst, mode, manifest, traces, args.out, edit_after_preview)
-        old.installed_version("0.12.23", inst)
+        old.installed_version(current, inst)
         old.check(all(old.sha(inst / name) == digest for name, digest in shipped.items()), "candidate file hash mismatch")
         if mode != "quiet":
             old.check(any(d["dialog"] == "offer" for d in traces), "no explicit old file review was shown")
@@ -354,7 +355,7 @@ def exercise(args, old, runner_temp, mode, shipped, manifest, report):
         if selected:
             repeat = report.setdefault("repeat_dialogs", [])
             interactive_setup(args.candidate_setup, root, inst, "repeat", manifest, repeat, args.out)
-            old.installed_version("0.12.23", inst)
+            old.installed_version(current, inst)
             old.check(all(d["dialog"] == "setup" for d in repeat), "repeat unexpectedly offered old file migration")
             old.check(set(recovery_parent.glob("qing-zip-v0.12.20-Recovery-*")) == before_recoveries | set(recoveries), "repeat created a new recovery path")
             old.check(tree(recovery, old.sha) == report["recovered"], "repeat changed recovery bytes")

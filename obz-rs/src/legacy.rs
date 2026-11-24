@@ -209,7 +209,7 @@ pub fn create_lzh(
         ) -> Result<(), String> {
             check(opts)?;
             engine::no_links(path)?;
-            engine::validate_name(&name)?;
+            engine::validate_new_member_name(&name)?;
             if !seen.insert(name.to_lowercase()) {
                 return Err("duplicate LZH input filename".into());
             }

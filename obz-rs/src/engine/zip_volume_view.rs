@@ -81,14 +81,14 @@ fn disk_part(extension: &str) -> bool {
 
 // For an ordinary ZIP the end record bounds the disk set. Treat an ambiguous
 // end record as unknown rather than letting a second engine discover siblings.
-pub(super) struct SingleDisk {
-    pub(super) entries: u16,
-    pub(super) directory: u32,
-    pub(super) directory_size: u32,
-    pub(super) end_record: u64,
-    pub(super) zip64: bool,
+pub(crate) struct SingleDisk {
+    pub(crate) entries: u16,
+    pub(crate) directory: u32,
+    pub(crate) directory_size: u32,
+    pub(crate) end_record: u64,
+    pub(crate) zip64: bool,
 }
-pub(super) fn single_disk_record(file: &mut File) -> Result<Option<SingleDisk>, String> {
+pub(crate) fn single_disk_record(file: &mut File) -> Result<Option<SingleDisk>, String> {
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let tail_len = length.min(22 + 65535 + 20) as usize;
     file.seek(SeekFrom::End(-(tail_len as i64)))

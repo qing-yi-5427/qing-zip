@@ -322,7 +322,7 @@ impl Pending {
         let selection = Selection::new(&opts.selected);
         let chosen = entries
             .iter()
-            .map(|e| selection.contains(&e.name))
+            .map(|e| selection.contains_entry(e))
             .collect::<Vec<_>>();
         let file_count = entries
             .iter()
@@ -360,10 +360,9 @@ impl Pending {
                 let leaf = root.file_name().ok_or("missing destination leaf")?;
                 let file = crate::private_stage::create_journal_directory(&parent, leaf)?;
                 let proof = created_directories::Identity::owned(&file)?;
-                guards.created_output_dirs.push((root.clone(), proof));
                 guards.exclusive_claim = true;
+                guards.record_created_output_dir(root, &file, proof)?;
                 guards.selected_output_root = Some(root.clone());
-                guards.owned_dirs.insert(root.clone());
                 guards.create_dirs(dest)?;
             }
             let mut ack = self.nonce.to_vec();
@@ -545,25 +544,9 @@ impl Pending {
                 guards.create_dirs(path)?;
             }
             directories.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-            let owned = guards
-                .created_output_dirs
-                .iter()
-                .enumerate()
-                .map(|(i, (path, _))| (path.clone(), i))
-                .collect::<HashMap<_, _>>();
             for (path, entry) in directories {
                 ctl.check()?;
-                if let Some(&index) = owned.get(&path) {
-                    match &mut guards.created_output_dirs[index].1 {
-                        proof @ created_directories::Identity::Owned(_, _) => {
-                            proof.restore_owned_metadata(entry)?
-                        }
-                        _ => {
-                            guards.check(&path)?;
-                            restore_metadata(&path, entry)?;
-                        }
-                    }
-                }
+                guards.restore_created_directory_metadata(&path, entry)?;
             }
             policy.validate_output()?;
             ctl.check()?;

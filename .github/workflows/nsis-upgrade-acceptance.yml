@@ -67,7 +67,8 @@ jobs:
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Disposable hosted Windows x64 runner required' }
           $inputs=Join-Path $env:RUNNER_TEMP 'qz-nsis-inputs'
           $dist=Join-Path $env:RUNNER_TEMP 'qz-nsis-dist'
-          $upgradeArgs = @('--old-setup', (Join-Path $inputs 'qing-zip-0.12.20-setup.exe'), '--old-portable', (Join-Path $inputs 'qing-zip-0.12.20-portable.zip'), '--candidate-setup', (Join-Path $dist 'qing-zip-0.12.23-setup.exe'), '--candidate-stage', (Join-Path $dist 'qing-zip-0.12.23-portable'))
+          $version = (Get-Content obz-gui/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $upgradeArgs = @('--old-setup', (Join-Path $inputs 'qing-zip-0.12.20-setup.exe'), '--old-portable', (Join-Path $inputs 'qing-zip-0.12.20-portable.zip'), '--candidate-setup', (Join-Path $dist "qing-zip-$version-setup.exe"), '--candidate-stage', (Join-Path $dist "qing-zip-$version-portable"))
           python scripts/check-nsis-upgrade-hosted.py @upgradeArgs --out evidence/acceptance
           if ($LASTEXITCODE) { throw 'Installer acceptance failed; inspect saved receipt' }
           python scripts/check-nsis-upgrade-hosted.py @upgradeArgs --use-default-location --out evidence/default-acceptance

@@ -9,6 +9,7 @@ test('encrypted directory asks for a password instead of exposing console cancel
 test('wrong supplied password is distinguishable from a missing password',()=>{
  assert.match(context.archiveOpenMessage('ERROR: Wrong password?',true),/密码不正确/);
  assert.match(context.archiveOpenMessage('Enter password:',true),/检查密码/);
+ assert.match(context.archiveOpenMessage('incorrect password or damaged encrypted archive',true),/或加密压缩包已损坏/);
 });
 test('ordinary corruption and cancellation errors remain visible',()=>{
  for(const message of ['CRC failed','operation cancelled','Cannot open C:\\password.zip as archive'])
@@ -23,7 +24,8 @@ test('corrupt ZIP recovery targets the failed path and clears an obsolete offer'
  assert.equal(button.hidden,false);
  assert.equal(button.dataset.failedPath,failed);
  for(const [path,error] of [
-  [failed,'wrong password'],[failed,'operation cancelled'],['C:\\fixture\\bad.7z','Cannot open as archive'],['','']
+  [failed,'wrong password'],[failed,'operation cancelled'],[failed,'missing archive volume: bad.z02'],
+  [failed,context.archiveOpenMessage('missing archive volume: bad.z02')],['C:\\fixture\\bad.7z','Cannot open as archive'],['','']
  ]){
   context.offerRepairAfterOpenFailure(path,Error(error));
   assert.equal(button.hidden,true);

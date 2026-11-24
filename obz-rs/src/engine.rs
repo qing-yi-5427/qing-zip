@@ -37,7 +37,7 @@ mod bounded_archive_stage;
 pub mod benchmark;
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub mod deep_extract;
-mod zip_volume_view;
+pub(crate) mod zip_volume_view;
 mod zip_input_probe;
 #[cfg(windows)]
 pub(crate) mod edit_source;
@@ -738,6 +738,7 @@ fn run_program_log_with_directory(
         &errors,
         output.as_ref().zip(output_size),
     );
+    let binary_output = output.is_some();
     let pipe = collect_directory.then(directory_capture::pipe).and_then(Result::ok);
     let (stdout, capture_files) = if let Some((reader, writer)) = pipe {
         (writer, Some((reader, logs.try_clone().map_err(|e| e.to_string())?)))
@@ -749,6 +750,13 @@ fn run_program_log_with_directory(
         (stdout, None)
     };
     let mut guarded_args = args.to_vec();
+    if binary_output && opts.password.is_none() && matches!(command, Some("x" | "e"))
+        && !guarded_args.iter().any(|argument| argument.starts_with("-bso"))
+    {
+        // With -so, console messages are disabled by default. Route prompts
+        // to the diagnostics file while keeping stdout for decoded bytes.
+        guarded_args.insert(1, "-bso2".into());
+    }
     zip_volume_view::apply_read_hint(&mut guarded_args);
     if !allow_zealfs && has_zealfs_handler(&program) && policy.as_ref().is_none_or(|p| p.handler_may_be_enabled("ZealFS"))
         && matches!(args.first().map(String::as_str), Some("l" | "t" | "x" | "e")) {
@@ -863,6 +871,10 @@ fn run_program_log_with_directory(
         errors.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut err = String::new();
         errors.take(8192).read_to_string(&mut err).ok();
+        if opts.password.is_none() && status.code() == Some(255)
+            && crate::engine_password::stopped_at_prompt(&bytes, err.as_bytes()) {
+            return Err("password required for encrypted archive".into());
+        }
         return Err(scrub(
             &format!(
                 "archive engine failed ({}): {} {}",
@@ -883,18 +895,21 @@ fn run_program_log_with_directory(
 }
 /// Resolve a member name to the same safe relative path used during extraction.
 pub fn validate_name(name: &str) -> Result<PathBuf, String> {
+    normalized_member_name(name).and_then(|name| crate::extract::member_path(&name))
+}
+
+fn normalized_member_name(name: &str) -> Result<std::borrow::Cow<'_, str>, String> {
     if name.starts_with(['/', '\\']) {
         return Err("absolute archive path rejected".into());
     }
-    if !name.split(['/', '\\']).any(|part| part == ".") {
-        return crate::extract::relative_path(name);
+    if name.split(['/', '\\']).any(|part| part == ".") {
+        return Ok(name.split(['/', '\\']).filter(|part| *part != ".").collect::<Vec<_>>().join("/").into());
     }
-    let normalized = name
-        .split(['/', '\\'])
-        .filter(|part| *part != ".")
-        .collect::<Vec<_>>()
-        .join("/");
-    crate::extract::relative_path(&normalized)
+    Ok(name.into())
+}
+
+pub(crate) fn validate_new_member_name(name: &str) -> Result<PathBuf, String> {
+    normalized_member_name(name).and_then(|name| crate::extract::relative_path(&name))
 }
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "engine returned invalid UTF-8")?;
@@ -1049,7 +1064,7 @@ fn validate_listing_member(
         return Ok(None);
     }
     if !seen.insert(path_key(&validate_name(name)?)) {
-        return Err("duplicate or case-colliding archive names".into());
+        return Err(format!("duplicate or case-colliding archive names: {name}"));
     }
     Ok(Some(is_dir))
 }
@@ -1468,6 +1483,8 @@ struct CheckedDirectories {
     #[cfg(windows)]
     owned_dirs: HashSet<PathBuf>,
     #[cfg(windows)]
+    directory_receipts: HashMap<(u32, u64), usize>,
+    #[cfg(windows)]
     selected_output_root: Option<PathBuf>,
     #[cfg(windows)]
     exclusive_claim: bool,
@@ -1541,14 +1558,60 @@ impl CheckedDirectories {
         }
         Some(create(transient.last().unwrap_or(anchor), leaf))
     }
+    #[cfg(windows)]
+    fn record_created_output_dir(
+        &mut self,
+        path: &Path,
+        created: &File,
+        proof: created_directories::Identity,
+    ) -> Result<(), String> {
+        self.directory_receipts.insert(directory_identity(created)?, self.created_output_dirs.len());
+        self.created_output_dirs.push((path.to_owned(), proof));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn restore_created_directory_metadata(&mut self, path: &Path, entry: &Entry) -> Result<(), String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        self.check(path)?;
+        if self.exclusive_claim {
+            let (handle, _) = self.held.get(path).ok_or("missing claimed output directory handle")?;
+            let index = *self.directory_receipts.get(&directory_identity(handle)?)
+                .ok_or("missing claimed output directory receipt")?;
+            return self.created_output_dirs[index].1.restore_owned_metadata(entry);
+        }
+
+        // In existing destinations, metadata applies to new child directories
+        // only. An alternate case spelling must resolve to their recorded identity.
+        if self.directory_receipts.is_empty() {
+            return Ok(());
+        }
+        let Ok(reader) = fs::OpenOptions::new()
+            .access_mode(0x81)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(path) else { return Ok(()); };
+        let (id, attrs) = directory_identity_and_attributes(&reader)?;
+        let Some(&index) = self.directory_receipts.get(&id) else { return Ok(()); };
+        let proof = &self.created_output_dirs[index].1;
+        if attrs & 0x410 != 0x10 || !proof.matches(&reader) {
+            return Ok(());
+        }
+        let writer = fs::OpenOptions::new()
+            .access_mode(0x180)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(path).map_err(|e| e.to_string())?;
+        if directory_identity(&writer)? != id {
+            return Err("output directory identity changed".into());
+        }
+        restore_open_file_metadata(&writer, entry)
+    }
+
     fn create_dirs(&mut self, path: &Path) -> Result<(), String> {
         for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
             self.check(component)?;
             if self.pinned(component) {
-                #[cfg(windows)]
-                if self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|r|component.starts_with(r)) && !self.owned_dirs.contains(component) {
-                    return Err(format!("foreign directory appeared in new destination: {}",component.display()));
-                }
                 continue;
             }
             #[cfg(windows)]
@@ -1561,13 +1624,13 @@ impl CheckedDirectories {
                                 // the directory. An identity alone cannot prove it unchanged.
                                 Some(created_directories::Identity::owned(&created)?)
                             } else if self.created_output_dirs.len() < 4096 {
-                                Some(created_directories::Identity::Handle(created))
+                                Some(created_directories::Identity::Handle(created.try_clone().map_err(|e| e.to_string())?))
                             } else {
                                 created_directories::Stamp::capture(&created)
                                     .map(created_directories::Identity::Journal)
                             };
                             if let Some(proof) = proof {
-                                self.created_output_dirs.push((component.to_owned(), proof));
+                                self.record_created_output_dir(component, &created, proof)?;
                             }
                             self.owned_dirs.insert(component.to_owned());
                             self.check(component)?;
@@ -1580,11 +1643,14 @@ impl CheckedDirectories {
                         Err(error) => return Err(error),
                     }
                 }
+                if self.exclusive_claim {
+                    return Err("missing claimed output parent handle".into());
+                }
             }
             match fs::create_dir(component) {
                 Ok(()) => {
                     #[cfg(windows)]
-                    self.owned_dirs.insert(component.to_path_buf());
+                    self.owned_dirs.insert(component.to_owned());
                     self.check(component)?;
                 }
                 Err(error)
@@ -1736,14 +1802,11 @@ impl CheckedDirectories {
                                 ));
                             }
                             let in_claim = self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|root| part.starts_with(root));
-                            if meta.is_dir() && in_claim && !self.owned_dirs.contains(part) {
-                                return Err(format!("foreign directory appeared in new destination: {}",part.display()));
-                            }
                             if meta.is_dir() && self.archive_snapshot_pin_limit.is_some_and(|limit|self.held.len()>=limit) {
                                 return Err("creation snapshot directory pin budget exhausted".into());
                             }
                             if meta.is_dir() && (self.held.len() < self.archive_snapshot_pin_limit.unwrap_or(4096) || in_claim) {
-                                let owned = self.owned_dirs.contains(part)
+                                let owned = in_claim || self.owned_dirs.contains(part)
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories
                                 // must not block unrelated applications' child renames.
@@ -1764,11 +1827,15 @@ impl CheckedDirectories {
                                                 part.display()
                                             ));
                                         }
+                                        if in_claim && !self.directory_receipts.contains_key(&directory_identity(&lock)?) {
+                                            return Err(format!("foreign directory appeared in new destination: {}", part.display()));
+                                        }
                                         self.held
                                             .insert(part.to_path_buf(), (lock, publication_parent));
                                     }
                                     // Existing applications may hold incompatible sharing handles.
                                     // Retain the original checks instead of weakening access.
+                                    Err(error) if in_claim => return Err(error.to_string()),
                                     Err(_) => return no_links(path),
                                 }
                             }
@@ -2522,7 +2589,7 @@ fn decode_selected_zip(
         ctl.check()?;
         let e = expected[&key];
         let target = root.join(validate_name(&e.name)?);
-        let keep = selection.contains(&e.name);
+        let keep = selection.contains_entry(e);
         let mut output = if keep && !e.is_dir {
             Some(create_staged_output(&target, guards)?)
         } else {
@@ -3136,7 +3203,7 @@ fn extract_raw_to(
     let selection = Selection::new(&opts.selected);
     let entries: Vec<_> = all_entries
         .iter()
-        .filter(|e| selection.contains(&e.name))
+        .filter(|e| selection.contains_entry(e))
         .collect();
     if !opts.selected.is_empty() && entries.is_empty() {
         return Err("selected archive entries were not found".into());
@@ -3574,9 +3641,8 @@ fn extract_raw_to(
             { output_guards.direct_memory_claim = memory.is_some() && opts.selected.is_empty()
                 && using_process_token() && crate::private_stage::direct_output_supported(&created); }
             let proof = created_directories::Identity::owned(&created)?;
-            output_guards.created_output_dirs.push((dest.clone(),proof));
+            output_guards.record_created_output_dir(&dest, &created, proof)?;
             output_guards.selected_output_root = Some(dest.clone());
-            output_guards.owned_dirs.insert(dest.clone());
         }
         #[cfg(not(windows))]
         fs::create_dir(&dest).map_err(|e|e.to_string())?;
@@ -3694,10 +3760,6 @@ fn extract_raw_to(
         }
         count
     };
-    #[cfg(windows)]
-    let directory_receipts: HashMap<PathBuf,usize> = if output_guards.exclusive_claim {
-        output_guards.created_output_dirs.iter().enumerate().map(|(i,(path,_))|(path.clone(),i)).collect()
-    } else { HashMap::new() };
     let directories = entries.iter().rev().filter(|e| e.is_dir);
     if directories.clone().next().is_some() {
         ctl.set("output-directory-metadata", None, "");
@@ -3707,8 +3769,7 @@ fn extract_raw_to(
         let path=dest.join(validate_name(&e.name)?);
         #[cfg(windows)]
         if output_guards.exclusive_claim {
-            let i=*directory_receipts.get(&path).ok_or("missing claimed output directory receipt")?;
-            output_guards.created_output_dirs[i].1.restore_owned_metadata(e)?;
+            output_guards.restore_created_directory_metadata(&path, e)?;
             continue;
         }
         restore_metadata(&path,e).map_err(|e|format!("directory metadata: {e}"))?;
@@ -4818,6 +4879,30 @@ pub fn copy_archive_file(source: &Path, destination: &Path) -> Result<(), String
     })
 }
 
+#[cfg(windows)]
+pub(crate) fn publish_adapter_file(
+    source: &Path, destination: &Path, overwrite: bool,
+    zone: Option<&crate::motw::ZoneIdentifier>, check: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut input = File::open(source).map_err(|e| e.to_string())?;
+    let parent = destination.parent().ok_or("missing output directory")?;
+    let mut guards = CheckedDirectories::default();
+    guards.check(destination)?;
+    guards.create_dirs(parent)?;
+    guards.allow_publication(parent)?;
+    with_output_temp(parent, &guards, |output| {
+        std::io::copy(&mut input, output).map_err(|e| e.to_string())?;
+        if let Ok(modified) = input.metadata().and_then(|m| m.modified()) {
+            output.as_file().set_times(std::fs::FileTimes::new().set_modified(modified))
+                .map_err(|e| e.to_string())?;
+        }
+        check()?;
+        guards.check_prepared(destination)?;
+        crate::motw::apply_to_file(output.as_file(), zone)?;
+        publish_output(output, destination, overwrite).map(drop)
+    })
+}
+
 fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
     output_temp_named(parent,guards,None)
 }
@@ -4869,7 +4954,8 @@ fn publish_output_recorded(temp:&mut OutputTemp,target:&Path,replace:bool,journa
     publish_output(temp,target,replace)
 }
 fn publish_output(temp: &mut OutputTemp, target: &Path, overwrite: bool) -> Result<File, String> {
-    #[cfg(windows)] { temp.inner.commit(target, overwrite) }
+    #[cfg(windows)]
+    { temp.inner.commit_extraction(target, overwrite) }
     #[cfg(not(windows))] {
         let file = temp.inner.take().ok_or("output already published")?;
         let result = if overwrite { file.persist(target) } else { file.persist_noclobber(target) };
@@ -5838,6 +5924,19 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         "rename" => "rn",
         _ => return Err("unknown archive update action".into()),
     };
+    if action == "rename" {
+        if inputs.len() % 2 != 0 {
+            return Err("rename requires old/new pairs".into());
+        }
+        for pair in inputs.chunks_exact(2) {
+            validate_name(&pair[0])?;
+            validate_new_member_name(&pair[1])?;
+        }
+    } else if action == "delete" {
+        for name in inputs {
+            validate_name(name)?;
+        }
+    }
     let locked_path = absolute(path)?;
     no_links(&locked_path)?;
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
@@ -5974,12 +6073,6 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
                 .collect::<Vec<_>>()
         }
     } else {
-        for n in inputs {
-            validate_name(n)?;
-        }
-        if action == "rename" && inputs.len() % 2 != 0 {
-            return Err("rename requires old/new pairs".into());
-        }
         inputs.to_vec()
     }) };
     #[cfg(windows)]
@@ -6098,7 +6191,7 @@ pub(crate) fn bounded_preview_command(
     let program = executable()?;
     let mut args = base("x", opts)?;
     args.retain(|value| value != "-bsp2");
-    args.extend(["-so".into(), "-bso0".into(), "-bsp0".into()]);
+    args.extend(["-so".into(), "-bso2".into(), "-bsp0".into()]);
     if let Some(format) = format { args.push(format!("-t{format}")); }
     if !allow_zealfs && has_zealfs_handler(&program) && policy.handler_may_be_enabled("ZealFS") {
         args.push("-stxZealFS".into());
@@ -6654,7 +6747,7 @@ fn create_libarchive(
     while let Some((p, name)) = pending.pop() {
         ctl.check()?;
         no_links(&p)?;
-        validate_name(&name)?;
+        validate_new_member_name(&name)?;
         if !names.insert(name.to_lowercase()) {
             return Err("archive names collide".into());
         }
@@ -9145,11 +9238,13 @@ mod staging_tests {
         let mut perm = fs::metadata(&target).unwrap().permissions();
         perm.set_readonly(true);
         fs::set_permissions(&target, perm).unwrap();
-        assert!(publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &target, true).is_err());
+        // A read-only file is kept unless overwrite was chosen; then it is replaced like 7-Zip -aoa.
+        assert!(publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &target, false).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"preserve");
-        let mut perm = fs::metadata(&target).unwrap().permissions();
-        perm.set_readonly(false);
-        fs::set_permissions(&target, perm).unwrap();
+        let mut replacement = output_temp(temp.path(), &guards).unwrap();
+        replacement.write_all(b"replaced").unwrap();
+        drop(publish_output(&mut replacement, &target, true).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), b"replaced");
         let newpath = temp.path().join("metadata.txt");
         let published = publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &newpath, false).unwrap();
         let entry = Entry { created: String::new(), accessed: String::new(),

@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "obz-rs"
-version = "0.12.23"
+version = "0.12.24"
 dependencies = [
  "aescrypt-rs",
  "blake3",

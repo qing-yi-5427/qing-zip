@@ -3,7 +3,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !ifndef VERSION
-!define VERSION "0.12.23"
+!define VERSION "0.12.24"
 !endif
 !ifndef STAGING
 !define STAGING "..\dist\qing-zip-${VERSION}-portable"
@@ -14,9 +14,8 @@ Unicode true
 !else
 !define PRODUCT_KEY "qing-zip"
 !define PRODUCT_LABEL "qing-zip"
-!if "${VERSION}" == "0.12.23"
+; The installed version is checked at runtime before offering migration.
 !define V01220_RETIRED_REVIEW
-!endif
 !endif
 Name "${PRODUCT_LABEL}"
 !ifndef OUTPUT

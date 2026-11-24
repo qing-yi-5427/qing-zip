@@ -175,6 +175,11 @@ fn capture_member_preview(
             .map_err(|error| error.to_string())?;
         let mut text = String::new();
         errors.take(8192).read_to_string(&mut text).ok();
+        if opts.password.is_none() && status.code() == Some(255)
+            && crate::engine_password::stopped_at_prompt(b"", text.as_bytes())
+        {
+            return Err("password required for encrypted archive".into());
+        }
         return Err(engine::scrub(&format!(
             "stream decode/checksum failed ({}): {}",
             status.code().unwrap_or(-1),

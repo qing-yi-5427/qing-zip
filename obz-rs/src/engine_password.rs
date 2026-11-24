@@ -98,6 +98,16 @@ pub(crate) fn listing_payload(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(CRLF).or_else(|| bytes.strip_prefix(LF)).unwrap_or(bytes)
 }
 
+pub(crate) fn stopped_at_prompt(stdout: &[u8], stderr: &[u8]) -> bool {
+    fn has_line(output: &[u8], line: &[u8]) -> bool {
+        output.split(|byte| *byte == b'\n')
+            .any(|row| row.strip_suffix(b"\r").unwrap_or(row) == line)
+    }
+    let prompt = b"Enter password (will not be echoed):";
+    has_line(stderr, b"Break signaled")
+        && (has_line(stdout, prompt) || has_line(stderr, prompt))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +137,14 @@ mod tests {
         assert_eq!(listing_payload(malformed), malformed);
         let unknown = b"\r\nEnter password:\r\nPath = bad\r\n";
         assert_eq!(listing_payload(unknown), unknown);
+    }
+
+    #[test]
+    fn a_break_without_a_password_prompt_is_not_a_password_error() {
+        let prompt = b"\r\nEnter password (will not be echoed):\r\n";
+        let stopped = b"\r\nBreak signaled\r\n";
+        assert!(stopped_at_prompt(prompt, stopped));
+        assert!(!stopped_at_prompt(b"", stopped));
+        assert!(!stopped_at_prompt(b"Path = Enter password (will not be echoed):\r\n", stopped));
     }
 }

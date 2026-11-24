@@ -645,7 +645,7 @@ fn acknowledge_mode(data:&mut Fields,entries:&[Entry],opts:&EngineOptions,verifi
         }
         members.push(Member {
             entry: i,
-            chosen: selection.contains(&entry.name),
+            chosen: selection.contains_entry(entry),
             times,
         });
     }

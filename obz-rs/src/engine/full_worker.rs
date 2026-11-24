@@ -35,7 +35,7 @@ pub(super) fn parse_manifest(body: &[u8], nonce: &[u8;16], verification: bool, d
         let name=data.wide()?.replace('\\',"/");
         units=units.checked_add(name.encode_utf16().count()).filter(|n|*n<=max_names).ok_or("full worker name budget")?;
         let key=path_key(&validate_name(&name)?);
-        if !names.insert(key) {return Err("duplicate full worker member".into());}
+        if !names.insert(key) {return Err(format!("duplicate or case-colliding archive names: {name}"));}
         let size=data.u64()?;total=total.checked_add(size).ok_or("full worker size overflow")?;
         let is_dir=data.bit()?;let present=data.bit()?;let attrs=data.u32()?;
         let crc_present=data.bit()?;let crc=data.u32()?;
@@ -219,9 +219,11 @@ mod tests {
         let good=manifest(&["folder/a.txt"],0x20);let entries=manifest_entries(&good,&[42;16]).unwrap();
         assert_eq!(entries[0].name,"folder/a.txt");assert_eq!(entries[0].size,3);
         assert!(manifest_entries(&good,&[41;16]).is_err());
-        for names in [&["../a"][..],&["A","a"][..],&["a","a/b"][..],&["a:stream"][..]] {
+        for names in [&["../a"][..],&["A","a"][..],&["a","a/b"][..],&["name:stream","name_stream"][..]] {
             assert!(manifest_entries(&manifest(names,0x20),&[42;16]).is_err(),"{names:?}");
         }
+        // A colon cannot reach an alternate data stream: outputs use the mapped name.
+        assert_eq!(validate_name("name:stream").unwrap(),Path::new("name_stream"));
         for attrs in [0x400,0xa0000000] {assert!(manifest_entries(&manifest(&["a"],attrs),&[42;16]).is_err());}
         let mut trailing=good.clone();trailing.push(0);assert!(manifest_entries(&trailing,&[42;16]).is_err());
         for length in [0,15,19,good.len()-1] {assert!(manifest_entries(&good[..length],&[42;16]).is_err());}

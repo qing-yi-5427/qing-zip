@@ -178,9 +178,9 @@ fn entries(a: &Archive) -> Result<Vec<Entry>, String> {
         })
         .collect::<Result<_, _>>()?;
     let mut seen = HashSet::new();
-    for name in &normalized {
+    for (entry, name) in out.iter().zip(&normalized) {
         if !seen.insert(name) {
-            return Err("duplicate or case-colliding archive names".into());
+            return Err(format!("duplicate or case-colliding archive names: {}", entry.name));
         }
     }
     let files: HashSet<_> = out
@@ -384,7 +384,7 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
     let selection = engine::Selection::new(&opts.selected);
     let chosen: Vec<_> = es
         .into_iter()
-        .filter(|e| selection.contains(&e.name))
+        .filter(|e| selection.contains_entry(e))
         .collect();
     if !opts.selected.is_empty() && chosen.is_empty() {
         return Err("selected archive entries were not found".into());
@@ -422,25 +422,31 @@ pub fn extract(path: &str, dest: &str, opts: &EngineOptions) -> Result<usize, St
         let Some(p) = engine::choose_target(p, &opts.overwrite)? else {
             continue;
         };
-        let parent = p.parent().ok_or("missing output parent")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        engine::no_links(parent)?;
         let source = stage.path().join(engine::validate_name(&e.name)?);
-        let mut input = File::open(&source).map_err(|e| e.to_string())?;
-        let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-        std::io::copy(&mut input, &mut tmp).map_err(|e| e.to_string())?;
-        if let Ok(t) = input.metadata().and_then(|m| m.modified()) {
-            tmp.as_file()
-                .set_times(std::fs::FileTimes::new().set_modified(t))
-                .map_err(|e| e.to_string())?;
-        }
-        check(opts)?;
-        engine::no_links(&p)?;
-        crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
-        if opts.overwrite == "overwrite" {
-            tmp.persist(p).map_err(|e| e.error.to_string())?;
-        } else {
-            tmp.persist_noclobber(p).map_err(|e| e.error.to_string())?;
+        #[cfg(windows)]
+        engine::publish_adapter_file(&source, &p, opts.overwrite == "overwrite",
+            opts.zone_identifier.as_ref(), || check(opts))?;
+        #[cfg(not(windows))]
+        {
+            let parent = p.parent().ok_or("missing output parent")?;
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            engine::no_links(parent)?;
+            let mut input = File::open(&source).map_err(|e| e.to_string())?;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+            std::io::copy(&mut input, &mut tmp).map_err(|e| e.to_string())?;
+            if let Ok(t) = input.metadata().and_then(|m| m.modified()) {
+                tmp.as_file()
+                    .set_times(std::fs::FileTimes::new().set_modified(t))
+                    .map_err(|e| e.to_string())?;
+            }
+            check(opts)?;
+            engine::no_links(&p)?;
+            crate::motw::apply_to_file(tmp.as_file(), opts.zone_identifier.as_ref())?;
+            if opts.overwrite == "overwrite" {
+                tmp.persist(p).map_err(|e| e.error.to_string())?;
+            } else {
+                tmp.persist_noclobber(p).map_err(|e| e.error.to_string())?;
+            }
         }
         if let Some(evidence) = &opts.extraction_password_use {
             if encrypted_egg_members.as_ref().map_or(e.encrypted, |names| names.contains(&e.name)) {

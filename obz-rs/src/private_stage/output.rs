@@ -398,12 +398,40 @@ fn leaf(value: &OsStr) -> Result<Vec<u16>, String> {
 }
 #[repr(C)]
 struct RenameInformation {
-    replace: u8,
+    flags: u32,
     root: Handle,
     length: u32,
     name: [u16; 1],
 }
+fn rename_error(status: i32) -> String {
+    nt_error("commit private output", status)
+}
+
 pub(super) fn rename(file: &File, parent: &File, name: &[u16], replace: bool) -> Result<(), String> {
+    rename_with_flags(file, parent, name, u32::from(replace), 10).map_err(rename_error)
+}
+
+fn rename_extraction(file: &File, parent: &File, name: &[u16]) -> Result<(), String> {
+    rename_with_flags(file, parent, name, 1, 10)
+        .or_else(|status| {
+            // Class 65 allows a single atomic replacement of a read-only
+            // entry while retaining the ordinary sharing rules.
+            const STATUS_ACCESS_DENIED: i32 = 0xc0000022_u32 as i32;
+            const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 1;
+            const FILE_RENAME_IGNORE_READONLY_ATTRIBUTE: u32 = 0x40;
+            const FILE_RENAME_INFORMATION_EX: u32 = 65;
+            if status == STATUS_ACCESS_DENIED {
+                rename_with_flags(file, parent, name,
+                    FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+                    FILE_RENAME_INFORMATION_EX)
+            } else {
+                Err(status)
+            }
+        })
+        .map_err(rename_error)
+}
+
+fn rename_with_flags(file: &File, parent: &File, name: &[u16], flags: u32, info_class: u32) -> Result<(), i32> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("rename");
     let offset = std::mem::offset_of!(RenameInformation, name);
@@ -413,7 +441,7 @@ pub(super) fn rename(file: &File, parent: &File, name: &[u16], replace: bool) ->
     let mut status = [0usize; 2];
     let result = unsafe {
         let header = raw.cast::<RenameInformation>();
-        (*header).replace = u8::from(replace);
+        (*header).flags = flags;
         (*header).root = parent.as_raw_handle();
         (*header).length = (name.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr().cast::<u8>(), raw.add(offset), name.len() * 2);
@@ -422,11 +450,11 @@ pub(super) fn rename(file: &File, parent: &File, name: &[u16], replace: bool) ->
             status.as_mut_ptr(),
             raw.cast(),
             length as u32,
-            10,
+            info_class,
         )
     };
     if result < 0 {
-        return Err(nt_error("commit private output", result));
+        return Err(result);
     }
     Ok(())
 }
@@ -611,20 +639,23 @@ impl PrivateOutputFile {
     pub(crate) fn commit(&mut self, target: &Path, replace: bool) -> Result<File, String> {
         self.commit_with(target, replace, &mut |_| Ok(()))
     }
+    pub(crate) fn commit_extraction(&mut self, target: &Path, overwrite: bool) -> Result<File, String> {
+        self.commit_journaled(target, overwrite, None, &mut |_| Ok(()), None, overwrite)
+    }
     fn commit_with(
         &mut self,
         target: &Path,
         replace: bool,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
     ) -> Result<File, String> {
-        self.commit_journaled(target, replace, None, step, None)
+        self.commit_journaled(target, replace, None, step, None, false)
     }
     pub(crate) fn commit_owned(
         &mut self,
         target: &Path,
         journal: &crate::engine::PublicationJournal,
     ) -> Result<File, String> {
-        self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None)
+        self.commit_journaled(target, false, Some(journal), &mut |_| Ok(()), None, false)
     }
     /// Retain metadata access before the ordinary inherited DACL is finalized,
     /// just like the directory publisher's existing metadata handle.
@@ -684,7 +715,7 @@ impl PrivateOutputFile {
     /// Explicit local-file mode; default/archive output still rejects custom ADS.
     pub(crate) fn commit_local_streams(&mut self,target:&Path,replace:bool,proof:&dyn LocalOutputProof)->Result<File,String>{
         if !proof.ordinary_primary() { proof.verify(self.as_file())?; }
-        self.commit_journaled(target,replace,None,&mut |_|Ok(()),Some(proof))
+        self.commit_journaled(target,replace,None,&mut |_|Ok(()),Some(proof),false)
     }
     fn commit_journaled(
         &mut self,
@@ -693,6 +724,7 @@ impl PrivateOutputFile {
         journal: Option<&crate::engine::PublicationJournal>,
         step: &mut dyn FnMut(Step) -> Result<(), String>,
         local_proof: Option<&dyn LocalOutputProof>,
+        replace_readonly: bool,
     ) -> Result<File, String> {
     #[cfg(feature = "output-phase-profile")]
     let _phase = crate::output_profile::Span::new("commit_journaled");
@@ -709,6 +741,13 @@ impl PrivateOutputFile {
             return Err("output parent changed".into());
         }
         let name = leaf(target.file_name().ok_or("missing output leaf")?)?;
+        let publish = |file, parent| {
+            if replace_readonly {
+                rename_extraction(file, parent, &name)
+            } else {
+                rename(file, parent, &name, replace)
+            }
+        };
         let current = info(self.as_file())?;
         if current[0] & 0x410 != if self.directory {0x10}else{0} || current[10] != 1 {
             return Err("private output identity changed".into());
@@ -764,7 +803,7 @@ impl PrivateOutputFile {
                     if unsafe {SetFileInformationByHandle(self.as_file().as_raw_handle(),21,
                         (&keep as *const u32).cast(),4)} == 0 {return Err(error("commit direct output"));}
                     Ok(())
-                } else {rename(self.as_file(), &self.parent, &name, replace)}
+                } else {publish(self.as_file(), &self.parent)}
             })();
             if let Err(reason) = transition {
                 // Restore the protected scratch permissions while the data
@@ -789,7 +828,7 @@ impl PrivateOutputFile {
             pending = journal
                 .map(|_| OutputReceipt::capture(target, self.as_file()))
                 .transpose()?;
-            rename(self.as_file(), &self.parent, &name, replace)?;
+            publish(self.as_file(), &self.parent)?;
             self.state = State::Committed;
             self.path = target.to_owned();
         }
@@ -1359,7 +1398,7 @@ mod tests {
             output.as_file_mut().write_all(b"complete").unwrap();
             assert!(output.commit_journaled(&path,false,Some(&journal),&mut |current| {
                 if current==*step {Err("cancelled".into())}else{Ok(())}
-            },None).is_err());
+            },None,false).is_err());
             output.abort().unwrap();assert!(!path.exists());
         }
         let user=current_sid(&effective_token().unwrap()).unwrap();
@@ -1394,7 +1433,7 @@ mod tests {
         let reason=output.commit_journaled(&path,false,Some(&journal),&mut |step| {
             if step==Step::ApplyPermissions {policy(&parent,&format!("D:PAI(A;OICI;FA;;;{user})"));}
             Ok(())
-        },None).unwrap_err();
+        },None,false).unwrap_err();
         assert!(reason.contains("permissions changed"));output.abort().unwrap();assert!(!path.exists());
     }
     fn direct_checkpoint(name:&str) {
