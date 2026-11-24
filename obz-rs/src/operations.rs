@@ -58,6 +58,8 @@ pub fn list_archive(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,St
     result
 }
 pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entry>,String>{
+    let detected=with_name_codepage(path,opts);
+    let opts=detected.as_ref().unwrap_or(opts);
     let policy=crate::machine_policy::scope();
     if policy.restricted() { return engine::list(path, opts); }
     if crate::rare::supports(path){return crate::rare::list(path,opts);}
@@ -65,6 +67,13 @@ pub fn list_archive_once(path:&str,opts:&EngineOptions)->Result<Vec<engine::Entr
     if crate::stream_formats::is_supported(path){return crate::stream_formats::list(path,opts);}
     if let Some(data)=crate::installer::recognize(path)? {return crate::installer::list(&data);}
     if crate::korean::is_supported(path){crate::korean::list(path,opts)}else if crate::legacy::is_supported(path){crate::legacy::list(path,opts)}else{engine::list(path,opts)}
+}
+/// ZIPs whose unflagged names are all UTF-8 (macOS, Java, Linux tools) are read
+/// as UTF-8 unless the user chose a code page. Names then match in every
+/// operation: list, extract, test, preview, delete and rename.
+fn with_name_codepage(path:&str,opts:&EngineOptions)->Option<EngineOptions>{
+    (opts.codepage.is_none() && crate::zip_names::implicit_utf8_names(path))
+        .then(|| EngineOptions{codepage:Some(65001),..opts.clone()})
 }
 pub fn test_archive(path:&str,opts:&EngineOptions)->Result<(),String>{
     let policy = crate::machine_policy::scope();
@@ -232,6 +241,9 @@ pub fn execute_request(mut r: Request) -> Result<OperationResponse, String> {
     let atime=if r.options.preserve_input_atime && matches!(r.operation.as_str(),"add"|"archive-add"|"archive-move"|"create") {
         let report=std::sync::Arc::new(std::sync::Mutex::new(crate::source_access::Report::default()));r.options.input_atime_report=Some(report.clone());Some(report)
     }else{None};
+    if matches!(r.operation.as_str(),"test"|"extract"|"preview"|"archive-properties"|"delete"|"rename") {
+        if let Some(options)=with_name_codepage(&r.path,&r.options) { r.options=options; }
+    }
     let mut result=execute_json(r, restricted)?;
     #[cfg(windows)]
     if let Some(report)=atime{let report=report.lock().unwrap_or_else(|e|e.into_inner());result["input_atime"]=serde_json::to_value(&*report).map_err(|e|e.to_string())?;result["input_atime"]["summary"]=report.summary().into();}

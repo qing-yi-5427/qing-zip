@@ -5,6 +5,7 @@ pub mod setup;
 pub mod sevenz;
 pub mod util;
 pub mod zipfmt;
+pub mod zip_names;
 
 pub mod extract;
 pub mod engine;
