@@ -1055,7 +1055,7 @@ fn validate_listing_member(
         return Ok(None);
     }
     if !seen.insert(path_key(&validate_name(name)?)) {
-        return Err("duplicate or case-colliding archive names".into());
+        return Err(format!("duplicate or case-colliding archive names: {name}"));
     }
     Ok(Some(is_dir))
 }
@@ -9166,11 +9166,13 @@ mod staging_tests {
         let mut perm = fs::metadata(&target).unwrap().permissions();
         perm.set_readonly(true);
         fs::set_permissions(&target, perm).unwrap();
-        assert!(publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &target, true).is_err());
+        // A read-only file is kept unless overwrite was chosen; then it is replaced like 7-Zip -aoa.
+        assert!(publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &target, false).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"preserve");
-        let mut perm = fs::metadata(&target).unwrap().permissions();
-        perm.set_readonly(false);
-        fs::set_permissions(&target, perm).unwrap();
+        let mut replacement = output_temp(temp.path(), &guards).unwrap();
+        replacement.write_all(b"replaced").unwrap();
+        drop(publish_output(&mut replacement, &target, true).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), b"replaced");
         let newpath = temp.path().join("metadata.txt");
         let published = publish_output(&mut output_temp(temp.path(), &guards).unwrap(), &newpath, false).unwrap();
         let entry = Entry { created: String::new(), accessed: String::new(),
