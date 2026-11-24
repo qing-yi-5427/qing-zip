@@ -219,9 +219,11 @@ mod tests {
         let good=manifest(&["folder/a.txt"],0x20);let entries=manifest_entries(&good,&[42;16]).unwrap();
         assert_eq!(entries[0].name,"folder/a.txt");assert_eq!(entries[0].size,3);
         assert!(manifest_entries(&good,&[41;16]).is_err());
-        for names in [&["../a"][..],&["A","a"][..],&["a","a/b"][..],&["a:stream"][..]] {
+        for names in [&["../a"][..],&["A","a"][..],&["a","a/b"][..],&["a:stream","a_stream"][..]] {
             assert!(manifest_entries(&manifest(names,0x20),&[42;16]).is_err(),"{names:?}");
         }
+        // A colon cannot reach an alternate data stream: outputs use the mapped name.
+        assert_eq!(validate_name("a:stream").unwrap(),Path::new("a_stream"));
         for attrs in [0x400,0xa0000000] {assert!(manifest_entries(&manifest(&["a"],attrs),&[42;16]).is_err());}
         let mut trailing=good.clone();trailing.push(0);assert!(manifest_entries(&trailing,&[42;16]).is_err());
         for length in [0,15,19,good.len()-1] {assert!(manifest_entries(&good[..length],&[42;16]).is_err());}

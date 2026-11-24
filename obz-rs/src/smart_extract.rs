@@ -116,7 +116,9 @@ mod tests {
     }
     #[test]
     fn unsafe_selected_and_unselected_paths_are_rejected() {
-        for bad in ["../outside.txt", "/absolute.txt", "C:\\outside.txt", "bundle/../../outside.txt"] {
+        // "C:\\outside.txt" maps to C_/outside.txt inside the destination, as in 7-Zip.
+        assert_eq!(crate::engine::validate_name("C:\\outside.txt").unwrap(), std::path::Path::new("C_").join("outside.txt"));
+        for bad in ["../outside.txt", "/absolute.txt", "\\\\server\\share.txt", "bundle/../../outside.txt"] {
             let entries = [e("bundle/a.txt", false), e(bad, false)];
             assert!(destination("bundle.zip", "output", &entries, &opts(&[bad])).is_err(), "{bad}");
             assert!(destination("bundle.zip", "output", &entries, &opts(&["bundle/a.txt"])).is_err(), "{bad}");
