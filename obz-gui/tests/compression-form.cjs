@@ -199,14 +199,16 @@ test('ZipCrypto rejects passwords that its writer cannot encode before starting'
   fields['oa-encryption'].focus = () => { focused = 'encryption'; };
   context.methodOptions();
   fields['oa-encryption'].value = 'ZipCrypto';
-  fields['qa-new-password'].value = fields['oa-password-again'].value = '中文密码';
-  assert.throws(() => context.validateCompressionPassword('zip'), /ZipCrypto 只支持.*AES-256/);
+  for (const password of ['Pass\t123', '中文密码']) {
+    fields['qa-new-password'].value = fields['oa-password-again'].value = password;
+    assert.throws(() => context.validateCompressionPassword('zip'), /ZipCrypto 只支持.*AES-256/);
+  }
   assert.equal(focused, 'encryption');
   fields['oa-encryption'].value = 'AES256';
   assert.equal(context.validateCompressionPassword('zip'), '中文密码');
   fields['oa-encryption'].value = 'ZipCrypto';
-  fields['qa-new-password'].value = fields['oa-password-again'].value = 'Pass-123';
-  assert.equal(context.validateCompressionPassword('zip'), 'Pass-123');
+  fields['qa-new-password'].value = fields['oa-password-again'].value = 'Pass -123\x7f';
+  assert.equal(context.validateCompressionPassword('zip'), 'Pass -123\x7f');
 });
 
 test('ZIP names notice belongs to the password disclosure and follows the form format', () => {
