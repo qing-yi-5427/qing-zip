@@ -481,3 +481,32 @@ fn engine_concurrent_updates_preserve_both_additions() {
         assert!(entries.iter().any(|e| e.name == format!("added-{i}.txt")));
     }
 }
+#[cfg(windows)]
+#[test]
+fn extract_small_zip_into_existing_long_directory_preserves_files_and_conflicts() {
+    use std::io::Write;
+    use std::os::windows::ffi::OsStrExt;
+    let t = tempfile::tempdir().unwrap();
+    let archive = t.path().join("invoice.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    writer.start_file("invoice.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    writer.write_all(b"invoice fixture").unwrap();
+    writer.finish().unwrap();
+    let original_archive = fs::read(&archive).unwrap();
+    let short = t.path().join("short");
+    let mut long = t.path().join("客户资料");
+    while long.as_os_str().encode_wide().count() < 340 {
+        long.push("客户目录2026");
+    }
+    for dest in [&short, &long] {
+        fs::create_dir_all(dest).unwrap();
+        fs::write(dest.join("existing.txt"), b"keep existing").unwrap();
+        engine::extract(&p(&archive), &p(dest), &EngineOptions::default()).unwrap();
+        assert_eq!(fs::read(dest.join("invoice.txt")).unwrap(), b"invoice fixture");
+        assert_eq!(fs::read(dest.join("existing.txt")).unwrap(), b"keep existing");
+        fs::write(dest.join("invoice.txt"), b"keep conflicting file").unwrap();
+        assert!(engine::extract(&p(&archive), &p(dest), &EngineOptions::default()).is_err());
+        assert_eq!(fs::read(dest.join("invoice.txt")).unwrap(), b"keep conflicting file");
+        assert_eq!(fs::read(&archive).unwrap(), original_archive);
+    }
+}
