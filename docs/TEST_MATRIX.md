@@ -8,6 +8,10 @@
 | --- | --- |
 | 真实窗口创建带密码的 ZIP 和 7z | Windows 11 x64 安装版 PASS：ZIP→TAR 阻断→7z 加密文件名，以及独立 AES256 ZIP 创建；独立 7-Zip 核对空、错、正确密码与产物，ZIP 文件名仍可见。[范围与回执](verification/encrypted-create-gui/README.md) |
 
+## 第十一轮普通 ZIP64
+
+Windows 11 x64 已安装的 0.12.23 对齐、略低于和略高于 4 GiB 的三个单成员归档均可正确列出、校验与解压。偏移跨界的选择性解压、程序创建超大 STORE 成员及追加小文件分别通过。实际文件与独立读取器做了完整的哈希核对。[三组回执与复跑命令](verification/round11/zip64-size/README.md)
+
 ## 第九轮批次恢复与高对比
 
 | 场景 | 实际结果 |

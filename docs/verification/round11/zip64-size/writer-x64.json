@@ -1,0 +1,45 @@
+{
+  "platform": "Windows-11-10.0.26300-SP0",
+  "cli_sha256": "8b2c94be2232b91089502d18310d17b76c08326182055e1b955c09d610545cf2",
+  "results": {
+    "create": {
+      "archive_bytes": 4294967598,
+      "central_offset": 4294967389,
+      "entries": [
+        {
+          "name": "large.bin",
+          "size": 4294967330,
+          "method": 0,
+          "header_offset": 0,
+          "crc32": "92b99664",
+          "sha256": "48e9c532fd50332291a98647aa7d383c3e95745d7db3c48a247927cb93696db8"
+        }
+      ]
+    },
+    "append": {
+      "archive_bytes": 4294967769,
+      "central_offset": 4294967468,
+      "entries": [
+        {
+          "name": "append.txt",
+          "size": 39,
+          "method": 0,
+          "header_offset": 0,
+          "crc32": "2c0e95bb",
+          "sha256": "0d7fd4022fee8b67676df63e1e14975b1f1cda2d91ae1ebb78bc5429554a40a5"
+        },
+        {
+          "name": "large.bin",
+          "size": 4294967330,
+          "method": 0,
+          "header_offset": 79,
+          "crc32": "92b99664",
+          "sha256": "48e9c532fd50332291a98647aa7d383c3e95745d7db3c48a247927cb93696db8"
+        }
+      ]
+    }
+  },
+  "source_preserved": true,
+  "status": "PASS",
+  "fixture_removed": true
+}

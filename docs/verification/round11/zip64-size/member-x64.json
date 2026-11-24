@@ -1,0 +1,316 @@
+{
+  "started": "2026-11-24T08:51:24+08:00",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python": "3.14.0",
+  "zlib": "1.3.1.zlib-ng",
+  "source": "3bd150cfa59975199587cbf6b7749c54309038b1",
+  "tree": "399a45efe8286a5aab8d914fec8d53dc00d27691",
+  "build_run": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45290034274",
+  "installed_payloads_verified": 739,
+  "installed_binaries_sha256": {
+    "obz.exe": "8b2c94be2232b91089502d18310d17b76c08326182055e1b955c09d610545cf2",
+    "obz-worker.exe": "83f9c366a3feb2052c8e163a03df67b251df17e397c96998442eb7b6ed9f35ee",
+    "qing-zip.exe": "1e3d78c2f4634948f5f3c39d4a72355a4d5b8655670d6cafe026e922f8f02631"
+  },
+  "free_before_all_bytes": 554850324480,
+  "minimum_free_before_case_bytes": 25769803776,
+  "cases": [
+    {
+      "status": "passed",
+      "case": "below",
+      "requested_member_bytes": 4294901759,
+      "synthetic_input": {
+        "bytes": 4294901759,
+        "sha256": "89ff0e8c1c30ea3821684d5f5cff2a2ea2b5232c627819af28c5792994f73b19",
+        "crc32": "bcc977f6"
+      },
+      "zip_headers": {
+        "format": "single-volume ZIP, one Deflate member",
+        "version_needed": 45,
+        "zip64_extra_id": "0x0001",
+        "central_original_size_32": 4294967295,
+        "central_original_size_64": 4294901759,
+        "central_compressed_size_32": 4294967295,
+        "central_compressed_size_64": 119973569,
+        "local_original_size_32": 4294967295,
+        "local_compressed_size_32": 4294967295,
+        "local_original_size_64": 4294901759,
+        "local_compressed_size_64": 119973569,
+        "crc32": "bcc977f6",
+        "ordinary_archive_end_record": true
+      },
+      "archive_before": {
+        "bytes": 119973745,
+        "sha256": "8e94991de5b0f63388d2caaf27931075374a5849f2e5a0c8eb8766bb5c2f7e35"
+      },
+      "independent_archive_member": {
+        "bytes": 4294901759,
+        "sha256": "89ff0e8c1c30ea3821684d5f5cff2a2ea2b5232c627819af28c5792994f73b19",
+        "crc32": "bcc977f6"
+      },
+      "installed_list": {
+        "exit_code": 0,
+        "seconds": 0.073,
+        "name": "ordinary-member.bin",
+        "member_bytes": 4294901759
+      },
+      "installed_test": {
+        "exit_code": 0,
+        "seconds": 2.042,
+        "valid": true
+      },
+      "installed_extract": {
+        "exit_code": 0,
+        "seconds": 3.454,
+        "files": 1
+      },
+      "extracted_member": {
+        "bytes": 4294901759,
+        "sha256": "89ff0e8c1c30ea3821684d5f5cff2a2ea2b5232c627819af28c5792994f73b19",
+        "crc32": "bcc977f6"
+      },
+      "markers": [
+        {
+          "offset": 0,
+          "bytes": 23,
+          "sha256": "d88ded7c603e24a7b8cd865a2db3d68cbcb44505d0388f51e0115a1838779bb3"
+        },
+        {
+          "offset": 2147483640,
+          "bytes": 36,
+          "sha256": "8614f81f3f74d453ca5093e75ea93571b46fa272d8cd9cf94ebb9fb806701704"
+        },
+        {
+          "offset": 4294836224,
+          "bytes": 26,
+          "sha256": "a6159d699a4feeded1a59e60134db0be2c0bb5a76f9e935778c3fdf211dfed45"
+        },
+        {
+          "offset": 4294901695,
+          "bytes": 23,
+          "sha256": "a79d49a66824c88ceae9fa9a40eb46ff7716952b0f7c05ab722b39e4fa0e55a2"
+        }
+      ],
+      "input_after": {
+        "bytes": 4294901759,
+        "sha256": "89ff0e8c1c30ea3821684d5f5cff2a2ea2b5232c627819af28c5792994f73b19",
+        "crc32": "bcc977f6"
+      },
+      "archive_after": {
+        "bytes": 119973745,
+        "sha256": "8e94991de5b0f63388d2caaf27931075374a5849f2e5a0c8eb8766bb5c2f7e35"
+      },
+      "volume_observation_bytes": {
+        "free_before": 554850324480,
+        "lowest_sampled_free": 546495852544,
+        "free_before_cleanup": 554730483712,
+        "samples": 79,
+        "free_after_case_cleanup": 563440271360
+      },
+      "case_directory_removed": true
+    },
+    {
+      "status": "passed",
+      "case": "at",
+      "requested_member_bytes": 4294967296,
+      "synthetic_input": {
+        "bytes": 4294967296,
+        "sha256": "1596316fedb6d10505654de35fe2de75e2e7c51940f24b2b7606c5e99225ac87",
+        "crc32": "32bdbe12"
+      },
+      "zip_headers": {
+        "format": "single-volume ZIP, one Deflate member",
+        "version_needed": 45,
+        "zip64_extra_id": "0x0001",
+        "central_original_size_32": 4294967295,
+        "central_original_size_64": 4294967296,
+        "central_compressed_size_32": 4294967295,
+        "central_compressed_size_64": 119974332,
+        "local_original_size_32": 4294967295,
+        "local_compressed_size_32": 4294967295,
+        "local_original_size_64": 4294967296,
+        "local_compressed_size_64": 119974332,
+        "crc32": "32bdbe12",
+        "ordinary_archive_end_record": true
+      },
+      "archive_before": {
+        "bytes": 119974508,
+        "sha256": "61481684ba5505f9cbf8daa3f8e44d5e2fd7cf526994a7d553d0b5d84b62cdb8"
+      },
+      "independent_archive_member": {
+        "bytes": 4294967296,
+        "sha256": "1596316fedb6d10505654de35fe2de75e2e7c51940f24b2b7606c5e99225ac87",
+        "crc32": "32bdbe12"
+      },
+      "installed_list": {
+        "exit_code": 0,
+        "seconds": 0.061,
+        "name": "ordinary-member.bin",
+        "member_bytes": 4294967296
+      },
+      "installed_test": {
+        "exit_code": 0,
+        "seconds": 2.023,
+        "valid": true
+      },
+      "installed_extract": {
+        "exit_code": 0,
+        "seconds": 3.448,
+        "files": 1
+      },
+      "extracted_member": {
+        "bytes": 4294967296,
+        "sha256": "1596316fedb6d10505654de35fe2de75e2e7c51940f24b2b7606c5e99225ac87",
+        "crc32": "32bdbe12"
+      },
+      "markers": [
+        {
+          "offset": 0,
+          "bytes": 23,
+          "sha256": "d88ded7c603e24a7b8cd865a2db3d68cbcb44505d0388f51e0115a1838779bb3"
+        },
+        {
+          "offset": 2147483640,
+          "bytes": 36,
+          "sha256": "8614f81f3f74d453ca5093e75ea93571b46fa272d8cd9cf94ebb9fb806701704"
+        },
+        {
+          "offset": 4294836224,
+          "bytes": 26,
+          "sha256": "a6159d699a4feeded1a59e60134db0be2c0bb5a76f9e935778c3fdf211dfed45"
+        },
+        {
+          "offset": 4294967232,
+          "bytes": 23,
+          "sha256": "a79d49a66824c88ceae9fa9a40eb46ff7716952b0f7c05ab722b39e4fa0e55a2"
+        }
+      ],
+      "input_after": {
+        "bytes": 4294967296,
+        "sha256": "1596316fedb6d10505654de35fe2de75e2e7c51940f24b2b7606c5e99225ac87",
+        "crc32": "32bdbe12"
+      },
+      "archive_after": {
+        "bytes": 119974508,
+        "sha256": "61481684ba5505f9cbf8daa3f8e44d5e2fd7cf526994a7d553d0b5d84b62cdb8"
+      },
+      "volume_observation_bytes": {
+        "free_before": 563440271360,
+        "lowest_sampled_free": 554730352640,
+        "free_before_cleanup": 554730352640,
+        "samples": 72,
+        "free_after_case_cleanup": 563440271360
+      },
+      "case_directory_removed": true
+    },
+    {
+      "status": "passed",
+      "case": "above",
+      "requested_member_bytes": 4295032833,
+      "synthetic_input": {
+        "bytes": 4295032833,
+        "sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+        "crc32": "75ef76ee"
+      },
+      "zip_headers": {
+        "format": "single-volume ZIP, one Deflate member",
+        "version_needed": 45,
+        "zip64_extra_id": "0x0001",
+        "central_original_size_32": 4294967295,
+        "central_original_size_64": 4295032833,
+        "central_compressed_size_32": 4294967295,
+        "central_compressed_size_64": 120043460,
+        "local_original_size_32": 4294967295,
+        "local_compressed_size_32": 4294967295,
+        "local_original_size_64": 4295032833,
+        "local_compressed_size_64": 120043460,
+        "crc32": "75ef76ee",
+        "ordinary_archive_end_record": true
+      },
+      "archive_before": {
+        "bytes": 120043636,
+        "sha256": "f82a77410330119ca8f27192b8fef85bbefbe31f7121d2476d773661bd2edfc0"
+      },
+      "independent_archive_member": {
+        "bytes": 4295032833,
+        "sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+        "crc32": "75ef76ee"
+      },
+      "installed_list": {
+        "exit_code": 0,
+        "seconds": 0.062,
+        "name": "ordinary-member.bin",
+        "member_bytes": 4295032833
+      },
+      "installed_test": {
+        "exit_code": 0,
+        "seconds": 2.038,
+        "valid": true
+      },
+      "installed_extract": {
+        "exit_code": 0,
+        "seconds": 3.488,
+        "files": 1
+      },
+      "extracted_member": {
+        "bytes": 4295032833,
+        "sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+        "crc32": "75ef76ee"
+      },
+      "markers": [
+        {
+          "offset": 0,
+          "bytes": 23,
+          "sha256": "d88ded7c603e24a7b8cd865a2db3d68cbcb44505d0388f51e0115a1838779bb3"
+        },
+        {
+          "offset": 2147483640,
+          "bytes": 36,
+          "sha256": "8614f81f3f74d453ca5093e75ea93571b46fa272d8cd9cf94ebb9fb806701704"
+        },
+        {
+          "offset": 4294836224,
+          "bytes": 26,
+          "sha256": "a6159d699a4feeded1a59e60134db0be2c0bb5a76f9e935778c3fdf211dfed45"
+        },
+        {
+          "offset": 4294967280,
+          "bytes": 41,
+          "sha256": "e1fc52583f131e5de8bb7ce1e24c61dfc1c78df24ffd9a8b02c85f7935ea3d8b"
+        },
+        {
+          "offset": 4295000064,
+          "bytes": 33,
+          "sha256": "fa5d1805a1ced58721e4d08d4b0e783889675dc168e91507d86f24757cf3ed13"
+        },
+        {
+          "offset": 4295032769,
+          "bytes": 23,
+          "sha256": "a79d49a66824c88ceae9fa9a40eb46ff7716952b0f7c05ab722b39e4fa0e55a2"
+        }
+      ],
+      "input_after": {
+        "bytes": 4295032833,
+        "sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+        "crc32": "75ef76ee"
+      },
+      "archive_after": {
+        "bytes": 120043636,
+        "sha256": "f82a77410330119ca8f27192b8fef85bbefbe31f7121d2476d773661bd2edfc0"
+      },
+      "volume_observation_bytes": {
+        "free_before": 563440271360,
+        "lowest_sampled_free": 554730143744,
+        "free_before_cleanup": 554730143744,
+        "samples": 72,
+        "free_after_case_cleanup": 563440271360
+      },
+      "case_directory_removed": true
+    }
+  ],
+  "owned_temporary_root_removed": true,
+  "free_after_all_bytes": 563440271360,
+  "installed_binaries_unchanged": true,
+  "finished": "2026-11-24T08:52:22+08:00",
+  "status": "passed"
+}
