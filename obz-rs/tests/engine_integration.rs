@@ -528,6 +528,7 @@ fn zipcrypto_non_ascii_password_fails_with_an_actionable_error() {
     engine::create(&p(&out), &[p(&source)], "zip", &opts("Pass-123")).unwrap();
     engine::test(&p(&out), &opts("Pass-123")).unwrap();
 }
+#[cfg(windows)]
 #[test]
 fn folders_differing_only_in_case_extract_into_one_folder() {
     use std::io::Write;
@@ -538,12 +539,20 @@ fn folders_differing_only_in_case_extract_into_one_folder() {
         writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
         writer.write_all(data).unwrap();
     }
+    writer.add_directory("docs/", zip::write::SimpleFileOptions::default()).unwrap();
     writer.finish().unwrap();
-    let out = t.path().join("out");
-    // Previously: "foreign directory appeared in new destination".
-    engine::extract(&p(&archive), &p(&out), &EngineOptions::default()).unwrap();
-    assert_eq!(fs::read(out.join("Docs").join("a.txt")).unwrap(), b"a");
-    assert_eq!(fs::read(out.join("docs").join("b.txt")).unwrap(), b"b");
+    for (name, selected) in [
+        ("full", vec![]),
+        ("selected", vec!["Docs/a.txt".into(), "docs/".into()]),
+    ] {
+        let out = t.path().join(name);
+        let opts = EngineOptions { selected, ..Default::default() };
+        assert_eq!(engine::extract(&p(&archive), &p(&out), &opts).unwrap(), 2);
+        let dirs = fs::read_dir(&out).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(fs::read(dirs[0].path().join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dirs[0].path().join("b.txt")).unwrap(), b"b");
+    }
 }
 #[cfg(windows)]
 #[test]
@@ -554,7 +563,7 @@ fn explicit_overwrite_replaces_read_only_files_and_other_policies_keep_them() {
     fs::write(source.join("b.txt"), b"new").unwrap();
     let archive = t.path().join("a.zip");
     engine::create(&p(&archive), &[p(&source)], "zip", &EngineOptions::default()).unwrap();
-    for policy in ["overwrite", "skip", "rename"] {
+    for policy in ["overwrite", "skip", "rename", "blocked-overwrite"] {
         let dest = t.path().join(policy);
         let target = dest.join("src").join("b.txt");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -562,10 +571,25 @@ fn explicit_overwrite_replaces_read_only_files_and_other_policies_keep_them() {
         let mut permissions = fs::metadata(&target).unwrap().permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&target, permissions).unwrap();
-        let opts = EngineOptions { overwrite: policy.into(), ..Default::default() };
-        engine::extract(&p(&archive), &p(&dest), &opts).unwrap();
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = if policy == "blocked-overwrite" {
+            Some(fs::File::options().read(true).share_mode(1).open(&target).unwrap())
+        } else {
+            None
+        };
+        let overwrite = if held.is_some() { "overwrite" } else { policy };
+        let opts = EngineOptions { overwrite: overwrite.into(), ..Default::default() };
+        let result = engine::extract(&p(&archive), &p(&dest), &opts);
+        if held.is_some() { assert!(result.is_err()); } else { result.unwrap(); }
+        drop(held);
         let expected: &[u8] = if policy == "overwrite" { b"new" } else { b"mine" };
         assert_eq!(fs::read(&target).unwrap(), expected, "{policy}");
+        if policy != "overwrite" {
+            assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        }
+        if policy == "rename" {
+            assert_eq!(fs::read(target.with_file_name("b (1).txt")).unwrap(), b"new");
+        }
         let mut permissions = fs::metadata(&target).unwrap().permissions();
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);

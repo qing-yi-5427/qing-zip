@@ -85,12 +85,12 @@ fn legacy_gbk_names_keep_the_system_code_page() {
 #[test]
 fn windows_invalid_member_names_are_mapped_like_7zip() {
     use std::io::Write;
-    let cases = [("what?.txt", "what_.txt"), ("a:b.txt", "a_b.txt"), ("CON.txt", "_CON.txt"),
+    let cases = [("what?.txt", "what_.txt"), ("title:note.txt", "title_note.txt"), ("CON.txt", "_CON.txt"),
         ("name.", "name_"), ("dir. /x.txt", "dir__/x.txt"), ("fine.txt", "fine.txt")];
     for (mapped, expected) in cases {
         assert_eq!(obz_core::extract::member_path(mapped).unwrap(), Path::new(expected), "{mapped}");
     }
-    for unsafe_name in ["../evil.txt", "/abs.txt", "a/../b", "a//b", "\\\\server\\x", "line\nPath = x"] {
+    for unsafe_name in ["../evil.txt", "/abs.txt", "C:/absolute.txt", "C:relative.txt", "a/../b", "a//b", "\\\\server\\x", "line\nPath = x"] {
         assert!(obz_core::extract::member_path(unsafe_name).is_err(), "{unsafe_name}");
     }
     // User-chosen names stay strict.

@@ -360,10 +360,9 @@ impl Pending {
                 let leaf = root.file_name().ok_or("missing destination leaf")?;
                 let file = crate::private_stage::create_journal_directory(&parent, leaf)?;
                 let proof = created_directories::Identity::owned(&file)?;
-                guards.created_output_dirs.push((root.clone(), proof));
                 guards.exclusive_claim = true;
+                guards.record_created_output_dir(root, &file, proof)?;
                 guards.selected_output_root = Some(root.clone());
-                guards.owned_dirs.insert(path_key(root));
                 guards.create_dirs(dest)?;
             }
             let mut ack = self.nonce.to_vec();
@@ -553,6 +552,10 @@ impl Pending {
                 .collect::<HashMap<_, _>>();
             for (path, entry) in directories {
                 ctl.check()?;
+                if guards.exclusive_claim {
+                    guards.restore_claimed_directory_metadata(&path, entry)?;
+                    continue;
+                }
                 if let Some(&index) = owned.get(&path) {
                     match &mut guards.created_output_dirs[index].1 {
                         proof @ created_directories::Identity::Owned(_, _) => {

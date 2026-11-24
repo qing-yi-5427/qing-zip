@@ -16,7 +16,7 @@ fn key(name: &str) -> String {
 fn member(name: &str) -> Result<String, String> {
     let name = name.replace('\\', "/");
     let name = name.trim_end_matches('/');
-    validate_name(name)?;
+    validate_new_member_name(name)?;
     Ok(name.to_owned())
 }
 
@@ -24,8 +24,10 @@ fn inventory(entries: &[Entry]) -> Result<BTreeMap<String, bool>, String> {
     let mut result = BTreeMap::new();
     let mut explicit = HashSet::new();
     for entry in entries {
-        let name = member(&entry.name)?;
-        let k = key(&name);
+        validate_name(&entry.name)?;
+        let name = entry.name.replace('\\', "/");
+        let name = name.trim_end_matches('/');
+        let k = key(name);
         if !explicit.insert(k.clone()) {
             return Err("目标压缩包存在重复或大小写冲突的成员".into());
         }
@@ -35,7 +37,7 @@ fn inventory(entries: &[Entry]) -> Result<BTreeMap<String, bool>, String> {
         {
             return Err("目标压缩包存在文件与目录冲突".into());
         }
-        let mut parent = name.as_str();
+        let mut parent = name;
         while let Some((prefix, _)) = parent.rsplit_once('/') {
             if result.insert(key(prefix), true) == Some(false) {
                 return Err("目标压缩包存在文件与目录冲突".into());

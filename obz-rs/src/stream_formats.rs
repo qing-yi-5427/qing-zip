@@ -204,9 +204,9 @@ fn asar(file: File, opts: &EngineOptions) -> Result<Archive, String> {
             return Err("ASAR external unpacked members are not read".into());
         }
         if !path.is_empty() {
-            engine::validate_name(&path)?;
-            if !names.insert(path.to_lowercase()) {
-                return Err("ASAR case-colliding names".into());
+            let relative = engine::validate_name(&path)?;
+            if !names.insert(relative.to_string_lossy().to_lowercase()) {
+                return Err(format!("ASAR duplicate or case-colliding names: {path}"));
             }
         }
         if let Some(files) = node.files {
@@ -454,7 +454,7 @@ fn extract_inner(path: &str, dest: &str, opts: &EngineOptions, verify_unselected
             } else {
                 fs::create_dir_all(path.parent().ok_or("missing parent")?)
                     .map_err(|e| e.to_string())?;
-                let mut f = File::create(path).map_err(|e| e.to_string())?;
+                let mut f = File::create_new(path).map_err(|e| e.to_string())?;
                 copy_item(&mut a.file, item, &mut f, opts)?;
             }
         }

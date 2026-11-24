@@ -159,12 +159,8 @@ pub fn split(
     let created =
         crate::private_stage::create_journal_directory(&parent_handle, dest.file_name().unwrap())?;
     guards.exclusive_claim = true;
-    guards.created_output_dirs.push((
-        dest.clone(),
-        created_directories::Identity::owned(&created)?,
-    ));
+    guards.record_created_output_dir(&dest, &created, created_directories::Identity::owned(&created)?)?;
     guards.selected_output_root = Some(dest.clone());
-    guards.owned_dirs.insert(path_key(&dest));
     drop(created);
     let journal = PublicationJournal::default();
     ctl.set("publishing", Some(95), "正在保存分块文件");

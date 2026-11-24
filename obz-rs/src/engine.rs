@@ -889,18 +889,21 @@ fn run_program_log_with_directory(
 }
 /// Resolve a member name to the same safe relative path used during extraction.
 pub fn validate_name(name: &str) -> Result<PathBuf, String> {
+    normalized_member_name(name).and_then(|name| crate::extract::member_path(&name))
+}
+
+fn normalized_member_name(name: &str) -> Result<std::borrow::Cow<'_, str>, String> {
     if name.starts_with(['/', '\\']) {
         return Err("absolute archive path rejected".into());
     }
-    if !name.split(['/', '\\']).any(|part| part == ".") {
-        return crate::extract::member_path(name);
+    if name.split(['/', '\\']).any(|part| part == ".") {
+        return Ok(name.split(['/', '\\']).filter(|part| *part != ".").collect::<Vec<_>>().join("/").into());
     }
-    let normalized = name
-        .split(['/', '\\'])
-        .filter(|part| *part != ".")
-        .collect::<Vec<_>>()
-        .join("/");
-    crate::extract::member_path(&normalized)
+    Ok(name.into())
+}
+
+pub(crate) fn validate_new_member_name(name: &str) -> Result<PathBuf, String> {
+    normalized_member_name(name).and_then(|name| crate::extract::relative_path(&name))
 }
 fn parse_listing(bytes: &[u8]) -> Result<Vec<Entry>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "engine returned invalid UTF-8")?;
@@ -1472,8 +1475,9 @@ struct CheckedDirectories {
     #[cfg(windows)]
     owned_roots: Vec<PathBuf>,
     #[cfg(windows)]
-    /// Lower-cased path keys: NTFS resolves `Docs` and `docs` to one directory.
-    owned_dirs: HashSet<String>,
+    owned_dirs: HashSet<PathBuf>,
+    #[cfg(windows)]
+    directory_receipts: HashMap<(u32, u64), usize>,
     #[cfg(windows)]
     selected_output_root: Option<PathBuf>,
     #[cfg(windows)]
@@ -1548,14 +1552,33 @@ impl CheckedDirectories {
         }
         Some(create(transient.last().unwrap_or(anchor), leaf))
     }
+    #[cfg(windows)]
+    fn record_created_output_dir(
+        &mut self,
+        path: &Path,
+        created: &File,
+        proof: created_directories::Identity,
+    ) -> Result<(), String> {
+        if self.exclusive_claim {
+            self.directory_receipts.insert(directory_identity(created)?, self.created_output_dirs.len());
+        }
+        self.created_output_dirs.push((path.to_owned(), proof));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn restore_claimed_directory_metadata(&mut self, path: &Path, entry: &Entry) -> Result<(), String> {
+        self.check(path)?;
+        let (handle, _) = self.held.get(path).ok_or("missing claimed output directory handle")?;
+        let index = *self.directory_receipts.get(&directory_identity(handle)?)
+            .ok_or("missing claimed output directory receipt")?;
+        self.created_output_dirs[index].1.restore_owned_metadata(entry)
+    }
+
     fn create_dirs(&mut self, path: &Path) -> Result<(), String> {
         for component in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
             self.check(component)?;
             if self.pinned(component) {
-                #[cfg(windows)]
-                if self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|r|component.starts_with(r)) && !self.owned_dirs.contains(&path_key(component)) {
-                    return Err(format!("foreign directory appeared in new destination: {}",component.display()));
-                }
                 continue;
             }
             #[cfg(windows)]
@@ -1568,15 +1591,15 @@ impl CheckedDirectories {
                                 // the directory. An identity alone cannot prove it unchanged.
                                 Some(created_directories::Identity::owned(&created)?)
                             } else if self.created_output_dirs.len() < 4096 {
-                                Some(created_directories::Identity::Handle(created))
+                                Some(created_directories::Identity::Handle(created.try_clone().map_err(|e| e.to_string())?))
                             } else {
                                 created_directories::Stamp::capture(&created)
                                     .map(created_directories::Identity::Journal)
                             };
                             if let Some(proof) = proof {
-                                self.created_output_dirs.push((component.to_owned(), proof));
+                                self.record_created_output_dir(component, &created, proof)?;
                             }
-                            self.owned_dirs.insert(path_key(component));
+                            self.owned_dirs.insert(component.to_owned());
                             self.check(component)?;
                             continue;
                         }
@@ -1587,11 +1610,14 @@ impl CheckedDirectories {
                         Err(error) => return Err(error),
                     }
                 }
+                if self.exclusive_claim {
+                    return Err("missing claimed output parent handle".into());
+                }
             }
             match fs::create_dir(component) {
                 Ok(()) => {
                     #[cfg(windows)]
-                    self.owned_dirs.insert(path_key(component));
+                    self.owned_dirs.insert(component.to_owned());
                     self.check(component)?;
                 }
                 Err(error)
@@ -1743,14 +1769,11 @@ impl CheckedDirectories {
                                 ));
                             }
                             let in_claim = self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|root| part.starts_with(root));
-                            if meta.is_dir() && in_claim && !self.owned_dirs.contains(&path_key(part)) {
-                                return Err(format!("foreign directory appeared in new destination: {}",part.display()));
-                            }
                             if meta.is_dir() && self.archive_snapshot_pin_limit.is_some_and(|limit|self.held.len()>=limit) {
                                 return Err("creation snapshot directory pin budget exhausted".into());
                             }
                             if meta.is_dir() && (self.held.len() < self.archive_snapshot_pin_limit.unwrap_or(4096) || in_claim) {
-                                let owned = self.owned_dirs.contains(&path_key(part))
+                                let owned = in_claim || self.owned_dirs.contains(part)
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories
                                 // must not block unrelated applications' child renames.
@@ -1771,11 +1794,15 @@ impl CheckedDirectories {
                                                 part.display()
                                             ));
                                         }
+                                        if in_claim && !self.directory_receipts.contains_key(&directory_identity(&lock)?) {
+                                            return Err(format!("foreign directory appeared in new destination: {}", part.display()));
+                                        }
                                         self.held
                                             .insert(part.to_path_buf(), (lock, publication_parent));
                                     }
                                     // Existing applications may hold incompatible sharing handles.
                                     // Retain the original checks instead of weakening access.
+                                    Err(error) if in_claim => return Err(error.to_string()),
                                     Err(_) => return no_links(path),
                                 }
                             }
@@ -3581,9 +3608,8 @@ fn extract_raw_to(
             { output_guards.direct_memory_claim = memory.is_some() && opts.selected.is_empty()
                 && using_process_token() && crate::private_stage::direct_output_supported(&created); }
             let proof = created_directories::Identity::owned(&created)?;
-            output_guards.created_output_dirs.push((dest.clone(),proof));
+            output_guards.record_created_output_dir(&dest, &created, proof)?;
             output_guards.selected_output_root = Some(dest.clone());
-            output_guards.owned_dirs.insert(path_key(&dest));
         }
         #[cfg(not(windows))]
         fs::create_dir(&dest).map_err(|e|e.to_string())?;
@@ -3701,10 +3727,6 @@ fn extract_raw_to(
         }
         count
     };
-    #[cfg(windows)]
-    let directory_receipts: HashMap<PathBuf,usize> = if output_guards.exclusive_claim {
-        output_guards.created_output_dirs.iter().enumerate().map(|(i,(path,_))|(path.clone(),i)).collect()
-    } else { HashMap::new() };
     let directories = entries.iter().rev().filter(|e| e.is_dir);
     if directories.clone().next().is_some() {
         ctl.set("output-directory-metadata", None, "");
@@ -3714,8 +3736,7 @@ fn extract_raw_to(
         let path=dest.join(validate_name(&e.name)?);
         #[cfg(windows)]
         if output_guards.exclusive_claim {
-            let i=*directory_receipts.get(&path).ok_or("missing claimed output directory receipt")?;
-            output_guards.created_output_dirs[i].1.restore_owned_metadata(e)?;
+            output_guards.restore_claimed_directory_metadata(&path, e)?;
             continue;
         }
         restore_metadata(&path,e).map_err(|e|format!("directory metadata: {e}"))?;
@@ -4825,6 +4846,30 @@ pub fn copy_archive_file(source: &Path, destination: &Path) -> Result<(), String
     })
 }
 
+#[cfg(windows)]
+pub(crate) fn publish_adapter_file(
+    source: &Path, destination: &Path, overwrite: bool,
+    zone: Option<&crate::motw::ZoneIdentifier>, check: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut input = File::open(source).map_err(|e| e.to_string())?;
+    let parent = destination.parent().ok_or("missing output directory")?;
+    let mut guards = CheckedDirectories::default();
+    guards.check(destination)?;
+    guards.create_dirs(parent)?;
+    guards.allow_publication(parent)?;
+    with_output_temp(parent, &guards, |output| {
+        std::io::copy(&mut input, output).map_err(|e| e.to_string())?;
+        if let Ok(modified) = input.metadata().and_then(|m| m.modified()) {
+            output.as_file().set_times(std::fs::FileTimes::new().set_modified(modified))
+                .map_err(|e| e.to_string())?;
+        }
+        check()?;
+        guards.check_prepared(destination)?;
+        crate::motw::apply_to_file(output.as_file(), zone)?;
+        publish_output(output, destination, overwrite).map(drop)
+    })
+}
+
 fn output_temp(parent: &Path, guards: &CheckedDirectories) -> Result<OutputTemp, String> {
     output_temp_named(parent,guards,None)
 }
@@ -4876,25 +4921,8 @@ fn publish_output_recorded(temp:&mut OutputTemp,target:&Path,replace:bool,journa
     publish_output(temp,target,replace)
 }
 fn publish_output(temp: &mut OutputTemp, target: &Path, overwrite: bool) -> Result<File, String> {
-    #[cfg(windows)] {
-        match temp.inner.commit(target, overwrite) {
-            // NTFS refuses to replace a read-only file. The user asked to
-            // overwrite, as 7-Zip -aoa does: clear the flag on that regular
-            // file only, retry once, and restore it if the retry fails.
-            Err(error) if overwrite && error.contains("(os error 5)") => {
-                use std::os::windows::fs::MetadataExt;
-                let Some(attributes) = fs::symlink_metadata(target).ok()
-                    .filter(|m| m.is_file() && m.file_attributes() & 0x401 == 1)
-                    .map(|m| m.file_attributes()) else { return Err(error) };
-                let writable = attributes & !1;
-                set_path_attributes(target, if writable == 0 { 0x80 } else { writable })?;
-                temp.inner.commit(target, true).inspect_err(|_| {
-                    let _ = set_path_attributes(target, attributes);
-                })
-            }
-            result => result,
-        }
-    }
+    #[cfg(windows)]
+    { temp.inner.commit_extraction(target, overwrite) }
     #[cfg(not(windows))] {
         let file = temp.inner.take().ok_or("output already published")?;
         let result = if overwrite { file.persist(target) } else { file.persist_noclobber(target) };
@@ -5859,6 +5887,19 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
         "rename" => "rn",
         _ => return Err("unknown archive update action".into()),
     };
+    if action == "rename" {
+        if inputs.len() % 2 != 0 {
+            return Err("rename requires old/new pairs".into());
+        }
+        for pair in inputs.chunks_exact(2) {
+            validate_name(&pair[0])?;
+            validate_new_member_name(&pair[1])?;
+        }
+    } else if action == "delete" {
+        for name in inputs {
+            validate_name(name)?;
+        }
+    }
     let locked_path = absolute(path)?;
     no_links(&locked_path)?;
     let _archive_lock = update_lock(&locked_path, &control(opts))?;
@@ -5995,12 +6036,6 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
                 .collect::<Vec<_>>()
         }
     } else {
-        for n in inputs {
-            validate_name(n)?;
-        }
-        if action == "rename" && inputs.len() % 2 != 0 {
-            return Err("rename requires old/new pairs".into());
-        }
         inputs.to_vec()
     }) };
     #[cfg(windows)]
@@ -6675,7 +6710,7 @@ fn create_libarchive(
     while let Some((p, name)) = pending.pop() {
         ctl.check()?;
         no_links(&p)?;
-        validate_name(&name)?;
+        validate_new_member_name(&name)?;
         if !names.insert(name.to_lowercase()) {
             return Err("archive names collide".into());
         }

@@ -24,7 +24,9 @@ fn is_device_name(part: &str) -> bool {
 }
 
 pub fn relative_path(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() || name.starts_with(['/', '\\']) {
+    if name.is_empty() || name.starts_with(['/', '\\'])
+        || matches!(name.as_bytes(), [b'A'..=b'Z' | b'a'..=b'z', b':', ..])
+    {
         return Err("unsafe archive path".into());
     }
     let mut path = PathBuf::new();
@@ -48,11 +50,14 @@ pub fn relative_path(name: &str) -> Result<PathBuf, String> {
 /// Output path for an archive member. Like 7-Zip on Windows, names that are
 /// legal in the archive but not on Windows are mapped instead of rejected:
 /// `<>:"|?*` become `_`, trailing dots and spaces become `_`, and device names
-/// such as `CON.txt` gain a leading `_`. Absolute paths, empty components, `.`,
+/// such as `CON.txt` gain a leading `_`. Rooted paths, Windows drive prefixes,
+/// empty components, `.`,
 /// `..` and control characters (which can forge listing lines) are still
 /// rejected, so nothing escapes the destination or spoofs another entry.
 pub fn member_path(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() || name.starts_with(['/', '\\']) {
+    if name.is_empty() || name.starts_with(['/', '\\'])
+        || matches!(name.as_bytes(), [b'A'..=b'Z' | b'a'..=b'z', b':', ..])
+    {
         return Err("unsafe archive path".into());
     }
     let mut path = PathBuf::new();
@@ -142,7 +147,7 @@ pub fn sevenz(archive: &Archive, data: &[u8], dest: &str) -> Result<usize, Strin
     let paths = archive
         .entries
         .iter()
-        .map(|e| member_path(&e.name))
+        .map(|e| relative_path(&e.name))
         .collect::<Result<Vec<_>, _>>()?;
     let root = Path::new(dest);
     let mut cache = HashMap::new();
@@ -181,7 +186,7 @@ pub fn zip(data: &[u8], base: usize, entries: &[ZipEntry], dest: &str) -> Result
     let _policy = crate::machine_policy::native("native archive extraction")?;
     let paths = entries
         .iter()
-        .map(|e| member_path(&e.name))
+        .map(|e| relative_path(&e.name))
         .collect::<Result<Vec<_>, _>>()?;
     let root = Path::new(dest);
     let mut count = 0;
