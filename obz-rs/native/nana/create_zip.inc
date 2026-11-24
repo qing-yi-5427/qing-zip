@@ -102,9 +102,15 @@ int path_order(std::wstring_view left, std::wstring_view right) {
 constexpr uint64_t EndRecordsBound = 22 + UINT16_MAX;
 constexpr uint64_t NotClassic = UINT64_MAX;
 
+// Extra fields the pinned NanaZip ZipOut.cpp writes for a new, unencrypted
+// item (Copy_From_UpdateItem_To_ItemOut clears Local/CentralExtra): ZIP64
+// (4 + 24 central), NTFS time (4 + 32), Unix time (4 + 5) and the Info-ZIP
+// Unicode name (4 + 5 + UTF-8 name). Margin is kept on top.
+constexpr uint64_t FreshItemExtraBound = 128;
+
 constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
                                       uint64_t bytes, size_t utf16_units,
-                                      bool no_member_comment = false) {
+                                      bool fresh_item = false) {
   constexpr uint64_t limit = UINT32_MAX - 1ull;
   // ZipAddCommon::Set_Pre_CompressionResult preselects ZIP64 at 0xf8000000.
   if (entries >= UINT16_MAX - 1u || bytes >= 0xf8000000ull ||
@@ -112,13 +118,14 @@ constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
     return NotClassic;
   // Windows UTF-8/OEM output fits four bytes per UTF-16 unit; allow the
   // trailing slash even for a file. Budget both filename fields. Each extra
-  // area and the central comment have separate 16-bit length fields. New
-  // items from Update::GetProperty do not provide kpidComment; the pinned
-  // NanaZip writer creates an empty comment for them. Callers without that
-  // guarantee retain the full comment allowance.
+  // area and the central comment have separate 16-bit length fields. A fresh
+  // item from Update::GetProperty has no kpidComment (the writer stores an
+  // empty comment) and only the extras listed above, whose Unicode-name part
+  // is bounded by `name`. Callers without that guarantee keep the full
+  // 16-bit allowance for each field.
   const uint64_t name = 4ull * (utf16_units + 1);
   const uint64_t records = 30 + 46 + 24 + 2 * name +
-      (no_member_comment ? 2ull : 3ull) * UINT16_MAX;
+      (fresh_item ? 2 * (FreshItemExtraBound + name) : 3ull * UINT16_MAX);
   // Only the pinned built-in unencrypted Deflate/Store writer is eligible.
   // Its seekable streams retry Store when Deflate expands (ZipAddCommon).
   // Also reserve tentative output: DeflateEncoder::GetBlockPrice compares
@@ -130,19 +137,21 @@ constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
     return NotClassic;
   return before + records + tail + bytes * 8;
 }
-static_assert(next_classic_bound(EndRecordsBound, 1, 0, 1, true) + UINT16_MAX ==
+static_assert(next_classic_bound(EndRecordsBound, 1, 0, 1, true) <
               next_classic_bound(EndRecordsBound, 1, 0, 1));
-// This ordinary many-small-file manifest fits only with the proven empty
-// comment; both modes must still fall back if their conservative bound exceeds
-// the ZIP32 offset limit.
-constexpr uint64_t small_file_budget(bool no_comment) {
+// Ordinary many-small-file manifests stay on the native writer up to the
+// classic entry limit; without the fresh-item guarantee they must fall back.
+constexpr uint64_t small_file_budget(bool fresh, size_t count) {
   uint64_t bound = EndRecordsBound;
-  for (size_t i = 0; i < 20000 && bound != NotClassic; ++i)
-    bound = next_classic_bound(bound, i, 2750, 30, no_comment);
+  for (size_t i = 0; i < count && bound != NotClassic; ++i)
+    bound = next_classic_bound(bound, i, 2750, 30, fresh);
   return bound;
 }
-static_assert(small_file_budget(true) != NotClassic);
-static_assert(small_file_budget(false) == NotClassic);
+static_assert(small_file_budget(true, 20000) != NotClassic);
+static_assert(small_file_budget(true, 40000) != NotClassic);
+static_assert(small_file_budget(false, 20000) == NotClassic);
+// Large total input still falls back before 32-bit offsets could overflow.
+static_assert(next_classic_bound(EndRecordsBound, 1, 600ull * 1024 * 1024, 30, true) == NotClassic);
 static_assert(next_classic_bound(UINT32_MAX - 100, 1, 0, 1, true) == NotClassic);
 static_assert(next_classic_bound(EndRecordsBound, 65533, 0, 1) != NotClassic);
 static_assert(next_classic_bound(EndRecordsBound, 65534, 0, 1) == NotClassic);
