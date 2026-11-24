@@ -11,12 +11,12 @@ index 8ea5a42..d7493f0 100644
 -              options.Password);
 +          UString_Wipe original;
 +          original.UString::operator=(static_cast<LPCOLESTR>(password));
-+          AString_Wipe oem;
++          AString_Wipe ansi;
 +          UString_Wipe roundTrip;
-+          ::UnicodeStringToMultiByte2(oem, original, CP_OEMCP);
-+          ::MultiByteToUnicodeString2(roundTrip, oem, CP_OEMCP);
++          ::UnicodeStringToMultiByte2(ansi, original, CP_ACP);
++          ::MultiByteToUnicodeString2(roundTrip, ansi, CP_ACP);
 +          if (roundTrip == original)
-+            options.Password = oem;
++            options.Password = ansi;
 +          else
 +            ::ConvertUnicodeToUTF8(original, options.Password);
          }

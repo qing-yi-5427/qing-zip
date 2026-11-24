@@ -1,7 +1,7 @@
 qing-zip extended archive backend
 
 NanaZip 7.0.1882.0 x64; NanaZip.Core.dll includes the ZIP AES password
-compatibility change in ../../obz-rs/native/nana/zip-aes-oem.patch. Other
+compatibility change in ../../obz-rs/native/nana/zip-aes-acp.patch. Other
 runtime files are upstream binaries. No NanaZip GUI or artwork is used.
 Licenses: ../../licenses/nanazip-7.0.1882.0/License.md
 Source, patch and build instructions: qing-zip engine-sources release asset,

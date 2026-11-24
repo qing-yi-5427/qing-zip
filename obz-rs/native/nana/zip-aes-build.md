@@ -3,9 +3,12 @@
 Based on official NanaZip tag 7.0.1882.0, commit
 `555a3ff0f0e6c754dbf93c528253afeb0444e9e1`; original source and license:
 https://github.com/M2Team/NanaZip/tree/7.0.1882.0 . Apply
-`zip-aes-oem.patch` at the source root. ZIP AES writes the Windows OEM bytes
+`zip-aes-acp.patch` at the source root. ZIP AES writes the Windows ANSI codepage bytes
 only when they decode back to the original password; otherwise it retains
-upstream UTF-8. Reader code remains unchanged. This is an x64-only change.
+upstream UTF-8. Reader code remains unchanged: NanaZip tries UTF-8 then the
+system ANSI codepage; 7-Zip uses the system ANSI codepage. Different systems
+with different ANSI codepages may still disagree on non-ASCII passwords.
+This is an x64-only change.
 
 Build used Visual Studio 2022 Build Tools 17.14.41, MSVC 14.44.35207,
 Release x64, with MSBuild SDK Mile.Project.Configurations 1.1.2116 and NuGet

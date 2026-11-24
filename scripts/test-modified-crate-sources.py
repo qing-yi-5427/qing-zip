@@ -25,7 +25,7 @@ class SourcePackageTests(unittest.TestCase):
                 path.write_bytes(("synthetic " + name).encode())
             patches = root / "obz-rs/native/nana"
             patches.mkdir(parents=True)
-            for name in ("zip-aes-oem.patch", "zip-aes-build.md"):
+            for name in ("zip-aes-acp.patch", "zip-aes-build.md"):
                 (patches / name).write_text("fixture " + name)
             subprocess.run(["git", "-C", str(root), "add", "obz-rs"], check=True)
             (root / "obz-gui").mkdir()
@@ -46,7 +46,7 @@ class SourcePackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as zipped:
                 for name, data in source_members(root).items():
                     self.assertEqual(zipped.read(name), data)
-                for name in ("zip-aes-oem.patch", "zip-aes-build.md"):
+                for name in ("zip-aes-acp.patch", "zip-aes-build.md"):
                     self.assertEqual(zipped.read("nanazip-modified/" + name), (patches / name).read_bytes())
             before = archive.read_bytes()
             (vendor / "target").mkdir()

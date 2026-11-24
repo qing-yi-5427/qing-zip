@@ -1,5 +1,5 @@
 """Windows x64 integration: python zip_aes_interop.py NEW_OBZ 7Z [OLD_OBZ] [WINRAR].
-A non-ASCII password is chosen for the current OEM codepage. Passwords are
+A non-ASCII password is chosen for the current Windows ANSI codepage. Passwords are
 public test fixtures; temporary files are removed automatically.
 """
 import ctypes
@@ -36,23 +36,21 @@ with tempfile.TemporaryDirectory(prefix="qz-aes-interop-") as tmp:
     source.write_bytes("互操作 fixture".encode())
     expected = hashlib.sha256(source.read_bytes()).digest()
     cases = [("ascii", "fixture123"), ("fallback", "密码🙂")]
-    codepage = ctypes.windll.kernel32.GetOEMCP()
-    if codepage == 65001:
-        print("SKIP non-ASCII encoding difference: OEM is UTF-8")
+    codepage = ctypes.windll.kernel32.GetACP()
+    candidates = ["中文密码", "café", "日本語", "한국어", "пароль", "κωδικός", "şifre", "סיסמה", "كلمة", "รหัส"]
+    for candidate in candidates:
+        try:
+            encoded = candidate.encode(f"cp{codepage}", errors="strict")
+            if encoded.decode(f"cp{codepage}", errors="strict") == candidate and (codepage == 65001 or encoded != candidate.encode("utf-8")):
+                cases.append(("ansi", candidate))
+                print(f"Testing non-ASCII password with ANSI codepage {codepage}")
+                break
+        except (LookupError, UnicodeError):
+            continue
     else:
-        candidates = ["中文密码", "café", "日本語", "한국어", "пароль", "κωδικός", "şifre", "סיסמה", "كلمة", "รหัส"]
-        for candidate in candidates:
-            try:
-                encoded = candidate.encode(f"cp{codepage}", errors="strict")
-                if encoded.decode(f"cp{codepage}", errors="strict") == candidate and encoded != candidate.encode("utf-8"):
-                    cases.append(("oem", candidate))
-                    print(f"Testing non-ASCII password with OEM codepage {codepage}")
-                    break
-            except (LookupError, UnicodeError):
-                continue
-        else:
-            raise RuntimeError(f"No representable non-ASCII fixture for OEM codepage {codepage}")
+        raise RuntimeError(f"No representable non-ASCII fixture for ANSI codepage {codepage}")
     for name, password in cases:
+        print(f"Running case {name} (ANSI codepage {codepage})", flush=True)
         archive = root / (name + ".zip")
         create(new, archive, source, password)
         dest = root / (name + "-new")
@@ -62,11 +60,11 @@ with tempfile.TemporaryDirectory(prefix="qz-aes-interop-") as tmp:
             dest = root / (name + "-7z")
             run([seven, "x", str(archive), "-y", "-o" + str(dest), "-p" + password])
             check_output(dest / source.name, expected)
-            if winrar and (name == "ascii" or (name == "oem" and codepage == 936)):
+            if winrar and (name == "ascii" or (name == "ansi" and codepage == 936)):
                 dest = root / (name + "-rar")
                 run([winrar, "x", "-ibck", "-y", "-p" + password, str(archive), str(dest) + os.sep])
                 check_output(dest / source.name, expected)
-        if name == "oem":
+        if name == "ansi":
             archives = [("new", archive)]
             if old:
                 legacy = root / "legacy.zip"
