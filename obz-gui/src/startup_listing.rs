@@ -38,9 +38,8 @@ struct Revision {
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 static CLAIMED: Condvar = Condvar::new();
 const MAX_AGE: Duration = Duration::from_secs(10);
-// A single fixed-drive ZIP64 directory can be read while WebView starts.
-// Bound both the pinned archive size and the speculative result's entry count.
-const MAX_ZIP_BYTES: u64 = 32 * 1024 * 1024;
+// Bound speculative ZIP metadata by directory bytes and entry count.
+const MAX_ZIP_DIRECTORY_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_7Z_BYTES: u64 = 1024 * 1024;
 const MAX_ZIP_ENTRIES: usize = 128_000;
 
@@ -112,16 +111,15 @@ pub(crate) fn prepare(path: String) {
     let Some(expected) = revision(&file) else {
         return;
     };
-    if expected.size > if zip { MAX_ZIP_BYTES } else { MAX_7Z_BYTES } {
-        return;
-    }
     let standalone = if zip {
-        crate::jobs::pinned_zip_entries(&file)
+        crate::jobs::pinned_zip_directory(&file)
             .ok()
             .flatten()
-            .is_some_and(|count| count <= MAX_ZIP_ENTRIES)
+            .is_some_and(|directory| {
+                directory.bytes <= MAX_ZIP_DIRECTORY_BYTES && directory.entries <= MAX_ZIP_ENTRIES
+            })
     } else {
-        standalone_7z_source(&file).unwrap_or(false)
+        expected.size <= MAX_7Z_BYTES && standalone_7z_source(&file).unwrap_or(false)
     };
     if !standalone {
         return;
@@ -245,6 +243,38 @@ mod tests {
         CLAIMED.notify_all();
         assert_eq!(claim(&path), None);
         assert!(crate::jobs::operation_status(unclaimed).is_err());
+    }
+
+    #[test]
+    fn cold_zip_listing_accepts_large_payload_with_small_directory() {
+        let _registry = crate::jobs::test_registry_guard();
+        let scratch = tempfile::tempdir().unwrap();
+        let payload = scratch.path().join("ordinary.bin");
+        let payload_bytes = 33 * 1024 * 1024;
+        File::create(&payload)
+            .unwrap()
+            .set_len(payload_bytes)
+            .unwrap();
+        let archive = scratch.path().join("ordinary.zip");
+        let options = obz_core::engine::EngineOptions {
+            method: Some("store".into()),
+            ..Default::default()
+        };
+        obz_core::engine::create(
+            archive.to_str().unwrap(),
+            &[payload.to_str().unwrap().to_owned()],
+            "zip",
+            &options,
+        )
+        .unwrap();
+        assert!(archive.metadata().unwrap().len() > payload_bytes);
+        let path =
+            crate::instance::canonical_archive_path(archive.to_str().unwrap().to_owned()).unwrap();
+
+        prepare(path.clone());
+        let id = claim(&path).expect("a small directory should prefetch despite a large ZIP payload");
+        wait_for_listing(id);
+        crate::jobs::forget_operation(id).unwrap();
     }
 
     fn wait_for_listing(id: u64) {
