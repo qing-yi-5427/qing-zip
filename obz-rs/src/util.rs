@@ -164,3 +164,34 @@ pub(crate) fn decode_codepage(bytes: &[u8], cp: u32) -> Result<String, String> {
             .map_err(|_| "only UTF8 encoded strings are supported on this platform".into())
     }
 }
+
+/// Encode text with a Windows code page (0 = ANSI, 1 = OEM) without best-fit
+/// substitution. None when a character cannot be represented exactly.
+pub(crate) fn encode_codepage(text: &str, cp: u32) -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn WideCharToMultiByte(cp: u32, flags: u32, input: *const u16, len: i32, out: *mut u8,
+                capacity: i32, default: *const u8, used_default: *mut i32) -> i32;
+            fn GetACP() -> u32;
+            fn GetOEMCP() -> u32;
+        }
+        let actual = match cp { 0 => unsafe { GetACP() }, 1 => unsafe { GetOEMCP() }, other => other };
+        if actual == 65001 { return None; }
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let len = i32::try_from(units.len()).ok()?;
+        let mut replaced = 0;
+        // WC_NO_BEST_FIT_CHARS: never map a character to a lookalike.
+        let size = unsafe { WideCharToMultiByte(actual, 0x400, units.as_ptr(), len, std::ptr::null_mut(), 0, std::ptr::null(), &mut replaced) };
+        if size <= 0 || replaced != 0 { return None; }
+        let mut out = vec![0u8; size as usize];
+        let written = unsafe { WideCharToMultiByte(actual, 0x400, units.as_ptr(), len, out.as_mut_ptr(), size, std::ptr::null(), &mut replaced) };
+        (written == size && replaced == 0).then_some(out)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (text, cp);
+        None
+    }
+}
