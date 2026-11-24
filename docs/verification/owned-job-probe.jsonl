@@ -1,3 +1,0 @@
-{"round": 1, "owned_child_exit_seconds": 0.0031, "controlled_bytes_at_exit": 7168, "controlled_growth_after_300ms": 0, "independent_growth_after_300ms": 107520, "independent_alive": true}
-{"round": 2, "owned_child_exit_seconds": 0.003, "controlled_bytes_at_exit": 7168, "controlled_growth_after_300ms": 0, "independent_growth_after_300ms": 107520, "independent_alive": true}
-{"round": 3, "owned_child_exit_seconds": 0.0028, "controlled_bytes_at_exit": 7168, "controlled_growth_after_300ms": 0, "independent_growth_after_300ms": 107520, "independent_alive": true}

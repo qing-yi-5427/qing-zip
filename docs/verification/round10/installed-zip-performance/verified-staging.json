@@ -1,9 +1,0 @@
-{
-  "main_commit": "be86c3560cb56e83efaa66b3a18a8d18943754e1",
-  "main_tree": "d88902dd860362a8c8c4acda36a7c61272517cb4",
-  "windows_regression_run": "https://github.com/qing-yi-5427/qing-zip/actions/runs/45277441627",
-  "portable_artifact_id": 14868574888,
-  "github_artifact_sha256": "d7142ab6e8ae085f85d11d433ffcb1412cc3d4595c803f3515870b344831c089",
-  "inner_portable_sha256": "97a2fc4e963ae910609e3a9eb53a7ad8e0abe699b3dc4e512f5fee70d6b7ec66",
-  "verified_payload_files": 739
-}

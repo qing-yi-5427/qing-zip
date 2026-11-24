@@ -1,9 +1,0 @@
-{
-  "runner_arch": "ARM64",
-  "package_sha256": "33e0aef289ee903c7ef8a01d4dbd6747463197821954df1797ee5f181499f91c",
-  "source": "6e29fad4cfaca19975bae7f93343dae5f5fabee3",
-  "run": 45253326818,
-  "artifact_digest": "sha256:06190e8dfff5024710f3c89b76749725211df97f63ddf4de19f646a878c35c17",
-  "artifact_id": 14859710729,
-  "harness": "6d3d2e5659e362f074558ad89154bc266a287a33"
-}

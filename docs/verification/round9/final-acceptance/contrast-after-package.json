@@ -1,9 +1,0 @@
-{
-  "artifact_digest": "sha256:ab88a81bcbe26ce6768c7fad68bcce8f4960a7db053515cd6f4a75fb069a3180",
-  "harness": "509ae794ad3fe4eb9cf2600ceecbd2c7eafda980",
-  "package_sha256": "491e199254ef729fb6afe4e31dbfdcf2489baa8998bef4fd2dfbd1ded6c4c9ca",
-  "artifact_id": 14860499695,
-  "source": "509ae794ad3fe4eb9cf2600ceecbd2c7eafda980",
-  "run": 45261746814,
-  "runner_arch": "ARM64"
-}
