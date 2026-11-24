@@ -1301,10 +1301,10 @@ pub fn list_with_control(
 pub(crate) use selection::Selection;
 mod selection;
 
-// Attribute queries avoid opening and closing a handle for every ancestor. Keep
-// ambiguous namespaces and DOS normalization cases on std's metadata path.
+// Classify paths whose individual directories can be safely pinned without
+// changing their spelling. Ambiguous namespaces stay on std's fallback path.
 #[cfg(windows)]
-pub(crate) fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
+fn unambiguous_disk_path(path: &Path) -> Option<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Component, Prefix};
     let verbatim = match path.components().next()? {
@@ -1315,8 +1315,8 @@ pub(crate) fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
         },
         _ => return None,
     };
-    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    if wide.contains(&0) || (!verbatim && wide.len() + 1 >= 248) {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
         return None;
     }
     // Do not invent a verbatim prefix or normalize the caller's spelling.
@@ -1343,6 +1343,19 @@ pub(crate) fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
         {
             return None;
         }
+    }
+    Some(wide)
+}
+
+// Raw Win32 attribute queries have a shorter limit for non-verbatim paths.
+// Directory pinning uses std's long-path support and has no such restriction.
+#[cfg(windows)]
+pub(crate) fn attribute_query_path(path: &Path) -> Option<Vec<u16>> {
+    use std::path::{Component, Prefix};
+    let mut wide = unambiguous_disk_path(path)?;
+    let verbatim = matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimDisk(_)));
+    if !verbatim && wide.len() + 1 >= 248 {
+        return None;
     }
     wide.push(0);
     Some(wide)
@@ -1664,7 +1677,7 @@ impl CheckedDirectories {
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if attribute_query_path(path).is_some() {
+            if unambiguous_disk_path(path).is_some() {
                 for part in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
                     if let Some((handle, weak)) = self.held.get(part) {
                         if *weak {
@@ -1700,7 +1713,7 @@ impl CheckedDirectories {
         {
             use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
             // Preserve std's handling of uncommon namespaces and ambiguous paths.
-            if attribute_query_path(path).is_some() {
+            if unambiguous_disk_path(path).is_some() {
                 for part in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
                     if let Some((handle, publication_parent)) = self.held.get(part) {
                         if *publication_parent {
@@ -9562,9 +9575,11 @@ mod staging_tests {
             r"C:/plain/file",
         ] {
             assert!(attribute_query_path(Path::new(path)).is_none(), "{path}");
+            assert!(unambiguous_disk_path(Path::new(path)).is_none(), "{path}");
         }
         let long = format!("C:\\{}\\file", "long\\".repeat(60));
         assert!(attribute_query_path(Path::new(&long)).is_none());
+        assert!(unambiguous_disk_path(Path::new(&long)).is_some());
         assert!(attribute_query_path(Path::new(&format!(r"\\?\{long}"))).is_some());
     }
     #[cfg(windows)]

@@ -9,6 +9,7 @@ $suites = @(
         Target = @('--test', 'engine_integration')
         Cases = @(
             'engine_zip_and_7z_encryption_roundtrip'
+            'extract_small_zip_into_existing_long_directory_preserves_files_and_conflicts'
             'engine_compound_tar_one_step_and_metadata'
             'engine_legacy_codepage_override'
             'engine_update_preserves_original_on_failure'
