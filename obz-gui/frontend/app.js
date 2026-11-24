@@ -967,6 +967,15 @@ function taskError(e){
  if(/^ZipCrypto passwords must use ASCII characters; use AES-256 for other passwords$/.test(text)){
   return 'ZipCrypto 只支持英文字母、数字和常用符号组成的密码。请改用 AES-256，或更换密码。';
  }
+ const colliding=/^duplicate or case-colliding archive names: (.+)$/.exec(text);
+ if(colliding)return `压缩包里有两个条目在 Windows 上会保存为同一个文件（名称只差大小写，或含 Windows 不支持的字符）：\n${colliding[1]}\n为避免一个覆盖另一个，没有解压。请在原系统上改名后重新打包。`;
+ if(/^password required for encrypted archive$/.test(text))return '此压缩包已加密，需要密码。请输入密码后重试。';
+ const missingVolume=/^missing archive volume: (.+)$/.exec(text);
+ if(missingVolume)return `分卷不完整，缺少：${missingVolume[1]}\n请把全部分卷放在同一文件夹后重试。`;
+ const lastVolume=/^archive volumes may be incomplete after: (.+)$/.exec(text);
+ if(lastVolume)return `分卷可能不完整：找到的最后一卷是 ${lastVolume[1]}，之后的分卷缺失或没有下载完整。\n请补齐全部分卷后重试。`;
+ const denied=/^commit private output: .*\(os error 5\)$/.exec(text);
+ if(denied)return '无法写入目标文件：拒绝访问。文件可能正被其他程序使用，或没有写入此文件夹的权限。关闭相关程序或换一个保存位置后重试。';
  const blocked=/^destination conflict:\s*output parent is a file:\s*(.+)$/i.exec(text);
  if(blocked)return `解压需要创建文件夹，但这个位置已有同名文件。\n${blocked[1]}\n请选择其他保存位置后重试。`;
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);

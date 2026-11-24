@@ -522,3 +522,61 @@ fn zipcrypto_non_ascii_password_fails_with_an_actionable_error() {
     assert!(!out.exists());
     engine::create(&p(&out), &[p(&source)], "zip", &opts("Pass-123")).unwrap();
 }
+#[test]
+fn folders_differing_only_in_case_extract_into_one_folder() {
+    use std::io::Write;
+    let t = tempfile::tempdir().unwrap();
+    let archive = t.path().join("docs.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for (name, data) in [("Docs/a.txt", b"a"), ("docs/b.txt", b"b")] {
+        writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(data).unwrap();
+    }
+    writer.finish().unwrap();
+    let out = t.path().join("out");
+    // Previously: "foreign directory appeared in new destination".
+    engine::extract(&p(&archive), &p(&out), &EngineOptions::default()).unwrap();
+    assert_eq!(fs::read(out.join("Docs").join("a.txt")).unwrap(), b"a");
+    assert_eq!(fs::read(out.join("docs").join("b.txt")).unwrap(), b"b");
+}
+#[cfg(windows)]
+#[test]
+fn explicit_overwrite_replaces_read_only_files_and_other_policies_keep_them() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("src");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("b.txt"), b"new").unwrap();
+    let archive = t.path().join("a.zip");
+    engine::create(&p(&archive), &[p(&source)], "zip", &EngineOptions::default()).unwrap();
+    for policy in ["overwrite", "skip", "rename"] {
+        let dest = t.path().join(policy);
+        let target = dest.join("src").join("b.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"mine").unwrap();
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        let opts = EngineOptions { overwrite: policy.into(), ..Default::default() };
+        engine::extract(&p(&archive), &p(&dest), &opts).unwrap();
+        let expected: &[u8] = if policy == "overwrite" { b"new" } else { b"mine" };
+        assert_eq!(fs::read(&target).unwrap(), expected, "{policy}");
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).unwrap();
+    }
+}
+#[test]
+fn encrypted_archive_without_password_reports_that_a_password_is_needed() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("a.txt");
+    fs::write(&source, b"secret").unwrap();
+    for (format, header) in [("zip", None), ("7z", Some(true)), ("7z", Some(false))] {
+        let archive = t.path().join(format!("{format}-{header:?}.{format}"));
+        let opts = EngineOptions { password: Some("right".into()), header_encryption: header, ..Default::default() };
+        engine::create(&p(&archive), &[p(&source)], format, &opts).unwrap();
+        let error = engine::extract(&p(&archive), &p(&t.path().join(format!("out-{format}-{header:?}"))), &EngineOptions::default()).unwrap_err();
+        assert!(error.contains("password"), "{format} {header:?}: {error}");
+        assert!(!error.contains("Break signaled"), "{format} {header:?}: {error}");
+    }
+}
