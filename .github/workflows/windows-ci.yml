@@ -60,6 +60,19 @@ jobs:
           $files = @(git ls-files --cached --ignored --exclude-from=.gitignore)
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           if ($files.Count) { throw "Keep generated files outside Git. Tracked paths: $($files -join ', ')" }
+      - name: Reject QA evidence and large new files in this change
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python scripts/test-tracked-artifacts.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not $env:BASE_SHA -or $env:BASE_SHA -match '^0+$') { Write-Host 'No base commit; skipped'; exit 0 }
+          git fetch --no-tags --depth=1 origin $env:BASE_SHA
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # Shallow history has no merge base; compare the two trees directly.
+          python scripts/check-tracked-artifacts.py $env:BASE_SHA HEAD --direct
+          exit $LASTEXITCODE
       - name: Runtime provenance and frontend regressions
         shell: pwsh
         run: |

@@ -76,7 +76,8 @@ fn invalid_multivolume_oversized_cancel_leave_source_unchanged() {
     let t = tempfile::tempdir().unwrap();
     let (path, opts) = make(&t, false);
     let before = fs::read(&path).unwrap();
-    assert!(archive_comment::set(&path, &"界".repeat(21846), &opts).is_err());
+    let utf8 = EngineOptions { codepage: Some(65001), ..opts.clone() };
+    assert!(archive_comment::set(&path, &"界".repeat(21846), &utf8).is_err());
     assert_eq!(fs::read(&path).unwrap(), before);
     let ctl = JobControl::new();
     ctl.cancel();
@@ -179,4 +180,38 @@ fn legacy_zip_comment_defaults_to_ansi_before_oem() {
         );
         assert_eq!(read(None), ansi);
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn saved_comments_stay_readable_by_legacy_code_page_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vendor.zip");
+    let raw_comment = |path: &Path| zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap().comment().to_vec();
+    let gbk = EngineOptions { codepage: Some(936), ..Default::default() };
+    // Saving an unchanged GBK comment must not rewrite it as UTF-8 for 7-Zip/WinRAR.
+    zip_with_legacy_comment(&path, b"\xb7\xa2\xc6\xb1"); // 发票
+    archive_comment::set(&p(&path), "发票", &gbk).unwrap();
+    assert_eq!(raw_comment(&path), b"\xb7\xa2\xc6\xb1");
+    let max_gbk = "发".repeat(32767) + "!";
+    let max_bytes = [b"\xb7\xa2".repeat(32767), b"!".to_vec()].concat();
+    archive_comment::set(&p(&path), &max_gbk, &gbk).unwrap();
+    assert_eq!(raw_comment(&path), max_bytes);
+    archive_comment::set(&p(&path), &max_gbk, &gbk).unwrap();
+    assert_eq!(raw_comment(&path), max_bytes);
+    assert!(archive_comment::set(&p(&path), &(max_gbk + "!"), &gbk).is_err());
+    assert_eq!(raw_comment(&path), max_bytes);
+    // New text representable in the code page is stored in it and reads back.
+    archive_comment::set(&p(&path), "供应商说明", &gbk).unwrap();
+    assert_eq!(raw_comment(&path), b"\xb9\xa9\xd3\xa6\xc9\xcc\xcb\xb5\xc3\xf7"); // GBK 供应商说明
+    assert_eq!(obz_core::operations::execute(obz_core::operations::Request {
+        operation: "comment-get".into(), path: p(&path), options: gbk.clone(), ..Default::default()
+    }).unwrap()["comment"], "供应商说明");
+    // Text outside the code page stays UTF-8.
+    archive_comment::set(&p(&path), "说明 🙂", &gbk).unwrap();
+    assert_eq!(raw_comment(&path), "说明 🙂".as_bytes());
+    // ASCII is unchanged; the members stay intact.
+    archive_comment::set(&p(&path), "plain", &gbk).unwrap();
+    assert_eq!(raw_comment(&path), b"plain");
+    engine::test(&p(&path), &EngineOptions::default()).unwrap();
 }

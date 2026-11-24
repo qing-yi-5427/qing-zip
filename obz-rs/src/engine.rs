@@ -4650,23 +4650,34 @@ fn normalize_staged_entry(
     guards.check(&path)?;
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        #[link(name = "Kernel32")]
-        extern "system" {
-            fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
-        }
-        let wide = path
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
         let attrs = if entry.is_dir { 0x10 } else { 0x20 }
             | if entry.attributes.contains('R') { 1 } else { 0 };
-        if unsafe { SetFileAttributesW(wide.as_ptr(), attrs) } == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+        set_path_attributes(path, attrs)?;
     }
     restore_metadata(&path, entry).map_err(|e| format!("staged metadata: {e}"))?;
+    Ok(())
+}
+/// SetFileAttributesW on a plain path fails beyond MAX_PATH. Open through std,
+/// which adds the long-path prefix itself, and set the attributes on the handle.
+/// The leaf itself is opened, never a reparse target.
+#[cfg(windows)]
+fn set_path_attributes(path: &Path, attributes: u32) -> Result<(), String> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    #[repr(C)]
+    struct FileBasicInfo { creation: i64, access: i64, write: i64, change: i64, attributes: u32 }
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn SetFileInformationByHandle(handle: *mut std::ffi::c_void, class: i32,
+            info: *const std::ffi::c_void, size: u32) -> i32;
+    }
+    let file = fs::OpenOptions::new().access_mode(0x100).share_mode(7)
+        .custom_flags(0x02200000).open(path).map_err(|e| e.to_string())?;
+    // Zero times leave them unchanged.
+    let info = FileBasicInfo { creation: 0, access: 0, write: 0, change: 0, attributes };
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0,
+        (&info as *const FileBasicInfo).cast(), std::mem::size_of::<FileBasicInfo>() as u32) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
     Ok(())
 }
 #[cfg(test)]
@@ -5449,6 +5460,14 @@ fn compression(args: &mut Vec<String>, format: &str, opts: &EngineOptions) -> Re
         ("zip" | "7z" | "sfx", Some("aes256")) => "AES256",
         _ => return Err(format!("encryption method is unsupported for {format}")),
     };
+    // Match the pinned ZIP writer's IsSimpleAsciiString check.
+    if selected_encryption == "ZipCrypto"
+        && opts.password.as_deref().is_some_and(|password| {
+            !password.bytes().all(|byte| (0x20..=0x7f).contains(&byte))
+        })
+    {
+        return Err("ZipCrypto passwords must use ASCII characters from 0x20 to 0x7F. Use AES-256 for other passwords.".into());
+    }
     if (opts.solid.is_some() || opts.header_encryption.is_some()) && !matches!(format, "7z" | "sfx")
     {
         return Err("solid and header encryption settings require 7z or SFX".into());
@@ -6817,6 +6836,37 @@ fn publish_new_copy(staged:&Path,target:&Path,ctl:&JobControl,preserve_time:bool
 
 #[cfg(test)]
 mod staging_tests {
+    #[cfg(windows)]
+    #[test]
+    fn staged_entry_attributes_are_restored_beyond_max_path() {
+        use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
+        let root = tempfile::tempdir().unwrap();
+        let mut dir = root.path().join("客户资料");
+        while dir.as_os_str().encode_wide().count() < 300 { dir.push("客户目录2026"); }
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("invoice.txt");
+        fs::write(&file, b"x").unwrap();
+        let entry = |name: &str, is_dir: bool, attributes: &str| Entry { name: name.into(), is_dir,
+            attributes: attributes.into(), modified: "2020-01-02 03:04:05".into(), size: 1, size_known: true,
+            packed_size: 1, crc: String::new(), encrypted: false, created: String::new(),
+            accessed: String::new(), method: String::new(), comment: String::new() };
+        let ctl = JobControl::new();
+        let mut guards = CheckedDirectories::default();
+        let meta = fs::symlink_metadata(&file).unwrap();
+        // Plain SetFileAttributesW failed here with "path not found" (os error 3).
+        normalize_staged_entry(&file, &entry("invoice.txt", false, "R"), &meta, &ctl, &mut guards, true).unwrap();
+        let after = fs::symlink_metadata(&file).unwrap();
+        assert_eq!(after.file_attributes() & 0x21, 0x21);
+        assert!(after.permissions().readonly());
+        assert_eq!(fs::read(&file).unwrap(), b"x");
+        let meta = fs::symlink_metadata(&dir).unwrap();
+        normalize_staged_entry(&dir, &entry("d/", true, ""), &meta, &ctl, &mut guards, true).unwrap();
+        assert!(fs::symlink_metadata(&dir).unwrap().is_dir());
+        let mut permissions = after.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&file, permissions).unwrap();
+    }
     #[test]
     fn stage_verification_replaces_decoder_percent_and_counts_only_checked_paths() {
         let stage = tempfile::tempdir().unwrap();

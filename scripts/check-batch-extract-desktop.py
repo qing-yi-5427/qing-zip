@@ -228,12 +228,16 @@ def run_case(page, root, evidence, result, cancel, candidate, show_paths, expect
                 assert "100%" in row["text"] and "总进度（步骤）" not in row["text"], row
 
 
+# cancel_and_close may spend 30 seconds stopping jobs safely before it exits.
+EXIT_SECONDS = 40
+
+
 @contextmanager
 def launch_local(exe, root, helpers):
     with helpers["private_process"](exe, root, None) as (page, process, _):
         def wait_for_exit():
             events = helpers["win32event"]
-            if events.WaitForSingleObject(process, 10000) != events.WAIT_OBJECT_0:
+            if events.WaitForSingleObject(process, EXIT_SECONDS * 1000) != events.WAIT_OBJECT_0:
                 raise RuntimeError("The private GUI did not close")
             return helpers["win32process"].GetExitCodeProcess(process)
 
@@ -268,7 +272,7 @@ def launch_hosted(exe, root, session_receipt, helpers):
             finally:
                 api.CloseHandle(handle)
             page.set_default_timeout(12000)
-            yield page, lambda: process.wait(timeout=10)
+            yield page, lambda: process.wait(timeout=EXIT_SECONDS)
 
 
 def main():

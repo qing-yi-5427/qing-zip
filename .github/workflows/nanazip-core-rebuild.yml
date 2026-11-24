@@ -1,0 +1,77 @@
+name: NanaZip Core rebuild
+
+# The shipped x64 NanaZip.Core.dll is a locally built binary. Rebuild it from the
+# pinned upstream source and the checked-in patch whenever any of them changes,
+# then run the same interoperability test on the result. MSVC output is not
+# byte-reproducible, so this checks behavior, not identity.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - runtime/nanazip/**
+      - obz-rs/native/nana/zip-aes-*
+      - obz-rs/tests/zip_aes_interop.py
+      - .github/workflows/nanazip-core-rebuild.yml
+permissions:
+  contents: read
+jobs:
+  rebuild-x64:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Fetch and patch the pinned source
+        shell: pwsh
+        run: |
+          $record = Get-Content runtime/nanazip/provenance.json -Raw | ConvertFrom-Json
+          $archive = Join-Path $env:RUNNER_TEMP 'nanazip.zip'
+          Invoke-WebRequest $record.source_archive_url -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $record.source_archive_sha256) { throw "Unexpected source archive $actual" }
+          $source = 'C:\nz'
+          Expand-Archive -LiteralPath $archive -DestinationPath $source
+          $tree = @(Get-ChildItem -LiteralPath $source -Directory)
+          if ($tree.Count -ne 1) { throw 'Expected one source tree' }
+          $patch = Join-Path $env:GITHUB_WORKSPACE $record.modified_files.'NanaZip.Core.dll'.patch
+          Push-Location $tree[0].FullName
+          # Standalone tree: git apply must not resolve paths against this checkout.
+          git init --quiet
+          git apply --ignore-whitespace $patch
+          if ($LASTEXITCODE) { throw 'Patch does not apply' }
+          Pop-Location
+          "NANAZIP_SOURCE=$($tree[0].FullName)" >> $env:GITHUB_ENV
+      - name: Build NanaZip.Core
+        shell: pwsh
+        env:
+          # The pinned upstream Brotli uses intentional constant conditions.
+          # Append the compiler option after the project's warning settings.
+          _CL_: /wd4127
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          & $msbuild "$env:NANAZIP_SOURCE\NanaZip.Core\NanaZip.Core.vcxproj" -restore -p:RestoreSources=https://api.nuget.org/v3/index.json -p:Configuration=Release -p:Platform=x64 -m -v:m -nologo
+          if ($LASTEXITCODE) { throw 'NanaZip.Core build failed' }
+      - name: Test the shipped and rebuilt DLL
+        shell: pwsh
+        run: |
+          foreach ($kind in 'shipped', 'rebuilt') {
+            if ($kind -eq 'rebuilt') {
+              # The CLI embeds the expected DLL hash, so record the rebuilt one
+              # in this disposable checkout before compiling it again.
+              Copy-Item -Force "$env:NANAZIP_SOURCE\Output\Binaries\Release\x64\NanaZip.Core.dll" runtime/nanazip/NanaZip.Core.dll
+              $record = Get-Content runtime/nanazip/provenance.json -Raw | ConvertFrom-Json
+              $record.files.'NanaZip.Core.dll' = (Get-FileHash -LiteralPath runtime/nanazip/NanaZip.Core.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+              $record | ConvertTo-Json -Depth 8 | Set-Content runtime/nanazip/provenance.json -Encoding utf8NoBOM
+            }
+            cargo build --locked --release --manifest-path obz-rs/Cargo.toml --target-dir target/core-rebuild --bins
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $root = Join-Path $env:RUNNER_TEMP $kind
+            New-Item -ItemType Directory $root | Out-Null
+            Copy-Item target/core-rebuild/release/obz.exe, target/core-rebuild/release/obz-worker.exe $root
+            Copy-Item -Recurse runtime (Join-Path $root 'runtime')
+            python obz-rs/tests/zip_aes_interop.py (Join-Path $root 'obz.exe') (Join-Path $root 'runtime/7zip/7z.exe')
+            if ($LASTEXITCODE) { throw "Interoperability failed with the $kind DLL" }
+          }

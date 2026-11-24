@@ -159,19 +159,36 @@ pub(crate) fn get_with_codepage(path: &str, codepage: Option<u32>) -> Result<Str
     let _policy = crate::machine_policy::native("ZIP comment editor")?;
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let bytes = inspect(&mut file, None)?.comment;
-    // EOCD has no encoding flag. Our writer stores UTF-8; legacy ZIP readers
-    // such as 7-Zip use the Windows ANSI code page (CP_ACP) for comments.
-    if let Ok(comment) = std::str::from_utf8(&bytes) {
+    decode_comment(&bytes, codepage)
+}
+// EOCD has no encoding flag. Legacy ZIP readers such as 7-Zip and WinRAR use
+// the Windows ANSI code page (CP_ACP) for comments; UTF-8 is tried first here.
+fn decode_comment(bytes: &[u8], codepage: Option<u32>) -> Result<String, String> {
+    if let Ok(comment) = std::str::from_utf8(bytes) {
         return Ok(comment.to_owned());
     }
-    crate::util::decode_codepage(&bytes, codepage.unwrap_or(0))
+    crate::util::decode_codepage(bytes, codepage.unwrap_or(0))
         .map_err(|e| format!("Could not decode ZIP comment: {e}"))
+}
+/// Bytes to store for `text`. An unchanged comment keeps its original bytes.
+/// Other text uses the legacy code page when it represents the text exactly
+/// and cannot be mistaken for UTF-8 on reading; anything else stays UTF-8.
+fn encode_comment(existing: &[u8], text: &str, codepage: Option<u32>) -> Vec<u8> {
+    if text.is_ascii() {
+        return text.as_bytes().to_vec();
+    }
+    if decode_comment(existing, codepage).is_ok_and(|current| current == text) {
+        return existing.to_vec();
+    }
+    let codepage = codepage.unwrap_or(0);
+    match crate::util::encode_codepage(text, codepage) {
+        Some(legacy) if std::str::from_utf8(&legacy).is_err()
+            && crate::util::decode_codepage(&legacy, codepage).is_ok_and(|back| back == text) => legacy,
+        _ => text.as_bytes().to_vec(),
+    }
 }
 pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::native("ZIP comment editor")?;
-    if text.len() > 65535 {
-        return Err("ZIP comment exceeds 65535 UTF-8 bytes".into());
-    }
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
     let path = Path::new(path);
@@ -184,6 +201,10 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let mut source = File::open(&path).map_err(|e| e.to_string())?;
     let before = source.metadata().map_err(|e| e.to_string())?;
     let directory = inspect(&mut source, Some(&ctl))?;
+    let encoded = encode_comment(&directory.comment, text, opts.codepage);
+    if encoded.len() > usize::from(u16::MAX) {
+        return Err("ZIP comment exceeds 65535 bytes".into());
+    }
     #[cfg(windows)]
     let output = edit.output()?;
     #[cfg(windows)]
@@ -213,9 +234,9 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
             "Updating archive comment",
         );
     }
-    writer.write_all(&(text.len() as u16).to_le_bytes())
+    writer.write_all(&(encoded.len() as u16).to_le_bytes())
         .map_err(|e| e.to_string())?;
-    writer.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    writer.write_all(&encoded).map_err(|e| e.to_string())?;
     writer.sync_all().map_err(|e| e.to_string())?;
     let after = source.metadata().map_err(|e| e.to_string())?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {

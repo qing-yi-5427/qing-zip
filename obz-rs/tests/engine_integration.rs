@@ -509,4 +509,25 @@ fn extract_small_zip_into_existing_long_directory_preserves_files_and_conflicts(
         assert_eq!(fs::read(dest.join("invoice.txt")).unwrap(), b"keep conflicting file");
         assert_eq!(fs::read(&archive).unwrap(), original_archive);
     }
+    let new_destination = long.join("fresh");
+    assert!(!new_destination.exists());
+    engine::extract(&p(&archive), &p(&new_destination), &EngineOptions::default()).unwrap();
+    assert_eq!(fs::read(new_destination.join("invoice.txt")).unwrap(), b"invoice fixture");
+    assert_eq!(fs::read(&archive).unwrap(), original_archive);
+}
+#[test]
+fn zipcrypto_password_validation_matches_the_writer() {
+    let t = tempfile::tempdir().unwrap();
+    let source = t.path().join("a.txt");
+    fs::write(&source, b"fixture").unwrap();
+    let out = t.path().join("out.zip");
+    let opts = |password: &str| EngineOptions { password: Some(password.into()), encryption: Some("ZipCrypto".into()), ..Default::default() };
+    for password in ["中文密码", "Pass\t123"] {
+        let error = engine::create(&p(&out), &[p(&source)], "zip", &opts(password)).unwrap_err();
+        assert!(error.contains("ZipCrypto passwords must use ASCII"), "{error}");
+        assert!(!out.exists());
+    }
+    let accepted = opts("Pass -123\x7f");
+    engine::create(&p(&out), &[p(&source)], "zip", &accepted).unwrap();
+    engine::test(&p(&out), &accepted).unwrap();
 }
