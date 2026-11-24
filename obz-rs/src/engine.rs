@@ -1129,7 +1129,8 @@ fn read_directory(
     if raw_format.is_none() {
         if let Some((entries, volumes)) = selected_worker::rar_listing::try_list(path, source, opts, &ctl)? {
             ctl.set("complete", Some(100), "Archive directory ready");
-            return Ok((entries, PayloadSource::Rar { _volumes: volumes }));
+            let _volumes = volumes.into_iter().map(|(_, pin)| pin).collect();
+            return Ok((entries, PayloadSource::Rar { _volumes }));
         }
     }
     let probe = if raw_format.is_none() && crate::machine_policy::scope().handler_may_be_enabled("ZealFS") && has_zealfs_handler(&executable()?) {
@@ -5832,7 +5833,7 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
                 let (listed, proof) = thread::scope(|scope| {
                     let verify = thread::Builder::new().spawn_scoped(scope,
                         || owned_update::verified_bundled_nana_console(&program)).ok();
-                    let listed = list(path, opts);
+                    let listed = list_as_named(path, opts);
                     (listed, verify.and_then(|worker| worker.join().ok().flatten()))
                 });
                 let entries = listed?;
@@ -5842,11 +5843,11 @@ fn update_impl_with_move(path: &str, action: &str, inputs: &[String], opts: &Eng
                 }
                 entries
             } else {
-                list(path, opts)?
+                list_as_named(path, opts)?
             }
         };
         #[cfg(not(nana_selected_worker))]
-        let existing = list(path, opts)?;
+        let existing = list_as_named(path, opts)?;
         validate_update_names(existing.into_iter().map(|entry| entry.name).collect(), inputs, action == "rename")?;
     }
     let path = locked_path;
@@ -6163,7 +6164,7 @@ pub fn with_preview_batch<T>(
     if !["zip", "rar", "7z"].iter().any(|ext| extension.eq_ignore_ascii_case(ext)) {
         return Ok(None);
     }
-    with_zip_source(path, opts, |source_path| {
+    with_archive_read_source(path, opts, false, |source_path, opts| {
         let path = absolute(source_path)?;
         let mut source = crate::engine_stream::pin(&path)?;
         // Only direct ZIP/RAR/7z use this route. A misleading suffix still goes
@@ -6351,8 +6352,39 @@ pub fn pin_archive_for_listing(path: &Path) -> Result<impl std::ops::Deref<Targe
     crate::engine_stream::pin(path)
 }
 
+fn with_archive_read_source<T>(
+    path: &str,
+    opts: &EngineOptions,
+    inherit_zone: bool,
+    action: impl FnOnce(&str, &EngineOptions) -> Result<T, String>,
+) -> Result<T, String> {
+    #[cfg(nana_selected_worker)]
+    if let Some(volume) = selected_worker::rar_listing::resolve_later_volume(path, opts)? {
+        let first = volume.first.to_str().ok_or("invalid RAR source path")?;
+        if inherit_zone {
+            let mut options = opts.clone();
+            let zone = options.zone_identifier.take()
+                .unwrap_or_else(crate::motw::ZoneIdentifier::unmarked);
+            options.zone_identifier = Some(volume.zone(zone)?);
+            return action(first, &options);
+        }
+        return action(first, opts);
+    }
+    #[cfg(not(nana_selected_worker))]
+    let _ = inherit_zone;
+    with_zip_source(path, opts, |path| action(path, opts))
+}
+
 pub fn list(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let _policy = crate::machine_policy::scope();
+    #[cfg(nana_selected_worker)]
+    if let Some(volume) = selected_worker::rar_listing::resolve_later_volume(path, opts)? {
+        return Ok(volume.entries);
+    }
+    list_as_named(path, opts)
+}
+
+fn list_as_named(path: &str, opts: &EngineOptions) -> Result<Vec<Entry>, String> {
     let read = || with_zip_source(path, opts, |path| {
         if compound_tar(path) {
             if let Some(result) = compressed_tar::scan(path, opts, compressed_tar::Request::List)? {
@@ -6382,7 +6414,7 @@ pub(crate) fn extract_with_projection(path: &str, dest: &str, opts: &EngineOptio
     } else {
         opts
     };
-    with_zip_source(path, opts, |path| {
+    with_archive_read_source(path, opts, true, |path, opts| {
         if compound_tar(path) {
             let (_temp, inner) = unpack_tar(path, opts)?;
             extract_raw_with_selection(&inner, dest, opts, allow_unencrypted_projection)
@@ -6403,10 +6435,10 @@ pub(crate) fn extract_smart_engine(
     if options.zone_identifier.is_none() {
         options.zone_identifier = Some(crate::motw::archive_context(Path::new(path))?);
     }
-    with_zip_source(path, &options, |source| {
+    with_archive_read_source(path, &options, true, |source, options| {
         let mut layout = None;
-        let files = extract_raw_to(source, &options, allow_unencrypted_projection, None, |entries| {
-            let planned = crate::smart_extract::layout(path, base, entries, &options)?;
+        let files = extract_raw_to(source, options, allow_unencrypted_projection, None, |entries| {
+            let planned = crate::smart_extract::layout(path, base, entries, options)?;
             let directory = absolute(&planned.directory)?;
             layout = Some(planned);
             Ok(directory)
@@ -6417,7 +6449,7 @@ pub(crate) fn extract_smart_engine(
 
 pub fn test(path: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::scope();
-    with_zip_source(path, opts, |path| {
+    with_archive_read_source(path, opts, false, |path, opts| {
         if !compound_tar(path) {
             return test_raw(path, opts);
         }
@@ -6437,7 +6469,7 @@ pub fn preview(path: &str, name: &str, opts: &EngineOptions) -> Result<Vec<u8>, 
 pub fn preview_limited(path: &str, name: &str, opts: &EngineOptions, limit: u64) -> Result<Vec<u8>, String> {
     let policy = crate::machine_policy::scope();
     if limit == 0 || limit > 32 * 1024 * 1024 { return Err("invalid archive preview limit".into()); }
-    let bytes = with_zip_source(path, opts, |path| {
+    let bytes = with_archive_read_source(path, opts, false, |path, opts| {
         if compound_tar(path) {
             let requested = validate_name(name)?;
             if let Some(result) = compressed_tar::scan(path, opts, compressed_tar::Request::Preview(&requested, limit))? {

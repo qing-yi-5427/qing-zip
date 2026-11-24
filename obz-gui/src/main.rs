@@ -174,9 +174,11 @@ async fn cancel_and_close(app: tauri::AppHandle) -> Result<bool,String> {
 
 #[tauri::command]
 fn pick_files() -> Vec<String> {
+    let mut extensions = associations::file_dialog_extensions();
+    extensions.push("r??");
     rfd::FileDialog::new()
         .set_title("打开压缩文件")
-        .add_filter("归档/安装包", &associations::file_dialog_extensions())
+        .add_filter("归档/安装包", &extensions)
         .add_filter("所有文件", &["*"])
         .pick_files()
         .map(|v| v.iter().map(|p| p.to_string_lossy().into_owned()).collect())
