@@ -38,9 +38,11 @@ struct Revision {
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 static CLAIMED: Condvar = Condvar::new();
 const MAX_AGE: Duration = Duration::from_secs(10);
-const MAX_ZIP_BYTES: u64 = 8 * 1024 * 1024;
+// A single fixed-drive ZIP64 directory can be read while WebView starts.
+// Bound both the pinned archive size and the speculative result's entry count.
+const MAX_ZIP_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_7Z_BYTES: u64 = 1024 * 1024;
-const MAX_ZIP_ENTRIES: usize = 2048;
+const MAX_ZIP_ENTRIES: usize = 128_000;
 
 fn fixed_local_path(path: &str) -> bool {
     // A mapped/network/device path must not delay creation of the main window.
