@@ -1,4 +1,4 @@
-"""Publish exact upstream source archives alongside the unmodified runtimes.
+"""Publish corresponding upstream sources and local patches for bundled runtimes.
 
 The reviewed manifests pin the downloads. Sources are a separate release asset,
 so normal installation does not add a source checkout to the application folder.
@@ -67,7 +67,7 @@ output.parent.mkdir(exist_ok=True)
 readme = (
     'Corresponding source for qing-zip bundled archive engines.\n'
     + ('These are the exact upstream source archives. The ARM64 GUI self-extractor was rebuilt from 7-Zip SFXWin source.\n'
-     if args.arm64_runtime else 'These are the exact upstream NanaZip and 7-Zip source archives; their bundled runtime binaries are unmodified.\n')
+     if args.arm64_runtime else 'The NanaZip Core x64 DLL is modified; apply nanazip-modified/zip-aes-acp.patch to the included upstream source and follow nanazip-modified/zip-aes-build.md. The other NanaZip files and 7-Zip runtime are upstream binaries.\n')
     + 'See each archive for its licenses, build instructions, and upstream credits.\n'
     'Modified lzma-rust2 0.23.0 source, original license and upstream provenance are included in lzma-rust2-modified-0.23.0/.\n'
     'The modified ZPAQ helper source and build instructions are in the portable package runtime/zpaq/.\n'
@@ -76,6 +76,9 @@ expected_members = {'README.txt': readme.encode('utf-8')}
 for component, source, manifest in sources:
     expected_members[source.name] = source.read_bytes()
     expected_members[f'{component}-provenance.json'] = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
+if not args.arm64_runtime:
+    for name in ('zip-aes-acp.patch', 'zip-aes-build.md'):
+        expected_members[f'nanazip-modified/{name}'] = (root / 'obz-rs/native/nana' / name).read_bytes()
 # Include the exact locally modified crate, with its original license/credits.
 from modified_crate_sources import source_members
 expected_members.update(source_members(root))

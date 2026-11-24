@@ -8,8 +8,8 @@ Crate source archives and upstream repositories are listed below.
 7-Zip 26.06 notices are in 7zip-26.06/License.txt. Corresponding source:
 https://github.com/ip7z/7zip/releases/download/26.06/7z2606-src.7z
 
-NanaZip 7.0.1882.0 unmodified console and codec runtime notices: nanazip-7.0.1882.0/License.md.
-Corresponding source: https://github.com/M2Team/NanaZip/tree/7.0.1882.0
+NanaZip 7.0.1882.0: the x64 Core DLL is modified for ZIP AES password compatibility; other bundled files are unmodified. Notices: nanazip-7.0.1882.0/License.md. The ARM64 runtime remains unmodified.
+Corresponding source: the qing-zip engine-sources release asset includes the official source, local patch and build instructions; upstream: https://github.com/M2Team/NanaZip/tree/7.0.1882.0
 Original NanaZip code is MIT; bundled 7-Zip, ZS and third-party code retain their own licenses.
 
 CPython embedded 3.14.9 and acefile notices: python-3.14.10/.

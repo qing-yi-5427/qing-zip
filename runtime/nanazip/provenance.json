@@ -8,12 +8,20 @@
   "source_url": "https://github.com/M2Team/NanaZip/tree/7.0.1882.0",
   "files": {
     "NanaZip.Universal.Console.exe": "06070ca08b3d10e760e8e394a1b6c8ad751aff89f759227ec111b878c12db139",
-    "NanaZip.Core.dll": "470e80066760f432bef8893ef416ba79fab6b165fbf3db3c1729bbe2b0feb46a",
+    "NanaZip.Core.dll": "b3b730257da7ddcb2126ec3ff3303ab7c3003c010863fbacf8ac1184c2e5deed",
     "NanaZip.Codecs.dll": "6fb3d89f4002890c939c07e311fc940dead1a5b571f3daf70e7535da790b65c5",
     "NanaZip.ZS.Codecs.dll": "8547b43be561fb283115de6e1183a789050b523255a55fe63f802298e5eff869",
     "K7Base.dll": "6b7903cbadae93f59f6705e73a570da9dee9f76d25879c2e60a5ef1c0b00ea92",
     "K7User.dll": "916d6ddc18738827921b2ed204c958ebbc4483d8586881a9df8b0f9c5df1052d"
   },
   "source_archive_url": "https://api.github.com/repos/M2Team/NanaZip/zipball/7.0.1882.0",
-  "source_archive_sha256": "413c4a3510d7e4c5c0e705d3a5c8a590cf9fcdbc5b6ffb5781275854354da67d"
+  "source_archive_sha256": "413c4a3510d7e4c5c0e705d3a5c8a590cf9fcdbc5b6ffb5781275854354da67d",
+  "modified_files": {
+    "NanaZip.Core.dll": {
+      "source_commit": "555a3ff0f0e6c754dbf93c528253afeb0444e9e1",
+      "patch": "obz-rs/native/nana/zip-aes-acp.patch",
+      "build": "obz-rs/native/nana/zip-aes-build.md",
+      "upstream_sha256": "470e80066760f432bef8893ef416ba79fab6b165fbf3db3c1729bbe2b0feb46a"
+    }
+  }
 }

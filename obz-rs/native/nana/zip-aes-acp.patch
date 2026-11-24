@@ -1,0 +1,24 @@
+diff --git a/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp b/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
+index 8ea5a42..d7493f0 100644
+--- a/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
++++ b/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
+@@ -428,9 +428,16 @@ Z7_COM7F_IMF(CHandler::UpdateItems(ISequentialOutStream *outStream, UInt32 numIt
+       {
+         if (password)
+         {
+-          ::ConvertUnicodeToUTF8(
+-              static_cast<LPCOLESTR>(password),
+-              options.Password);
++          UString_Wipe original;
++          original.UString::operator=(static_cast<LPCOLESTR>(password));
++          AString_Wipe ansi;
++          UString_Wipe roundTrip;
++          ::UnicodeStringToMultiByte2(ansi, original, CP_ACP);
++          ::MultiByteToUnicodeString2(roundTrip, ansi, CP_ACP);
++          if (roundTrip == original)
++            options.Password = ansi;
++          else
++            ::ConvertUnicodeToUTF8(original, options.Password);
+         }
+         if (NCrypto::NWzAes::kPasswordSizeMax < options.Password.Len())
+         {
