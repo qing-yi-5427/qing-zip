@@ -1,8 +1,5 @@
 name: Windows ARM64 native validation
 on:
-  push:
-    branches: [main, codex/nanazip-parity, codex/arm64-engine-validation]
-  pull_request:
   workflow_dispatch:
     inputs:
       hosted_scale_probe:
@@ -45,7 +42,7 @@ permissions:
   contents: read
 jobs:
   native:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.round2_fluent_capture && !inputs.hosted_scale_probe)
+    if: ${{ !inputs.round2_fluent_capture && !inputs.hosted_scale_probe }}
     runs-on: windows-11-arm
     timeout-minutes: 55
     env:
@@ -299,7 +296,7 @@ jobs:
           python scripts/check_classic_shell.py dist/arm64 target/qing-shell-arm/Release/qing-shell-classic-forwarding.exe
           exit $LASTEXITCODE
       - name: Build ARM64 installer without running it
-        if: github.event_name != 'workflow_dispatch' || !inputs.run_deep_tests
+        if: ${{ !inputs.run_deep_tests }}
         shell: pwsh
         run: |
           python scripts/check-arm64-package.py dist/arm64 (Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads') --package-only
@@ -311,7 +308,7 @@ jobs:
           python scripts/check-arm64-package.py dist/arm64 (Join-Path $env:RUNNER_TEMP 'qing-arm64-downloads')
           exit $LASTEXITCODE
       - name: Upgrade the previous official ARM64 release in its registered directory
-        if: github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade
+        if: inputs.run_installer_upgrade
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -329,14 +326,14 @@ jobs:
           python scripts/check-nsis-upgrade-hosted.py @upgradeArgs --use-default-location --out evidence/arm64-default-upgrade
           exit $LASTEXITCODE
       - name: Save ARM64 upgrade and uninstall receipt
-        if: always() && (github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade)
+        if: always() && inputs.run_installer_upgrade
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: arm64-release-upgrade
           path: evidence/arm64-upgrade/receipt.json
           if-no-files-found: warn
       - name: Save ARM64 default installation and upgrade receipt
-        if: always() && (github.event_name != 'workflow_dispatch' || inputs.run_installer_upgrade)
+        if: always() && inputs.run_installer_upgrade
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: arm64-default-release-upgrade

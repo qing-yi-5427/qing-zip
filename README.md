@@ -39,7 +39,7 @@
 
 ## 使用
 
-x64 版面向 Windows 10 2004（19041）及以上版本和 Windows 11。含 `arm64` 的资产是 Windows 11 ARM64 构建，请以对应版本的发布页为准。部分稳定版仅提供 x64。桌面界面需要 Microsoft Edge WebView2 Runtime，可从微软下载缺少的运行时。[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+x64 版面向 Windows 10 2004（19041）及以上版本和 Windows 11。默认构建 x64，Windows 11 ARM64 版本按需构建，请以对应版本的发布页为准。桌面界面需要 Microsoft Edge WebView2 Runtime，可从微软下载缺少的运行时。[WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 
 - **便携版**：完整解压 `qing-zip-版本-portable.zip`，运行 `qing-zip.exe`，保留同目录中的其他程序文件及 `runtime` 目录。
 - **安装版**：运行 `qing-zip-版本-setup.exe`，默认安装到当前用户目录，无需管理员权限。
