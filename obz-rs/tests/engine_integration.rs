@@ -509,6 +509,11 @@ fn extract_small_zip_into_existing_long_directory_preserves_files_and_conflicts(
         assert_eq!(fs::read(dest.join("invoice.txt")).unwrap(), b"keep conflicting file");
         assert_eq!(fs::read(&archive).unwrap(), original_archive);
     }
+    let new_destination = long.join("fresh");
+    assert!(!new_destination.exists());
+    engine::extract(&p(&archive), &p(&new_destination), &EngineOptions::default()).unwrap();
+    assert_eq!(fs::read(new_destination.join("invoice.txt")).unwrap(), b"invoice fixture");
+    assert_eq!(fs::read(&archive).unwrap(), original_archive);
 }
 #[test]
 fn zipcrypto_non_ascii_password_fails_with_an_actionable_error() {
@@ -521,6 +526,7 @@ fn zipcrypto_non_ascii_password_fails_with_an_actionable_error() {
     assert!(error.contains("ZipCrypto passwords must use ASCII"), "{error}");
     assert!(!out.exists());
     engine::create(&p(&out), &[p(&source)], "zip", &opts("Pass-123")).unwrap();
+    engine::test(&p(&out), &opts("Pass-123")).unwrap();
 }
 #[test]
 fn folders_differing_only_in_case_extract_into_one_folder() {

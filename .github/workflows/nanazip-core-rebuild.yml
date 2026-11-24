@@ -45,10 +45,14 @@ jobs:
           "NANAZIP_SOURCE=$($tree[0].FullName)" >> $env:GITHUB_ENV
       - name: Build NanaZip.Core
         shell: pwsh
+        env:
+          # The pinned upstream Brotli uses intentional constant conditions.
+          # Append the compiler option after the project's warning settings.
+          _CL_: /wd4127
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          & $msbuild "$env:NANAZIP_SOURCE\NanaZip.Core\NanaZip.Core.vcxproj" -restore -p:RestoreSources=https://api.nuget.org/v3/index.json -p:Configuration=Release -p:Platform=x64 -p:TreatWarningAsError=false -m -v:m -nologo
+          & $msbuild "$env:NANAZIP_SOURCE\NanaZip.Core\NanaZip.Core.vcxproj" -restore -p:RestoreSources=https://api.nuget.org/v3/index.json -p:Configuration=Release -p:Platform=x64 -m -v:m -nologo
           if ($LASTEXITCODE) { throw 'NanaZip.Core build failed' }
       - name: Test the shipped and rebuilt DLL
         shell: pwsh

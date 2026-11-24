@@ -11,6 +11,9 @@ rejected = [
     ("A", "docs/verification/run.png", 1000),
     ("A", "docs/report/screen.webp", 1000),
     ("M", "docs/notes/receipt.json", 1000),
+    ("A", "docs/examples/nested/oversized.json", big),
+    ("A", "docs/examples-old/receipt.json", 1000),
+    ("A", "docs/examples/run.jsonl", 1000),
     ("A", "docs/x/output.log", 10),
     ("A", "scripts/proof.png", 1000),
     ("R", "evidence-r12/window.jpg", 1000),
@@ -25,6 +28,8 @@ accepted = [
     ("A", "runtime/nanazip/NanaZip.Core.dll", big),
     ("M", "obz-rs/src/engine.rs", 500 * 1024),
     ("A", "docs/deep-extraction.md", 1000),
+    ("A", "docs/examples/settings.json", 1000),
+    ("M", "docs/examples/nested/options.json", gate.LIMIT),
     ("A", "runtime/nanazip/provenance.json", 1000),
     ("D", "docs/verification/old.png", None),
 ]
