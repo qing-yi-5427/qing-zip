@@ -20,6 +20,21 @@ def load_module(name, script):
     return module
 
 
+def verify_task_feedback(samples, captured, action):
+    first = samples[0] if samples else {}
+    values = [int(view["percent"]) for view in samples
+              if view["phase"] == "验证并解码" and view["percent"] is not None]
+    finished = samples[-1] if samples else {}
+    if first.get("percent") is not None or "进度待定" not in first.get("summary", ""):
+        raise RuntimeError("Indeterminate progress was not observed")
+    if not captured or len(set(values)) < 2 or not any(0 < value < 100 for value in values):
+        raise RuntimeError("Not enough observable decode progress or no running screenshot")
+    if sorted(values) != values or min(values) < 0 or max(values) > 100:
+        raise RuntimeError("Invalid or decreasing decode percentage")
+    if finished.get("phase") != "已完成" or finished.get("percent") != "100" or action != "打开输出位置":
+        raise RuntimeError("Completion state or output action differs")
+
+
 def extract_large_member(page, work, out, expected):
     destination = work / "output"
     destination.mkdir()
@@ -48,7 +63,7 @@ def extract_large_member(page, work, out, expected):
             samples.append({**view, "elapsed_s": round(time.monotonic() - started, 3)})
         if "已完成" in view["summary"]:
             break
-        if not captured and view["percent"] is not None and 0 < float(view["percent"]) < 100:
+        if not captured and view["phase"] == "验证并解码" and view["percent"] is not None and 0 < float(view["percent"]) < 100:
             panel.screenshot(path=str(out / "installed-running.png"))
             captured = True
         page.wait_for_timeout(100)
@@ -56,6 +71,8 @@ def extract_large_member(page, work, out, expected):
         raise RuntimeError("No completed task observed in the installed desktop")
     button = panel.locator("#oa-task-output")
     expect(button).to_be_visible()
+    action = button.inner_text()
+    verify_task_feedback(samples, captured, action)
     panel.screenshot(path=str(out / "installed-complete.png"))
     entries = list(destination.rglob("*"))
     if len(entries) != 1 or entries[0].name != "ordinary-member.bin":
@@ -65,7 +82,7 @@ def extract_large_member(page, work, out, expected):
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     if target.stat().st_size != expected["requested_member_bytes"] or digest != expected["extracted_member"]["sha256"]:
         raise RuntimeError("Installed GUI output mismatch")
-    return {"samples": samples, "running_screenshot": captured, "completion_action": button.inner_text(),
+    return {"samples": samples, "running_screenshot": captured, "completion_action": action,
             "output_bytes": target.stat().st_size, "output_sha256": digest}
 
 

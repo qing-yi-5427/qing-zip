@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import statistics
 import subprocess
@@ -109,9 +110,11 @@ def main():
     spec = importlib.util.spec_from_file_location("fixture", args.member_script)
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
-    if sha(cli) != prior["installed_binaries_sha256"]["obz.exe"]:
-        raise RuntimeError("Installed CLI differs from the reference run")
-    results = {"status": "FAIL", "cli_sha256": sha(cli), "source": prior["source"], "platform": prior["platform"],
+    actual_binaries = {name: sha(cli.with_name(name)) for name in ("obz.exe", "obz-worker.exe")}
+    if cli.name.lower() != "obz.exe" or any(value != prior["installed_binaries_sha256"][name] for name, value in actual_binaries.items()):
+        raise RuntimeError("CLI or worker differs from the reference run")
+    results = {"status": "FAIL", "cli_sha256": actual_binaries["obz.exe"], "worker_sha256": actual_binaries["obz-worker.exe"],
+               "source": prior["source"], "platform": platform.platform(),
                "requested_sample_delay_ms": 25, "trials": []}
     try:
         with tempfile.TemporaryDirectory(prefix="zip64-disk-", dir=parent) as folder:

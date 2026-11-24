@@ -17,112 +17,112 @@
         "summary": "等待引擎响应 · 进度待定",
         "metric": "进度待定",
         "percent": null,
-        "elapsed_s": 0.072
+        "elapsed_s": 0.08
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 0%",
         "metric": "本阶段 0%",
         "percent": "0",
-        "elapsed_s": 0.286
+        "elapsed_s": 0.186
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 7%",
         "metric": "本阶段 7%",
         "percent": "7",
-        "elapsed_s": 0.394
+        "elapsed_s": 0.403
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 14%",
         "metric": "本阶段 14%",
         "percent": "14",
-        "elapsed_s": 0.658
+        "elapsed_s": 0.669
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 21%",
         "metric": "本阶段 21%",
         "percent": "21",
-        "elapsed_s": 0.871
+        "elapsed_s": 0.886
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 28%",
         "metric": "本阶段 28%",
         "percent": "28",
-        "elapsed_s": 1.199
+        "elapsed_s": 1.214
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 35%",
         "metric": "本阶段 35%",
         "percent": "35",
-        "elapsed_s": 1.526
+        "elapsed_s": 1.431
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 42%",
         "metric": "本阶段 42%",
         "percent": "42",
-        "elapsed_s": 1.635
+        "elapsed_s": 1.648
       },
       {
         "phase": "验证并解码",
-        "summary": "验证并解码 · 本阶段 50%",
-        "metric": "本阶段 50%",
-        "percent": "50",
-        "elapsed_s": 1.965
+        "summary": "验证并解码 · 本阶段 49%",
+        "metric": "本阶段 49%",
+        "percent": "49",
+        "elapsed_s": 1.973
       },
       {
         "phase": "验证并解码",
-        "summary": "验证并解码 · 本阶段 57%",
-        "metric": "本阶段 57%",
-        "percent": "57",
-        "elapsed_s": 2.071
+        "summary": "验证并解码 · 本阶段 56%",
+        "metric": "本阶段 56%",
+        "percent": "56",
+        "elapsed_s": 2.081
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 64%",
         "metric": "本阶段 64%",
         "percent": "64",
-        "elapsed_s": 2.398
+        "elapsed_s": 2.409
       },
       {
         "phase": "验证并解码",
-        "summary": "验证并解码 · 本阶段 72%",
-        "metric": "本阶段 72%",
-        "percent": "72",
-        "elapsed_s": 2.728
+        "summary": "验证并解码 · 本阶段 71%",
+        "metric": "本阶段 71%",
+        "percent": "71",
+        "elapsed_s": 2.74
       },
       {
         "phase": "验证并解码",
-        "summary": "验证并解码 · 本阶段 79%",
-        "metric": "本阶段 79%",
-        "percent": "79",
-        "elapsed_s": 2.839
+        "summary": "验证并解码 · 本阶段 78%",
+        "metric": "本阶段 78%",
+        "percent": "78",
+        "elapsed_s": 2.849
       },
       {
         "phase": "验证并解码",
-        "summary": "验证并解码 · 本阶段 87%",
-        "metric": "本阶段 87%",
-        "percent": "87",
-        "elapsed_s": 3.162
+        "summary": "验证并解码 · 本阶段 86%",
+        "metric": "本阶段 86%",
+        "percent": "86",
+        "elapsed_s": 3.179
       },
       {
         "phase": "验证并解码",
         "summary": "验证并解码 · 本阶段 93%",
         "metric": "本阶段 93%",
         "percent": "93",
-        "elapsed_s": 3.38
+        "elapsed_s": 3.401
       },
       {
         "phase": "已完成",
         "summary": "已完成 · 100%",
         "metric": "100%",
         "percent": "100",
-        "elapsed_s": 3.597
+        "elapsed_s": 3.512
       }
     ],
     "running_screenshot": true,
