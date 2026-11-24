@@ -1,5 +1,5 @@
 diff --git a/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp b/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
-index 8ea5a42..d7493f0 100644
+index 8ea5a42..87b9c04 100644
 --- a/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
 +++ b/NanaZip.Core/SevenZip/CPP/7zip/Archive/Zip/ZipHandlerOut.cpp
 @@ -428,9 +428,16 @@ Z7_COM7F_IMF(CHandler::UpdateItems(ISequentialOutStream *outStream, UInt32 numIt

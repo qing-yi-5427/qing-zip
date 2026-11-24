@@ -189,9 +189,6 @@ fn encode_comment(existing: &[u8], text: &str, codepage: Option<u32>) -> Vec<u8>
 }
 pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let _policy = crate::machine_policy::native("ZIP comment editor")?;
-    if text.len() > 65535 {
-        return Err("ZIP comment exceeds 65535 UTF-8 bytes".into());
-    }
     let ctl = opts.control.clone().unwrap_or_default();
     ctl.check()?;
     let path = Path::new(path);
@@ -205,7 +202,7 @@ pub fn set(path: &str, text: &str, opts: &EngineOptions) -> Result<(), String> {
     let before = source.metadata().map_err(|e| e.to_string())?;
     let directory = inspect(&mut source, Some(&ctl))?;
     let encoded = encode_comment(&directory.comment, text, opts.codepage);
-    if encoded.len() > 65535 {
+    if encoded.len() > usize::from(u16::MAX) {
         return Err("ZIP comment exceeds 65535 bytes".into());
     }
     #[cfg(windows)]
