@@ -29,7 +29,9 @@ def violations(changes):
             continue
         suffix = PurePosixPath(path).suffix.lower()
         added = status in "ARC"
-        if path.startswith("docs/") and suffix in EVIDENCE:
+        small_doc_example = (path.startswith("docs/examples/") and suffix == ".json"
+                             and size is not None and size <= LIMIT)
+        if path.startswith("docs/") and suffix in EVIDENCE and not small_doc_example:
             found.append(f"{path}: docs/ 不保存截图、回执、日志或压缩包")
         elif added and suffix in IMAGES and not path.startswith(IMAGE_HOMES) and FIXTURE_PART not in f"/{path}":
             found.append(f"{path}: 新增图片只允许放在产品素材或测试样本目录")
