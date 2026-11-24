@@ -1,9 +1,0 @@
-{
-  "artifact_id": 14793568095,
-  "harness": "f3f702abcbe1259dabae2948fce2b5a350415591",
-  "run": 45119972417,
-  "source": "b2bf9f3f4eaddcbfefd3144ad0fdb8769fa1824b",
-  "package_sha256": "39b494dcbff1b3afa20b4c85bcb0ddb4de5da017fcee3c056593daab038fc10e",
-  "artifact_digest": "sha256:eaa7d974800ae0e37204ea2d3d98c4c000d98a95fe33e7435d4eaf75a77a8ad4",
-  "runner_arch": "ARM64"
-}

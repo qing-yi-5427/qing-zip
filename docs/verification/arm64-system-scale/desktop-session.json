@@ -1,9 +1,0 @@
-{
-  "passed": false,
-  "executable": "qing-zip.exe",
-  "port": 52973,
-  "debug_override_prior_value_present": false,
-  "driver_error": "RuntimeError('The tested Windows display modes do not offer an enabled 200% Scale')",
-  "process_terminal": 0,
-  "debug_override_restored": true
-}

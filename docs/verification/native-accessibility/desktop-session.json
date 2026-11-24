@@ -1,8 +1,0 @@
-{
-  "passed": true,
-  "executable": "qing-zip.exe",
-  "port": 56593,
-  "debug_override_prior_value_present": false,
-  "process_terminal": 1,
-  "debug_override_restored": true
-}
