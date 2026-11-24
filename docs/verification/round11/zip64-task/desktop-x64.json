@@ -1,0 +1,136 @@
+{
+  "status": "PASS",
+  "member_bytes": 4295032833,
+  "gui_sha256": "1e3d78c2f4634948f5f3c39d4a72355a4d5b8655670d6cafe026e922f8f02631",
+  "archive_sha256": "f82a77410330119ca8f27192b8fef85bbefbe31f7121d2476d773661bd2edfc0",
+  "row": "ordinary-member.bin",
+  "fields": {
+    "大小": "4,295,032,833 字节",
+    "压缩后大小": "120,043,460 字节",
+    "包内路径": "ordinary-member.bin"
+  },
+  "dpr": 1.5,
+  "task": {
+    "samples": [
+      {
+        "phase": "等待引擎响应",
+        "summary": "等待引擎响应 · 进度待定",
+        "metric": "进度待定",
+        "percent": null,
+        "elapsed_s": 0.072
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 0%",
+        "metric": "本阶段 0%",
+        "percent": "0",
+        "elapsed_s": 0.286
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 7%",
+        "metric": "本阶段 7%",
+        "percent": "7",
+        "elapsed_s": 0.394
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 14%",
+        "metric": "本阶段 14%",
+        "percent": "14",
+        "elapsed_s": 0.658
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 21%",
+        "metric": "本阶段 21%",
+        "percent": "21",
+        "elapsed_s": 0.871
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 28%",
+        "metric": "本阶段 28%",
+        "percent": "28",
+        "elapsed_s": 1.199
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 35%",
+        "metric": "本阶段 35%",
+        "percent": "35",
+        "elapsed_s": 1.526
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 42%",
+        "metric": "本阶段 42%",
+        "percent": "42",
+        "elapsed_s": 1.635
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 50%",
+        "metric": "本阶段 50%",
+        "percent": "50",
+        "elapsed_s": 1.965
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 57%",
+        "metric": "本阶段 57%",
+        "percent": "57",
+        "elapsed_s": 2.071
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 64%",
+        "metric": "本阶段 64%",
+        "percent": "64",
+        "elapsed_s": 2.398
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 72%",
+        "metric": "本阶段 72%",
+        "percent": "72",
+        "elapsed_s": 2.728
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 79%",
+        "metric": "本阶段 79%",
+        "percent": "79",
+        "elapsed_s": 2.839
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 87%",
+        "metric": "本阶段 87%",
+        "percent": "87",
+        "elapsed_s": 3.162
+      },
+      {
+        "phase": "验证并解码",
+        "summary": "验证并解码 · 本阶段 93%",
+        "metric": "本阶段 93%",
+        "percent": "93",
+        "elapsed_s": 3.38
+      },
+      {
+        "phase": "已完成",
+        "summary": "已完成 · 100%",
+        "metric": "100%",
+        "percent": "100",
+        "elapsed_s": 3.597
+      }
+    ],
+    "running_screenshot": true,
+    "completion_action": "打开输出位置",
+    "output_bytes": 4295032833,
+    "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c"
+  },
+  "exit_code": 0,
+  "archive_preserved": true,
+  "fixture_removed": true
+}

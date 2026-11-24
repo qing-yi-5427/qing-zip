@@ -1,0 +1,259 @@
+{
+  "status": "PASS",
+  "cli_sha256": "8b2c94be2232b91089502d18310d17b76c08326182055e1b955c09d610545cf2",
+  "source": "3bd150cfa59975199587cbf6b7749c54309038b1",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "requested_sample_delay_ms": 25,
+  "trials": [
+    {
+      "seconds_to_last_sample": 3.8318,
+      "samples": 129,
+      "volume_free_before": 558917226496,
+      "lowest_sampled_volume_free": 554622189568,
+      "volume_free_drop": 4295036928,
+      "max_sample_interval_s": 0.0918,
+      "permission_errors": 0,
+      "peak": {
+        "final": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-a5u0ztq7/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.8318
+        },
+        "temporary": {
+          "bytes": 0,
+          "files_over_mib": [],
+          "elapsed_s": 0
+        },
+        "combined": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-a5u0ztq7/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.8318
+        }
+      },
+      "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+      "archive_unchanged": true
+    },
+    {
+      "seconds_to_last_sample": 3.9419,
+      "samples": 135,
+      "volume_free_before": 558917226496,
+      "lowest_sampled_volume_free": 554622185472,
+      "volume_free_drop": 4295041024,
+      "max_sample_interval_s": 0.0837,
+      "permission_errors": 0,
+      "peak": {
+        "final": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-068eprk7/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.9419
+        },
+        "temporary": {
+          "bytes": 0,
+          "files_over_mib": [],
+          "elapsed_s": 0
+        },
+        "combined": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-068eprk7/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.9419
+        }
+      },
+      "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+      "archive_unchanged": true
+    },
+    {
+      "seconds_to_last_sample": 4.008,
+      "samples": 132,
+      "volume_free_before": 558917226496,
+      "lowest_sampled_volume_free": 554622185472,
+      "volume_free_drop": 4295041024,
+      "max_sample_interval_s": 0.1221,
+      "permission_errors": 0,
+      "peak": {
+        "final": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-xn9krki5/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.982
+        },
+        "temporary": {
+          "bytes": 0,
+          "files_over_mib": [],
+          "elapsed_s": 0
+        },
+        "combined": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-xn9krki5/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.982
+        }
+      },
+      "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+      "archive_unchanged": true
+    },
+    {
+      "seconds_to_last_sample": 3.8307,
+      "samples": 132,
+      "volume_free_before": 558917226496,
+      "lowest_sampled_volume_free": 554622185472,
+      "volume_free_drop": 4295041024,
+      "max_sample_interval_s": 0.0909,
+      "permission_errors": 0,
+      "peak": {
+        "final": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-38c1kter/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.8307
+        },
+        "temporary": {
+          "bytes": 0,
+          "files_over_mib": [],
+          "elapsed_s": 0
+        },
+        "combined": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-38c1kter/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.8307
+        }
+      },
+      "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+      "archive_unchanged": true
+    },
+    {
+      "seconds_to_last_sample": 3.9789,
+      "samples": 135,
+      "volume_free_before": 558917226496,
+      "lowest_sampled_volume_free": 554622185472,
+      "volume_free_drop": 4295041024,
+      "max_sample_interval_s": 0.0841,
+      "permission_errors": 0,
+      "peak": {
+        "final": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-8ctyz_0z/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.9789
+        },
+        "temporary": {
+          "bytes": 0,
+          "files_over_mib": [],
+          "elapsed_s": 0
+        },
+        "combined": {
+          "bytes": 4295032833,
+          "files_over_mib": [
+            [
+              "trial-8ctyz_0z/out/ordinary-member.bin",
+              4295032833
+            ]
+          ],
+          "elapsed_s": 3.9789
+        }
+      },
+      "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+      "archive_unchanged": true
+    }
+  ],
+  "warmup": {
+    "seconds_to_last_sample": 3.9715,
+    "samples": 135,
+    "volume_free_before": 558917226496,
+    "lowest_sampled_volume_free": 554622185472,
+    "volume_free_drop": 4295041024,
+    "max_sample_interval_s": 0.0738,
+    "permission_errors": 0,
+    "peak": {
+      "final": {
+        "bytes": 4295032833,
+        "files_over_mib": [
+          [
+            "trial-5fdygbqb/out/ordinary-member.bin",
+            4295032833
+          ]
+        ],
+        "elapsed_s": 3.9715
+      },
+      "temporary": {
+        "bytes": 0,
+        "files_over_mib": [],
+        "elapsed_s": 0
+      },
+      "combined": {
+        "bytes": 4295032833,
+        "files_over_mib": [
+          [
+            "trial-5fdygbqb/out/ordinary-member.bin",
+            4295032833
+          ]
+        ],
+        "elapsed_s": 3.9715
+      }
+    },
+    "output_sha256": "a525a8d4ca78c300f7a477d7daebd65b6457ff3049a3dacd9ee1ac4885a2ce8c",
+    "archive_unchanged": true
+  },
+  "source_unchanged": true,
+  "fixture_removed": true,
+  "final_sampled_bytes": {
+    "median": 4295032833,
+    "min": 4295032833,
+    "max": 4295032833
+  },
+  "temporary_sampled_bytes": {
+    "median": 0,
+    "min": 0,
+    "max": 0
+  },
+  "combined_sampled_bytes": {
+    "median": 4295032833,
+    "min": 4295032833,
+    "max": 4295032833
+  },
+  "volume_free_drop_bytes": {
+    "median": 4295041024,
+    "min": 4295036928,
+    "max": 4295041024
+  }
+}
