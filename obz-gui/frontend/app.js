@@ -964,6 +964,9 @@ function taskError(e){
  // String(Error(x)) is "Error: x"; the JavaScript class name is not part of the message.
  const text=String(e).replace(/^Error:\s*/,''),directoryError=archiveDirectoryError(text);
  if(directoryError)return directoryError;
+ if(/^ZipCrypto passwords must use ASCII characters; use AES-256 for other passwords$/.test(text)){
+  return 'ZipCrypto 只支持英文字母、数字和常用符号组成的密码。请改用 AES-256，或更换密码。';
+ }
  const blocked=/^destination conflict:\s*output parent is a file:\s*(.+)$/i.exec(text);
  if(blocked)return `解压需要创建文件夹，但这个位置已有同名文件。\n${blocked[1]}\n请选择其他保存位置后重试。`;
  const conflict=/^(?:Error:\s*)?destination conflict:\s*(.+)$/i.exec(text);
@@ -1721,6 +1724,13 @@ function validateCompressionPassword(format){
   $('oa-password-button').setAttribute('aria-expanded','true');
   $('oa-password-again').focus();
   throw Error('两次输入的密码不一致。');
+ }
+ // ZipCrypto has no defined encoding for other characters; the writer rejects them.
+ if(format==='zip'&&$('oa-encryption').value==='ZipCrypto'&&/[^\x00-\x7f]/.test($('qa-new-password').value)){
+  $('oa-password-panel').hidden=false;
+  $('oa-password-button').setAttribute('aria-expanded','true');
+  $('oa-encryption').focus();
+  throw Error('ZipCrypto 只支持英文字母、数字和常用符号组成的密码。请改用 AES-256，或更换密码。');
  }
  return $('qa-new-password').value;
 }

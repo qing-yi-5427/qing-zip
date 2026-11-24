@@ -193,6 +193,22 @@ test('ZIP to TAR to 7z blocks unencrypted submission and preserves both password
   assert.equal(context.validateCompressionPassword('7z'), 'test-only');
 });
 
+test('ZipCrypto rejects passwords that its writer cannot encode before starting', () => {
+  const {context, fields} = fixture();
+  let focused = '';
+  fields['oa-encryption'].focus = () => { focused = 'encryption'; };
+  context.methodOptions();
+  fields['oa-encryption'].value = 'ZipCrypto';
+  fields['qa-new-password'].value = fields['oa-password-again'].value = '中文密码';
+  assert.throws(() => context.validateCompressionPassword('zip'), /ZipCrypto 只支持.*AES-256/);
+  assert.equal(focused, 'encryption');
+  fields['oa-encryption'].value = 'AES256';
+  assert.equal(context.validateCompressionPassword('zip'), '中文密码');
+  fields['oa-encryption'].value = 'ZipCrypto';
+  fields['qa-new-password'].value = fields['oa-password-again'].value = 'Pass-123';
+  assert.equal(context.validateCompressionPassword('zip'), 'Pass-123');
+});
+
 test('ZIP names notice belongs to the password disclosure and follows the form format', () => {
   const {context, fields} = fixture();
   const markup = app.slice(app.indexOf('<div id="oa-password-panel"'), app.indexOf('${compressionAdvancedFields()}'));
