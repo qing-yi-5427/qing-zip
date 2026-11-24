@@ -964,8 +964,8 @@ function taskError(e){
  // String(Error(x)) is "Error: x"; the JavaScript class name is not part of the message.
  const text=String(e).replace(/^Error:\s*/,''),directoryError=archiveDirectoryError(text);
  if(directoryError)return directoryError;
- if(/^ZipCrypto passwords must use ASCII characters; use AES-256 for other passwords$/.test(text)){
-  return 'ZipCrypto 只支持英文字母、数字和常用符号组成的密码。请改用 AES-256，或更换密码。';
+ if(/^ZipCrypto passwords must use ASCII characters from 0x20 to 0x7F\. Use AES-256 for other passwords\.$/.test(text)){
+  return 'ZipCrypto 只支持英文字母、数字、空格和常用符号组成的密码。请改用 AES-256，或更换密码。';
  }
  const colliding=/^duplicate or case-colliding archive names: (.+)$/.exec(text);
  if(colliding)return `压缩包里有两个条目在 Windows 上会保存为同一个文件（名称只差大小写，或含 Windows 不支持的字符）：\n${colliding[1]}\n为避免一个覆盖另一个，没有解压。请在原系统上改名后重新打包。`;
@@ -1734,12 +1734,12 @@ function validateCompressionPassword(format){
   $('oa-password-again').focus();
   throw Error('两次输入的密码不一致。');
  }
- // ZipCrypto has no defined encoding for other characters; the writer rejects them.
- if(format==='zip'&&$('oa-encryption').value==='ZipCrypto'&&/[^\x00-\x7f]/.test($('qa-new-password').value)){
+ // Match the ZIP writer's allowed range, including for pasted passwords.
+ if(format==='zip'&&$('oa-encryption').value==='ZipCrypto'&&/[^\x20-\x7f]/.test($('qa-new-password').value)){
   $('oa-password-panel').hidden=false;
   $('oa-password-button').setAttribute('aria-expanded','true');
   $('oa-encryption').focus();
-  throw Error('ZipCrypto 只支持英文字母、数字和常用符号组成的密码。请改用 AES-256，或更换密码。');
+  throw Error('ZipCrypto 只支持英文字母、数字、空格和常用符号组成的密码。请改用 AES-256，或更换密码。');
  }
  return $('qa-new-password').value;
 }

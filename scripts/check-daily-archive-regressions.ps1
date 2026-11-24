@@ -10,7 +10,7 @@ $suites = @(
         Cases = @(
             'engine_zip_and_7z_encryption_roundtrip'
             'extract_small_zip_into_existing_long_directory_preserves_files_and_conflicts'
-            'zipcrypto_non_ascii_password_fails_with_an_actionable_error'
+            'zipcrypto_password_validation_matches_the_writer'
             'engine_compound_tar_one_step_and_metadata'
             'engine_legacy_codepage_override'
             'engine_update_preserves_original_on_failure'

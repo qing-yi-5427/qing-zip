@@ -5513,9 +5513,13 @@ fn compression(args: &mut Vec<String>, format: &str, opts: &EngineOptions) -> Re
         ("zip" | "7z" | "sfx", Some("aes256")) => "AES256",
         _ => return Err(format!("encryption method is unsupported for {format}")),
     };
-    // The ZIP writer rejects these with a bare "invalid parameter"; 7-Zip does too.
-    if selected_encryption == "ZipCrypto" && opts.password.as_deref().is_some_and(|p| !p.is_ascii()) {
-        return Err("ZipCrypto passwords must use ASCII characters; use AES-256 for other passwords".into());
+    // Match the pinned ZIP writer's IsSimpleAsciiString check.
+    if selected_encryption == "ZipCrypto"
+        && opts.password.as_deref().is_some_and(|password| {
+            !password.bytes().all(|byte| (0x20..=0x7f).contains(&byte))
+        })
+    {
+        return Err("ZipCrypto passwords must use ASCII characters from 0x20 to 0x7F. Use AES-256 for other passwords.".into());
     }
     if (opts.solid.is_some() || opts.header_encryption.is_some()) && !matches!(format, "7z" | "sfx")
     {
