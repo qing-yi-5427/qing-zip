@@ -103,7 +103,7 @@ constexpr uint64_t EndRecordsBound = 22 + UINT16_MAX;
 constexpr uint64_t NotClassic = UINT64_MAX;
 
 // Extra fields the pinned NanaZip ZipOut.cpp writes for a new, unencrypted
-// item (Copy_From_UpdateItem_To_ItemOut clears Local/CentralExtra): ZIP64
+// item (SetFileHeader clears LocalExtra and CentralExtra): ZIP64
 // (4 + 24 central), NTFS time (4 + 32), Unix time (4 + 5) and the Info-ZIP
 // Unicode name (4 + 5 + UTF-8 name). Margin is kept on top.
 constexpr uint64_t FreshItemExtraBound = 128;
