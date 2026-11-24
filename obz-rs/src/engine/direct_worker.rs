@@ -544,29 +544,9 @@ impl Pending {
                 guards.create_dirs(path)?;
             }
             directories.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-            let owned = guards
-                .created_output_dirs
-                .iter()
-                .enumerate()
-                .map(|(i, (path, _))| (path.clone(), i))
-                .collect::<HashMap<_, _>>();
             for (path, entry) in directories {
                 ctl.check()?;
-                if guards.exclusive_claim {
-                    guards.restore_claimed_directory_metadata(&path, entry)?;
-                    continue;
-                }
-                if let Some(&index) = owned.get(&path) {
-                    match &mut guards.created_output_dirs[index].1 {
-                        proof @ created_directories::Identity::Owned(_, _) => {
-                            proof.restore_owned_metadata(entry)?
-                        }
-                        _ => {
-                            guards.check(&path)?;
-                            restore_metadata(&path, entry)?;
-                        }
-                    }
-                }
+                guards.restore_created_directory_metadata(&path, entry)?;
             }
             policy.validate_output()?;
             ctl.check()?;

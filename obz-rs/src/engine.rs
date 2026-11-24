@@ -1559,20 +1559,47 @@ impl CheckedDirectories {
         created: &File,
         proof: created_directories::Identity,
     ) -> Result<(), String> {
-        if self.exclusive_claim {
-            self.directory_receipts.insert(directory_identity(created)?, self.created_output_dirs.len());
-        }
+        self.directory_receipts.insert(directory_identity(created)?, self.created_output_dirs.len());
         self.created_output_dirs.push((path.to_owned(), proof));
         Ok(())
     }
 
     #[cfg(windows)]
-    fn restore_claimed_directory_metadata(&mut self, path: &Path, entry: &Entry) -> Result<(), String> {
+    fn restore_created_directory_metadata(&mut self, path: &Path, entry: &Entry) -> Result<(), String> {
+        use std::os::windows::fs::OpenOptionsExt;
         self.check(path)?;
-        let (handle, _) = self.held.get(path).ok_or("missing claimed output directory handle")?;
-        let index = *self.directory_receipts.get(&directory_identity(handle)?)
-            .ok_or("missing claimed output directory receipt")?;
-        self.created_output_dirs[index].1.restore_owned_metadata(entry)
+        if self.exclusive_claim {
+            let (handle, _) = self.held.get(path).ok_or("missing claimed output directory handle")?;
+            let index = *self.directory_receipts.get(&directory_identity(handle)?)
+                .ok_or("missing claimed output directory receipt")?;
+            return self.created_output_dirs[index].1.restore_owned_metadata(entry);
+        }
+
+        // In existing destinations, metadata applies to new child directories
+        // only. An alternate case spelling must resolve to their recorded identity.
+        if self.directory_receipts.is_empty() {
+            return Ok(());
+        }
+        let Ok(reader) = fs::OpenOptions::new()
+            .access_mode(0x81)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(path) else { return Ok(()); };
+        let (id, attrs) = directory_identity_and_attributes(&reader)?;
+        let Some(&index) = self.directory_receipts.get(&id) else { return Ok(()); };
+        let proof = &self.created_output_dirs[index].1;
+        if attrs & 0x410 != 0x10 || !proof.matches(&reader) {
+            return Ok(());
+        }
+        let writer = fs::OpenOptions::new()
+            .access_mode(0x180)
+            .share_mode(3)
+            .custom_flags(0x02200000)
+            .open(path).map_err(|e| e.to_string())?;
+        if directory_identity(&writer)? != id {
+            return Err("output directory identity changed".into());
+        }
+        restore_open_file_metadata(&writer, entry)
     }
 
     fn create_dirs(&mut self, path: &Path) -> Result<(), String> {
@@ -3736,7 +3763,7 @@ fn extract_raw_to(
         let path=dest.join(validate_name(&e.name)?);
         #[cfg(windows)]
         if output_guards.exclusive_claim {
-            output_guards.restore_claimed_directory_metadata(&path, e)?;
+            output_guards.restore_created_directory_metadata(&path, e)?;
             continue;
         }
         restore_metadata(&path,e).map_err(|e|format!("directory metadata: {e}"))?;
