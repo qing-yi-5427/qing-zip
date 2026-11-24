@@ -1552,7 +1552,7 @@ impl CheckedDirectories {
             self.check(component)?;
             if self.pinned(component) {
                 #[cfg(windows)]
-                if self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|r|component.starts_with(r)) && !self.owned_dirs.contains(component) {
+                if self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|r|component.starts_with(r)) && !self.owned_dirs.contains(&path_key(component)) {
                     return Err(format!("foreign directory appeared in new destination: {}",component.display()));
                 }
                 continue;
@@ -1575,7 +1575,7 @@ impl CheckedDirectories {
                             if let Some(proof) = proof {
                                 self.created_output_dirs.push((component.to_owned(), proof));
                             }
-                            self.owned_dirs.insert(component.to_owned());
+                            self.owned_dirs.insert(path_key(component));
                             self.check(component)?;
                             continue;
                         }
@@ -1590,7 +1590,7 @@ impl CheckedDirectories {
             match fs::create_dir(component) {
                 Ok(()) => {
                     #[cfg(windows)]
-                    self.owned_dirs.insert(component.to_path_buf());
+                    self.owned_dirs.insert(path_key(component));
                     self.check(component)?;
                 }
                 Err(error)
@@ -1742,14 +1742,14 @@ impl CheckedDirectories {
                                 ));
                             }
                             let in_claim = self.exclusive_claim && self.selected_output_root.as_ref().is_some_and(|root| part.starts_with(root));
-                            if meta.is_dir() && in_claim && !self.owned_dirs.contains(part) {
+                            if meta.is_dir() && in_claim && !self.owned_dirs.contains(&path_key(part)) {
                                 return Err(format!("foreign directory appeared in new destination: {}",part.display()));
                             }
                             if meta.is_dir() && self.archive_snapshot_pin_limit.is_some_and(|limit|self.held.len()>=limit) {
                                 return Err("creation snapshot directory pin budget exhausted".into());
                             }
                             if meta.is_dir() && (self.held.len() < self.archive_snapshot_pin_limit.unwrap_or(4096) || in_claim) {
-                                let owned = self.owned_dirs.contains(part)
+                                let owned = self.owned_dirs.contains(&path_key(part))
                                     || self.owned_roots.iter().any(|root| part.starts_with(root));
                                 // Shared ancestors and pre-existing output directories
                                 // must not block unrelated applications' child renames.
@@ -3582,7 +3582,7 @@ fn extract_raw_to(
             let proof = created_directories::Identity::owned(&created)?;
             output_guards.created_output_dirs.push((dest.clone(),proof));
             output_guards.selected_output_root = Some(dest.clone());
-            output_guards.owned_dirs.insert(dest.clone());
+            output_guards.owned_dirs.insert(path_key(&dest));
         }
         #[cfg(not(windows))]
         fs::create_dir(&dest).map_err(|e|e.to_string())?;
@@ -4875,7 +4875,25 @@ fn publish_output_recorded(temp:&mut OutputTemp,target:&Path,replace:bool,journa
     publish_output(temp,target,replace)
 }
 fn publish_output(temp: &mut OutputTemp, target: &Path, overwrite: bool) -> Result<File, String> {
-    #[cfg(windows)] { temp.inner.commit(target, overwrite) }
+    #[cfg(windows)] {
+        match temp.inner.commit(target, overwrite) {
+            // NTFS refuses to replace a read-only file. The user asked to
+            // overwrite, as 7-Zip -aoa does: clear the flag on that regular
+            // file only, retry once, and restore it if the retry fails.
+            Err(error) if overwrite && error.contains("(os error 5)") => {
+                use std::os::windows::fs::MetadataExt;
+                let Some(attributes) = fs::symlink_metadata(target).ok()
+                    .filter(|m| m.is_file() && m.file_attributes() & 0x401 == 1)
+                    .map(|m| m.file_attributes()) else { return Err(error) };
+                let writable = attributes & !1;
+                set_path_attributes(target, if writable == 0 { 0x80 } else { writable })?;
+                temp.inner.commit(target, true).inspect_err(|_| {
+                    let _ = set_path_attributes(target, attributes);
+                })
+            }
+            result => result,
+        }
+    }
     #[cfg(not(windows))] {
         let file = temp.inner.take().ok_or("output already published")?;
         let result = if overwrite { file.persist(target) } else { file.persist_noclobber(target) };

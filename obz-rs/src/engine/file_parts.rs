@@ -164,7 +164,7 @@ pub fn split(
         created_directories::Identity::owned(&created)?,
     ));
     guards.selected_output_root = Some(dest.clone());
-    guards.owned_dirs.insert(dest.clone());
+    guards.owned_dirs.insert(path_key(&dest));
     drop(created);
     let journal = PublicationJournal::default();
     ctl.set("publishing", Some(95), "正在保存分块文件");

@@ -363,7 +363,7 @@ impl Pending {
                 guards.created_output_dirs.push((root.clone(), proof));
                 guards.exclusive_claim = true;
                 guards.selected_output_root = Some(root.clone());
-                guards.owned_dirs.insert(root.clone());
+                guards.owned_dirs.insert(path_key(root));
                 guards.create_dirs(dest)?;
             }
             let mut ack = self.nonce.to_vec();
