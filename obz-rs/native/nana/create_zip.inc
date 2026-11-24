@@ -103,7 +103,8 @@ constexpr uint64_t EndRecordsBound = 22 + UINT16_MAX;
 constexpr uint64_t NotClassic = UINT64_MAX;
 
 constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
-                                      uint64_t bytes, size_t utf16_units) {
+                                      uint64_t bytes, size_t utf16_units,
+                                      bool no_member_comment = false) {
   constexpr uint64_t limit = UINT32_MAX - 1ull;
   // ZipAddCommon::Set_Pre_CompressionResult preselects ZIP64 at 0xf8000000.
   if (entries >= UINT16_MAX - 1u || bytes >= 0xf8000000ull ||
@@ -111,9 +112,13 @@ constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
     return NotClassic;
   // Windows UTF-8/OEM output fits four bytes per UTF-16 unit; allow the
   // trailing slash even for a file. Budget both filename fields. Each extra
-  // area and the central comment have separate 16-bit length fields.
+  // area and the central comment have separate 16-bit length fields. New
+  // items from Update::GetProperty do not provide kpidComment; the pinned
+  // NanaZip writer creates an empty comment for them. Callers without that
+  // guarantee retain the full comment allowance.
   const uint64_t name = 4ull * (utf16_units + 1);
-  const uint64_t records = 30 + 46 + 24 + 2 * name + 3ull * UINT16_MAX;
+  const uint64_t records = 30 + 46 + 24 + 2 * name +
+      (no_member_comment ? 2ull : 3ull) * UINT16_MAX;
   // Only the pinned built-in unencrypted Deflate/Store writer is eligible.
   // Its seekable streams retry Store when Deflate expands (ZipAddCommon).
   // Also reserve tentative output: DeflateEncoder::GetBlockPrice compares
@@ -125,6 +130,20 @@ constexpr uint64_t next_classic_bound(uint64_t before, size_t entries,
     return NotClassic;
   return before + records + tail + bytes * 8;
 }
+static_assert(next_classic_bound(EndRecordsBound, 1, 0, 1, true) + UINT16_MAX ==
+              next_classic_bound(EndRecordsBound, 1, 0, 1));
+// This ordinary many-small-file manifest fits only with the proven empty
+// comment; both modes must still fall back if their conservative bound exceeds
+// the ZIP32 offset limit.
+constexpr uint64_t small_file_budget(bool no_comment) {
+  uint64_t bound = EndRecordsBound;
+  for (size_t i = 0; i < 20000 && bound != NotClassic; ++i)
+    bound = next_classic_bound(bound, i, 2750, 30, no_comment);
+  return bound;
+}
+static_assert(small_file_budget(true) != NotClassic);
+static_assert(small_file_budget(false) == NotClassic);
+static_assert(next_classic_bound(UINT32_MAX - 100, 1, 0, 1, true) == NotClassic);
 static_assert(next_classic_bound(EndRecordsBound, 65533, 0, 1) != NotClassic);
 static_assert(next_classic_bound(EndRecordsBound, 65534, 0, 1) == NotClassic);
 static_assert(next_classic_bound(EndRecordsBound, 1, UINT64_MAX, 1) ==
@@ -162,7 +181,7 @@ class Source {
     } else if ((units_ += r.path.size()) > 8 * 1024 * 1024 || (r.attributes & ~DWORD(0xb7)))
       throw NotEligible{};
     if (classic_zip_) {
-      layout_bound_ = next_classic_bound(layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size());
+      layout_bound_ = next_classic_bound(layout_bound_, items.size(), r.directory() ? 0 : r.size, r.path.size(), true);
       if (layout_bound_ == NotClassic) throw NotEligible{};
     } else if (!snapshot_limit_ && items.size() >= UINT16_MAX - 1u) {
       // Bounded source manifest only, not a claim about 7z physical offsets.
