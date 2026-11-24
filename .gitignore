@@ -14,6 +14,8 @@
 /docs/第*轮证据/
 /docs/**/*.png
 /docs/**/*.jsonl
+/docs/**/*.json
+!/docs/examples/**/*.json
 /docs/**/round[0-9]*/
 /docs/**/round[0-9]*.md
 /docs/**/第*轮报告.md
