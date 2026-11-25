@@ -122,3 +122,26 @@ test('matching per-operation measurements advance the total and survive unmeasur
  job.status='complete';
  assert.equal(QingProgress.value(job),100);
 });
+
+test('automatic expansion leaves a pressed task toggle in place and respects the eventual click',()=>{
+ const start=src.indexOf('const expandWhenIdle=');
+ const end=src.indexOf('}else if(!silent)',start);
+ assert.ok(start>=0&&end>start);
+ for(const outcome of ['click','cancel','finished']){
+  const state={active:1,inlineToggled:false,inlineExpanded:false};
+  let pressed=true,pending,rendered=0;
+  const context={s:state,id:1,$:()=>({matches:selector=>selector===':active'&&pressed}),
+   renderInlineTask:()=>rendered++,setTimeout:(fn,ms)=>{pending={fn,ms};return 1;}};
+  vm.runInNewContext('let autoExpand;'+src.slice(start,end),context);
+  assert.equal(pending.ms,300);
+  pending.fn();
+  assert.equal(state.inlineExpanded,false);
+  assert.equal(pending.ms,100);
+  pressed=false;
+  if(outcome==='click')state.inlineToggled=true;
+  if(outcome==='finished')state.active=null;
+  pending.fn();
+  assert.equal(rendered,outcome==='cancel'?1:0);
+  assert.equal(state.inlineExpanded,outcome==='cancel');
+ }
+});

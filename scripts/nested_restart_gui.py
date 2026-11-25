@@ -11,12 +11,12 @@ import socket
 import subprocess
 import tempfile
 import time
-import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 import winreg
 import zipfile
 
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect, sync_playwright
 from arm_gui_lifecycle import guarded_run
 
 
@@ -61,19 +61,58 @@ def workcopies(temp):
 def connect(app, port, driver):
     endpoint = f'http://127.0.0.1:{port}'
     deadline = time.monotonic() + 75
-    while time.monotonic() < deadline:
+    def require_running():
         if app.poll() is not None:
             raise RuntimeError(f'GUI exited during startup: {app.returncode}')
-        with suppress(OSError, urllib.error.URLError):
-            with urllib.request.urlopen(endpoint + '/json/version', timeout=1):
-                browser = driver.chromium.connect_over_cdp(endpoint)
-                while time.monotonic() < deadline:
-                    if browser.contexts and browser.contexts[0].pages:
-                        return browser, browser.contexts[0].pages[0]
-                    time.sleep(.1)
-                raise RuntimeError('WebView2 page unavailable')
-        time.sleep(.2)
-    raise RuntimeError('WebView2 debugging endpoint unavailable')
+
+    def remaining_ms():
+        return max(0, int((deadline - time.monotonic()) * 1000))
+
+    while remaining_ms():
+        require_running()
+        try:
+            with urllib.request.urlopen(endpoint + '/json/version', timeout=min(1, remaining_ms() / 1000 or .001)):
+                break
+        except OSError:
+            time.sleep(min(.2, remaining_ms() / 1000))
+    else:
+        require_running()
+        raise RuntimeError('WebView2 debugging endpoint unavailable')
+
+    require_running()
+    timeout = remaining_ms()
+    if not timeout:
+        raise RuntimeError('WebView2 page unavailable')
+    browser = driver.chromium.connect_over_cdp(endpoint, timeout=min(30000, timeout))
+    # Chromium's browser-level CDP connection includes its persistent context.
+    if not browser.contexts:
+        raise RuntimeError('WebView2 browser context unavailable')
+    context = browser.contexts[0]
+    while remaining_ms():
+        require_running()
+        if not browser.is_connected():
+            raise RuntimeError('WebView2 disconnected during startup')
+        for page in context.pages:
+            url = urlsplit(page.url)
+            if url.scheme not in ('http', 'https') or url.hostname != 'tauri.localhost':
+                continue
+            budget = min(250, remaining_ms())
+            if not budget:
+                break
+            try:
+                page.locator('#qing-archive').wait_for(state='attached', timeout=budget)
+            except PlaywrightTimeoutError:
+                continue
+            require_running()
+            return browser, page
+        budget = min(200, remaining_ms())
+        if budget:
+            # A Python sleep does not dispatch Playwright's CDP page/navigation
+            # events. A bounded wait dispatches them even when no page exists yet.
+            with suppress(PlaywrightTimeoutError):
+                context.wait_for_event('page', timeout=budget)
+    require_running()
+    raise RuntimeError('WebView2 page unavailable')
 
 
 def launch(exe, outer, root, env, port, driver, lifetime):

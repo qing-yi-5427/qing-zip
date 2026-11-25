@@ -1,0 +1,98 @@
+/* Motion rules for state changes, in one place. Tokens live in ui.css.
+   Rule of thumb: what the user repeats (hover, tree, rows) is quick or
+   instant; what appears or moves explains where it came from. Only
+   opacity, transform and colours transition, never layout properties. */
+
+/* Hover and selection colour changes on controls that are not .qa-button. */
+#qing-archive :is(.oa-nav button, #oa-tree button[data-tree], .qa-app-menu,
+  .qa-window-controls button, .oa-archive-tab, .oa-tab-close, .oa-tab-add,
+  .oa-toolcard, .oa-places button, .oa-folders button, .qa-recent-row,
+  .qa-theme-switch button, .oa-view-switch button),
+#oa-menu button {
+  transition: background-color var(--qa-dur-quick) var(--qa-ease-out),
+    border-color var(--qa-dur-quick) var(--qa-ease-out),
+    color var(--qa-dur-quick) var(--qa-ease-out),
+    box-shadow var(--qa-dur-quick) var(--qa-ease-out);
+}
+/* Pressing is immediate; only the release eases. */
+#qing-archive :is(.oa-nav button, #oa-tree button[data-tree], .qa-app-menu,
+  .qa-window-controls button, .oa-archive-tab, .oa-tab-close, .oa-tab-add,
+  .oa-toolcard, .oa-places button, .oa-folders button, .qa-recent-row,
+  .qa-theme-switch button, .oa-view-switch button):active,
+#oa-menu button:active { transition-duration: 0s; }
+
+/* Large targets sink slightly while pressed. */
+#qing-archive .oa-toolcard { transition-property: background-color, border-color, transform; }
+#qing-archive .oa-toolcard:active { transform: scale(.985); }
+
+/* Disclosure chevrons turn with the content they reveal. */
+#qing-archive :is(.oa-tree-toggle svg, .oa-task-chevron),
+.oa-password-command::after {
+  transition: transform var(--qa-dur-base) var(--qa-ease-out);
+}
+/* The tree is expanded often; keep its chevron quicker. */
+#qing-archive .oa-tree-toggle svg { transition-duration: var(--qa-dur-quick); }
+
+/* Switch thumb slides; track colour follows. */
+#qing-archive input.oa-switch {
+  transition: background-color var(--qa-dur-base) var(--qa-ease-out),
+    border-color var(--qa-dur-base) var(--qa-ease-out);
+}
+#qing-archive input.oa-switch::after { transition: transform var(--qa-dur-base) var(--qa-ease-out); }
+
+/* Fields show focus and validation changes without a jump. */
+:is(#qing-archive, .qa-tools) :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {
+  transition: border-color var(--qa-dur-quick) var(--qa-ease-out),
+    box-shadow var(--qa-dur-quick) var(--qa-ease-out);
+}
+
+/* The drop target answers a drag immediately but settles softly. */
+#qing-archive .oa-home-smart-drop {
+  transition: background-color var(--qa-dur-quick) var(--qa-ease-out),
+    border-color var(--qa-dur-quick) var(--qa-ease-out);
+}
+
+/* Changing numbers keep their width, so labels do not jitter sideways. */
+#qing-archive :is(#oa-task-panel, .qa-status, .qa-table td, .qa-jobcard, .qa-jobresult,
+  .oa-compression-results, #oa-total) { font-variant-numeric: tabular-nums; }
+
+/* Selection indicators that slide between options (motion.js adds them). */
+#qing-archive .qa-motion-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  border-radius: 6px;
+  background: var(--qa-card);
+  box-shadow: 0 2px 5px light-dark(#344c6c12, #0002);
+  transition: transform var(--qa-dur-base) var(--qa-ease-out),
+    opacity var(--qa-dur-quick) var(--qa-ease-out);
+}
+#qing-archive .oa-nav .qa-motion-thumb { box-shadow: 0 2px 7px light-dark(#33476708, #0001); }
+#qing-archive :is(.qa-theme-switch, .oa-nav).qa-has-thumb { position: relative; }
+#qing-archive :is(.qa-theme-switch, .oa-nav).qa-has-thumb > :not(.qa-motion-thumb) { position: relative; }
+@media (forced-colors: none) {
+  #qing-archive .qa-theme-switch.qa-has-thumb button[aria-pressed=true],
+  #qing-archive .oa-nav.qa-has-thumb button[aria-current=true] { background: transparent; box-shadow: none; }
+}
+
+/* Copies that play an exit after the real element is already gone. */
+.qa-motion-ghost { pointer-events: none !important; }
+
+@media (forced-colors: active) {
+  #qing-archive .qa-motion-thumb { display: none; }
+}
+
+/* Let native disclosures resize and hide their controls immediately. */
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  @supports selector(::details-content) {
+    :is(#qing-archive, .qa-tools) details[open]::details-content {
+      animation: qa-details-reveal var(--qa-dur-base) var(--qa-ease-out);
+    }
+    :is(#qing-archive, .qa-tools) details:has(:focus-visible:not(summary))::details-content { animation: none; }
+  }
+}
+@keyframes qa-details-reveal {
+  from { opacity: .7; }
+  to { opacity: 1; }
+}

@@ -39,8 +39,8 @@ def fixtures(root, cancel):
             if cancel and path.stem == "second":
                 # Bound the real job to 64 MiB and many ordinary outputs so
                 # the stop button can be used while extraction is still active.
-                block = bytes(range(256)) * 256
-                for index in range(1024):
+                block = bytes(range(256)) * 32
+                for index in range(8192):
                     archive.writestr(zipfile.ZipInfo(f"parts/{index:04}.bin"), block)
     if not cancel:
         conflict = output / "2-second" / "file.txt"
@@ -89,18 +89,20 @@ def job_rows(page, root, selector):
     return [{**row, "text": text_without_paths(row["text"], root)} for row in rows]
 
 
-def stop_active_second(page, result, expect):
-    label = "批量 2/3 · 解压"
+def active_stop_control(page, label, expect):
     modal = page.locator('#qa-overlay [data-job-card]:visible').filter(has_text=label)
-    inline = page.locator('#oa-task-panel:visible').filter(has=page.locator('#oa-task-title').filter(has_text=label))
-    expect(modal.or_(inline)).to_be_visible(timeout=15000)
-    if inline.is_visible():
-        toggle = inline.locator('#oa-task-toggle')
-        if toggle.get_attribute('aria-expanded') == 'false':
-            toggle.click()
-        stop = inline.locator('#oa-task-cancel')
-    else:
-        stop = modal.locator('[data-action="canceljob"]')
+    inline = page.locator('#oa-task-panel:visible').filter(
+        has=page.locator('#oa-task-title').filter(has_text=label))
+    stop = modal.locator('[data-action="canceljob"]:visible').or_(
+        inline.locator('#oa-task-cancel:visible'))
+    # The background task card expands by itself. Await its stop button so
+    # clicking the card cannot collapse it between the read and the click.
+    expect(stop).to_be_visible(timeout=15000)
+    return stop
+
+
+def stop_active_second(page, result, expect):
+    stop = active_stop_control(page, "批量 2/3 · 解压", expect)
     result["stop_control_text"] = stop.inner_text()
     # A trusted click through the real WebView, only on the active second job.
     stop.click(timeout=15000)
