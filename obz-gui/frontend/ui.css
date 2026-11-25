@@ -33,6 +33,17 @@
   --qa-glass: light-dark(#f4f7fcb8, #1f2b3bc9);
   --qa-danger: light-dark(#a23040, #ffabb7);
   --qa-scroll: color-mix(in srgb, var(--qa-sub) 45%, transparent);
+  /* One motion language for the whole app (motion.js reads these too).
+     Entrances and moves decelerate; exits accelerate and are shorter;
+     a value moving between two known points eases both ends. Repeated
+     actions use the shorter durations. */
+  --qa-ease-out: cubic-bezier(.22, 1, .36, 1);
+  --qa-ease-in: cubic-bezier(.4, 0, 1, 1);
+  --qa-ease-move: cubic-bezier(.65, 0, .35, 1);
+  --qa-dur-quick: 140ms;
+  --qa-dur-base: 200ms;
+  --qa-dur-sheet: 260ms;
+  --qa-dur-exit: 140ms;
 }
 
 body {
@@ -70,7 +81,13 @@ button {
   color: var(--qa-text);
   font-size: var(--qa-font-control);
   white-space: nowrap;
+  /* Hover eases in and out; pressing is immediate (see :active). */
+  transition: background-color var(--qa-dur-quick) var(--qa-ease-out),
+    border-color var(--qa-dur-quick) var(--qa-ease-out),
+    color var(--qa-dur-quick) var(--qa-ease-out),
+    opacity var(--qa-dur-quick) var(--qa-ease-out);
 }
+:is(#qing-archive, .qa-tools) .qa-button:enabled:active { transition-duration: 0s; }
 
 :is(#qing-archive, .qa-tools) .qa-button.quiet {
   background: transparent;

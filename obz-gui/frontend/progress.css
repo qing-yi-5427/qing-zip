@@ -6,36 +6,45 @@
   overflow: hidden;
   border-radius: 999px;
   background: var(--qa-line);
+  /* The fill moves on the compositor; a bar never forces layout per frame. */
+  contain: layout paint;
 }
 .qa-progress[hidden], .qa-progress.hidden { display: none; }
 .qa-progress > span {
   position: absolute;
-  inset-block: 0;
-  left: 0;
-  width: var(--qa-progress-value, 0%);
+  inset: 0;
   border-radius: inherit;
   background: var(--qa-accent);
+  /* A full-width fill slides in from the left, so the rounded leading edge
+     keeps its shape at every value (scaleX would squash it). */
+  transform: translateX(calc(var(--qa-progress-value, 0%) - 100%));
+  transition: transform var(--qa-dur-base, 200ms) var(--qa-ease-out, ease-out);
+  will-change: transform;
 }
 .qa-progress[data-progress-activity]::after {
   content: '';
   position: absolute;
   inset-block: 0;
+  left: 0;
   border-radius: inherit;
   background: var(--qa-accent);
   opacity: 0.45;
 }
 .qa-progress:not([aria-valuenow]) > span, .qa-progress[data-progress-activity]::after {
   width: 28%;
-  animation: qa-progress-across 1.5s linear infinite;
+  transition: none;
+  animation: qa-progress-across 1.5s var(--qa-ease-move, ease-in-out) infinite;
 }
 @keyframes qa-progress-across {
-  from { left: -28%; }
-  to { left: 100%; }
+  /* A 28%-wide segment travels from just left of the track to just past it. */
+  from { transform: translateX(-100%); }
+  to { transform: translateX(357%); }
 }
 @media (prefers-reduced-motion: reduce) {
+  .qa-progress > span { transition: none; }
   .qa-progress:not([aria-valuenow]) > span, .qa-progress[data-progress-activity]::after {
-    left: 0;
     width: 100%;
+    transform: none;
     animation: none;
     background: repeating-linear-gradient(135deg, var(--qa-accent) 0 5px, transparent 5px 10px);
   }
