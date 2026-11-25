@@ -477,11 +477,14 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 @media(forced-colors:active){
  #qing-archive .qa-window{background:Canvas}
  :is(#qa-overlay,.qa-overlay-ghost){background:Canvas;backdrop-filter:none}
- #qing-archive :is(.qa-theme-switch button[aria-pressed=true],.oa-nav button[aria-current=true],.oa-advanced-tabs button[aria-selected=true],.qa-table tr.selected){
+ #qing-archive .qa-dialog{border-color:ButtonText}
+ #qing-archive :is(.qa-theme-switch button[aria-pressed=true],.oa-nav button[aria-current=true],.oa-view-switch button[aria-pressed=true],.qa-table tr.selected):not(:focus-visible){
   outline:1px solid Highlight;outline-offset:-1px
  }
  #qing-archive :is(.qa-theme-switch,.qa-window-controls) button:focus-visible{outline:2px solid Highlight;outline-offset:-2px}
 }
+
+#oa-menu button:focus-visible{outline-offset:-2px}
 
 /* Keep archive controls in view when browsing columns beyond the visible width. */
 #qing-archive .oa-column-controls { display:flex; align-items:center; gap:4px; margin-left:auto; }

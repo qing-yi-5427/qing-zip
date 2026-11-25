@@ -7,17 +7,19 @@
 #qing-archive :is(.oa-nav button, #oa-tree button[data-tree], .qa-app-menu,
   .qa-window-controls button, .oa-archive-tab, .oa-tab-close, .oa-tab-add,
   .oa-toolcard, .oa-places button, .oa-folders button, .qa-recent-row,
-  .qa-theme-switch button, .oa-view-switch button, .oa-advanced-tabs button),
-:is(#oa-menu, .oa-menu-ghost) button {
+  .qa-theme-switch button, .oa-view-switch button),
+#oa-menu button {
   transition: background-color var(--qa-dur-quick) var(--qa-ease-out),
     border-color var(--qa-dur-quick) var(--qa-ease-out),
     color var(--qa-dur-quick) var(--qa-ease-out),
     box-shadow var(--qa-dur-quick) var(--qa-ease-out);
 }
 /* Pressing is immediate; only the release eases. */
-#qing-archive :is(.oa-nav button, #oa-tree button[data-tree], .oa-toolcard,
-  .qa-recent-row, .oa-archive-tab):active,
-:is(#oa-menu, .oa-menu-ghost) button:active { transition-duration: 0s; }
+#qing-archive :is(.oa-nav button, #oa-tree button[data-tree], .qa-app-menu,
+  .qa-window-controls button, .oa-archive-tab, .oa-tab-close, .oa-tab-add,
+  .oa-toolcard, .oa-places button, .oa-folders button, .qa-recent-row,
+  .qa-theme-switch button, .oa-view-switch button):active,
+#oa-menu button:active { transition-duration: 0s; }
 
 /* Large targets sink slightly while pressed. */
 #qing-archive .oa-toolcard { transition-property: background-color, border-color, transform; }
@@ -39,7 +41,7 @@
 #qing-archive input.oa-switch::after { transition: transform var(--qa-dur-base) var(--qa-ease-out); }
 
 /* Fields show focus and validation changes without a jump. */
-#qing-archive :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {
+:is(#qing-archive, .qa-tools) :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {
   transition: border-color var(--qa-dur-quick) var(--qa-ease-out),
     box-shadow var(--qa-dur-quick) var(--qa-ease-out);
 }
@@ -64,16 +66,15 @@
   background: var(--qa-card);
   box-shadow: 0 2px 5px light-dark(#344c6c12, #0002);
   transition: transform var(--qa-dur-base) var(--qa-ease-out),
-    width var(--qa-dur-base) var(--qa-ease-out),
-    height var(--qa-dur-base) var(--qa-ease-out),
     opacity var(--qa-dur-quick) var(--qa-ease-out);
-  will-change: transform;
 }
 #qing-archive .oa-nav .qa-motion-thumb { box-shadow: 0 2px 7px light-dark(#33476708, #0001); }
 #qing-archive :is(.qa-theme-switch, .oa-nav).qa-has-thumb { position: relative; }
 #qing-archive :is(.qa-theme-switch, .oa-nav).qa-has-thumb > :not(.qa-motion-thumb) { position: relative; }
-#qing-archive .qa-theme-switch.qa-has-thumb button[aria-pressed=true],
-#qing-archive .oa-nav.qa-has-thumb button[aria-current=true] { background: transparent; box-shadow: none; }
+@media (forced-colors: none) {
+  #qing-archive .qa-theme-switch.qa-has-thumb button[aria-pressed=true],
+  #qing-archive .oa-nav.qa-has-thumb button[aria-current=true] { background: transparent; box-shadow: none; }
+}
 
 /* Copies that play an exit after the real element is already gone. */
 .qa-motion-ghost { pointer-events: none !important; }
@@ -82,16 +83,16 @@
   #qing-archive .qa-motion-thumb { display: none; }
 }
 
-/* Native disclosures (<details>) open and close in place where supported. */
-@supports selector(::details-content) {
-  #qing-archive, .qa-tools { interpolate-size: allow-keywords; }
-  :is(#qing-archive, .qa-tools) details::details-content {
-    block-size: 0;
-    overflow: hidden;
-    opacity: 0;
-    transition: block-size var(--qa-dur-base) var(--qa-ease-out),
-      opacity var(--qa-dur-base) var(--qa-ease-out),
-      content-visibility var(--qa-dur-base) allow-discrete;
+/* Let native disclosures resize and hide their controls immediately. */
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  @supports selector(::details-content) {
+    :is(#qing-archive, .qa-tools) details[open]::details-content {
+      animation: qa-details-reveal var(--qa-dur-base) var(--qa-ease-out);
+    }
+    :is(#qing-archive, .qa-tools) details:has(:focus-visible:not(summary))::details-content { animation: none; }
   }
-  :is(#qing-archive, .qa-tools) details[open]::details-content { block-size: auto; opacity: 1; }
+}
+@keyframes qa-details-reveal {
+  from { opacity: .7; }
+  to { opacity: 1; }
 }

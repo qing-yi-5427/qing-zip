@@ -2,8 +2,7 @@
 // controls (motion.css); this module choreographs what CSS cannot: things that
 // appear, disappear, move or change size. Everything here is purely visual —
 // application state (hidden, content, focus) always changes synchronously, and
-// exits play on inert copies, so an interrupted animation never leaves the UI
-// in a half state. Durations and curves come from the CSS tokens in ui.css.
+// exit effects use empty, inert decoration. Durations and curves come from the CSS tokens in ui.css.
 (() => {
   'use strict';
   const reduceQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -22,133 +21,156 @@
     };
     return tokens;
   }
-  const enabled = () => !reduceQuery.matches && typeof Element.prototype.animate === 'function';
+  const enabled = () => !reduceQuery.matches && !forcedQuery.matches &&
+    typeof Element.prototype.animate === 'function';
 
-  // One running animation per element and channel; a new one replaces it.
   const running = new WeakMap();
-  const entering = new Set();
-  function play(el, frames, options, channel = 'main') {
+  const active = new Set();
+  const entering = new Map();
+  function stop(el, channel = 'main') {
+    running.get(el)?.get(channel)?.finish(true);
+  }
+  function play(el, frames, options, channel = 'main', onFinish) {
+    stop(el, channel);
     if (!enabled() || !el?.isConnected) return null;
     let channels = running.get(el);
     if (!channels) running.set(el, channels = new Map());
-    channels.get(channel)?.cancel();
     const animation = el.animate(frames, { fill: 'none', ...options });
-    channels.set(channel, animation);
-    const done = () => { if (channels.get(channel) === animation) channels.delete(channel); };
-    animation.finished.then(done, done);
-    return animation;
+    const entry = {
+      finish(cancelled) {
+        if (!active.delete(entry)) return;
+        channels.delete(channel);
+        if (entering.get(el) === entry) entering.delete(el);
+        onFinish?.(cancelled);
+        if (cancelled || options.fill === 'forwards') animation.cancel();
+      },
+    };
+    channels.set(channel, entry);
+    active.add(entry);
+    animation.finished.then(() => entry.finish(false), () => entry.finish(true));
+    return entry;
   }
+  function settleMotion() {
+    if (!enabled()) for (const entry of active) entry.finish(true);
+  }
+  reduceQuery.addEventListener('change', settleMotion);
+  forcedQuery.addEventListener('change', settleMotion);
+
   function enter(el, frames, options) {
-    const animation = play(el, frames, options);
-    if (!animation) return null;
-    entering.add(el);
-    const done = () => entering.delete(el);
-    animation.finished.then(done, done);
-    return animation;
+    const entry = play(el, frames, options);
+    if (entry) entering.set(el, entry);
   }
-  const insideEntrance = el => [...entering].some(host => host !== el && host.contains(el));
-
-  // An inert copy that plays an exit while the real element has already gone.
-  // Ids are dropped so lookups keep finding the live element. A copy that
-  // must keep id-based styling (keepIds) is always placed after the live
-  // element, which therefore stays first for getElementById.
-  function ghost(el, className, keepIds = false) {
-    const copy = el.cloneNode(true);
-    if (!keepIds) {
-      copy.removeAttribute('id');
-      for (const node of copy.querySelectorAll('[id]')) node.removeAttribute('id');
+  function insideEntrance(el) {
+    for (let host = el.parentElement; host; host = host.parentElement) {
+      if (entering.has(host)) return true;
     }
-    const from = el.querySelectorAll('input,select,textarea');
-    const to = copy.querySelectorAll('input,select,textarea');
-    if (from.length <= 200) from.forEach((field, index) => {
-      const target = to[index];
-      if (!target) return;
-      if (field.type === 'checkbox' || field.type === 'radio') target.checked = field.checked;
-      else if (field.type !== 'password') target.value = field.value;
-    });
-    copy.hidden = false;
-    copy.inert = true;
-    copy.setAttribute('aria-hidden', 'true');
-    copy.classList.add('qa-motion-ghost');
-    if (className) copy.classList.add(className);
-    return copy;
-  }
-  function removeWhenDone(node, animation) {
-    const remove = () => node.remove();
-    animation ? animation.finished.then(remove, remove) : remove();
+    return false;
   }
 
-  // Dialogs: the sheet rises out of the dimmed backdrop; replacing an open
-  // dialog only cross-fades the content. Closing plays on a copy.
+  const exits = new WeakMap();
+  function clearExit(el) {
+    const decoration = exits.get(el);
+    if (decoration) stop(decoration);
+  }
+  function exit(el, className, prepare, duration) {
+    clearExit(el);
+    if (!enabled() || el.hidden || !el.isConnected) return;
+    const opacity = getComputedStyle(el).opacity;
+    const decoration = document.createElement('div');
+    decoration.className = 'qa-motion-ghost ' + className;
+    decoration.inert = true;
+    decoration.setAttribute('aria-hidden', 'true');
+    prepare?.(decoration);
+    el.before(decoration);
+    const remove = () => { decoration.remove(); exits.delete(el); };
+    if (play(decoration, [{ opacity }, { opacity: 0 }], {
+      duration, easing: token().in, fill: 'forwards',
+    }, 'main', remove)) exits.set(el, decoration);
+    else remove();
+  }
+
+  // Keep modal contents and menu actions out of exit decorations.
   function dialogShown(overlay, wasOpen) {
+    clearExit(overlay);
+    if (!enabled()) return;
     const sheet = overlay.firstElementChild;
     if (!sheet) return;
     const t = token();
     if (wasOpen) {
-      play(sheet, [{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: '0 0' }], { duration: t.quick, easing: t.out });
+      play(sheet, [{ opacity: 0.8, translate: '0 4px' }, { opacity: 1, translate: '0 0' }], { duration: t.quick, easing: t.out });
       return;
     }
-    enter(overlay, [{ opacity: 0 }, { opacity: 1 }], { duration: t.base, easing: t.out });
-    play(sheet, [{ opacity: 0, translate: '0 12px', scale: '.98' }, { opacity: 1, translate: '0 0', scale: '1' }], { duration: t.sheet, easing: t.out });
+    enter(overlay, [{ opacity: 0.75 }, { opacity: 1 }], { duration: t.base, easing: t.out });
+    play(sheet, [{ opacity: 0.8, translate: '0 8px', scale: '.99' }, { opacity: 1, translate: '0 0', scale: '1' }], { duration: t.sheet, easing: t.out });
   }
   function dialogClosing(overlay) {
-    if (!enabled() || overlay.hidden || !overlay.firstElementChild) return;
-    const t = token();
-    const opacity = getComputedStyle(overlay).opacity;
-    const copy = ghost(overlay, 'qa-overlay-ghost');
-    overlay.after(copy);
-    const fade = copy.animate([{ opacity }, { opacity: 0 }], { duration: t.exit, easing: t.in, fill: 'forwards' });
-    copy.firstElementChild?.animate([{ translate: '0 0', scale: '1' }, { translate: '0 6px', scale: '.985' }], { duration: t.exit, easing: t.in, fill: 'forwards' });
-    removeWhenDone(copy, fade);
+    if (overlay.hidden || !overlay.firstElementChild) return;
+    if (enabled()) exit(overlay, 'qa-overlay-ghost', null, token().exit);
+    stop(overlay);
+    stop(overlay.firstElementChild);
   }
 
-  // Menus grow out of the control that opened them. Moving between the menu
-  // bar and a submenu slides in the direction of travel.
+  const menuDepth = new WeakMap();
+  function menuPreparing(box) {
+    clearExit(box);
+    stop(box);
+  }
   function menuShown(box, anchorRect, wasOpen) {
+    if (!enabled()) return;
     const t = token();
     const depth = box.querySelector('.oa-submenu-head') ? 1 : 0;
-    const previous = Number(box.dataset.motionDepth ?? depth);
-    box.dataset.motionDepth = String(depth);
+    const previous = menuDepth.get(box) ?? depth;
+    menuDepth.set(box, depth);
     if (wasOpen) {
       const direction = Math.sign(depth - previous);
-      play(box, [{ opacity: 0, translate: `${direction * 10}px 0` }, { opacity: 1, translate: '0 0' }], { duration: t.quick, easing: t.out });
+      play(box, [{ opacity: 0.8, translate: `${direction * 8}px 0` }, { opacity: 1, translate: '0 0' }], { duration: t.quick, easing: t.out });
       return;
     }
     const bounds = box.getBoundingClientRect();
     const originX = anchorRect ? Math.max(0, Math.min(bounds.width, anchorRect.left + (anchorRect.width || 0) / 2 - bounds.left)) : 0;
     const originY = anchorRect && anchorRect.top > bounds.top ? bounds.height : 0;
-    box.style.transformOrigin = `${originX}px ${originY}px`;
-    play(box, [{ opacity: 0, scale: '.96' }, { opacity: 1, scale: '1' }], { duration: t.quick, easing: t.out });
+    const transformOrigin = `${originX}px ${originY}px`;
+    play(box, [{ opacity: 0.8, scale: '.98', transformOrigin }, { opacity: 1, scale: '1', transformOrigin }],
+      { duration: t.quick, easing: t.out });
   }
   function menuClosing(box) {
-    if (!enabled() || box.hidden) return;
-    const t = token();
-    const copy = ghost(box, 'oa-menu-ghost');
-    copy.style.left = box.style.left;
-    copy.style.top = box.style.top;
-    copy.scrollTop = box.scrollTop;
-    box.after(copy);
-    removeWhenDone(copy, copy.animate([{ opacity: getComputedStyle(box).opacity }, { opacity: 0 }], { duration: t.exit * 0.8, easing: t.in, fill: 'forwards' }));
+    if (box.hidden) return;
+    if (enabled()) exit(box, 'oa-menu-ghost', decoration => {
+      const bounds = box.getBoundingClientRect();
+      Object.assign(decoration.style, {
+        left: bounds.left + 'px', top: bounds.top + 'px',
+        width: bounds.width + 'px', height: bounds.height + 'px',
+      });
+    }, token().exit * 0.8);
+    stop(box);
   }
 
-  // Toasts rise in and fade out; a new message during the exit takes over.
-  function toastShown(el) {
+  // A new message always interrupts a fade in progress.
+  function toastCleared(el) {
+    stop(el);
+    el.hidden = true;
+  }
+  function toastShown(el, wasHidden) {
+    stop(el);
+    if (!wasHidden) return;
     const t = token();
     play(el, [{ opacity: 0, translate: '0 8px' }, { opacity: 1, translate: '0 0' }], { duration: t.base, easing: t.out });
   }
   function toastHide(el) {
+    if (el.hidden) return;
     const t = token();
-    const animation = play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: t.exit, easing: t.in, fill: 'forwards' });
-    if (!animation) { el.hidden = true; return; }
-    animation.finished.then(() => { el.hidden = true; animation.cancel(); }, () => {});
+    const animation = play(el, [{ opacity: 1 }, { opacity: 0 }], {
+      duration: t.exit, easing: t.in, fill: 'forwards',
+    }, 'main', cancelled => { if (!cancelled || !enabled()) el.hidden = true; });
+    if (!animation) el.hidden = true;
   }
 
   // Pages: a new destination settles in; switching archive tabs is lateral
   // and only cross-fades.
   function pageShown(main, lateral) {
     const t = token();
-    if (lateral) play(main, [{ opacity: 0.4 }, { opacity: 1 }], { duration: t.quick, easing: t.out });
-    else play(main, [{ opacity: 0, translate: '0 6px' }, { opacity: 1, translate: '0 0' }], { duration: t.base, easing: t.out });
+    if (lateral) play(main, [{ opacity: 0.85 }, { opacity: 1 }], { duration: t.quick, easing: t.out });
+    else play(main, [{ opacity: 0.85, translate: '0 6px' }, { opacity: 1, translate: '0 0' }], { duration: t.base, easing: t.out });
   }
 
   // Changed wording (not a changed number) cross-fades so the reader notices it.
@@ -181,109 +203,52 @@
     mutate();
     if (!before.size) return;
     const t = token();
-    for (const item of container.querySelectorAll(selector)) {
-      const old = before.get(item.getAttribute(key));
+    const items = Array.from(container.querySelectorAll(selector), item =>
+      [item, before.get(item.getAttribute(key)), item.getBoundingClientRect()]);
+    for (const [item, old, now] of items) {
       if (!old) {
-        play(item, [{ opacity: 0, scale: '.94' }, { opacity: 1, scale: '1' }], { duration: t.base, easing: t.out });
+        play(item, [{ opacity: 0.8, scale: '.97' }, { opacity: 1, scale: '1' }], { duration: t.base, easing: t.out });
         continue;
       }
-      const now = item.getBoundingClientRect();
       const dx = old.left - now.left;
       if (Math.abs(dx) >= 1) play(item, [{ translate: `${dx}px 0` }, { translate: '0 0' }], { duration: t.base, easing: t.out });
     }
   }
 
-  // An element whose box changes size (the task card) grows or shrinks from
-  // its anchored corner. Width/height never animate: the larger state is
-  // clipped on the compositor (clip-path), so a blurred panel stays cheap.
+  // The task card settles into its new size with the live controls in place.
   function resize(el, mutate) {
     if (!enabled() || !el?.isConnected || el.hidden) { mutate(); return; }
+    stop(el, 'size');
     const before = el.getBoundingClientRect();
-    const shrinking = ghost(el, null, true);
     mutate();
     if (el.hidden) return;
     const after = el.getBoundingClientRect();
     if (Math.abs(before.width - after.width) < 1 && Math.abs(before.height - after.height) < 1) return;
     const t = token();
-    const radius = getComputedStyle(el).borderRadius;
-    const inset = (outer, inner) => `inset(${inner.top - outer.top}px ${outer.right - inner.right}px ${outer.bottom - inner.bottom}px ${inner.left - outer.left}px round ${radius})`;
-    const growing = after.width * after.height >= before.width * before.height;
-    if (growing) {
-      play(el, [{ clipPath: inset(after, before) }, { clipPath: inset(after, after) }], { duration: t.base, easing: t.out }, 'size');
-      return;
-    }
-    // Shrinking: the previous, larger card is clipped down onto the new one.
-    shrinking.style.position = 'fixed';
-    shrinking.style.inset = 'auto';
-    shrinking.style.left = before.left + 'px';
-    shrinking.style.top = before.top + 'px';
-    shrinking.style.width = before.width + 'px';
-    shrinking.style.height = before.height + 'px';
-    shrinking.style.margin = '0';
-    el.after(shrinking);
-    const animation = shrinking.animate([{ clipPath: inset(before, before), opacity: 1 }, { clipPath: inset(before, after), opacity: 1 }],
-      { duration: t.exit, easing: t.in, fill: 'forwards' });
-    removeWhenDone(shrinking, animation);
+    play(el, [{ opacity: 0.85, translate: '0 3px' }, { opacity: 1, translate: '0 0' }],
+      { duration: t.quick, easing: t.out }, 'size');
   }
 
-  // Disclosures open and close in place. The observer reacts to the hidden
-  // attribute, so call sites only change state.
   const DISCLOSURES = '#oa-password-panel,#oa-compression-advanced,#oa-task-content,.oa-password-choices,#oa-password-unsupported,#oa-compression-preview';
-  // Elements that only fade: in-flow chrome whose layout change is not the point.
   const FADES = '#oa-task-output,#oa-task-dismiss,#oa-task-cancel,#oa-toolbar,.oa-tree-section,#oa-archive-tabs';
   const POPOVERS = '#oa-task-panel';
-  const collapsing = new WeakMap();
-  const sizeProps = ['height', 'paddingTop', 'paddingBottom', 'marginTop', 'marginBottom'];
-  function measured(el) {
-    const style = getComputedStyle(el);
-    return Object.fromEntries(sizeProps.map(prop => [prop, style[prop]]));
-  }
-  const closed = { height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px' };
-  function reveal(el) {
-    const t = token();
-    const copy = collapsing.get(el);
-    let from = { ...closed, opacity: 0 };
-    if (copy) {
-      // Reopened mid-close: continue from the copy's current size.
-      from = { ...measured(copy), opacity: getComputedStyle(copy).opacity };
-      collapsing.delete(el);
-      copy.remove();
-    }
-    const to = { ...measured(el), opacity: 1 };
-    el.style.overflow = 'hidden';
-    const animation = play(el, [from, to], { duration: t.base, easing: t.out }, 'disclosure');
-    const release = () => { el.style.overflow = ''; };
-    animation ? animation.finished.then(release, release) : release();
-  }
-  function conceal(el) {
-    const t = token();
-    const opening = running.get(el)?.get('disclosure');
-    const copy = ghost(el);
-    copy.style.overflow = 'hidden';
-    el.after(copy);
-    let from = { ...measured(copy), opacity: 1 };
-    if (opening) {
-      // Closed mid-open: start from where the opening had reached.
-      const progress = opening.effect.getComputedTiming().progress ?? 1;
-      from = { ...from, height: parseFloat(from.height) * progress + 'px', opacity: progress };
-      opening.cancel();
-    }
-    collapsing.set(el, copy);
-    const animation = copy.animate([from, { ...closed, opacity: 0 }], { duration: t.exit, easing: t.in, fill: 'forwards' });
-    animation.finished.then(() => { if (collapsing.get(el) === copy) collapsing.delete(el); copy.remove(); }, () => {});
-  }
   function hiddenChanged(el) {
+    if (el.hidden) {
+      stop(el);
+      stop(el, 'size');
+      return;
+    }
     if (!enabled() || insideEntrance(el)) return;
     const t = token();
+    const options = { duration: t.base, easing: t.out };
+    const still = { opacity: 1, translate: '0 0' };
     if (el.matches(POPOVERS)) {
-      if (!el.hidden) enter(el, [{ opacity: 0, translate: '0 10px', scale: '.98' }, { opacity: 1, translate: '0 0', scale: '1' }], { duration: t.base, easing: t.out });
-      return;
+      enter(el, [{ opacity: 0.8, translate: '0 6px' }, still], options);
+    } else if (el.matches(FADES)) {
+      play(el, [{ opacity: 0.8 }, { opacity: 1 }], options);
+    } else {
+      play(el, [{ opacity: 0.8, translate: '0 -3px' }, still], options);
     }
-    if (el.matches(FADES)) {
-      if (!el.hidden) play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: t.base, easing: t.out });
-      return;
-    }
-    if (el.hidden) conceal(el); else reveal(el);
   }
 
   // A segmented selection indicator that slides to the chosen option.
@@ -318,10 +283,10 @@
     }
   }
 
-  // Colour scheme changes cross-fade instead of flashing.
-  function crossfade(change) {
-    if (!enabled() || typeof document.startViewTransition !== 'function') { change(); return; }
-    document.startViewTransition(change);
+  function themeChanged(group) {
+    if (!enabled()) return;
+    const t = token();
+    play(group, [{ opacity: 0.85 }, { opacity: 1 }], { duration: t.quick, easing: t.out });
   }
 
   function observe(root) {
@@ -339,7 +304,7 @@
           thumbsChanged = true;
         }
       }
-      for (const [el, hidden] of wasHidden) if (hidden !== el.hidden) hiddenChanged(el);
+      for (const [el, hidden] of wasHidden) if (el.isConnected && hidden !== el.hidden) hiddenChanged(el);
       if (thumbsChanged) placeThumbs(true);
     }).observe(root, { subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['hidden', 'aria-pressed', 'aria-current'] });
     placeThumbs(false);
@@ -358,7 +323,7 @@
   if (host) observe(host);
 
   window.QingMotion = {
-    enabled, dialogShown, dialogClosing, menuShown, menuClosing, toastShown, toastHide,
-    pageShown, text, attention, fadeIn, flip, resize, crossfade, observe,
+    enabled, dialogShown, dialogClosing, menuPreparing, menuShown, menuClosing, toastCleared, toastShown, toastHide,
+    pageShown, text, attention, fadeIn, flip, resize, themeChanged,
   };
 })();

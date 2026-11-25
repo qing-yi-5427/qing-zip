@@ -82,8 +82,8 @@ function sortableColumn(key, label) {
 }
 function showColumns(){columnDraft=ArchiveColumns.normalize(columns);dialog('列设置','<div id="oa-column-list"></div>',btn('恢复默认','columns-reset')+btn('取消','close')+btn('应用','columns-apply','primary'));paintColumns();}
 function paintColumns(){const box=$('oa-column-list');box.innerHTML=columnDraft.map((c,i)=>`<div class="oa-column-setting"><label><input type="checkbox" data-column-visible="${c.id}" ${c.visible?'checked':''} ${c.id==='name'?'disabled':''}>${c.label}</label><label>宽度 <input type="number" min="64" max="800" step="8" aria-label="${c.label}宽度" data-column-width="${c.id}" value="${c.width}"></label><button type="button" class="qa-button quiet" data-column-move="${c.id}" data-delta="-1" aria-label="${c.label}前移" ${i===0?'disabled':''}>↑</button><button type="button" class="qa-button quiet" data-column-move="${c.id}" data-delta="1" aria-label="${c.label}后移" ${i===columnDraft.length-1?'disabled':''}>↓</button></div>`).join('');}
-function clearToast(){clearTimeout(toastTimer);$('qa-toast').hidden=true;}
-function toast(message){const box=$('qa-toast');box.textContent=message;const wasHidden=box.hidden;box.hidden=false;if(wasHidden)globalThis.QingMotion?.toastShown(box);clearTimeout(toastTimer);toastTimer=setTimeout(()=>{if(globalThis.QingMotion)QingMotion.toastHide(box);else box.hidden=true;},4500)}
+function clearToast(){clearTimeout(toastTimer);const box=$('qa-toast');if(globalThis.QingMotion)QingMotion.toastCleared(box);else box.hidden=true;}
+function toast(message){const box=$('qa-toast');box.textContent=message;const wasHidden=box.hidden;box.hidden=false;globalThis.QingMotion?.toastShown(box,wasHidden);clearTimeout(toastTimer);toastTimer=setTimeout(()=>{if(globalThis.QingMotion)QingMotion.toastHide(box);else box.hidden=true;},4500)}
 function syncToolTheme(frame){
   const doc=frame?.contentDocument;
   if(doc)doc.documentElement.style.colorScheme=document.documentElement.style.colorScheme;
@@ -94,13 +94,11 @@ root.addEventListener('load',event=>{
 const updateNativeAppearance=QingAppearance.bind(
   ()=>({theme:s.theme,material:s.material}),
   (theme,material)=>{
-    const paint=()=>{
-      document.documentElement.style.colorScheme=theme;
-      root.dataset.material=material;
-      syncToolTheme($('qa-tools'));
-    };
-    const changed=document.documentElement.style.colorScheme&&document.documentElement.style.colorScheme!==theme;
-    if(changed&&globalThis.QingMotion)QingMotion.crossfade(paint);else paint();
+    const previous=document.documentElement.style.colorScheme;
+    document.documentElement.style.colorScheme=theme;
+    root.dataset.material=material;
+    syncToolTheme($('qa-tools'));
+    if(previous&&previous!==theme)globalThis.QingMotion?.themeChanged(root.querySelector('.qa-theme-switch'));
   },
   toast,
 );
@@ -961,7 +959,7 @@ function render(){if(overlay.dataset.page==='close-confirm')return;releaseListin
 
 function navigate(v){if(!['files','archive','home','tools','tool','history','settings','associations','batch','profiles','jobs','password-book'].includes(v))return;if(homeIntake)stopHomeIntake();if($('qa-tools')?.contentWindow?.obzBusy){toast('请等待或取消当前工具任务。');return;}if(s.active&&v!=='jobs'&&!(s.backgroundExtraction&&['archive','files','history'].includes(v))){toast('请先等待或取消当前任务。');return;}if(renderedPage==='archive:'+currentTabId)saveCurrentTab();rememberPage();close(false);if(v==='archive'||v==='files'||v==='home'){s.page='files';s.view=s.archive?'archive':'home';if(v==='home'){closeArchiveTabs('all');return;}}else{s.page=v;s.view=v;}render();if(v==='batch'||v==='history')loadBatchResume();}
 
-function dialog(title,body,footer,layout=''){clearToast();overlay.dataset.page='';returnFocus=document.activeElement;const wasOpen=!overlay.hidden;overlay.hidden=false;overlay.innerHTML=`<section class="qa-dialog ${layout}" role="dialog" aria-modal="true" aria-labelledby="qa-dialog-title"><div class="qa-dialog-header"><h2 id="qa-dialog-title">${esc(title)}</h2>${btn('关闭','close','quiet')}</div>${layout?`<div class="oa-dialog-body">${body}</div>`:body}<div id="qa-formerror" class="qa-error" role="alert"></div><div class="qa-dialog-footer">${footer}</div></section>`;globalThis.QingMotion?.dialogShown(overlay,wasOpen);root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;$('oa-menu').inert=true;$('oa-toolbar').inert=true;$('oa-archive-tabs').inert=true;passwordBook.mountPickers(overlay);overlay.querySelector('input,textarea,button')?.focus();}
+function dialog(title,body,footer,layout=''){clearToast();overlay.dataset.page='';const wasOpen=!overlay.hidden;if(!wasOpen)returnFocus=document.activeElement;overlay.hidden=false;overlay.innerHTML=`<section class="qa-dialog ${layout}" role="dialog" aria-modal="true" aria-labelledby="qa-dialog-title"><div class="qa-dialog-header"><h2 id="qa-dialog-title">${esc(title)}</h2>${btn('关闭','close','quiet')}</div>${layout?`<div class="oa-dialog-body">${body}</div>`:body}<div id="qa-formerror" class="qa-error" role="alert"></div><div class="qa-dialog-footer">${footer}</div></section>`;globalThis.QingMotion?.dialogShown(overlay,wasOpen);root.querySelector('.qa-shell').inert=true;if($('oa-task-panel'))$('oa-task-panel').inert=true;$('oa-menu').inert=true;$('oa-toolbar').inert=true;$('oa-archive-tabs').inert=true;passwordBook.mountPickers(overlay);overlay.querySelector('input,textarea,button')?.focus();}
 function close(restoreFocus=true){if($('qa-open-status')?.closest('.qa-dialog')?.getAttribute('aria-busy')==='true'){
  if(secondaryOpen){secondaryOpen.cancelRequested=true;if(secondaryOpen.id!==null)invoke('cancel_operation',{id:secondaryOpen.id}).catch(error);return;}
  if(s.jobs.some(job=>job.id===s.active&&job.operation==='list')||s.active==='starting'&&!s.backgroundExtraction){action('canceljob').catch(error);return;}
@@ -3432,7 +3430,7 @@ function hideMenu(){
  root.querySelector('[aria-controls=oa-menu][aria-expanded=true]')?.setAttribute('aria-expanded','false');
 }
 function rememberMenuFocus(){const box=$('oa-menu');if(!box.contains(document.activeElement))menuReturnFocus=document.activeElement;}
-function positionMenu(box,anchor,alignEnd=false){const r=anchor?.getBoundingClientRect?.()||$('oa-toolbar').getBoundingClientRect();menuAnchorRect={left:r.left,bottom:r.bottom};const wasOpen=!box.hidden;box.hidden=false;box.scrollTop=0;const bounds=box.getBoundingClientRect();box.style.left=Math.max(8,Math.min(alignEnd?r.right-bounds.width:r.left,innerWidth-bounds.width-12))+'px';box.style.top=Math.max(8,Math.min(r.bottom+5,innerHeight-bounds.height-12))+'px';globalThis.QingMotion?.menuShown(box,r,wasOpen);}
+function positionMenu(box,anchor,alignEnd=false){const r=anchor?.getBoundingClientRect?.()||$('oa-toolbar').getBoundingClientRect();menuAnchorRect={left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};const wasOpen=!box.hidden;globalThis.QingMotion?.menuPreparing(box);box.hidden=false;box.scrollTop=0;const bounds=box.getBoundingClientRect();box.style.left=Math.max(8,Math.min(alignEnd?r.right-bounds.width:r.left,innerWidth-bounds.width-12))+'px';box.style.top=Math.max(8,Math.min(r.bottom+5,innerHeight-bounds.height-12))+'px';globalThis.QingMotion?.menuShown(box,r,wasOpen);}
 function showMore(){rememberMenuFocus();const box=$('oa-menu');box.innerHTML='<div class="oa-menu-title">菜单</div><nav id="oa-menubar" aria-label="所有菜单">'+[['file','文件'],['edit','编辑'],['find','查找'],['options','选项'],['view','视图'],['tools','工具'],['help','帮助']].map(([k,l])=>`<button role="menuitem" data-menu="${k}" aria-haspopup="menu"><span>${l}</span>${icon('chevron')}</button>`).join('')+'</nav>';positionMenu(box,root.querySelector('[data-action=app-menu]'));box.querySelector('button')?.focus();}
 
 
