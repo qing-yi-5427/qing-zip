@@ -43,10 +43,10 @@ def close(page, wait, active=False):
 
 def prepare(root):
     inputs, paths, output, expected = batch["fixtures"](root, True)
-    block = bytes(range(256)) * 256
+    block = bytes(range(256)) * 64
     with zipfile.ZipFile(paths[2], "a") as archive:
         # Keep the third job live long enough for a native close confirmation.
-        for index in range(2048):
+        for index in range(8192):
             archive.writestr(zipfile.ZipInfo(f"parts/{index:04}.bin"), block)
     for name in ("fourth", "fifth"):
         path = inputs / (name + ".zip")
@@ -62,17 +62,7 @@ def prepare(root):
 
 
 def live_control(page, index):
-    title = f"批量 {index}/5 · 解压"
-    modal = page.locator("#qa-overlay [data-job-card]:visible").filter(has_text=title)
-    inline = page.locator("#oa-task-panel:visible").filter(
-        has=page.locator("#oa-task-title").filter(has_text=title))
-    expect(modal.or_(inline)).to_be_visible(timeout=15000)
-    if inline.is_visible():
-        toggle = inline.locator("#oa-task-toggle")
-        if toggle.get_attribute("aria-expanded") == "false":
-            toggle.click()
-        return inline.locator("#oa-task-cancel")
-    return modal.locator('[data-action="canceljob"]')
+    return batch["active_stop_control"](page, f"批量 {index}/5 · 解压", expect)
 
 
 def show_saved(page, root, output, summary, policy="自动重命名"):

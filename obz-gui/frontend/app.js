@@ -1081,9 +1081,16 @@ async function run(request,label,{silent=false,recycleAfter=false,startJob=null,
   close();s.inlineTask=id;s.inlineExpanded=false;s.inlineToggled=false;renderInlineTask();
   if(previous)renderHistoryJob(previous);
   renderHistoryJob(j);
-  autoExpand=setTimeout(()=>{
-   if(s.active===id&&!s.inlineToggled){s.inlineExpanded=true;renderInlineTask();}
-  },300);
+  const expandWhenIdle=()=>{
+   if(s.active!==id||s.inlineToggled)return;
+   // Keep the task toggle under the pointer or Space key until activation ends.
+   if($('oa-task-toggle').matches(':active')){
+    autoExpand=setTimeout(expandWhenIdle,100);
+    return;
+   }
+   s.inlineExpanded=true;renderInlineTask();
+  };
+  autoExpand=setTimeout(expandWhenIdle,300);
  }else if(!silent){
   if(deferProgress){
    updateToolbar();
