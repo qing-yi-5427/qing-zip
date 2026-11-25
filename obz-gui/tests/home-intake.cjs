@@ -67,8 +67,8 @@ test('ZIP repair moves from home to a labeled toolbox group while recent files r
  assert.doesNotMatch(home,/repair-tool|修复/);
  assert.equal(toolbox.match(/class="oa-toolgrid"/g).length,3);
  const cards=[...toolbox.matchAll(/class="oa-toolcard"[^>]+>[\s\S]*?<svg[^>]*>(.*?)<\/svg>[\s\S]*?<\/button>/g)];
- assert.equal(cards.length,12);
- assert.equal(new Set(cards.map(card=>card[1])).size,12);
+ assert.equal(cards.length,13);
+ assert.equal(new Set(cards.map(card=>card[1])).size,cards.length);
  assert.match(toolbox,/data-action="repair-tool"[\s\S]*?修复 ZIP 压缩包/);
  assert.match(toolbox,/data-launch-tool="file-split"/);
 });
@@ -138,21 +138,42 @@ test('unsupported item stays visible alongside a recognized nested archive',asyn
  assert.deepEqual(f.calls.filter(c=>c[0]==='deep'),[['deep',[nested]]]);
 });
 
-test('ordinary files and directories can fill a single compression form in selection order',async()=>{
+test('ordinary files and directories fill one compression form directly in selection order',async()=>{
  const photo='C:/photo.jpg',folder='C:/Sample Folder/';
  const f=fixture({
   [photo]:{route:'review',path:photo,reason:'Plain input reason',compression_source:'file'},
   [folder]:{route:'review',path:folder,reason:'Folder reason',compression_source:'directory'},
  });
  await f.context.routeHomeArchives([photo,folder]);
- const [, ,html]=f.calls.find(c=>c[0]==='dialog');
- assert.equal((html.match(/value="compress" selected/g)||[]).length,2);
- assert.match(html,/Sample Folder/);
- assert.equal(f.calls.some(c=>c[0]==='compression'),false);
- f.fields['oa-home-review-0']={value:'compress'};
- f.fields['oa-home-review-1']={value:'compress'};
- f.context.submitHomeReview();
+ assert.equal(f.calls.some(c=>c[0]==='dialog'),false);
  assert.deepEqual(f.calls.filter(c=>c[0]==='compression'),[['compression',[photo,folder]]]);
+});
+
+test('an uncertain item keeps the batch in review alongside a valid source',async()=>{
+ const photo='C:/photo.jpg',broken='C:/bad.zip';
+ const f=fixture({
+  [photo]:{route:'review',path:photo,reason:'Plain input reason',compression_source:'file'},
+  [broken]:{route:'review',path:broken,reason:'Invalid archive header'},
+ });
+ await f.context.routeHomeArchives([photo,broken]);
+ const [, ,html]=f.calls.find(c=>c[0]==='dialog');
+ assert.equal((html.match(/value="compress" selected/g)||[]).length,1);
+ assert.match(html,/bad\.zip/);
+ assert.equal(f.calls.some(c=>c[0]==='compression'),false);
+});
+
+test('a classification finishing while a different dialog is open queues the sources',async()=>{
+ const folder='C:/Sample Folder';
+ let resolveInspection;
+ const f=fixture({[folder]:new Promise(resolve=>{resolveInspection=resolve;})});
+ const intake=f.context.routeHomeArchives([folder]);
+ f.context.overlay.hidden=false;
+ f.context.overlay.dataset.page='other-dialog';
+ resolveInspection({route:'review',path:folder,reason:'Folder reason',compression_source:'directory'});
+ await intake;
+ assert.equal(f.context.overlay.dataset.page,'other-dialog');
+ assert.equal(f.calls.some(c=>c[0]==='compression'),false);
+ assert.deepEqual(f.context.pendingFileGroups.map(paths=>Array.from(paths)),[[folder]]);
 });
 
 test('selected compression sources wait for the recognized deep batch dialog',async()=>{

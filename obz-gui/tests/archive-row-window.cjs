@@ -81,7 +81,7 @@ test('height lookup matches the cumulative model for sparse, fractional and shri
 
 test('the archive view uses the window only for large details and keeps icon thumbnails',()=>{
   const app=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
-  const excerpt=app.slice(app.indexOf('const windowThreshold'),app.indexOf('\n}',app.indexOf('function rows() {'))+2);
+  const excerpt=app.slice(app.indexOf('const windowThreshold'),app.indexOf('\n}',app.indexOf('function rows('))+2);
   const table={attributes:{},classList:{toggle(){}},setAttribute(k,v){this.attributes[k]=v}};
   const body={closest:()=>table,innerHTML:''},empty={};
   const state={selected:new Set(),listStyle:'details',entries:[],search:''},calls=[];

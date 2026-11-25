@@ -63,6 +63,33 @@ test('supported alternate suffixes are preserved and directory values stay intac
   assert.equal(context.validCompressionFilename('C:\\temp\\broken?.zip'), false);
 });
 
+test('automatic output location avoids nested input folders independent of source order', () => {
+  const {context} = fixture();
+  const sources = ['C:/Reports/Project/nested/file.txt', 'C:/REPORTS/Project/'];
+  for (const order of [sources, [...sources].reverse()]) {
+    assert.equal(context.suggestedCompressionPath(order, 'zip', false).toLowerCase(), 'c:/reports/reports.zip');
+    assert.equal(context.suggestedCompressionPath(order, 'zip', true).toLowerCase(), 'c:/reports/');
+  }
+  assert.equal(context.suggestedCompressionPath(['C:/folder/a.txt', 'C:/'], 'zip', false), '');
+  assert.equal(context.suggestedCompressionPath(['//s/share/folder/a.txt', '//s/share/'], 'zip', true), '');
+});
+
+test('presets migrate legacy maximum levels and retain explicitly selected current levels', () => {
+  const {context} = fixture();
+  const options = context.window.qingCompression;
+  for (const [format, maximum] of [['lizard', 49], ['lz4', 12], ['lz5', 15], ['brotli', 11]]) {
+    assert.equal(options.profileLevel(format, 9), maximum);
+    assert.equal(options.profileLevel(format, maximum, 2), maximum);
+    assert.equal(options.preferredLevel(format, '', maximum), maximum);
+  }
+  assert.equal(options.profileLevel('lz4', 9, 2), 9);
+  assert.equal(options.profileLevel('lizard', 5), 10);
+  assert.equal(options.profileLevel('lzh', 9), 5);
+  assert.equal(options.profileLevel('lzh', 0), 0);
+  assert.equal(options.profileLevel('iso', 9), undefined);
+  assert.equal(options.profileLevel('tar', 9), undefined);
+});
+
 test('single-file formats validate combined sources before creating jobs and allow separate file outputs', () => {
   const {context, fields} = fixture();
   let focused;
@@ -172,6 +199,27 @@ test('same basenames show the nearest parents that distinguish their paths', () 
     ['Client A\\Current', 'Client B\\Current', 'Different', 'Current']);
 });
 
+test('the add action names replacement when the selection matches an archive entry', () => {
+  const {context, fields} = fixture();
+  const code = app.slice(app.indexOf('function refreshAddConflicts('), app.indexOf('function syncAddPassword('));
+  vm.runInContext(code, context);
+  const input = fields['qa-edit-inputs'] = {addContext: {existingNames: new Set(['sample.txt'])}};
+  const mode = fields['qa-update-mode'] = {value: 'add'};
+  const notice = fields['oa-add-conflicts'] = {};
+  const button = {};
+  context.overlay = {querySelector: () => button};
+  context.refreshAddConflicts(input, ['C:/Sample.txt']);
+  assert.equal(button.textContent, '添加并替换');
+  assert.match(notice.textContent, /Sample\.txt/);
+  mode.value = 'update';
+  context.refreshAddConflicts(input, ['C:/Sample.txt']);
+  assert.equal(button.textContent, '更新');
+  mode.value = 'add';
+  context.refreshAddConflicts(input, ['C:/new.txt']);
+  assert.equal(button.textContent, '添加');
+  assert.equal(notice.hidden, true);
+});
+
 test('ZIP to TAR to 7z blocks unencrypted submission and preserves both passwords', () => {
   const {context, fields, scrolled} = fixture();
 
@@ -211,11 +259,11 @@ test('ZipCrypto rejects passwords that its writer cannot encode before starting'
   assert.equal(context.validateCompressionPassword('zip'), 'Pass -123\x7f');
 });
 
-test('ZIP names notice belongs to the password disclosure and follows the form format', () => {
+test('ZIP and ZIPX names notice belongs to the password disclosure and follows the form format', () => {
   const {context, fields} = fixture();
   const markup = app.slice(app.indexOf('<div id="oa-password-panel"'), app.indexOf('${compressionAdvancedFields()}'));
   assert.match(markup, /^<div id="oa-password-panel"[^>]* hidden>/);
-  assert.match(markup, /<p id="oa-zip-password-notice" class="qa-sub" hidden>ZIP 密码保护文件内容，文件名仍可见。<\/p>\s*<div class="qa-fieldrow">\s*<label[^>]*>密码<input id="qa-new-password"/);
+  assert.match(markup, /<p id="oa-zip-password-notice" class="qa-sub" hidden>密码保护文件内容，文件名仍可见。<\/p>\s*<div class="qa-fieldrow">\s*<label[^>]*>密码<input id="qa-new-password"/);
   fields['qa-save'] = {dataset: {}};
   fields['oa-separate'] = {checked: false};
   context.refreshSources = () => {};
@@ -228,7 +276,10 @@ test('ZIP names notice belongs to the password disclosure and follows the form f
   panel.hidden = false;
   assert.equal(visible(), true);
 
-  for (const format of ['7z', 'zipx', 'sfx', 'tar']) {
+  fields['qa-format'].value = 'zipx';
+  context.changeCompressionFormat();
+  assert.equal(visible(), true);
+  for (const format of ['7z', 'sfx', 'tar']) {
     fields['qa-format'].value = format;
     context.changeCompressionFormat();
     assert.equal(notice.hidden, true, format);

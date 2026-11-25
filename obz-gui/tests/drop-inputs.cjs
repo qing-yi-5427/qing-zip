@@ -31,6 +31,16 @@ test('native drops add files and directories to the open creation or update form
   }
 });
 
+test('dropping into the batch list retains its current inputs and view', () => {
+  const {input,calls,context}=fixture('qa-batch-inputs');
+  Object.assign(context,{s:{page:'batch'},$:(id)=>id===input.id&&input,
+    updateBatchPage:()=>calls.push('batch')});
+  context.overlay.hidden=true;
+  context.acceptDroppedPaths(['C:\\original','C:\\next.zip','C:\\next.zip']);
+  assert.equal(input.value,'C:\\original\nC:\\next.zip');
+  assert.deepEqual(calls,['batch']);
+});
+
 test('other drops still open archives, busy forms and dismissed pickers keep their inputs', () => {
   const plain = fixture(null);
   const paths = ['C:\\one.zip', 'C:\\two.7z'];

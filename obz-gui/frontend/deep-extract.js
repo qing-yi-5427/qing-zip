@@ -2,7 +2,7 @@
 const gib=1073741824;
 const defaults={depth:8,archives:256,files:100000,bytes:20*gib,reserve_bytes:gib,recovery_directory:null};
 window.QingDeepExtract=({passwordBook,root,s,pref,esc,btn,dialog,$,run,invoke,appearance,toast,error,archiveParent,joinExtractionPath,folderForSource,conflictHelp,recycleSummary,sourceDisposition,onRecycled,onBrowse,passwordRequiredForSource,currentReport,canContinue})=>{
- s.deepExtract=!!pref.deepExtract;s.deepRecycleAfter=!!pref.deepRecycleAfter;s.deepLimits={...defaults,...pref.deepLimits};
+ s.deepExtract=!!pref.deepExtract;s.deepLimits={...defaults,...pref.deepLimits};
  const sessionOptions=new Map();
  const button=(label,action,extra='',variant='')=>`<button type="button" class="qa-button ${variant}" data-deep-action="${action}" ${extra}>${label}</button>`;
  function passwordMarkup(id,text,label='密码'){
@@ -98,7 +98,7 @@ window.QingDeepExtract=({passwordBook,root,s,pref,esc,btn,dialog,$,run,invoke,ap
     <p class="qa-sub">按内容识别压缩包。Office、APK、JAR、EPUB 等容器保持完整。</p>
    </details>
    ${limitsMarkup()}
-  `,recycleSummary({statusId:'oa-deep-source-status',recycleId:'oa-deep-recycle',recycle:s.deepRecycleAfter})+
+  `,recycleSummary({statusId:'oa-deep-source-status',recycleId:'oa-deep-recycle'})+
    btn('取消','close')+(allowBrowse?button('改为打开压缩包','browse-archives'):'')+
    button('开始深度解压','start-batch','title="Ctrl+Enter" aria-keyshortcuts="Control+Enter"','primary'),'oa-extraction-dialog oa-extraction-form');
   if(password)$('oa-deep-password-reveal').dataset.expanded='true';
@@ -293,7 +293,7 @@ window.QingDeepExtract=({passwordBook,root,s,pref,esc,btn,dialog,$,run,invoke,ap
   const smart=$('oa-deep-smart').checked,input=$('oa-deep-password'),password=input.disabled?null:input.value||null;
   const openAfter=$('oa-deep-open-after').checked,closeAfter=$('oa-deep-close-after').checked;
   if($('oa-deep-remember').checked){
-   Object.assign(s,{deepLimits:limits,deepRecycleAfter:recycleAfter,sameFolder:smart,overwrite,openAfter,closeAfter});
+   Object.assign(s,{deepLimits:limits,sameFolder:smart,overwrite,openAfter,closeAfter});
    appearance();
   }
   input.value='';

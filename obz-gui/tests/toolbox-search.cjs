@@ -14,6 +14,7 @@ test('returning to a filtered toolbox matches only the named tools and their des
     ['密码',['password-book','recover-tool']],
     [' ZIP  修复 ',['repair-tool']],
     ['校验文件大小',[]],
+    ...['sha-256','SHA256','MD5','哈希','校验值'].map(term=>[term,['checksum-tool']]),
   ]) {
     state.toolQuery=query;
     const html = context.toolbox();
