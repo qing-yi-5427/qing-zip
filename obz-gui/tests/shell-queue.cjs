@@ -1,11 +1,11 @@
 // Pure queue model tests. These do not claim Explorer or desktop GUI clicks.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),test=require('node:test');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../frontend/app.js'),'utf8');
-const names=['archiveKey','canRecycleArchive','shellQueueStatus','clearShellSecret','clearShellQueue','showShellPassword','retryShellExtraction','enqueueShellExtractions','pumpShellExtractions','pumpArchiveQueue','drainNativeArchives'];
+const names=['archiveKey','archivePasswordError','pumpArchiveQueue','drainNativeArchives'];
 const functions=names.map(name=>source.split('\n').find(line=>line.startsWith(`function ${name}(`)||line.startsWith(`async function ${name}(`))).join('\n');
 assert.equal(functions.split('\n').length,names.length);
+const shell=source.slice(source.indexOf('function shellQueueStatus('),source.indexOf('function showCompressionFiles('));
 const finish=source.slice(source.indexOf('async function finishExtraction('),source.indexOf('async function runSecondaryListing('));
-const recyclePolicy=source.slice(source.indexOf('function recycleBlockReason('),source.indexOf('function canRecycleArchive('));
 const errorText=source.slice(source.indexOf('function archiveDirectoryError('),source.indexOf('function archiveOpenMessage('))+source.slice(source.indexOf('function taskError('),source.indexOf('function showPreservationNotice('));
 function fixture(options={}){
  const timers=[],calls=[],errors=[],elements={},native={extractions:[],folders:[],files:[],archives:[]};
@@ -23,12 +23,12 @@ function fixture(options={}){
   close:()=>{context.overlay.hidden=true;delete elements['qa-shell-password'];},
   openArchive:async path=>calls.push(['open',path]),openDialog:()=>{},
   invoke:async(command,args)=>{calls.push([command,args]);switch(command){case'take_pending_shell_extractions':return native.extractions.splice(0);case'take_pending_compression_files':return native.files.splice(0);case'take_pending_folders':return native.folders.splice(0);case'take_pending_archives':return native.archives.splice(0);default:return null;}},
-  run:async(request,label,settings)=>{calls.push(['run',JSON.parse(JSON.stringify(request)),settings]);context.s.jobs.push({summary:'done'});return {destination:request.dest,recycled:settings.recycleAfter};},
+  run:async(request,label,settings={})=>{calls.push(['run',JSON.parse(JSON.stringify(request)),settings]);context.s.jobs.push({summary:'done'});return {destination:request.dest,recycled:settings.recycleAfter};},
  };
  context.enqueueArchives=paths=>context.pendingArchivePaths.push(...paths);
  const compression=source.slice(source.indexOf('function showCompressionFiles('),source.indexOf('async function pumpArchiveQueue('));
  const naming=source.slice(source.indexOf('const compressionExtensions='),source.indexOf('function sourceFields('));
- vm.createContext(context);vm.runInContext(errorText+'\n'+naming+'\n'+compression+'\n'+recyclePolicy+finish+functions,context);
+ vm.createContext(context);vm.runInContext(errorText+'\n'+naming+'\n'+compression+'\n'+finish+shell+functions,context);
  const actions=source.slice(source.indexOf("case'shell-continue':"),source.indexOf("case'clear-recent':"));
  assert.ok(actions,'real queue action handlers must be present');
  vm.runInContext(`async function queueAction(action){switch(action){${actions}}}`,context);
@@ -56,15 +56,15 @@ test('Explorer file selections are grouped in one compression dialog, including 
  assert.equal(f.elements['qa-save'].value,'D:\\single.bin.zip');
  assert.ok(f.calls.some(([op,label])=>op==='toast'&&label==='selection invalid'));
 });
-test('smart and here retain exact request rules and inherit completion preferences',async()=>{
+test('smart and here keep original archives despite legacy recycle settings',async()=>{
  const f=fixture({overwrite:'rename',recycleAfter:true,openAfter:true,closeAfter:true});
  f.queue('C:\\archives\\one.zip',true);f.queue('C:\\archives\\two.7z',false);
  await f.context.pumpShellExtractions();
  const runs=f.calls.filter(c=>c[0]==='run');
  assert.deepEqual(runs.map(c=>c[1].smart),[true,false]);
- for(const [,request,settings] of runs){assert.equal(request.options.overwrite,'rename');assert.deepEqual(request.options.selected,[]);assert.equal(settings.recycleAfter,true);}
+ for(const [,request,settings] of runs){assert.equal(request.options.overwrite,'rename');assert.deepEqual(request.options.selected,[]);assert.equal(settings.recycleAfter,undefined);}
  assert.equal(f.calls.filter(c=>c[0]==='reveal_path').length,2);
- assert.equal(f.calls.filter(c=>c[0]==='discard').length,2);
+ assert.equal(f.calls.filter(c=>c[0]==='discard').length,0);
  assert.equal(f.calls.filter(c=>c[0]==='window_action').length,1);
  assert.equal(f.calls.at(-1)[0],'window_action');
 });
@@ -95,7 +95,7 @@ test('the first completed job progress dialog permits the next extraction but ne
 test('skip and unverified or split formats preserve source despite saved recycle preference',async()=>{
  for(const [path,overwrite] of [['a.zip','skip'],['a.rar','error'],['a.7z.001','rename']]){
   const f=fixture({recycleAfter:true,overwrite});f.queue('C:\\archives\\'+path);await f.context.pumpShellExtractions();
-  assert.equal(f.calls.find(c=>c[0]==='run')[2].recycleAfter,false);
+  assert.equal(f.calls.find(c=>c[0]==='run')[2].recycleAfter,undefined);
   assert.equal(f.calls.some(c=>c[0]==='discard'),false);
  }
 });
@@ -136,11 +136,32 @@ test('canonical duplicate requests collapse while distinct case and extraction m
  f.queue('C:\\archives\\ONE.zip');f.queue('C:\\archives\\one.zip',false);
  assert.equal(f.context.pendingShellExtractions.length,3);
 });
-test('recycle failure prevents auto-close and pauses subsequent tasks',async()=>{
- const f=fixture({recycleAfter:true,closeAfter:true});f.queue('C:\\archives\\one.zip');f.queue('C:\\archives\\two.zip');
- f.context.run=async()=>{f.context.s.jobs.push({summary:'done'});return {destination:'C:\\archives',recycled:false,recycle_error:'source identity changed'};};
- await f.context.pumpShellExtractions();assert.equal(f.context.shellQueuePaused,true);
- assert.equal(f.calls.some(c=>c[0]==='window_action'),false);assert.match(f.context.s.jobs.at(-1).summary,/source identity changed/);
+test('skipping a failed queue item runs only remaining requests and keeps the window open',async()=>{
+ const f=fixture({closeAfter:true});f.queue('C:\\archives\\one.zip');f.queue('C:\\archives\\two.zip');
+ const first=f.context.pendingShellExtractions[0],run=f.context.run;
+ first.password='manual-secret';
+ f.context.run=async()=>{throw Error('existing destination file');};
+ await f.context.pumpShellExtractions();
+ assert.match(f.context.shellQueueStatus(),/跳过并继续/);
+ f.context.run=run;await f.context.queueAction('shell-skip');
+ assert.equal('password' in first,false);
+ assert.equal(f.context.pendingShellExtractions.length,0);
+ assert.deepEqual(f.calls.filter(c=>c[0]==='run').map(c=>c[1].path),['C:\\archives\\two.zip']);
+ assert.equal(f.calls.some(c=>c[0]==='window_action'),false);
+});
+test('retry after a skip does not hide the earlier failure by closing the window',async()=>{
+ const f=fixture({closeAfter:true});
+ f.queue('C:\\archives\\first.zip');f.queue('C:\\archives\\second.zip');
+ const run=f.context.run;
+ f.context.run=async()=>{throw Error('destination unavailable');};
+ await f.context.pumpShellExtractions();
+ await f.context.queueAction('shell-skip');
+ assert.equal(f.context.pendingShellExtractions[0].path,'C:\\archives\\second.zip');
+ assert.equal(f.context.shellQueuePaused,true);
+ f.context.run=run;
+ await f.context.queueAction('shell-continue');
+ assert.equal(f.context.pendingShellExtractions.length,0);
+ assert.equal(f.calls.some(c=>c[0]==='window_action'),false);
 });
 test('an unrelated active task or open dialog blocks queue execution',async()=>{
  const f=fixture();f.queue('C:\\archives\\one.zip');f.context.s.active='123';await f.context.pumpShellExtractions();
@@ -151,7 +172,7 @@ test('last failed item remains available for explicit generic retry',async()=>{
  const f=fixture({closeAfter:true,openAfter:true});f.queue('C:\\archives\\one.zip');
  const good=f.context.run;f.context.run=async()=>{throw Error('temporary destination error');};
  await f.context.pumpShellExtractions();const item=f.context.pendingShellExtractions[0];
- assert.equal(item.state,'failed');assert.match(f.context.shellQueueStatus(),/shell-password/);
+ assert.equal(item.state,'failed');assert.doesNotMatch(f.context.shellQueueStatus(),/shell-password/);
  assert.equal(f.calls.some(c=>c[0]==='dialog'),false,'no error-message guessing or automatic password dialog');
  f.context.run=good;await f.context.queueAction('shell-continue');
  assert.equal(f.context.pendingShellExtractions.length,0);assert.equal(item.state,'complete');
@@ -186,7 +207,7 @@ test('wrong password retry stays paused and clear removes secret references',asy
  f.context.run=async()=>{throw Error('wrong password');};await f.context.pumpShellExtractions();
  f.context.showShellPassword();f.elements['qa-shell-password'].value='temporary-password';
  await f.context.retryShellExtraction(true);const item=f.context.pendingShellExtractions[0];
- assert.equal(item.password,'temporary-password');assert.equal(item.state,'failed');assert.equal(f.context.shellQueuePaused,true);
+ assert.equal('password' in item,false);assert.equal(item.state,'failed');assert.equal(f.context.shellQueuePaused,true);
  assert.equal(f.context.shellQueueStatus().includes('temporary-password'),false);
  f.context.showShellPassword();const field=f.elements['qa-shell-password'];field.value='not-submitted';
  await f.context.queueAction('shell-clear');
@@ -220,7 +241,7 @@ test('native enqueue cannot seed password or overwrite failed state',async()=>{
  assert.equal(f.context.pendingShellExtractions.length,1);assert.equal(item.state,'failed');assert.equal(f.context.shellQueuePaused,true);
 });
 test('empty password is rejected and stale dialog cannot retry a different archive',async()=>{
- const f=fixture();f.queue('C:\\archives\\one.zip');f.context.run=async()=>{throw Error('failure');};await f.context.pumpShellExtractions();
+ const f=fixture();f.queue('C:\\archives\\one.zip');f.context.run=async()=>{throw Error('password required');};await f.context.pumpShellExtractions();
  f.context.showShellPassword();await assert.rejects(f.context.retryShellExtraction(true),/请输入密码/);
  assert.equal(f.context.pendingShellExtractions[0].state,'failed');f.context.clearShellQueue();f.queue('C:\\archives\\different.zip');
  await assert.rejects(f.context.retryShellExtraction(true),/已移出队列/);

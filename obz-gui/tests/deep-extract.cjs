@@ -49,6 +49,9 @@ test('batch previews complete paths and live recycle eligibility',()=>{
  f.context.s.deepRecycleAfter=true;
  f.api.batch(['C:\\a.zip','D:\\archives\\b.zip']);
  const fields=f.elements,output=index=>fields['oa-deep-path-'+index].textContent,disposition=fields['oa-deep-source-status'];
+ assert.equal(fields['oa-deep-recycle'].checked,false);
+ fields['oa-deep-recycle'].checked=true;
+ f.handlers.change({target:fields['oa-deep-recycle']});
  assert.equal(output(0),'C:\\a');
  assert.equal(output(1),'D:\\archives\\b');
  assert.equal(disposition.dataset.recycle,'true');
@@ -89,7 +92,7 @@ test('batch forwards optional initial password and dedicated per-source destinat
  assert.equal(run[3].recycleAfter,true);
  assert.equal(f.elements['oa-deep-password'].value,'');
  f.api.batch();
- assert.equal(f.elements['oa-deep-recycle'].checked,true);
+ assert.equal(f.elements['oa-deep-recycle'].checked,false);
 });
 test('cancelled session remains manageable and recovery is directly reachable',()=>{const f=fixture(),html=f.api.jobActions({deep:{deep_session:4,finished:false,cancelled:true,pending:[],recovery_path:'C:\\Recovery'}});assert.match(html,/data-session="4"/);assert.match(html,/打开恢复目录/);assert.match(html,/继续保存或结束会话/);});
 test('retained ordinary companions are shown without a failure or new retry action',()=>{const f=fixture(),html=f.api.jobActions({deep:{deep_session:4,finished:true,partial:false,retained_matching_files:['outer.zip → bundle.002']}});assert.match(html,/保留的同名匹配文件/);assert.match(html,/bundle.002/);assert.doesNotMatch(html,/data-deep-action="manage"/);});
@@ -171,7 +174,8 @@ for(const deep of [false,true]){
 
   scope.value='all';onChange(scope);
   assert.equal(box.disabled,false);
-  assert.equal(box.checked,true);
+  assert.equal(box.checked,false);
+  box.checked=true;onChange(box);
   assert.match(submit.lastChild.textContent,/回收/);
   conflict.value='skip';onChange(conflict);
   assert.equal(box.disabled,true);
@@ -196,9 +200,12 @@ for(const deep of [false,true]){
   state.archive='single.zip';
   box.checked=false;onChange(box);
   toggle.checked=!deep;onChange(toggle);
-  assert.equal(box.checked,true);
+  assert.equal(box.checked,false);
   toggle.checked=deep;onChange(toggle);
   assert.equal(box.checked,false);
+  context.extract({recycleOnce:true,forceDeep:deep});
+  assert.equal(scope.value,'all');
+  assert.equal(box.checked,true);
  });
 }
 test('single extraction previews a preserved wrapper, selected members, and a direct destination',()=>{

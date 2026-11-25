@@ -77,6 +77,37 @@ test('numeric compression preference selects standard instead of silently choosi
  assert.match(options,/<option value="5" selected>Standard/);
  assert.doesNotMatch(options,/<option value="0" selected>/);
 });
+test('clearing a query restores its own folder selection, measured listing and scroll',()=>{
+ const context=fixture(),{s,api}=context;
+ const original='folder/near.txt',target='folder/needle.txt';
+ const search={focus(){context.focused='search';},value:''};
+ context.$=id=>id==='qa-search'?search:null;
+ context.main={scrollTop:1420,scrollLeft:63,getBoundingClientRect:()=>({top:100,bottom:700})};
+ context.positionsFor=list=>new Map(list.map((entry,index)=>[entry.name,index]));
+ context.listingWindow={paint(){context.paintedAt=context.main.scrollTop;}};
+ context.rows=restoreFocus=>{context.restoreFocus=restoreFocus;};
+ context.updateColumnScroll=()=>{};
+ context.rowButtons=()=>[{dataset:{entry:original},getBoundingClientRect:()=>({top:240,bottom:276}),focus(){context.focused=original;}}];
+ Object.assign(s,{folder:'folder/',selected:new Set([original]),anchor:original,cursor:original,
+  entries:[{name:original},{name:target}]});
+ const listing=api.visibleEntries();
+ search.value='needle';
+ context.updateArchiveSearch(search);
+ assert.equal(s.selected.size,0);
+ assert.equal(context.main.scrollTop,0);
+ s.cursor=target;
+ assert.deepEqual(Array.from(api.visibleEntries(),entry=>entry.name),[target]);
+ context.clearArchiveSearch(true);
+ assert.equal(api.visibleEntries(),listing);
+ assert.deepEqual([...s.selected],[original]);
+ assert.equal(s.anchor,original);
+ assert.equal(s.cursor,original);
+ assert.equal(context.focused,original);
+ assert.equal(context.restoreFocus,false);
+ assert.equal(context.paintedAt,1420);
+ assert.equal(context.main.scrollLeft,63);
+ assert.equal(s.searchOrigin,null);
+});
 test('extended methods present only real application levels and distinguish fast from store',()=>{
  const {api}=fixture();
  assert.equal(api.compressionLevels('zstd').at(-1)[0],9);

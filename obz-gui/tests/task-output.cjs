@@ -144,6 +144,31 @@ test('a blocked output directory names the existing file in the task and extract
   assert.doesNotMatch(retryBody, /destination conflict:|output parent is a file:/);
 });
 
+test('an ordinary conflict retry can reuse a matching open tab password without caching it in the task', () => {
+ const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
+ const request={job:{error:'destination conflict'},selected:[],source:'C:/secure.zip',
+  dest:'D:/out',location:{label:'预计输出目录'},requiresPassword:true,reuseTabPassword:true};
+ const input={value:'',focus(){}};
+ let markup;
+ const context=makeContext({
+  ordinaryRetries:new Map([[1,request]]),s:{archive:'C:/other.zip',password:'unrelated'},
+  archiveTabs:[{archive:'C:/secure.zip',password:'tab-secret'}],archiveKey:String,esc:String,filename:String,btn:()=>'',taskError:String,
+  dialog:(_title,body)=>{markup=body;input.value='';},extractionPathMarkup:()=>'',conflicts:()=>'',updateExtractionRetry(){},
+  labelExtractionShortcut(){},$:()=>input,
+ });
+ vm.runInContext(source.slice(source.indexOf('function tabExtractionPassword('),source.indexOf('function updateExtractionRetry(')),context);
+ context.openExtractionRetry(1);
+ assert.equal(input.value,'tab-secret');
+ assert.ok(!markup.includes('tab-secret'));
+ context.archiveTabs.length=0;
+ context.openExtractionRetry(1);
+ assert.equal(input.value,'');
+ context.archiveTabs.push({archive:'C:/secure.zip',password:'tab-secret'});
+ request.job.retryLabel='输入密码重试';
+ context.openExtractionRetry(1);
+ assert.equal(input.value,'');
+});
+
 test('nested disk space failure keeps the recovery advice and is announced once in its task dialog', () => {
   const source=fs.readFileSync(path.join(__dirname,'../frontend/app.js'),'utf8');
   const cause='写回失败，内层工作副本已保留，可重试或另存为：create private stage: There is not enough space on the disk. (os error 112)';

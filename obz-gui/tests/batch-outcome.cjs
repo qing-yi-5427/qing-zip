@@ -7,6 +7,19 @@ const source = fs.readFileSync(path.join(__dirname, '../frontend/app.js'), 'utf8
 const functions = source.slice(source.indexOf('const batchPolicies='), source.indexOf('const conflicts='))
   + source.slice(source.indexOf('function batchResultMarkup'), source.indexOf('function updateBatchPage'));
 
+test('batch extraction infers only a shared absolute parent and previews the real child directory',()=>{
+  const ctx={filename:path=>path.split(/[\\/]/).pop()};
+  vm.runInNewContext(source.slice(source.indexOf('function commonBatchFolder'),source.indexOf('function updateBatchPage')),ctx);
+  for(const [paths,expected] of [
+    [['C:/a.zip','C:\\b.zip'],'C:\\'],
+    [['C:/dir/a.zip','C:\\dir\\b.zip'],'C:\\dir'],
+    [['\\\\server\\share\\a.zip','\\\\server\\share\\b.zip'],'\\\\server\\share'],
+    [['C:/one/a.zip','C:/two/b.zip'],''],[['C:relative.zip'],''],
+    [['\\\\?\\C:\\a.zip'],''],[['..\\foo.zip'],''],[['C:/dir/../foo.zip'],''],[[],'']
+  ])assert.equal(ctx.commonBatchFolder(paths),expected);
+  assert.equal(ctx.batchExtractionTarget('C:\\','C:\\a.zip',0),'C:\\1-a');
+});
+
 function checkpoints({failSave=false, failAdmission=false}={}) {
   let count=0, record=null, active=null;
   return {
